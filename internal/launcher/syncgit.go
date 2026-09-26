@@ -22,14 +22,19 @@ var syncBudget = 20 * time.Second
 // command in a process group of its own, so the kill takes git's ssh with
 // it, and the timer in another, killed whole as soon as git is done: its
 // sleep would otherwise hold docker exec's output open for the rest of the
-// budget. It holds none of those descriptors either, in case.
+// budget. It holds none of those descriptors either, in case. With job
+// control on, some bash versions (5.2, Debian's) report each job that ends
+// ("[1]- Terminated") on the shell's stderr, which would stand in for the
+// error the caller shows: the shell's own stderr goes to /dev/null, and the
+// command and the timeout message write to the real one, kept as fd 3.
 const watchdog = `set -m
+exec 3>&2 2>/dev/null
 t=$1; shift
-"$@" & p=$!
-( sleep "$t"; kill -TERM -- "-$p" ) </dev/null >/dev/null 2>&1 & w=$!
+"$@" 2>&3 3>&- & p=$!
+( sleep "$t"; kill -TERM -- "-$p" ) </dev/null >/dev/null 2>&1 3>&- & w=$!
 wait "$p"; s=$?
-kill -- "-$w" 2>/dev/null
-if [ "$s" = 143 ]; then echo "no answer from the remote in ${t}s" >&2; exit 124; fi
+kill -- "-$w"
+if [ "$s" = 143 ]; then echo "no answer from the remote in ${t}s" >&3; exit 124; fi
 exit "$s"`
 
 // knownHosts is where the sync's ssh keeps host keys: in the sync repo,

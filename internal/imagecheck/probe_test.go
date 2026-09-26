@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/shelltest"
 )
 
 // These run the real imagecheck.sh with the local shells, the way docker
@@ -26,26 +27,6 @@ func probeScript(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return string(b)
-}
-
-// shells are the POSIX shells to run the probe with: /bin/sh always, and
-// whichever of the others this machine has, since images differ in theirs
-// (dash on Debian, BusyBox ash on Alpine).
-func shells(t *testing.T) [][]string {
-	t.Helper()
-	out := [][]string{{"/bin/sh"}}
-	for _, s := range []string{"dash", "ash", "mksh", "yash", "posh"} {
-		if p, err := exec.LookPath(s); err == nil {
-			out = append(out, []string{p})
-		}
-	}
-	if p, err := exec.LookPath("bash"); err == nil {
-		out = append(out, []string{p, "--posix"})
-	}
-	if p, err := exec.LookPath("busybox"); err == nil {
-		out = append(out, []string{p, "sh"})
-	}
-	return out
 }
 
 type fakeImage struct {
@@ -150,7 +131,7 @@ func (f *fakeImage) run(shell []string, uid, gid int) string {
 func (f *fakeImage) probe(uid, gid int) *Report {
 	f.t.Helper()
 	var first string
-	for i, sh := range shells(f.t) {
+	for i, sh := range shelltest.Shells(f.t) {
 		out := f.run(sh, uid, gid)
 		if i == 0 {
 			first = out

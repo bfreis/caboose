@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bfreis/caboose/internal/shelltest"
 )
 
 // These run the real layer-user.sh against a fake image root (its third
@@ -14,23 +16,6 @@ import (
 // which is /bin/sh on some images -- and sets UID itself, which is why the
 // script takes the IDs as arguments. chown is a stub that logs; mkdir is
 // the host's.
-
-func layerShells(t *testing.T) [][]string {
-	t.Helper()
-	out := [][]string{{"/bin/sh"}}
-	for _, s := range []string{"dash", "ash", "mksh", "yash", "posh"} {
-		if p, err := exec.LookPath(s); err == nil {
-			out = append(out, []string{p})
-		}
-	}
-	if p, err := exec.LookPath("bash"); err == nil {
-		out = append(out, []string{p, "--posix"})
-	}
-	if p, err := exec.LookPath("busybox"); err == nil {
-		out = append(out, []string{p, "sh"})
-	}
-	return out
-}
 
 type layerImage struct {
 	t         *testing.T
@@ -273,7 +258,7 @@ func TestLayerUser(t *testing.T) {
 			files{"etc/passwd": rootPasswd, "etc/group": rootGroup, "usr/bin/bash": ""},
 			files{"etc/passwd": rootPasswd + "agent:!:1000:1000::/home/agent:/usr/bin/bash\n"}},
 	}
-	for _, sh := range layerShells(t) {
+	for _, sh := range shelltest.Shells(t) {
 		for _, tc := range cases {
 			t.Run(filepath.Base(sh[0])+"/"+tc.name, func(t *testing.T) {
 				im := newLayerImage(t, tc.in)
