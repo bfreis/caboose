@@ -294,6 +294,10 @@ func (a *App) createContainer(mayBuild bool) error {
 	if err := a.prepareDataDir(); err != nil {
 		return err
 	}
+	// Before a build that may take minutes; again below, with the mounts.
+	if err := checkRunArgs(c.DockerRunArgs, nil, c.Roots); err != nil {
+		return a.runArgsError(err)
+	}
 	labels, err := a.ensureImage(mayBuild)
 	if err != nil {
 		return err
@@ -388,6 +392,16 @@ func (a *App) createContainer(mayBuild bool) error {
 	// /work, or /work/<name> for several (config.WorkDir).
 	for _, r := range c.Roots {
 		args = append(args, "-v", r.Host+":"+r.Container)
+	}
+	// The user's own arguments, last, so they are checked against all of
+	// caboose's, and labelled, so a change to them shows (runargs.go).
+	if err := checkRunArgs(c.DockerRunArgs, args, c.Roots); err != nil {
+		return a.runArgsError(err)
+	}
+	args = append(args, "--label", assets.LabelRunArgs+"="+runArgsLabel(c.DockerRunArgs))
+	if len(c.DockerRunArgs) > 0 {
+		a.Note("creating the container with docker run arguments %s (%s)", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
+		args = append(args, c.DockerRunArgs...)
 	}
 	args = append(args, c.Image, "--cc-supervise")
 	if err := a.Docker.Run(args...); err != nil {
@@ -648,6 +662,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		}
 		a.warnIfRootsDrifted()
 		a.warnIfKeepDrifted()
+		a.warnIfRunArgsDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {
 			return err

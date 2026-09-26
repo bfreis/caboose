@@ -284,12 +284,30 @@ func (a *App) doctorConfig(c *checkup) bool {
 		c.problem("image", "unset CABOOSE_IMAGE (the default is caboose), or give it a tag of its own",
 			"CABOOSE_BASE_IMAGE names the same image as CABOOSE_IMAGE ('%s'): the build would build over its own base", cfg.Image)
 	}
+	a.doctorRunArgs(c)
 	if err := cfg.ResolveRoots(); err != nil {
 		c.problem("roots", "point the roots at directories that exist ("+cfg.RootsOrigin()+")", "%s", firstLine(err.Error()))
 		return false
 	}
 	c.ok("roots", "%s", mountList(cfg.Roots))
 	return true
+}
+
+// doctorRunArgs checks the user's docker run arguments, and names those
+// that widen what the sandbox reaches: theirs to choose, but never unseen.
+func (a *App) doctorRunArgs(c *checkup) {
+	cfg := a.Cfg
+	if len(cfg.DockerRunArgs) == 0 {
+		return
+	}
+	if err := checkRunArgs(cfg.DockerRunArgs, nil, cfg.Roots); err != nil {
+		c.problem("run args", "fix "+runArgsOrigin(cfg), "%v", err)
+		return
+	}
+	c.ok("run args", "%s (%s)", describeRunArgs(cfg.DockerRunArgs), runArgsOrigin(cfg))
+	if w := wideningRunArgs(cfg.DockerRunArgs); len(w) > 0 {
+		c.note("run args", "%s widen what the sandbox reaches of this host, beyond what caboose gives it", strings.Join(w, " "))
+	}
 }
 
 // doctorSandbox checks the sandbox config: that it can be used, what it
@@ -480,6 +498,9 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	}
 	if d := a.keepDrift(); d != "" {
 		c.problem("keep", "caboose restart"+endsSessions, "the container %s", d)
+	}
+	if d := a.runArgsDrift(); d != "" {
+		c.problem("run args", "caboose restart"+endsSessions, "%s", d)
 	}
 	return state
 }

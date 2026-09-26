@@ -87,6 +87,11 @@ const (
 	// what a launcher reads off a running container to tell whether it can
 	// still work with it.
 	LabelCompat = "io.github.bfreis.caboose.compat"
+	// LabelRunArgs is on the container, not the image: the user's own
+	// docker run arguments it was created with (config.DockerRunArgs), as
+	// a JSON list, "" for none. Set on every container, so one inherited
+	// from a base never reads as the container's.
+	LabelRunArgs = "io.github.bfreis.caboose.run-args"
 )
 
 // Compat is the version of what the launcher expects of a container it did

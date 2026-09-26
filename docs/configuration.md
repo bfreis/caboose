@@ -23,6 +23,7 @@ keeps of its home, and what of that syncs, is not here: it is the
 | `auto_sync` | `CABOOSE_AUTO_SYNC` | unset | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
 | `tz` | `CABOOSE_TZ` | host's zone | timezone inside the container |
 | `docker_sock` | `CABOOSE_DOCKER_SOCK` | unset | mount the host docker socket — **removes the isolation**, see caveats |
+| `docker_run_args` | `CABOOSE_DOCKER_RUN_ARGS` | unset | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments). The variable is split at whitespace |
 | | `CABOOSE_ENV` | `default` | the environment; `--env` wins over it |
 | | `CABOOSE_HOME` | `~/.caboose` | where environments live |
 | | `CABOOSE_DATA_DIR` | `$CABOOSE_HOME/envs/<env>/data` | the data dir, named outright |
@@ -40,6 +41,47 @@ The roots and `CABOOSE_KEEP_VERSIONS` are both fixed when the
 container is created (as bind mounts and a `docker run -e`), so changing
 either needs `caboose restart`. `caboose prune` always uses the current
 value of the second, and `caboose status` warns when the two disagree.
+
+## docker run arguments
+
+`docker_run_args` adds arguments of your own to the `docker run` that
+creates the container: a capability, a device, a DNS server, a host entry,
+a memory limit.
+
+```toml
+docker_run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun", "--dns=100.100.100.100"]
+```
+
+or, for one shell, `CABOOSE_DOCKER_RUN_ARGS="--cap-add=NET_ADMIN --device=/dev/net/tun"`,
+split at whitespace, which wins over the file. Like the roots, they are
+fixed when the container is created: `caboose restart` applies a change,
+and until then a launch, `caboose status` and `caboose doctor` say the
+container was created with others.
+
+Each argument is one flag with its value, `--flag=value`. Only a few
+boolean flags (`--privileged`, `--read-only`, ...) may stand alone, since
+docker would take the next argument as another flag's value. Refused:
+
+- short flags (`-e`): write the long one (`--env=...`);
+- the flags caboose sets or depends on: `--name`, `--hostname`,
+  `--user`, `--entrypoint`, `--init`, `--restart`, `--rm`, `--detach`,
+  `--interactive`, `--tty`, `--attach`, `--platform`, `--pull`,
+  `--cidfile`, and `--env-file` and `--label-file`, whose contents caboose
+  cannot check;
+- `--env` for a variable caboose sets (`HOME`, `PATH`, `TZ`,
+  `SSH_AUTH_SOCK`, anything `CABOOSE_` or `TINI_`), and `--label` for
+  caboose's own (`io.github.bfreis.caboose.*`);
+- a `--volume`, `--mount` or `--tmpfs` at, inside or around one of
+  caboose's mounts (the roots under `/work`, the kept parts of the home,
+  Claude Code's install), or over the agent's home itself.
+
+A refused argument stops the launch that would create the container, and
+`caboose restart` before it removes the old one; `caboose doctor` names
+it. Everything else goes to docker as written, and is yours to choose:
+some arguments (`--privileged`, `--cap-add`, `--device`, `--volume`,
+`--network=host`, ...) give the sandbox more of the host, which `caboose
+doctor` notes. Only the host can set them: they are not in the sandbox's
+own config, and a session cannot propose them.
 
 ## The repo root
 

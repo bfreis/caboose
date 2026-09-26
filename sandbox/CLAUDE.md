@@ -135,7 +135,10 @@ other = "~/src/other"
   `RUN --security`, nor `# caboose:` lines. Plain text only: no control
   characters (escape sequences) or invisible ones anywhere.
 - Nothing else can be proposed — not the base image, the docker socket, or
-  any other setting. For those, tell the user what to change on the host.
+  any other setting. For those, tell the user what to change on the host:
+  a capability, a device or another `docker run` flag is
+  `docker_run_args` in the environment's `config.toml`, then
+  `caboose restart`.
 - Then tell the user to run `caboose apply` in a host terminal (with the
   same `-e ENV` as this session's, if it has one). It rebuilds the image
   and offers `caboose restart`, which ends this session: nothing proposed

@@ -57,6 +57,8 @@ func TestConfigFileRefuses(t *testing.T) {
 		"a root not a path":   {"[roots]\ndev = 1", "roots.dev must be a path"},
 		"roots and repo_root": {"repo_root = \"/r\"\n[roots]\ndev = \"/x\"", "repo_root and [roots] both"},
 		"a list":              {`repo_root = ["/x"]`, "repo_root must be a string, a number or true/false"},
+		"a run arg not text":  {`docker_run_args = ["--init", 1]`, "docker_run_args must be a list of strings"},
+		"an empty run arg":    {`docker_run_args = [""]`, "docker_run_args must be a list of strings"},
 		"not TOML":            {`repo_root = `, cfgPath + ":"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -72,12 +74,13 @@ func TestConfigFileRefuses(t *testing.T) {
 func TestTemplate(t *testing.T) {
 	uncommented := strings.NewReplacer("\n#repo_root", "\nrepo_root", "\n#base_image", "\nbase_image",
 		"\n#keep_versions", "\nkeep_versions", "\n#docker_sock", "\ndocker_sock",
-		"\n#no_tmux", "\nno_tmux", "\n#no_auto_build", "\nno_auto_build", "\n#auto_sync", "\nauto_sync").Replace(Template)
+		"\n#no_tmux", "\nno_tmux", "\n#no_auto_build", "\nno_auto_build", "\n#auto_sync", "\nauto_sync",
+		"\n#docker_run_args", "\ndocker_run_args").Replace(Template)
 	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: uncommented}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Roots[0].Host != "/h/dev" || c.KeepVersions != "2" || c.NoTmux != "1" || c.AutoSync != "1" {
+	if c.Roots[0].Host != "/h/dev" || c.KeepVersions != "2" || c.NoTmux != "1" || c.AutoSync != "1" || len(c.DockerRunArgs) != 2 {
 		t.Errorf("config %+v", *c)
 	}
 	if _, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: Template}, ""); err != nil {
@@ -126,5 +129,41 @@ func TestFormat(t *testing.T) {
 	}
 	if f, err := ParseFile("c.toml", []byte(Template)); err != nil || f.Format != FileFormat {
 		t.Errorf("the template: %+v %v", f, err)
+	}
+}
+
+// docker_run_args is a list, or a string split at whitespace as
+// CABOOSE_DOCKER_RUN_ARGS is, which wins over it.
+func TestConfigFileRunArgs(t *testing.T) {
+	home := map[string]string{"HOME": "/h"}
+	for _, tc := range []struct {
+		name, body string
+		env        map[string]string
+		want       []string
+		from       string
+	}{
+		{"none", ``, nil, nil, ""},
+		{"a list", `docker_run_args = ["--cap-add=NET_ADMIN", "--label=a=b c"]`, nil, []string{"--cap-add=NET_ADMIN", "--label=a=b c"}, cfgPath},
+		{"an empty list", `docker_run_args = []`, nil, nil, ""},
+		{"a string", `docker_run_args = " --cap-add=NET_ADMIN  --init "`, nil, []string{"--cap-add=NET_ADMIN", "--init"}, cfgPath},
+		{"the variable", `docker_run_args = ["--a=1"]`, map[string]string{"CABOOSE_DOCKER_RUN_ARGS": "--b=2 --c"}, []string{"--b=2", "--c"}, "CABOOSE_DOCKER_RUN_ARGS"},
+		{"the variable alone", ``, map[string]string{"CABOOSE_DOCKER_RUN_ARGS": "--b=2"}, []string{"--b=2"}, "CABOOSE_DOCKER_RUN_ARGS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			for k, v := range home {
+				env[k] = v
+			}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			c, err := Load(envOf(env), fakeFS{cfgPath: tc.body}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(c.DockerRunArgs, tc.want) || c.DockerRunArgsFrom != tc.from {
+				t.Errorf("args %q from %q, want %q from %q", c.DockerRunArgs, c.DockerRunArgsFrom, tc.want, tc.from)
+			}
+		})
 	}
 }

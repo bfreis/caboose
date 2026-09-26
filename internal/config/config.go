@@ -20,7 +20,7 @@ import (
 var Settings = []string{
 	"IMAGE", "CONTAINER", "DATA_DIR", "REPO_ROOT", "READY_TIMEOUT",
 	"KEEP_VERSIONS", "DOCKER_SOCK", "TZ", "SESSION", "PROJECT", "NO_TMUX",
-	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC",
+	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC", "DOCKER_RUN_ARGS",
 }
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -101,6 +101,15 @@ type Config struct {
 	// Dockerfile is built instead. It and BaseImage exclude each other
 	// (CheckImages).
 	ImageDir string
+	// DockerRunArgs are arguments of the user's own for `docker run`, as
+	// the container is created: CABOOSE_DOCKER_RUN_ARGS split at
+	// whitespace, else docker_run_args in the config file, a list (or a
+	// string, split as the variable is). The launcher checks them
+	// (launcher/runargs.go); nil when there are none.
+	DockerRunArgs []string
+	// DockerRunArgsFrom names what set DockerRunArgs, for messages:
+	// CABOOSE_DOCKER_RUN_ARGS, or the config file by its path.
+	DockerRunArgsFrom string
 
 	// Home is $HOME, as the rest of the launcher sees it.
 	Home string
@@ -298,6 +307,13 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		Getenv:       getenv,
 	}
 	c.DataDir = c.resolveDataDir(vals["DATA_DIR"])
+	c.DockerRunArgs, c.DockerRunArgsFrom = strings.Fields(vals["DOCKER_RUN_ARGS"]), from["DOCKER_RUN_ARGS"]
+	if file != nil && file.RunArgs != nil && c.DockerRunArgsFrom == "" {
+		c.DockerRunArgs, c.DockerRunArgsFrom = file.RunArgs, file.Path
+	}
+	if len(c.DockerRunArgs) == 0 {
+		c.DockerRunArgs, c.DockerRunArgsFrom = nil, ""
+	}
 	if envDir != "" && fsys.IsDir(envDir+"/"+ImageDirName) {
 		c.ImageDir = envDir + "/" + ImageDirName
 	}

@@ -28,6 +28,8 @@ var fileKeys = map[string]string{
 	"no_tmux":       "NO_TMUX",
 	"no_auto_build": "NO_AUTO_BUILD",
 	"auto_sync":     "AUTO_SYNC",
+	// A list, or a string split at whitespace as the variable is.
+	"docker_run_args": "DOCKER_RUN_ARGS",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -52,6 +54,9 @@ type File struct {
 	Roots map[string]string
 	// Format is the file's format key, 0 when it has none.
 	Format int
+	// RunArgs is docker_run_args written as a list, nil otherwise; written
+	// as a string, it is in Vals, as the variable would give it.
+	RunArgs []string
 }
 
 // readFile reads path, or returns nil when there is none. Every key must be
@@ -102,6 +107,18 @@ func ParseFile(path string, data []byte) (*File, error) {
 			continue
 		}
 		switch v := v.(type) {
+		case []any:
+			if name != "DOCKER_RUN_ARGS" {
+				return nil, fmt.Errorf("%s: %s must be a string, a number or true/false", path, k)
+			}
+			f.RunArgs = []string{}
+			for _, e := range v {
+				s, ok := e.(string)
+				if !ok || s == "" {
+					return nil, fmt.Errorf("%s: %s must be a list of strings, each an argument to docker run", path, k)
+				}
+				f.RunArgs = append(f.RunArgs, s)
+			}
 		case string:
 			f.Vals[name] = v
 		case int64:
@@ -199,4 +216,9 @@ format = 1    # this file's structure
 # Sync (caboose sync) before a launch that finds nothing running in the
 # container, once a sync remote is set. [CABOOSE_AUTO_SYNC]
 #auto_sync = true
+
+# More arguments for docker run as the container is created, each written
+# --flag=value; caboose's own flags are refused. Some remove isolation, as
+# the docker socket does. [CABOOSE_DOCKER_RUN_ARGS, split at whitespace]
+#docker_run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun"]
 `

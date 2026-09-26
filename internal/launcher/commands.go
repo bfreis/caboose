@@ -127,6 +127,9 @@ func (a *App) Status() error {
 		}
 		fmt.Fprintf(out, "keeps     : %s (in %s/%s)\n", strings.Join(kept, ", "), c.DataDir, datadir.HomeDir)
 	}
+	if len(c.DockerRunArgs) > 0 {
+		fmt.Fprintf(out, "run args  : %s (%s)\n", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
+	}
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	if state != "running" {
 		fmt.Fprintf(out, "\nnot running — start it by running caboose in a repo.\n")
@@ -137,6 +140,7 @@ func (a *App) Status() error {
 	}
 	a.warnIfImageDrifted()
 	a.warnIfKeepDrifted()
+	a.warnIfRunArgsDrifted()
 
 	claude, err := a.Docker.RawOutput("exec", c.Container, "claude", "--version")
 	if err != nil {
@@ -242,6 +246,10 @@ func (a *App) Stop() error {
 func (a *App) Restart() error {
 	if err := a.Cfg.CheckImages(); err != nil {
 		return Die("%v", err)
+	}
+	// Refused now, not once the container is gone.
+	if err := checkRunArgs(a.Cfg.DockerRunArgs, nil, a.Cfg.Roots); err != nil {
+		return a.runArgsError(err)
 	}
 	if err := a.confirmSessionLoss("restart"); err != nil {
 		return err

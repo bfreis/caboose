@@ -229,6 +229,17 @@ outside the repo.
   `~/.ssh` holds `known_hosts` and the sandbox's own ssh config, never
   keys: doctor notes one it finds (`datadir.PrivateKeysIn`, through
   `nofollow`).
+- **`docker_run_args` is the host's, and leaves caboose's flags alone.**
+  The user's own `docker run` arguments come from `config.toml` or
+  `CABOOSE_DOCKER_RUN_ARGS`, never from the sandbox config or a proposal:
+  they can hand the sandbox the host. They go in after caboose's, where
+  docker takes the last of a single-value flag, so `checkRunArgs`
+  (`internal/launcher/runargs.go`) refuses the flags caboose sets or
+  depends on, its variables and labels, and mounts over its own (read off
+  the `-v`/`-e` it built). A new flag caboose passes at `docker run` goes
+  in `ownedFlags` there. The container is labelled with them
+  (`assets.LabelRunArgs`, set even when empty) to tell when a restart is
+  due.
 - **A launch never writes the sandbox's git identity.** `caboose setup
   git` is its only writer (`datadir.WriteSandboxGit`); a launch and doctor
   only say when there is none. Never seed it from the host: that would
