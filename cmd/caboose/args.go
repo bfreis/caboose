@@ -57,6 +57,18 @@ sync. Naming SECTIONs -- roots, image, git, sync -- asks only those. A
 whole run also brings the container up and ends at the Claude login. Only
 what an answer changed is written, so a re-run is safe; with no terminal
 it refuses.`},
+	{Name: "apply", Args: noArgs,
+		Summary: "review the changes sessions proposed, and apply them",
+		Help: `A session in the sandbox cannot change what the sandbox is: it proposes
+the change instead, into ~/.caboose-proposals -- a Dockerfile section to
+install a tool, directories of the home to keep across containers
+([persist]), or another repo root. This shows each proposal whole, and
+applies it, leaves it pending or deletes it as you say. Nothing else in
+config.toml can be proposed, and a root that would hand the sandbox your
+home, a hidden directory of it or caboose's own state is refused. Then it
+builds the image if the Dockerfile changed, and offers the restart that
+moves the container onto the changes (which ends running sessions). With
+no terminal it refuses.`},
 	{Name: "doctor", Usage: "[--offline]", Args: ownArgs,
 		Summary: "what is wrong, and the command that fixes each problem",
 		Help: `Checks the whole environment -- configuration, data dir, Docker engine,

@@ -103,6 +103,10 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		// Before the roots are resolved: a missing root is one of the
 		// problems it reports, not a reason to stop.
 		return exit(stderr, app.Doctor(inv.Args))
+	case "apply":
+		// Before the roots are resolved too: a proposal may be what fixes
+		// them, and the restart it ends in resolves them itself.
+		return exit(stderr, app.Apply())
 	}
 	if err := cfg.ResolveRoots(); err != nil {
 		return exit(stderr, launcher.Die("%v", err))

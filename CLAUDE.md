@@ -81,6 +81,7 @@ embedded in it instead.
 | `internal/imagecheck` | the requirements table the probe's output is judged against (the requirements table in `docs/images.md` mirrors it), and the checklist |
 | `cmd/caboose`, `internal/` | the host launcher, in Go: subcommands and their help, from one table (`cmd/caboose/args.go`; nothing reaches claude but through `caboose claude`), environments and `config.toml` (`internal/config`), container lifecycle, bind mounts, SSH agent forwarding, repo roots at fixed `/work` paths, tmux attach, `caboose build` |
 | `internal/shelltest` | the POSIX shells the tests run the shell scripts with: `/bin/sh` and whichever others the machine has, but never a BusyBox that runs its own applets before `PATH` (Debian's and Ubuntu's), which would bypass the tests' stub tools |
+| `internal/proposal` | what a session proposes for `caboose apply` (`internal/launcher/apply.go`): the TOML format, its checks (an allowlist of parts, no control or bidi characters), reading through `nofollow` from the data dir's `proposals/` (mounted at `~/.caboose-proposals`), and `current/`, what the host tells sessions a proposal is made against |
 | `internal/nofollow` | file access under a directory the container can also write (the data dir's `.claude`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
 | `internal/statesync` | `caboose sync`: the allowlist, which project keys sync (those under `/work`), JSON merge by key, and the export/merge/apply cycle in the data dir's `sync/`; files are handled on the host, git runs in the container (`docker exec`, repo mounted at `~/.caboose-sync`); tested against real git |
 | `embed.go` | the `//go:embed` list: the files the launcher carries with it and builds the image from |
@@ -170,6 +171,17 @@ outside the repo.
   paths, so keep it first, and set any new attribute after it. Never make the data dir, or anything mounted from it, a git work
   tree: the sync repo is the data dir's `sync/`, and results are applied file
   by file.
+- **A proposal is the sandbox asking; only the host decides.** What a
+  session may propose is an allowlist -- a Dockerfile section, `[persist]`
+  entries, one root (`internal/proposal`) -- and anything more is refused
+  whole, never shown as a question. Never add a proposable part that
+  widens what the sandbox reaches without a refusal list of its own, as a
+  root has (`checkProposedRoot`: home, hidden dirs of it, caboose's own
+  state, overlaps; judged and written as the physical path). Everything a
+  proposal holds is shown on the host's terminal, so its text is refused
+  with any control or invisible format character, and whatever else of the
+  sandbox's is said (a file's name, an error quoting one) goes through
+  `proposal.Printable`.
 - **The host never follows a path the container can write.** Anything
   the launcher reads or writes inside a mounted dir of the data dir
   (`.claude`, `dot_config/*`, `sync/`, ...) goes through

@@ -41,7 +41,13 @@ var Dirs = []string{
 	PrivateDir,
 	SSHDir,
 	SyncDir,
+	ProposalsDir,
 }
+
+// ProposalsDir is where sessions leave proposals for 'caboose apply'
+// (internal/proposal), mounted so that they can write them. Created here
+// for the reason SyncDir is.
+const ProposalsDir = "proposals"
 
 // SyncDir is caboose sync's git repo (internal/statesync), mounted so that the
 // container's git runs it. Created here, before the container is, since a

@@ -185,6 +185,14 @@ check '~/.caboose-sync is the data dir'"'"'s sync/, from inside' 0 \
     "$(docker exec "$CONTAINER" sh -c 'touch "$HOME/.caboose-sync/caboose-test-probe"' >/dev/null 2>&1 \
        && exists "$DATA_DIR/sync/caboose-test-probe")"
 rm -f "$DATA_DIR/sync/caboose-test-probe"
+# Sessions write proposals into the data dir's proposals/, and read what the
+# host last wrote into current/.
+check '~/.caboose-proposals is the data dir'"'"'s proposals/, from inside' 0 \
+    "$(docker exec "$CONTAINER" sh -c 'touch "$HOME/.caboose-proposals/.caboose-test-probe"' >/dev/null 2>&1 \
+       && exists "$DATA_DIR/proposals/.caboose-test-probe")"
+rm -f "$DATA_DIR/proposals/.caboose-test-probe"
+check 'a launch tells sessions what a proposal is made against' 0 \
+    "$(docker exec "$CONTAINER" test -f /home/agent/.caboose-proposals/current/state.toml >/dev/null 2>&1; echo $?)"
 check 'git runs in the container (sync needs it)' 0 \
     "$(docker exec "$CONTAINER" git --version >/dev/null 2>&1; echo $?)"
 # A Claude Code run outside tmux (CABOOSE_NO_TMUX, caboose claude -p) is seen, from

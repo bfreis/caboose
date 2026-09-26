@@ -34,6 +34,7 @@
 //	$CABOOSE_DATA_DIR/dot_config/jj   -> ~/.config/jj
 //	$CABOOSE_DATA_DIR/dot_config/gh   -> ~/.config/gh   (0700: holds the gh token)
 //	$CABOOSE_DATA_DIR/sync            -> ~/.caboose-sync (caboose sync's repo; git runs it in here)
+//	$CABOOSE_DATA_DIR/proposals       -> ~/.caboose-proposals (sessions' proposals for caboose apply)
 //	$CABOOSE_REPO_ROOT                -> /work
 //	    (or, with a [roots] table in config.toml, each root -> /work/<name>)
 //
@@ -133,6 +134,10 @@ type App struct {
 	// inSetup is set while caboose setup runs: a launch's "not set up"
 	// line would only interrupt it.
 	inSetup bool
+	// lossConfirmed is set once the user has said yes to ending the
+	// running sessions (caboose apply's restart): confirmSessionLoss does
+	// not ask again.
+	lossConfirmed bool
 	// attach, when set, stands in for Attach at the end of setup: the
 	// tests' way to see it called without attaching anything.
 	attach func(args []string) error

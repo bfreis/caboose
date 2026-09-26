@@ -49,7 +49,7 @@ is that persisted binary.
 What else is installed depends on the base the image was built on: caboose's
 default, or one the user chose (`CABOOSE_BASE_IMAGE`). caboose installs
 nothing into a base, so a missing tool is the image's to add, on the host —
-not something to install from in here.
+not something to install from in here: propose it (below).
 
 ## Most of the home does not survive a restart
 
@@ -59,8 +59,58 @@ mounted from the data dir: `~/.claude`, `~/.claude.json`, Claude Code in
 (`known_hosts` and the sandbox's own ssh `config`; keys stay on the host,
 through the forwarded agent). Anything else under the home is lost, unless
 the environment's `config.toml` names its directory in `[persist]` — a
-host-side setting, so say so rather than work around it from in here.
-`mount` in here, or `caboose status` on the host, shows what is kept.
+host-side setting: propose it (below) rather than work around it from in
+here. `mount` in here, or `caboose status` on the host, shows what is kept.
+
+## Changing the sandbox: propose it, the user applies it
+
+Nothing in here can change the image, `config.toml` or the roots: they
+decide what the sandbox is and what of the host it reaches. When asked to
+install a tool for good, keep a tool's settings across restarts, or mount
+another host directory, write a **proposal**; the user reviews it on the
+host with `caboose apply`, which applies it only once they say yes.
+
+First read `~/.caboose-proposals/current/`: `state.toml` (where the
+Dockerfile comes from, its hash, the roots and `[persist]` entries there
+are now) and `Dockerfile` (the one the next build uses). Then write
+`~/.caboose-proposals/NAME.toml` (NAME: lowercase letters, digits, `-`,
+`_`), with any of the three parts:
+
+```toml
+title = "Install foo"                  # one line
+reason = "Why, in a sentence or two."
+dockerfile_sha256 = "..."              # from state.toml; needed with [section]
+
+[section]                              # a Dockerfile section: root, after the base
+name = "foo"                           # replaces a section of that name, else is added
+title = "foo 2.3"
+body = '''
+ARG FOO_VERSION=2.3.0
+RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
+'''
+
+[persist]                              # directories of the home to keep
+foo = "~/.config/foo"                  # directly in ~, ~/.config, ~/.local, ~/.local/share or ~/.cache
+
+[roots]                                # one host directory to mount, at /work/NAME
+other = "~/src/other"
+```
+
+- One request, one proposal, and one `[section]` in it: applying a section
+  changes the Dockerfile's hash, and a proposal written against the old one
+  is refused. Re-read `current/` before proposing again.
+- A section cannot hold `FROM`, `ONBUILD`, `RUN --network` or
+  `RUN --security`, nor `# caboose:` lines. Plain text only: no control
+  characters (escape sequences) or invisible ones anywhere.
+- Nothing else can be proposed — not the base image, the docker socket, or
+  any other setting. For those, tell the user what to change on the host.
+- Then tell the user to run `caboose apply` in a host terminal (with the
+  same `-e ENV` as this session's, if it has one). It rebuilds the image
+  and offers `caboose restart`, which ends this session: nothing proposed
+  is in effect before that, and a directory proposed for `[persist]` starts
+  empty, so configure the tool only after the restart.
+- No `~/.caboose-proposals` means the container is older than proposals:
+  `caboose restart` on the host creates it again with one.
 
 ## The sandbox itself is just another repo
 

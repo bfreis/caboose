@@ -67,6 +67,7 @@ building from a checkout.
 caboose                    # start or attach the session for this project
 caboose claude --resume    # pass arguments to claude
 caboose setup              # roots, image, git identity, sync
+caboose apply              # review and apply the changes sessions proposed
 caboose doctor             # what is wrong, and the command that fixes it
 caboose status             # container, sessions, disk use
 caboose help               # every command
@@ -80,6 +81,7 @@ caboose help               # every command
 | [Commands](docs/commands.md) | every command, and `caboose doctor` |
 | [Configuration](docs/configuration.md) | `config.toml`, repo roots, environments, `caboose setup`, git identity |
 | [How it works](docs/how-it-works.md) | the container, persistent state, tmux, terminal rendering |
+| [Proposals](docs/proposals.md) | sessions asking for a tool, a kept directory or a root; `caboose apply` |
 | [Use your own image](docs/images.md) | building on another image, and what it must contain |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |
 | [SSH agent and commit signing](docs/ssh.md) | agent forwarding on macOS and Linux, 1Password, signing |

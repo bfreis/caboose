@@ -18,6 +18,7 @@ import (
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/nofollow"
+	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/tty"
 )
@@ -420,6 +421,8 @@ func (a *App) createContainer(mayBuild bool) error {
 		"-v", d+"/"+datadir.SSHDir+":"+sshDir,
 		// caboose sync's repo: the container's git runs it (launcher/sync.go).
 		"-v", d+"/"+datadir.SyncDir+":"+statesync.ContainerDir,
+		// Where sessions propose what only the host can change (apply.go).
+		"-v", d+"/"+datadir.ProposalsDir+":"+proposal.ContainerDir,
 	)
 	// config.toml's [persist]: each kept in the data dir, never at a host
 	// path of the user's choosing, so the sandbox reaches no more of the
@@ -678,6 +681,8 @@ func (a *App) ensureRunning(mayBuild bool) error {
 	if err := a.syncSandboxInstructions(); err != nil {
 		return err
 	}
+	a.exportProposals()
+	a.notePendingProposals()
 	created := false
 	switch a.state() {
 	case "running":
@@ -724,7 +729,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 // and what lets the suite drive caboose restart unattended. With no tty they
 // refuse outright rather than assume.
 func (a *App) confirmSessionLoss(action string) error {
-	if a.state() != "running" {
+	if a.state() != "running" || a.lossConfirmed {
 		return nil
 	}
 	sessions, _ := a.Docker.Output("exec", a.Cfg.Container, "tmux", "list-sessions", "-F", "#{session_name}")

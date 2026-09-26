@@ -41,7 +41,7 @@ var ReservedHome = []string{
 	".claude", ".claude.json",
 	".local/bin", ".local/share/claude", ".local/state", ".cache/claude",
 	".config/git", ".config/jj", ".config/gh",
-	".ssh", ".caboose-sync",
+	".ssh", ".caboose-sync", ".caboose-proposals",
 }
 
 // ParsePersist validates one [persist] entry, written as ~/<dir>.

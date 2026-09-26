@@ -21,6 +21,10 @@ type Edit struct {
 	// comments it out when Roots is nil.
 	SetRoots bool
 	Roots    map[string]string
+	// SetPersist replaces the [persist] table with Persist (name -> ~/dir),
+	// or comments it out when Persist is nil.
+	SetPersist bool
+	Persist    map[string]string
 }
 
 // EditFile applies e to a config.toml's contents, line by line, as a person
@@ -29,8 +33,9 @@ type Edit struct {
 // failing that, the key is added. A top-level key has to stay above the
 // first table, or TOML reads it as the table's, so that is where one is
 // added, and a commented line below a table is never the one uncommented.
-// The [roots] table is rewritten in place, keeping any comment lines in
-// it, or added at the end; removed, its lines are commented out.
+// The [roots] and [persist] tables are rewritten in place, keeping any
+// comment lines in them, or added at the end; removed, their lines are
+// commented out.
 //
 // Line-based editing cannot follow every TOML construct (a multi-line
 // string, say), so the result is to be checked with CheckEdit before it is
@@ -70,7 +75,10 @@ func EditFile(data []byte, e Edit) []byte {
 		}
 	}
 	if e.SetRoots {
-		lines = editRoots(lines, e.Roots)
+		lines = editTable(lines, rootsKey, e.Roots)
+	}
+	if e.SetPersist {
+		lines = editTable(lines, persistKey, e.Persist)
 	}
 	if len(lines) == 0 {
 		return nil
@@ -78,11 +86,11 @@ func EditFile(data []byte, e Edit) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
-// editRoots rewrites the [roots] table in lines.
-func editRoots(lines []string, roots map[string]string) []string {
+// editTable rewrites the table key, [roots] or [persist], in lines.
+func editTable(lines []string, key string, table map[string]string) []string {
 	start := -1
 	for i, l := range lines {
-		if strings.TrimSpace(l) == "["+rootsKey+"]" {
+		if strings.TrimSpace(l) == "["+key+"]" {
 			start = i
 			break
 		}
@@ -96,7 +104,7 @@ func editRoots(lines []string, roots map[string]string) []string {
 			}
 		}
 	}
-	if roots == nil {
+	if table == nil {
 		if start >= 0 {
 			for i := start; i < end; i++ {
 				if t := strings.TrimSpace(lines[i]); t != "" && !strings.HasPrefix(t, "#") {
@@ -106,9 +114,9 @@ func editRoots(lines []string, roots map[string]string) []string {
 		}
 		return lines
 	}
-	block := []string{"[" + rootsKey + "]"}
-	for _, name := range slices.Sorted(maps.Keys(roots)) {
-		block = append(block, name+" = "+tomlValue(roots[name]))
+	block := []string{"[" + key + "]"}
+	for _, name := range slices.Sorted(maps.Keys(table)) {
+		block = append(block, name+" = "+tomlValue(table[name]))
 	}
 	if start < 0 {
 		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
@@ -127,7 +135,7 @@ func editRoots(lines []string, roots map[string]string) []string {
 
 // CheckEdit reports whether edited, config.toml as EditFile made it, reads
 // back as e meant: it parses, every key set has its value, every key unset
-// is gone, and the roots are e's.
+// is gone, and the roots and persisted directories are e's.
 func CheckEdit(path string, edited []byte, e Edit) error {
 	f, err := ParseFile(path, edited)
 	if err != nil {
@@ -153,6 +161,16 @@ func CheckEdit(path string, edited []byte, e Edit) error {
 	if e.SetRoots && !maps.Equal(f.Roots, e.Roots) {
 		return fmt.Errorf("[roots] reads back as %v, not %v", f.Roots, e.Roots)
 	}
+	if e.SetPersist {
+		got := map[string]string{}
+		for _, p := range f.Persist {
+			got[p.Name] = p.Path
+		}
+		if len(e.Persist) == 0 && len(got) == 0 || maps.Equal(got, e.Persist) {
+			return nil
+		}
+		return fmt.Errorf("[persist] reads back as %v, not %v", got, e.Persist)
+	}
 	return nil
 }
 
@@ -166,13 +184,19 @@ func (e Edit) Snippet() string {
 	for _, k := range e.Unset {
 		fmt.Fprintf(&b, "# (remove %s)\n", k)
 	}
-	if e.SetRoots {
-		if e.Roots == nil {
-			b.WriteString("# (remove the [roots] table)\n")
-		} else {
-			b.WriteString("[" + rootsKey + "]\n")
-			for _, name := range slices.Sorted(maps.Keys(e.Roots)) {
-				fmt.Fprintf(&b, "%s = %s\n", name, tomlValue(e.Roots[name]))
+	for _, t := range []struct {
+		set   bool
+		key   string
+		table map[string]string
+	}{{e.SetRoots, rootsKey, e.Roots}, {e.SetPersist, persistKey, e.Persist}} {
+		switch {
+		case !t.set:
+		case t.table == nil:
+			b.WriteString("# (remove the [" + t.key + "] table)\n")
+		default:
+			b.WriteString("[" + t.key + "]\n")
+			for _, name := range slices.Sorted(maps.Keys(t.table)) {
+				fmt.Fprintf(&b, "%s = %s\n", name, tomlValue(t.table[name]))
 			}
 		}
 	}

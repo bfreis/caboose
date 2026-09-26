@@ -44,6 +44,7 @@ sandbox's own git, jj, gh and ssh config — lives in the environment's data dir
 | `<data>/dot_ssh` | `~/.ssh` (`known_hosts` and the sandbox's own ssh `config`; `0700`) |
 | `<data>/persist/<name>` | each directory [`[persist]`](#keeping-more-of-the-home) names (`0700` when new) |
 | `<data>/sync` | `~/.caboose-sync` ([`caboose sync`](sync.md)'s git repo) |
+| `<data>/proposals` | `~/.caboose-proposals` (sessions' [proposals](proposals.md) for `caboose apply`) |
 
 Deleting the container loses nothing; deleting this directory is a fresh
 install, login included.
@@ -93,7 +94,8 @@ path when the container is created, so a change needs `caboose restart`
 differs). What is kept lives in the data dir, never at the host's own
 `~/.aws`: the sandbox reaches no more of the host than it did, and the
 host's files do not become the sandbox's. For a directory shared with the
-host, use a [root](configuration.md#the-repo-root).
+host, use a [root](configuration.md#the-repo-root). A session can also
+[propose](proposals.md) an entry, which `caboose apply` adds.
 
 An entry is a directory written `~/<dir>`, directly in `~`, `~/.config`,
 `~/.local`, `~/.local/share` or `~/.cache`: Docker creates a mount's

@@ -80,6 +80,10 @@ func TestEditTemplateReadsBack(t *testing.T) {
 		{Set: map[string]any{"auto_sync": true}},
 		{Set: map[string]any{"auto_sync": false}},
 		{Set: map[string]any{"repo_root": "~/one"}, SetRoots: true},
+		{SetPersist: true, Persist: map[string]string{"foo": "~/.config/foo"}},
+		{Unset: []string{"repo_root"}, SetRoots: true, Roots: map[string]string{"dev": "~/dev", "src": "/src"},
+			SetPersist: true, Persist: map[string]string{"foo": "~/.config/foo", "aws": "~/.aws"}},
+		{SetPersist: true},
 	} {
 		data = EditFile(data, e)
 		if err := CheckEdit("config.toml", data, e); err != nil {
@@ -106,6 +110,9 @@ func TestCheckEdit(t *testing.T) {
 		{"repo_root = \"/x\"\n", Edit{Unset: []string{"repo_root"}}, `repo_root is still set, to "/x"`},
 		{"[roots]\na = \"/a\"\n", Edit{SetRoots: true, Roots: map[string]string{"b": "/b"}}, "[roots] reads back as"},
 		{"repo_root = \n", Edit{}, "config.toml:"},
+		{"[persist]\na = \"~/.a\"\n", Edit{SetPersist: true, Persist: map[string]string{"a": "~/.a"}}, ""},
+		{"[persist]\na = \"~/.a\"\n", Edit{SetPersist: true, Persist: map[string]string{"b": "~/.b"}}, "[persist] reads back as"},
+		{"", Edit{SetPersist: true}, ""},
 	} {
 		err := CheckEdit("config.toml", []byte(tc.data), tc.e)
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
@@ -119,5 +126,24 @@ func TestSnippet(t *testing.T) {
 	want := "auto_sync = true\n# (remove repo_root)\n[roots]\ndev = \"~/dev\"\n"
 	if got := e.Snippet(); got != want {
 		t.Errorf("got\n%s", got)
+	}
+	e = Edit{SetPersist: true, Persist: map[string]string{"foo": "~/.config/foo"}}
+	if got, want := e.Snippet(), "[persist]\nfoo = \"~/.config/foo\"\n"; got != want {
+		t.Errorf("got\n%s", got)
+	}
+}
+
+// A [persist] table is rewritten where it is, its comments kept, and the
+// [roots] table after it is left alone.
+func TestEditPersistInPlace(t *testing.T) {
+	in := "tz = \"UTC\"\n\n[persist]\n# tools\nfoo = \"~/.config/foo\"\n\n[roots]\ndev = \"~/dev\"\n"
+	e := Edit{SetPersist: true, Persist: map[string]string{"foo": "~/.config/foo", "aws": "~/.aws"}}
+	got := string(EditFile([]byte(in), e))
+	want := "tz = \"UTC\"\n\n[persist]\naws = \"~/.aws\"\nfoo = \"~/.config/foo\"\n# tools\n\n[roots]\ndev = \"~/dev\"\n"
+	if got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+	if err := CheckEdit("config.toml", []byte(got), e); err != nil {
+		t.Error(err)
 	}
 }
