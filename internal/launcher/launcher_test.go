@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/version"
 )
 
@@ -150,6 +152,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		"image     : img\n" +
 		"repo root : /h/dev -> /work\n" +
 		"data dir  : /h/.caboose\n" +
+		"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +
 		"version   : " + version.Get().Version + "\n" +
 		"\nnot running — start it by running caboose in a repo.\n"
 	if out.String() != want {
@@ -231,7 +234,7 @@ func TestInstallWithoutCheckout(t *testing.T) {
 	if _, err := datadir.InstallInstructions(src, "", []config.Root{{Host: "/home/u/src", Container: "/work"}}, data); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(data, ".claude", "CLAUDE.md"))
+	b, err := os.ReadFile(filepath.Join(data, datadir.ClaudeDir, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +306,7 @@ func TestEnterProjectDir(t *testing.T) {
 func TestReportUsageFailsWithDu(t *testing.T) {
 	var out, errb bytes.Buffer
 	a := &App{Cfg: &config.Config{DataDir: filepath.Join(t.TempDir(), "missing")}, Stdout: &out, Stderr: &errb}
-	err := a.reportUsage("caboose: now using ", filepath.Join(a.Cfg.DataDir, "dot_local/linux-x64"))
+	err := a.reportUsage("caboose: now using ", filepath.Join(a.Cfg.DataDir, "local/linux-x64"))
 	var ee *ExitError
 	if !errors.As(err, &ee) || ee.Code != 1 || ee.Msg != "" {
 		t.Errorf("err = %#v", err)
@@ -313,11 +316,11 @@ func TestReportUsageFailsWithDu(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "dot_local/linux-x64/share/claude"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "local/linux-x64/share/claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	a.Cfg.DataDir = dir
-	if err := a.reportUsage("caboose: now using ", filepath.Join(dir, "dot_local/linux-x64")); err != nil {
+	if err := a.reportUsage("caboose: now using ", filepath.Join(dir, "local/linux-x64")); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(out.String(), "caboose: now using ") || !strings.Contains(out.String(), dir) {
@@ -360,10 +363,18 @@ esac
 			t.Fatal(err)
 		}
 	}
+	// The user's own entries, beside the defaults.
+	sbx := filepath.Join(data, datadir.SandboxConfig)
+	if err := os.MkdirAll(filepath.Dir(sbx), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	extra := "\n[[keep]]\npath = \"~/.aws\"\n\n[[keep]]\npath = \"~/.config/foo\"\n"
+	if err := os.WriteFile(sbx, append(sandboxcfg.Default(nil), extra...), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var out, errb bytes.Buffer
 	a := &App{
 		Cfg: &config.Config{Container: "caboose-x", Image: "img", Roots: roots,
-			Persist: []config.Persist{mustPersist(t, "aws", "~/.aws"), mustPersist(t, "foo", "~/.config/foo")},
 			DataDir: data, KeepVersions: "2", Getenv: func(string) string { return "" }},
 		Docker: &docker.CLI{Path: fake},
 		Stdout: &out, Stderr: &errb,
@@ -391,20 +402,20 @@ esac
 		}
 	}
 	want := map[string]string{
-		"/home/agent/.claude":             "dir .claude",
-		"/home/agent/.claude.json":        "file .claude.json",
-		"/home/agent/.local/bin":          "dir dot_local/linux-arm64/bin",
-		"/home/agent/.local/share/claude": "dir dot_local/linux-arm64/share/claude",
-		"/home/agent/.cache/claude":       "dir dot_local/linux-arm64/cache/claude",
-		"/home/agent/.config/git":         "dir dot_config/git",
-		"/home/agent/.config/jj":          "dir dot_config/jj",
-		"/home/agent/.config/gh":          "dir dot_config/gh",
-		"/home/agent/.ssh":                "dir dot_ssh",
+		"/home/agent/.claude":             "dir home/.claude",
+		"/home/agent/.claude.json":        "file home/.claude.json",
+		"/home/agent/.local/bin":          "dir local/linux-arm64/bin",
+		"/home/agent/.local/share/claude": "dir local/linux-arm64/share/claude",
+		"/home/agent/.cache/claude":       "dir local/linux-arm64/cache/claude",
+		"/home/agent/.config/git":         "dir home/.config/git",
+		"/home/agent/.config/jj":          "dir home/.config/jj",
+		"/home/agent/.config/gh":          "dir home/.config/gh",
+		"/home/agent/.ssh":                "dir home/.ssh",
 		"/home/agent/.caboose-sync":       "dir sync",
 		"/home/agent/.caboose-proposals":  "dir proposals",
-		"/home/agent/.config/caboose":     "dir dot_config/caboose",
-		"/home/agent/.aws":                "dir persist/aws",
-		"/home/agent/.config/foo":         "dir persist/foo",
+		"/home/agent/.config/caboose":     "dir home/.config/caboose",
+		"/home/agent/.aws":                "dir home/.aws",
+		"/home/agent/.config/foo":         "dir home/.config/foo",
 	}
 	for dst, w := range want {
 		if got[dst] != w {
@@ -414,18 +425,19 @@ esac
 	if len(got) != len(want) {
 		t.Errorf("data dir mounts = %v", got)
 	}
-	// Every home mount of caboose's own is one a [persist] entry may not
-	// name: config.ReservedHome has to keep up with this function.
+	// Every home mount of caboose's own, beside the keep entries, is one a
+	// keep entry may not name: sandboxcfg.Reserved has to keep up with
+	// this function.
 	for dst, w := range got {
 		rel := strings.TrimPrefix(dst, config.ContainerHome+"/")
-		if strings.Contains(w, "persist/") {
+		if strings.Contains(w, " home/") {
 			continue
 		}
-		if _, err := config.ParsePersist("x", "~/"+rel); err == nil {
-			t.Errorf("~/%s is mounted by caboose but a [persist] entry may name it: add it to config.ReservedHome", rel)
+		if !slices.Contains(sandboxcfg.Reserved, rel) {
+			t.Errorf("~/%s is mounted by caboose but a keep entry may name it: add it to sandboxcfg.Reserved", rel)
 		}
 	}
-	for _, p := range []string{"persist/aws", "persist/foo", "dot_ssh"} {
+	for _, p := range []string{"home/.aws", "home/.config/foo", "home/.ssh", "home/.config/gh"} {
 		if fi, err := os.Stat(filepath.Join(data, p)); err != nil || fi.Mode().Perm() != 0o700 {
 			t.Errorf("%s: %v, want a 0700 dir", p, fi)
 		}
@@ -460,7 +472,7 @@ func TestSyncFallsBackOnUnknownPlaceholder(t *testing.T) {
 			if err := a.syncSandboxInstructions(); err != nil {
 				t.Fatal(err)
 			}
-			got, err := os.ReadFile(filepath.Join(data, ".claude", "CLAUDE.md"))
+			got, err := os.ReadFile(filepath.Join(data, datadir.ClaudeDir, "CLAUDE.md"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -480,13 +492,4 @@ func TestSyncFallsBackOnUnknownPlaceholder(t *testing.T) {
 			}
 		})
 	}
-}
-
-func mustPersist(t *testing.T, name, p string) config.Persist {
-	t.Helper()
-	ps, err := config.ParsePersist(name, p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ps
 }

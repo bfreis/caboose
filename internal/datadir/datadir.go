@@ -2,15 +2,20 @@
 // bind-mounts piece by piece: its layout, the sandbox's git config and the
 // installed sandbox CLAUDE.md.
 //
+// What the sandbox keeps of its home is under home/, at its path under ~:
+// home/.claude is ~/.claude, home/.config/git is ~/.config/git. Which of
+// it is kept, and so mounted, is the sandbox config's [[keep]] entries
+// (internal/sandboxcfg); caboose's own machinery -- Claude Code's binaries
+// (local/), the sync repo, the proposals -- sits beside home/.
+//
 // Configuration that a tool rewrites is mounted as a DIRECTORY, never as a
 // single file. git, jj and gh all save by writing a temp file and renaming
 // it over the original, and a rename onto a single-file bind mount fails
 // inside the container with EBUSY (`gh auth login`: "could not write config
-// file /home/agent/.gitconfig: Device or resource busy"). So they live under
-// dot_config/ and reach the container at their XDG paths.
+// file /home/agent/.gitconfig: Device or resource busy").
 //
-// .claude.json is the one single-file mount, and a file mount is pinned to
-// the inode it was created from: anything on the host that replaces it by
+// .claude.json is a single-file mount, and a file mount is pinned to the
+// inode it was created from: anything on the host that replaces it by
 // rename leaves the container reading a deleted inode. That is why the
 // writers here work IN PLACE (see WriteInPlace) rather than using Go's usual
 // write-temp-then-rename "atomic write".
@@ -29,35 +34,55 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/nofollow"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
-// Dirs are the directories bind-mounted into the container, other than the
-// platform dir's (PlatformMounts): those depend on the image, and are only
-// created when a container is, by EnsurePlatformLayout.
-var Dirs = []string{
-	".claude",
-	"dot_config/git",
-	"dot_config/jj",
-	PrivateDir,
-	SSHDir,
-	SyncDir,
-	ProposalsDir,
-	StartDir,
-	ShellDir,
-}
+// HomeDir holds what the sandbox keeps of its home, each [[keep]] entry at
+// its path under ~.
+const HomeDir = "home"
 
-// CabooseConfig is the sandbox's ~/.config/caboose, the user's own
-// configuration of it: StartDir and ShellDir. Mounted whole, as one
-// directory, and written from both sides -- by hand on the host, or by a
-// session -- so the host only ever reads it through nofollow.
-const CabooseConfig = "dot_config/caboose"
+// Home is home-relative path rel's place in the data dir.
+func Home(rel string) string { return HomeDir + "/" + rel }
 
-// StartDir holds the scripts the entrypoint runs at container start, in
-// name order (run_start_scripts in entrypoint.sh).
-const StartDir = CabooseConfig + "/start.d"
+// Paths in the data dir, under HomeDir, that caboose itself reads or
+// writes. Each is in a Required keep entry, or in one of the defaults.
+const (
+	// ClaudeDir is ~/.claude.
+	ClaudeDir = HomeDir + "/.claude"
+	// ClaudeJSON is ~/.claude.json, a single-file mount.
+	ClaudeJSON = HomeDir + "/.claude.json"
+	// Credentials is Claude Code's login: ~/.claude/.credentials.json
+	// inside the container, where it is kept in a file rather than a
+	// keychain.
+	Credentials = ClaudeDir + "/.credentials.json"
+	// CabooseConfig is the sandbox's ~/.config/caboose, the user's own
+	// configuration of it: the sandbox config, StartDir and ShellDir.
+	// Written from both sides -- by hand on the host, or by a session --
+	// so the host only ever reads it through nofollow.
+	CabooseConfig = HomeDir + "/.config/caboose"
+	// SandboxConfig is the sandbox config (internal/sandboxcfg).
+	SandboxConfig = HomeDir + "/" + sandboxcfg.Rel
+	// StartDir holds the scripts the entrypoint runs at container start,
+	// in name order (run_start_scripts in entrypoint.sh).
+	StartDir = CabooseConfig + "/start.d"
+	// ShellDir holds what every interactive bash reads (shellrc.bash).
+	ShellDir = CabooseConfig + "/shell.d"
+	// GitConfig is the sandbox's global git config, ~/.config/git/config.
+	GitConfig = HomeDir + "/.config/git/config"
+	// JJConfig is the sandbox's user-level jj config.
+	JJConfig = HomeDir + "/.config/jj/config.toml"
+	// SSHDir is the sandbox's ~/.ssh: its known_hosts and its own config.
+	// ssh refuses a ~/.ssh others can write, and every kept directory is
+	// created 0700. Private keys do not belong here -- they stay on the
+	// host and reach the sandbox through the forwarded agent -- and doctor
+	// says so when it finds one (PrivateKeysIn).
+	SSHDir = HomeDir + "/.ssh"
+)
 
-// ShellDir holds what every interactive bash reads (shellrc.bash).
-const ShellDir = CabooseConfig + "/shell.d"
+// LastGoodConfig is a copy of the last sandbox config the host could read,
+// in the data dir itself, which no container mounts: what a launch uses
+// when the sandbox config does not parse, or is of a newer format.
+const LastGoodConfig = "sandbox.last-good.toml"
 
 // ProposalsDir is where sessions leave proposals for 'caboose apply'
 // (internal/proposal), mounted so that they can write them. Created here
@@ -69,101 +94,74 @@ const ProposalsDir = "proposals"
 // bind-mount source docker has to create itself is root's on a Linux host.
 const SyncDir = "sync"
 
-// PrivateDir is gh's config dir, mounted at ~/.config/gh. It holds the
-// GitHub token (there is no keyring in the container), so it is created
-// 0700 rather than with the umask.
-const PrivateDir = "dot_config/gh"
+// Machinery are the directories caboose mounts for itself, beside HomeDir.
+var Machinery = []string{SyncDir, ProposalsDir}
 
-// SSHDir is the sandbox's ~/.ssh: its known_hosts and its own config, kept
-// across containers. Mounted whole, as a directory, since ssh-keygen -R
-// saves known_hosts by rename. ssh refuses a ~/.ssh others can write, so it
-// is created 0700. Private keys do not belong here -- they stay on the host
-// and reach the sandbox through the forwarded agent -- and doctor says so
-// when it finds one (PrivateKeysIn).
-const SSHDir = "dot_ssh"
+// seeds are what a kept file starts as when it is new or empty, by home-
+// relative path. An empty .claude.json is not valid JSON: the first
+// `claude install` in a fresh data dir reports it corrupted and fails.
+var seeds = map[string]string{".claude.json": "{}\n"}
 
-// Private are the Dirs created 0700 rather than with the umask.
-var Private = []string{PrivateDir, SSHDir}
-
-// PersistRoot holds the directories config.toml's [persist] names, each at
-// PersistDir(name).
-const PersistRoot = "persist"
-
-// PersistDir is where [persist] entry name is kept, relative to the data dir.
-func PersistDir(name string) string { return PersistRoot + "/" + name }
-
-// Files are the single files bind-mounted into the container.
-var Files = []string{".claude.json"}
-
-// Seeds are what a file in Files starts as when it is new or empty. An empty
-// .claude.json is not valid JSON: the first `claude install` in a fresh data
-// dir reports it corrupted and fails.
-var Seeds = map[string]string{".claude.json": "{}\n"}
-
-// GitConfig is the sandbox's global git config, mounted as part of
-// dot_config/git at ~/.config/git/config.
-const GitConfig = "dot_config/git/config"
-
-// JJConfig is the sandbox's user-level jj config, mounted as part of
-// dot_config/jj at ~/.config/jj/config.toml.
-const JJConfig = "dot_config/jj/config.toml"
-
-// Created are files that must exist inside a mounted directory.
+// created are files that must exist inside a kept directory, by its
+// home-relative path.
 //
 // git writes `git config --global` to ~/.config/git/config only when that
 // file already exists and ~/.gitconfig does not; otherwise it creates
 // ~/.gitconfig, which is outside every mount and dies with the container.
 // jj has no such rule -- it creates config.toml itself -- so it is not here.
-var Created = []string{GitConfig}
+var created = map[string][]string{".config/git": {"config"}}
 
-// EnsureLayout creates the directories and files the container mounts.
+// createdDirs are directories made inside a kept one, by its home-relative
+// path: start.d and shell.d, so there is somewhere obvious to put a script.
+var createdDirs = map[string][]string{".config/caboose": {"start.d", "shell.d"}}
+
+// EnsureLayout creates what the container mounts: each kept directory
+// (0700 when new, like every place a tool may keep a token) or file, and
+// caboose's own directories. An existing one is left as it is.
 //
 // Bind-mounting a file requires the file to exist first, or Docker creates a
-// directory in its place. Cheap and idempotent, so it also repairs a data dir
-// that lost a piece.
-func EnsureLayout(dir string) error {
-	for _, d := range Dirs {
-		mk := func(p string) error { return os.MkdirAll(p, 0o777) }
-		if isPrivate(d) {
-			mk = mkdirPrivate
-		}
-		if err := mk(filepath.Join(dir, d)); err != nil {
+// directory in its place; and a mount source docker creates itself is
+// root's on a Linux host. Cheap and idempotent, so it also repairs a data
+// dir that lost a piece. A directory no entry names any more is left where
+// it is, with what it holds.
+func EnsureLayout(dir string, keep []sandboxcfg.Keep) error {
+	for _, d := range Machinery {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o777); err != nil {
 			return err
 		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, HomeDir), 0o700); err != nil {
+		return err
 	}
 	now := time.Now()
-	for _, f := range append(append([]string(nil), Files...), Created...) {
-		if err := touch(filepath.Join(dir, f), now); err != nil {
+	for _, k := range keep {
+		p := filepath.Join(dir, HomeDir, filepath.FromSlash(k.Rel))
+		if k.File {
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				return err
+			}
+			if err := touch(p, now); err != nil {
+				return err
+			}
+			if seed, ok := seeds[k.Rel]; ok {
+				if err := seedIfEmpty(p, seed); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := mkdirPrivate(p); err != nil {
 			return err
 		}
-	}
-	for f, seed := range Seeds {
-		if err := seedIfEmpty(filepath.Join(dir, f), seed); err != nil {
-			return err
+		for _, sub := range createdDirs[k.Rel] {
+			if err := os.MkdirAll(filepath.Join(p, sub), 0o777); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
-}
-
-func isPrivate(d string) bool {
-	for _, p := range Private {
-		if d == p {
-			return true
-		}
-	}
-	return false
-}
-
-// EnsurePersist creates the directory each [persist] entry is kept in, 0700
-// like every other place a tool may keep a token, and leaves an existing
-// one alone. Like the rest of the layout it has to exist before the
-// container is created: a bind-mount source docker creates itself is
-// root's on a Linux host. A directory no entry names any more is left
-// where it is, with what it holds.
-func EnsurePersist(dir string, ps []config.Persist) error {
-	for _, p := range ps {
-		if err := mkdirPrivate(filepath.Join(dir, PersistRoot, p.Name)); err != nil {
-			return err
+		for _, f := range created[k.Rel] {
+			if err := touch(filepath.Join(p, f), now); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -233,10 +231,10 @@ func StartScripts(dir string) (run, skipped []string, err error) {
 // OpenSSH's own, PEM (RSA, EC, DSA, PKCS#8), encrypted or not.
 var privateKeyHeader = regexp.MustCompile(`^\s*-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`)
 
-// mkdirPrivate creates path 0700 (its parents with the umask), and leaves
-// an existing one alone.
+// mkdirPrivate creates path 0700 (its parents too, when missing), and
+// leaves an existing one alone.
 func mkdirPrivate(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	err := os.Mkdir(path, 0o700)
@@ -377,7 +375,7 @@ func UnknownPlaceholders(expanded []byte) []string {
 }
 
 // InstallInstructions installs the sandbox-wide CLAUDE.md into
-// dataDir/.claude/CLAUDE.md, expanded by ExpandInstructions, and reports
+// dataDir/home/.claude/CLAUDE.md, expanded by ExpandInstructions, and reports
 // whether it had to write.
 //
 // The data dir sits outside any checkout, so the CLAUDE.md the sandbox reads
@@ -398,10 +396,10 @@ func UnknownPlaceholders(expanded []byte) []string {
 func InstallInstructions(src []byte, checkout string, roots []config.Root, dataDir string) (bool, error) {
 	// .claude itself is the container's mount point, in the host's own
 	// data dir: nothing inside can replace it.
-	if err := os.MkdirAll(filepath.Join(dataDir, ".claude"), 0o777); err != nil {
+	if err := os.MkdirAll(filepath.Join(dataDir, ClaudeDir), 0o700); err != nil {
 		return false, err
 	}
-	const dst = ".claude/CLAUDE.md"
+	const dst = ClaudeDir + "/CLAUDE.md"
 	d := nofollow.Dir(dataDir)
 	want := ExpandInstructions(src, checkout, roots)
 	have, _, err := d.ReadFile(dst)
@@ -416,10 +414,6 @@ func InstallInstructions(src []byte, checkout string, roots []config.Root, dataD
 	return err == nil, err
 }
 
-// Credentials is Claude Code's login in the data dir: ~/.claude/.credentials.json
-// inside the container, where it is kept in a file rather than a keychain.
-const Credentials = ".claude/.credentials.json"
-
 // LoggedIn reports whether the data dir holds a Claude login: Credentials
 // as a plain, non-empty file. It is looked at, never read, and reached
 // through plain directories only (the container writes .claude). Anything
@@ -432,7 +426,7 @@ func LoggedIn(dataDir string) (bool, error) {
 	case err != nil:
 		return false, err
 	case !fi.Mode().IsRegular():
-		return false, fmt.Errorf("%s is not a plain file", Credentials)
+		return false, fmt.Errorf("~/.claude/.credentials.json is not a plain file")
 	}
 	return fi.Size() > 0, nil
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,7 @@ import (
 
 // `caboose apply` is the host's half of a proposal (internal/proposal): a
 // session in the sandbox writes what it would change -- a Dockerfile
-// section, [persist] entries, a root -- and apply shows each one and makes
+// section, a root -- and apply shows each one and makes
 // the change when the user says so. The sandbox never writes config.toml
 // or image/ itself: both decide what it is, and what of the host it
 // reaches, so a person at the host says yes to every change, having seen
@@ -106,16 +105,12 @@ type plan struct {
 	// dockerfile is the new image/Dockerfile, and from what it was made.
 	dockerfile, oldDockerfile []byte
 	source                    string
-	// persist is the whole [persist] table after, when it changes.
-	persist map[string]string
-	// added are the [persist] entries the proposal adds.
-	added []config.Persist
 	// root is the root to add, at host, its physical path.
 	root *proposal.Root
 	host string
 }
 
-func (pl plan) empty() bool { return pl.dockerfile == nil && pl.persist == nil && pl.root == nil }
+func (pl plan) empty() bool { return pl.dockerfile == nil && pl.root == nil }
 
 // applyOne shows one proposal and does what the user says with it.
 func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
@@ -165,9 +160,6 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 	}
 
 	edit := config.Edit{}
-	if pl.persist != nil {
-		edit.SetPersist, edit.Persist = true, pl.persist
-	}
 	if pl.root != nil {
 		ok, err := a.confirmRoot(p, pl, &edit)
 		if err != nil || !ok {
@@ -180,14 +172,14 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 		}
 		done.dockerfile = true
 	}
-	if edit.SetPersist || edit.SetRoots {
+	if edit.SetRoots {
 		if _, err := a.writeConfig(edit); err != nil {
 			return err
 		}
 		if err := a.rereadConfigFile(); err != nil {
 			return err
 		}
-		p.ok("Wrote %s to %s", describeEdit(edit), a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)))
+		p.ok("Wrote the roots to %s", a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)))
 		done.config = true
 	}
 	if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
@@ -196,18 +188,6 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 	}
 	p.ok("Applied %s", name)
 	return nil
-}
-
-// describeEdit says what an apply's config edit changes.
-func describeEdit(e config.Edit) string {
-	var parts []string
-	if e.SetRoots {
-		parts = append(parts, "the roots")
-	}
-	if e.SetPersist {
-		parts = append(parts, "[persist]")
-	}
-	return strings.Join(parts, " and ")
 }
 
 // planProposal works out what applying pr would change, or why it cannot:
@@ -240,34 +220,6 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		}
 	}
 
-	if len(pr.Persist) > 0 {
-		table := map[string]string{}
-		if c.File != nil {
-			for _, e := range c.File.Persist {
-				table[e.Name] = e.Path
-			}
-		}
-		cur := maps.Clone(table)
-		for _, e := range pr.Persist {
-			if path, ok := cur[e.Name]; ok {
-				if path != e.Path {
-					refusals = append(refusals, fmt.Sprintf("[persist] already has %s, as %s, not %s.", e.Name, path, e.Path))
-				}
-				continue
-			}
-			for n, path := range cur {
-				if q, err := config.ParsePersist(n, path); err == nil && q.Rel == e.Rel {
-					refusals = append(refusals, fmt.Sprintf("[persist] already keeps ~/%s, as %s.", e.Rel, n))
-				}
-			}
-			table[e.Name] = e.Path
-			pl.added = append(pl.added, e)
-		}
-		if len(pl.added) > 0 {
-			pl.persist = table
-		}
-	}
-
 	if r := pr.Root; r != nil {
 		host, why, warn := a.checkProposedRoot(*r)
 		refusals = append(refusals, why...)
@@ -287,15 +239,6 @@ func (a *App) showPlan(p *prompter, pl plan) {
 		}
 		p.say("The image: a section in the Dockerfile.")
 		p.diff(from, "with the proposal", lineDiff(string(pl.oldDockerfile), string(pl.dockerfile)))
-		p.blank()
-	}
-	if len(pl.added) > 0 {
-		p.say("Keep across containers, in the data dir ([persist]):")
-		rows := make([][2]string, len(pl.added))
-		for i, e := range pl.added {
-			rows[i] = [2]string{"~/" + e.Rel, "← " + a.short(filepath.Join(c.DataDir, "persist", e.Name))}
-		}
-		p.table(rows)
 		p.blank()
 	}
 	if pl.root != nil {
@@ -515,7 +458,7 @@ func (a *App) dockerfileBase() (source string, data []byte, err error) {
 
 // exportProposals writes what a proposal is made against where sessions
 // can read it (proposal.WriteCurrent). Best-effort: a session without it
-// can still propose persist entries and roots.
+// can still propose a root.
 func (a *App) exportProposals() {
 	c := a.Cfg
 	if c.EnvDir == "" {
@@ -533,12 +476,6 @@ func (a *App) exportProposals() {
 		s.Roots = map[string]string{}
 		for _, r := range roots {
 			s.Roots[r.Name] = r.Path
-		}
-	}
-	if c.File != nil && len(c.File.Persist) > 0 {
-		s.Persist = map[string]string{}
-		for _, e := range c.File.Persist {
-			s.Persist[e.Name] = e.Path
 		}
 	}
 	if err := proposal.WriteCurrent(c.DataDir, s); err != nil {

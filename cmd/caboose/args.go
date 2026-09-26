@@ -61,8 +61,8 @@ it refuses.`},
 		Summary: "review the changes sessions proposed, and apply them",
 		Help: `A session in the sandbox cannot change what the sandbox is: it proposes
 the change instead, into ~/.caboose-proposals -- a Dockerfile section to
-install a tool, directories of the home to keep across containers
-([persist]), or another repo root. This shows each proposal whole, and
+install a tool, or another repo root. (What it keeps of its home is its own
+sandbox config's, which it edits itself.) This shows each proposal whole, and
 applies it, leaves it pending or deletes it as you say. Nothing else in
 config.toml can be proposed, and a root that would hand the sandbox your
 home, a hidden directory of it or caboose's own state is refused. Then it
@@ -79,7 +79,7 @@ Exits 0 with no problems, 1 with any, 2 when it could not run.`},
 	{Name: "status", Args: noArgs,
 		Summary: "the container, SSH agent, live sessions and disk use"},
 	{Name: "version", Args: noArgs,
-		Summary: "the launcher's version, and whether the image matches it",
+		Summary: "the launcher's version, and if the image matches it",
 		Help: `The launcher's version, commit and build date, how it was installed, and
 whether the image exists and was built from this launcher's files, on the
 base in use. Also: caboose --version.`},
@@ -90,7 +90,7 @@ installs it next to this one. An install made by install.sh also does this
 by itself, at most daily, in the background; CABOOSE_NO_AUTO_UPDATE=1 turns
 that off. A build from a checkout never updates itself.`},
 	{Name: "build", Usage: "[ARGS]", Args: passArgs,
-		Summary: "build the image: the base, checked, then caboose's layer",
+		Summary: "build the image: base, checked, then caboose's layer",
 		Help: `Builds the base (the embedded Dockerfile, the environment's image/, or
 pulls CABOOSE_BASE_IMAGE), checks it, and builds the layer on it. ARGS go
 to both docker builds (--no-cache, --progress=plain, -q), except --pull,
@@ -104,7 +104,8 @@ each requirement as met or not. Exits 0 when all are, 1 when one is not,
 	{Name: "restart", Args: noArgs,
 		Summary: "recreate the container (asks before ending sessions)",
 		Help: `Recreates the container, building the image first when it is stale, so
-it picks up a rebuilt image, changed roots or [persist]. Every running
+it picks up a rebuilt image, changed roots, or a change to what the sandbox
+config keeps. Every running
 session ends: it lists them and asks first. FORCE=1 skips the question;
 with no terminal it refuses.`},
 	{Name: "stop", Args: noArgs,
@@ -117,14 +118,28 @@ with no terminal it refuses.`},
 		Summary: "a bash prompt in the container (ARGS go to bash)"},
 	{Name: "prune", Args: noArgs,
 		Summary: "delete old Claude Code versions now"},
-	{Name: "sync", Usage: "[--remote URL]", Args: ownArgs,
-		Summary: "sync memories, settings and skills with other machines",
-		Help: `Sends this machine's changes since the last sync to the remote, takes the
-other machines', and writes back only the files that changed. --remote URL
-sets the remote first (use a private repo). It refuses while a session is
-running (FORCE=1 overrides).`},
+	{Name: "sync", Usage: "[ARGS]", Args: ownArgs,
+		Summary: "sync what the sandbox config names with other machines",
+		Help: `caboose sync [--remote URL] | status | add PATH | rm PATH
+
+Sends this machine's changes since the last sync to the remote, takes the
+other machines', and writes back only the files that changed. What syncs
+is the sandbox config's rules (~/.config/caboose/sandbox.toml, which syncs
+too). --remote URL sets the remote first (use a private repo). It refuses
+while a session is running (FORCE=1 overrides).
+
+'status' shows what a sync would send and take, changing nothing. 'add
+PATH' makes a path of the sandbox's home (~/...) sync, keeping it too when
+nothing keeps it yet; 'rm PATH' stops a rule, leaving the files.`},
+	{Name: "sandbox-config", Usage: "update", Args: ownArgs,
+		Summary: "bring the sandbox config up to this caboose",
+		Help: `Brings ~/.config/caboose/sandbox.toml -- what the sandbox keeps across
+containers, and what of it syncs -- up to this caboose: its format, then
+each default added since it was written, offered one by one. Writes it
+from the defaults when there is none. A change to what is kept takes
+effect at the next 'caboose restart'.`},
 	{Name: "env", Usage: "[list]", Args: ownArgs,
-		Summary: "list the environments ('caboose -e NAME setup' makes one)"},
+		Summary: "list environments ('caboose -e NAME setup' makes one)"},
 	{Name: "help", Usage: "[COMMAND]", Args: ownArgs,
 		Summary: "this, or what COMMAND does"},
 }

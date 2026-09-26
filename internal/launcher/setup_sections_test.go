@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/statesync"
 )
 
@@ -315,7 +316,7 @@ exec "$@"
 func TestSetupSyncSetsTheRemote(t *testing.T) {
 	e, remote := syncSetupEnv(t)
 	e.writeConfig("")
-	mem := filepath.Join(e.a.Cfg.DataDir, ".claude", "projects", statesync.ProjectKey("/work/proj"), "memory")
+	mem := filepath.Join(e.a.Cfg.DataDir, datadir.ClaudeDir, "projects", statesync.ProjectKey("/work/proj"), "memory")
 	if err := os.MkdirAll(mem, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +337,7 @@ func TestSetupSyncSetsTheRemote(t *testing.T) {
 	if e.file().Vals["AUTO_SYNC"] != "1" {
 		t.Error("auto_sync not written")
 	}
-	got, err := exec.Command("git", "--git-dir", remote, "show", "main:claude/projects/"+statesync.ProjectKey("/work/proj")+"/memory/m.md").CombinedOutput()
+	got, err := exec.Command("git", "--git-dir", remote, "show", "main:home/.claude/projects/"+statesync.ProjectKey("/work/proj")+"/memory/m.md").CombinedOutput()
 	if err != nil || string(got) != "a fact\n" {
 		t.Errorf("the remote holds %q (%v)", got, err)
 	}

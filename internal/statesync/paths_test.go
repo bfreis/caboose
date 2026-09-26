@@ -1,8 +1,9 @@
 package statesync
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
 func TestProjectKeyMatchesClaudeCode(t *testing.T) {
@@ -14,72 +15,47 @@ func TestProjectKeyMatchesClaudeCode(t *testing.T) {
 	}
 }
 
-func TestSyncedKey(t *testing.T) {
-	for _, k := range []string{
-		"-work",
-		"-work-bfreis-caboose",
-		"-work-dev-bfreis-caboose--claude-worktrees-rebrand",
-		"-work-" + strings.Repeat("a", 249),
-	} {
-		if !SyncedKey(k) {
-			t.Errorf("SyncedKey(%q) = false", k)
-		}
-	}
-	for _, k := range []string{
-		"",
-		"-home-agent",
-		"-tmp-x",
-		"-workx", // shares the prefix, not the separator
-		"work-x",
-		"bfreis-caboose", // a repo-relative key, as sync once stored them
-		"@root",
-		"-work-a.b",
-		"-work-a b",
-		"-work-..",
-		"-work-" + strings.Repeat("a", 250),
-	} {
-		if SyncedKey(k) {
-			t.Errorf("SyncedKey(%q) = true", k)
-		}
-	}
-}
-
 func TestLiveTarget(t *testing.T) {
-	for repo, want := range map[string]Target{
-		"claude.json":          {Rel: ".claude.json", ClaudeJSON: true},
-		"claude/settings.json": {Rel: ".claude/settings.json"},
-		"claude/projects/-work-a-b/memory/MEMORY.md": {Rel: ".claude/projects/-work-a-b/memory/MEMORY.md"},
-		"claude/projects/-work/memory/x.md":          {Rel: ".claude/projects/-work/memory/x.md"},
-		"claude/skills/s/SKILL.md":                   {Rel: ".claude/skills/s/SKILL.md"},
-		"claude/agents/a.md":                         {Rel: ".claude/agents/a.md"},
-		"claude/commands/deep/c.md":                  {Rel: ".claude/commands/deep/c.md"},
+	c, err := sandboxcfg.Parse(sandboxcfg.Default(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for repo, want := range map[string]struct {
+		rel, stop, merge string
+		inPlace, keys    bool
+	}{
+		"home/.claude.json":                            {"home/.claude.json", "home/.claude.json", "json", true, true},
+		"home/.claude/settings.json":                   {"home/.claude/settings.json", "home/.claude", "json", false, false},
+		"home/.claude/projects/-work-a-b/memory/x.md":  {"home/.claude/projects/-work-a-b/memory/x.md", "home/.claude/projects", "text", false, false},
+		"home/.claude/projects/-work/memory/MEMORY.md": {"home/.claude/projects/-work/memory/MEMORY.md", "home/.claude/projects", "union", false, false},
+		"home/.claude/skills/s/SKILL.md":               {"home/.claude/skills/s/SKILL.md", "home/.claude/skills", "text", false, false},
+		"home/.config/caboose/start.d/10-x":            {"home/.config/caboose/start.d/10-x", "home/.config/caboose", "text", false, false},
 	} {
-		got, err := LiveTarget(repo)
-		if err != nil || got != want {
+		got, err := LiveTarget(c, repo)
+		if err != nil || got.Rel != want.rel || got.Stop != want.stop || got.Rule.Merge != want.merge ||
+			got.InPlace != want.inPlace || got.Keys() != want.keys {
 			t.Errorf("LiveTarget(%q) = %+v, %v; want %+v", repo, got, err, want)
 		}
 	}
 	for _, repo := range []string{
-		"claude/.credentials.json",
-		"claude/history.jsonl",
-		"claude/CLAUDE.md",
-		"claude/projects/a/x.jsonl",
-		"claude/projects/a/b/memory/x.md",
-		"claude/projects/-work-a/b/memory/x.md",
-		"claude/projects/a-b/memory/x.md",
-		"claude/projects/@root/memory/x.md",
-		"claude/projects/-home-agent/memory/x.md",
-		"claude/projects/../memory/x.md",
-		"claude/projects/a/memory/../../../../.credentials.json",
-		"claude/skills/",
-		"claude/skills/.git/config",
-		"claude/skills/synced/manifest.json",
-		"claude/skills/synced/a_b/docx/SKILL.md",
+		"home/.claude/.credentials.json",
+		"home/.claude/history.jsonl",
+		"home/.claude/CLAUDE.md",
+		"home/.claude/projects/-work-a/x.jsonl",
+		"home/.claude/projects/-home-agent/memory/x.md",
+		"home/.claude/projects/-work-a/memory/../../../../.credentials.json",
+		"home/.claude/skills/",
+		"home/.claude/skills/.git/config",
+		"home/.claude/skills/synced/a_b/docx/SKILL.md",
+		"home/.config/gh/hosts.yml",
+		"home/.config/git/config",
+		"home//.claude/settings.json",
+		"home/",
+		"claude/settings.json",
+		"claude.json",
 		"/etc/passwd",
-		"claude//settings.json",
-		"dot_config/gh/hosts.yml",
 	} {
-		if got, err := LiveTarget(repo); err == nil {
+		if got, err := LiveTarget(c, repo); err == nil {
 			t.Errorf("LiveTarget(%q) = %+v; want refused", repo, got)
 		}
 	}

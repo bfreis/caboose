@@ -116,6 +116,7 @@ func (a *App) autoSync() {
 		if line := syncedLine(r); line != "" {
 			a.Note("%s", line)
 		}
+		a.afterSync(r)
 	}
 }
 

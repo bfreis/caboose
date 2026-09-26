@@ -175,7 +175,7 @@ func newBare(t *testing.T) string {
 
 // memRel is a memory file's data dir path, for a project under /work.
 func memRel(project, file string) string {
-	return ".claude/projects/" + statesync.ProjectKey("/work/"+project) + "/memory/" + file
+	return "home/.claude/projects/" + statesync.ProjectKey("/work/"+project) + "/memory/" + file
 }
 
 // pair is two machines on one remote, the other one's first sync done.
@@ -194,7 +194,9 @@ func pair(t *testing.T) (here, there *autoEnv) {
 
 func TestAutoSyncTakesAndSends(t *testing.T) {
 	here, there := pair(t)
-	if got := here.launch(); got != "caboose: synced: took 1 change from the remote\n" {
+	// The memory, and the sandbox config the other machine's first sync
+	// wrote from the defaults.
+	if got := here.launch(); got != "caboose: synced: took 2 changes from the remote\n" {
 		t.Errorf("first launch said %q", got)
 	}
 	if here.read(memRel("p", "base.md")) != "base\n" {

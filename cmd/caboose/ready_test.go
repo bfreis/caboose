@@ -44,9 +44,9 @@ func TestReadyWaitSaysWhatItWaitsFor(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box", "CABOOSE_READY_TIMEOUT", "1")
-			local := filepath.Join(home, ".caboose", "envs", "default", "data", "dot_local", "linux-arm64")
+			local := filepath.Join(home, ".caboose", "envs", "default", "data", "local", "linux-arm64")
 			// Another platform's dir, from a data dir used with another image.
-			if err := os.MkdirAll(filepath.Join(home, ".caboose", "envs", "default", "data", "dot_local", "linux-arm64-musl", "bin"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(home, ".caboose", "envs", "default", "data", "local", "linux-arm64-musl", "bin"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if tc.installed {

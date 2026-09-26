@@ -1,6 +1,7 @@
 // Package proposal is how a session in the sandbox asks for a change only
-// the host can make: a tool installed in the image, a directory of the
-// home kept across containers, another repo root. The session writes a
+// the host can make: a tool installed in the image, or another repo root.
+// (What the sandbox keeps of its home is its own to change, in the sandbox
+// config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
 // ContainerDir); `caboose apply`, on the host, shows each one and applies
 // it when the user says so.
@@ -10,13 +11,11 @@
 // an unknown key, a control character or a bidi override that could make
 // the terminal show other than what is there, a section that starts a
 // stage -- and what it may ask for is an allowlist: a Dockerfile section,
-// [persist] entries, and one root. Nothing else in config.toml can be
-// proposed at all.
+// and one root. Nothing else in config.toml can be proposed at all.
 //
 // The host also writes what a proposal is made against into proposals/
 // current/ (WriteCurrent): the Dockerfile the next build uses, and the
-// roots and [persist] entries config.toml has, which the sandbox cannot
-// otherwise see. A proposal for a section names the hash of that
+// roots config.toml has, which the sandbox cannot otherwise see. A proposal for a section names the hash of that
 // Dockerfile, and is refused when the real one has changed since.
 package proposal
 
@@ -27,9 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"path"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -58,6 +55,9 @@ const (
 	MaxSize = 64 << 10
 )
 
+// sandboxHint is where what the sandbox keeps is changed instead.
+const sandboxHint = "~/.config/caboose/sandbox.toml"
+
 // Section is a Dockerfile section, as assets.SetSection takes it.
 type Section struct {
 	Name  string `toml:"name"`
@@ -79,8 +79,6 @@ type Proposal struct {
 	// against; set exactly when Section is.
 	DockerfileSHA256 string
 	Section          *Section
-	// Persist are the [persist] entries to add, in name order.
-	Persist []config.Persist
 	// Root is the root to add, or nil.
 	Root *Root
 }
@@ -91,7 +89,6 @@ type file struct {
 	Reason           string            `toml:"reason"`
 	DockerfileSHA256 *string           `toml:"dockerfile_sha256"`
 	Section          *Section          `toml:"section"`
-	Persist          map[string]string `toml:"persist"`
 	Roots            map[string]string `toml:"roots"`
 }
 
@@ -117,7 +114,8 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [persist] and [roots])", strings.Join(keys, ", "))
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section] and [roots]; what the sandbox keeps is changed in %s, with no proposal)",
+			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
 	if err := checkText("title", p.Title, false, 100); err != nil {
@@ -155,22 +153,6 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		p.Section, p.DockerfileSHA256 = &s, *f.DockerfileSHA256
 	}
 
-	for _, name := range slices.Sorted(maps.Keys(f.Persist)) {
-		if err := checkText("persist."+name, f.Persist[name], false, 200); err != nil {
-			return nil, err
-		}
-		e, err := config.ParsePersist(name, f.Persist[name])
-		if err != nil {
-			return nil, err
-		}
-		for _, o := range p.Persist {
-			if o.Rel == e.Rel {
-				return nil, fmt.Errorf("persist.%s and persist.%s both name ~/%s", o.Name, name, e.Rel)
-			}
-		}
-		p.Persist = append(p.Persist, e)
-	}
-
 	switch len(f.Roots) {
 	case 0:
 	case 1:
@@ -190,8 +172,8 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		return nil, errors.New("more than one root: a proposal adds one at most, so that each is confirmed on its own")
 	}
 
-	if p.Section == nil && len(p.Persist) == 0 && p.Root == nil {
-		return nil, errors.New("it proposes nothing: no [section], [persist] or [roots]")
+	if p.Section == nil && p.Root == nil {
+		return nil, errors.New("it proposes nothing: no [section] or [roots]")
 	}
 	return p, nil
 }

@@ -5,13 +5,15 @@ Each [environment](#environments) has a `config.toml` in its dir
 setting in it can be overridden for one shell by its variable. `caboose
 setup` writes one with every setting commented out, when there is none, and
 never rewrites one that is there; `caboose status` names the file it read.
-A key the file does not know is an error, not ignored.
+A key the file does not know is an error, not ignored. What the sandbox
+keeps of its home, and what of that syncs, is not here: it is the
+[sandbox config](sandbox-config.md), the sandbox's own.
 
 | `config.toml` | Variable | Default | |
 |---|---|---|---|
 | `repo_root` | `CABOOSE_REPO_ROOT` | `$HOME/dev` | host dir mounted into the container, at `/work` |
 | `[roots]` | | unset | several host dirs instead, by name, each at `/work/<name>`; see [the repo root](#the-repo-root). `CABOOSE_REPO_ROOT` still wins |
-| `[persist]` | | unset | directories under the container's home to keep across containers, by name; see [Keeping more of the home](how-it-works.md#keeping-more-of-the-home) |
+| `format` | | `1` | the file's structure, which `caboose setup` writes; a file of a newer format than this caboose reads is refused, saying `caboose update` |
 | `keep_versions` | `CABOOSE_KEEP_VERSIONS` | `2` | installed versions to retain (~224MB each) |
 | `image`, `container` | `CABOOSE_IMAGE`, `CABOOSE_CONTAINER` | `caboose`; `caboose-<env>` for other environments | names |
 | `base_image` | `CABOOSE_BASE_IMAGE` | unset | [your own image](images.md) to build the sandbox on; unset, the environment's `image/Dockerfile` when it has one, else the embedded Dockerfile, built and tagged `$CABOOSE_IMAGE-base` |
@@ -166,7 +168,7 @@ and setup shows the lines to change by hand.
 
 `caboose setup git` asks for the sandbox's `user.name` and `user.email`
 and how it signs commits, and writes them into its git config,
-`<data>/dot_config/git/config` (`~/.config/git/config` inside). The
+`<data>/home/.config/git/config` (`~/.config/git/config` inside). The
 defaults are the sandbox's own values; where it has none, the host's
 *default* identity is offered — an `[include]` is followed, an
 `[includeIf]` is not, since the sandbox has one git config for every repo

@@ -99,7 +99,7 @@ const (
 // then a launch refuses the old container and says 'caboose restart' --
 // never merely because the image's files changed: the hashes already say
 // that, and a rebuild at the next restart is all it takes.
-const Compat = 1
+const Compat = 2
 
 // The values of LabelBaseKind.
 const (

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 )
 
@@ -25,13 +27,18 @@ func doctorBox(t *testing.T, home string, over ...string) string {
 		t.Fatal(err)
 	}
 	data := filepath.Join(home, ".caboose", "envs", "default", "data")
+	// What a container created from the default sandbox config mounts.
+	var keeps strings.Builder
+	for _, rel := range []string{".claude", ".claude.json", ".config/caboose", ".config/git", ".config/jj", ".config/gh", ".ssh"} {
+		fmt.Fprintf(&keeps, "/home/agent/%s\t%s\n", rel, filepath.Join(data, "home", rel))
+	}
 	return strings.Join(over, "\n") + `
 case "$1" in version) exit 0 ;; esac
 ` + imageLabels(defaultLabels("v1")) + "\n" + imageIDIs("sha:1") + "\n" + containerRunning + `
 case "$*" in
   "inspect --type=container box --format "*)
-    printf '/work\t%s\n/home/agent/.local/bin\t%s\n/home/agent/.ssh\t%s\n` + statesync.ContainerDir + `\t%s\n' '` + root + `' '` +
-		filepath.Join(data, "dot_local", "linux-arm64", "bin") + `' '` + filepath.Join(data, "dot_ssh") + `' '` + filepath.Join(data, statesync.Dir) + `'; exit 0 ;;
+    printf '/work\t%s\n/home/agent/.local/bin\t%s\n` + statesync.ContainerDir + `\t%s\n' '` + root + `' '` +
+		filepath.Join(data, "local", "linux-arm64", "bin") + `' '` + filepath.Join(data, statesync.Dir) + `'; printf '%s' '` + keeps.String() + `'; exit 0 ;;
   "exec box claude --version") echo "2.1.0 (Claude Code)"; exit 0 ;;
   "exec box bash -c for d in /proc/"*) echo "7 1 sleep"; exit 0 ;;
   "exec box bash -c printf '%s\0%s\0'"*) printf 'Etc/UTC\0002\0'; exit 0 ;;
@@ -129,7 +136,7 @@ func TestDoctorNotSetUp(t *testing.T) {
 // loggedIn gives home's default environment a Claude login.
 func loggedIn(t *testing.T, home string) string {
 	t.Helper()
-	p := filepath.Join(home, ".caboose", "envs", "default", "data", ".claude", ".credentials.json")
+	p := filepath.Join(home, ".caboose", "envs", "default", "data", "home", ".claude", ".credentials.json")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +360,7 @@ func TestDoctorAgent(t *testing.T) {
 
 func TestDoctorLinkWhereALaunchWrites(t *testing.T) {
 	home, _ := doctorEnv(t)
-	claude := filepath.Join(home, ".caboose", "envs", "default", "data", ".claude")
+	claude := filepath.Join(home, ".caboose", "envs", "default", "data", "home", ".claude")
 	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +398,7 @@ func TestDoctorSync(t *testing.T) {
 	if code, _, errOut := runIt("sync", "--remote", remote); code != 0 {
 		t.Fatalf("sync: exit %d: %s", code, errOut)
 	}
-	mem := filepath.Join(data, ".claude", "projects", statesync.ProjectKey("/work/proj"), "memory", "MEMORY.md")
+	mem := filepath.Join(data, "home", ".claude", "projects", statesync.ProjectKey("/work/proj"), "memory", "MEMORY.md")
 	if err := os.MkdirAll(filepath.Dir(mem), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -438,15 +445,18 @@ func TestDoctorTwoBases(t *testing.T) {
 	}
 }
 
-// [persist] shows with the configuration; a container that mounts other
-// entries -- here none -- is a problem a restart fixes.
-func TestDoctorPersist(t *testing.T) {
+// What the sandbox config keeps shows; a container that mounts other
+// entries -- here none of its own -- is a problem a restart fixes. A bad
+// entry is a problem of its own, with where to fix it.
+func TestDoctorKeep(t *testing.T) {
 	home, _ := doctorEnv(t, `[ "$1 $2" = "inspect --type=container" ] && [ "$4" = --format ] && { printf '/work\t%s\n' "$HOME/dev"; exit 0; }`)
-	dir := filepath.Join(home, ".caboose", "envs", "default")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	data := filepath.Join(home, ".caboose", "envs", "default", "data")
+	cfg := filepath.Join(data, "home", ".config", "caboose", "sandbox.toml")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[persist]\naws = \"~/.aws\"\n"), 0o644); err != nil {
+	extra := "\n[[keep]]\npath = \"~/.aws\"\n\n[[keep]]\npath = \"~/.config/deep/er\"\n\n[[keep]]\npath = \"~/.npmrc\"\nfile = true\n"
+	if err := os.WriteFile(cfg, append(sandboxcfg.Default([]string{"oss"}), extra...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	code, out, _ := runIt("doctor", "--offline")
@@ -454,29 +464,37 @@ func TestDoctorPersist(t *testing.T) {
 		t.Errorf("exit %d", code)
 	}
 	wantRows(t, out, map[string]string{
-		"persist": "~/.aws (aws)",
+		"keep":  "~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc; 8 sync rules",
+		"roots": "problem: the sandbox config expects a root named oss, which this machine has not",
 	})
-	want := "problem: the container persists none; the configuration says ~/.aws (aws)"
-	if row(out, "persist", want) == "" || !fixFor(out, "persist", "caboose restart (this ends running sessions)") {
-		t.Errorf("no drift problem %q in:\n%s", want, out)
+	for _, want := range []string{
+		`problem: keep "~/.config/deep/er": "~/.config/deep/er" is too deep`,
+		"note: ~/.npmrc is kept as a file, a single-file mount",
+		"problem: the container does not keep ~/.aws, ~/.claude, ~/.claude.json",
+	} {
+		if row(out, "keep", want) == "" {
+			t.Errorf("no keep row %q in:\n%s", want, out)
+		}
+	}
+	if !fixFor(out, "keep", "caboose restart (this ends running sessions)") || !fixFor(out, "roots", "caboose setup roots") {
+		t.Errorf("fixes:\n%s", out)
 	}
 }
 
-// A private key in the sandbox's ~/.ssh, and a persist/ dir no entry names
-// any more, are each worth a note -- not problems: both may be a choice.
-func TestDoctorSSHKeyAndLeftoverPersist(t *testing.T) {
+// A private key in the sandbox's ~/.ssh is worth a note -- not a problem:
+// it may be a choice.
+func TestDoctorSSHKey(t *testing.T) {
 	home, _ := doctorEnv(t)
 	setUp(t, home)
 	data := filepath.Join(home, ".caboose", "envs", "default", "data")
-	for _, d := range []string{"dot_ssh", "persist/old"} {
-		if err := os.MkdirAll(filepath.Join(data, d), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(data, "dot_ssh", "id_ed25519"), []byte("-----BEGIN OPENSSH PRIVATE KEY-----\n"), 0o600); err != nil {
+	ssh := filepath.Join(data, "home", ".ssh")
+	if err := os.MkdirAll(ssh, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(data, "dot_ssh", "known_hosts"), []byte("github.com ssh-ed25519 AAAA\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(ssh, "id_ed25519"), []byte("-----BEGIN OPENSSH PRIVATE KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ssh, "known_hosts"), []byte("github.com ssh-ed25519 AAAA\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, out, _ := runIt("doctor", "--offline")
@@ -484,8 +502,7 @@ func TestDoctorSSHKeyAndLeftoverPersist(t *testing.T) {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 	wantRows(t, out, map[string]string{
-		"ssh":     "note: the sandbox's ~/.ssh holds a private key file (id_ed25519), kept in " + filepath.Join(data, "dot_ssh"),
-		"persist": "note: old in " + filepath.Join(data, "persist") + " is no longer in [persist], so not mounted; it is kept",
+		"ssh": "note: the sandbox's ~/.ssh holds a private key file (id_ed25519), kept in " + ssh,
 	})
 	if strings.Contains(out, "known_hosts)") {
 		t.Errorf("known_hosts named as a key:\n%s", out)

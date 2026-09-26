@@ -68,7 +68,7 @@ func TestInstalledBinary(t *testing.T) {
 	if code, out := runBin(project, "claude", "--version"); code == 0 {
 		t.Errorf("attach succeeded against a failing docker:\n%s", out)
 	}
-	b, err := os.ReadFile(filepath.Join(home, ".caboose", "envs", "default", "data", ".claude", "CLAUDE.md"))
+	b, err := os.ReadFile(filepath.Join(home, ".caboose", "envs", "default", "data", "home", ".claude", "CLAUDE.md"))
 	if err != nil {
 		t.Fatalf("sandbox CLAUDE.md not installed: %v", err)
 	}

@@ -71,11 +71,7 @@ type Config struct {
 	// file by its path, or "" when it is the default. Every message about
 	// the roots says which, because someone who never set them has no
 	// reason to know they exist.
-	RootsFrom string
-	// Persist are the directories under the container's home kept in the
-	// data dir across containers: config.toml's [persist] table, which has
-	// no variable.
-	Persist      []Persist
+	RootsFrom    string
 	ReadyTimeout string
 	// KeepVersions is the number of installed Claude Code versions to retain
 	// (~224MB each). The updater never deletes the version it replaced, so
@@ -288,7 +284,6 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		Container:    or(vals["CONTAINER"], name),
 		Roots:        roots,
 		RootsFrom:    rootsFrom,
-		Persist:      filePersist(file),
 		ReadyTimeout: or(vals["READY_TIMEOUT"], "600"),
 		KeepVersions: or(vals["KEEP_VERSIONS"], "2"),
 		DockerSock:   vals["DOCKER_SOCK"],
@@ -556,14 +551,6 @@ func Cwd() (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(wd)
-}
-
-// filePersist is file's [persist] entries, none without a file.
-func filePersist(file *File) []Persist {
-	if file == nil {
-		return nil
-	}
-	return file.Persist
 }
 
 func sortedKeys(m map[string]string) []string {

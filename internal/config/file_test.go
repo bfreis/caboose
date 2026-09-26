@@ -107,3 +107,24 @@ func TestConfigFileRoots(t *testing.T) {
 		t.Errorf("no HOME, roots from the file: %+v, %v", c, err)
 	}
 }
+
+func TestFormat(t *testing.T) {
+	for data, want := range map[string]int{"": 0, "format = 1\n": 1} {
+		f, err := ParseFile("c.toml", []byte(data))
+		if err != nil || f.Format != want {
+			t.Errorf("%q: %+v %v", data, f, err)
+		}
+	}
+	for data, want := range map[string]string{
+		"format = 2\n":     "c.toml is format 2, and this caboose reads up to format 1",
+		"format = 0\n":     "format must be a whole number",
+		"format = \"1\"\n": "format must be a whole number",
+	} {
+		if _, err := ParseFile("c.toml", []byte(data)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", data, err, want)
+		}
+	}
+	if f, err := ParseFile("c.toml", []byte(Template)); err != nil || f.Format != FileFormat {
+		t.Errorf("the template: %+v %v", f, err)
+	}
+}

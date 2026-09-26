@@ -45,10 +45,10 @@ func TestPendingAgainstTheLastSync(t *testing.T) {
 
 	a.write(mem("p", "MEMORY.md"), "- one\n- two\n")
 	a.write(mem("q", "new.md"), "new\n")
-	if err := os.Remove(filepath.Join(a.s.DataDir, filepath.FromSlash(mem("p", "gone.md")))); err != nil {
+	if err := os.Remove(a.path(mem("p", "gone.md"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(a.s.DataDir, ".claude/skills/s/run.sh"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(a.s.DataDir, "home/.claude/skills/s/run.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// A path another machine (or a newer caboose) put in the repo is not
@@ -58,11 +58,11 @@ func TestPendingAgainstTheLastSync(t *testing.T) {
 	}
 	p := a.pending()
 	wantChanged := []string{
-		"claude/projects/" + ProjectKey("/work/p") + "/memory/MEMORY.md",
-		"claude/projects/" + ProjectKey("/work/q") + "/memory/new.md",
-		"claude/skills/s/run.sh",
+		"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/MEMORY.md",
+		"home/.claude/projects/" + ProjectKey("/work/q") + "/memory/new.md",
+		"home/.claude/skills/s/run.sh",
 	}
-	wantDeleted := []string{"claude/projects/" + ProjectKey("/work/p") + "/memory/gone.md"}
+	wantDeleted := []string{"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/gone.md"}
 	if !reflect.DeepEqual(p.Changed, wantChanged) || !reflect.DeepEqual(p.Deleted, wantDeleted) {
 		t.Fatalf("changed %v, deleted %v; want %v, %v", p.Changed, p.Deleted, wantChanged, wantDeleted)
 	}
@@ -82,14 +82,14 @@ func TestPendingReadsNoLinkInTheRepo(t *testing.T) {
 	if err := os.WriteFile(secret, []byte(`{"x":1}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(a.s.RepoDir(), "claude/settings.json")
+	target := filepath.Join(a.s.RepoDir(), "home/.claude/settings.json")
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(secret, target); err != nil {
 		t.Fatal(err)
 	}
-	if p := a.pending(); !reflect.DeepEqual(p.Changed, []string{"claude/settings.json"}) {
+	if p := a.pending(); !reflect.DeepEqual(p.Changed, []string{"home/.claude/settings.json"}) {
 		t.Fatalf("changed %v, want the linked file", p.Changed)
 	}
 }
@@ -101,7 +101,7 @@ func TestPendingKeepsWhatItCannotRead(t *testing.T) {
 	a.sync()
 	// The memory dir is now a symlink: refused, never read, and what the
 	// repo has of it is kept -- not a deletion waiting to be sent.
-	dir := filepath.Join(a.s.DataDir, filepath.FromSlash(filepath.Dir(mem("r", "MEMORY.md"))))
+	dir := a.path(filepath.Dir(mem("r", "MEMORY.md")))
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestDirty(t *testing.T) {
 		t.Fatalf("after a sync: dirty %v, %v", dirty, err)
 	}
 	// A sync that died after writing the export, before committing it.
-	if err := a.s.repo().WriteFile("claude/settings.json", []byte(`{"x":2}`), 0o644); err != nil {
+	if err := a.s.repo().WriteFile("home/.claude/settings.json", []byte(`{"x":2}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if dirty, err := a.s.Dirty(); err != nil || !dirty {

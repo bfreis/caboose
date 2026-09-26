@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
 // File is one file as the sync repo holds it.
@@ -17,22 +19,23 @@ type File struct {
 	Exec bool
 }
 
-// Export is what the live data dir holds of the allowlist.
+// Export is what the live data dir holds of what syncs.
 type Export struct {
 	// Files are the repo paths to write, with their contents.
 	Files map[string]File
 	// Keep are repo paths to leave as the repo has them: their live source
-	// exists but could not be read as it should (a .claude.json mid-write,
+	// exists but could not be read as it should (a JSON file mid-write,
 	// a symlink), and must not read as deleted. A path ending in "/" keeps
 	// everything under it.
 	Keep map[string]bool
-	// Unsynced are project keys with memory that are not under /work, so do
-	// not sync.
-	Unsynced []string
 	// Refused are data dir paths that would have synced but are not plain
 	// files and directories: symlinks, hard links (see internal/nofollow).
 	// They are never followed; what the repo has of them is kept.
 	Refused []string
+	// Shadowed are sync rules that matched files, but only files an
+	// earlier rule of their entry took: first match wins, so they never
+	// decide anything. A rule written in the wrong order, most likely.
+	Shadowed []string
 }
 
 // kept reports whether repo path p is to be left as the repo has it.
@@ -55,62 +58,85 @@ func (e *Export) refuse(rel, repoPath string) {
 	e.Keep[repoPath] = true
 }
 
-// ExportLive reads the allowlist out of data dir dir. The container writes
-// .claude, so nothing there is trusted to be what its name says: a symlink
-// or a hard link is refused, never followed, anywhere on a path -- one to
-// .credentials.json would otherwise export the Claude login.
-func ExportLive(dir string) (*Export, error) {
+// ExportLive reads what c's rules sync out of data dir dir. The container
+// writes the whole home, so nothing there is trusted to be what its name
+// says: a symlink or a hard link is refused, never followed, anywhere on a
+// path -- one to .credentials.json would otherwise export the Claude login.
+func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
 	e := &Export{Files: map[string]File{}, Keep: map[string]bool{}}
 	d := nofollow.Dir(dir)
-
-	if err := e.addFile(d, ".claude/settings.json", repoSettings); err != nil {
-		return nil, err
-	}
-	for _, t := range TreeDirs {
-		skip := func(rel string) bool { return !synced(t + "/" + rel) }
-		if err := e.addTree(d, ".claude/"+t, repoClaude+t+"/", skip); err != nil {
-			return nil, err
-		}
-	}
-
-	projects, err := d.ReadDir(".claude/projects")
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
-	for _, p := range projects {
-		if !p.IsDir() {
+	first, later := map[*sandboxcfg.Rule]bool{}, map[*sandboxcfg.Rule]bool{}
+	for i := range c.Keep {
+		k := &c.Keep[i]
+		if len(k.Rules) == 0 {
 			continue
 		}
-		mem := ".claude/projects/" + p.Name() + "/memory"
-		fi, err := d.Lstat(mem)
-		if errors.Is(err, fs.ErrNotExist) {
+		if k.File {
+			if r, ok := c.Match(k.Rel); ok {
+				if err := e.addFile(d, datadir.Home(k.Rel), RepoHome+k.Rel, r); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
+		err := d.Walk(datadir.Home(k.Rel), func(p string, ent fs.DirEntry) error {
+			rel := strings.TrimPrefix(p, datadir.HomeDir+"/")
+			repoPath := RepoHome + rel
+			switch {
+			case ent.Name() == ".DS_Store" || (ent.IsDir() && ent.Name() == ".git"):
+				if ent.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			case ent.IsDir():
+				if !c.Reaches(rel) {
+					return fs.SkipDir
+				}
+				return nil
+			case !safeRel(repoPath):
+				return nil
+			case ent.Type()&fs.ModeSymlink != 0:
+				if c.Reaches(rel) {
+					// A file or a directory: whatever the repo has of either stays.
+					e.refuse(p, repoPath)
+					e.Keep[repoPath+"/"] = true
+				}
+				return nil
+			case !ent.Type().IsRegular():
+				return nil // a socket, a FIFO: never synced
+			}
+			r, ok := c.Match(rel)
+			if !ok {
+				return nil
+			}
+			first[r] = true
+			for j := range k.Rules {
+				if o := &k.Rules[j]; o != r && o.Matches(rel) {
+					later[o] = true
+				}
+			}
+			return e.addFile(d, p, repoPath, r)
+		})
 		if err != nil {
 			return nil, err
 		}
-		if !SyncedKey(p.Name()) {
-			e.Unsynced = append(e.Unsynced, p.Name())
-			continue
-		}
-		repoMem := repoProjects + p.Name() + "/memory/"
-		if !fi.IsDir() {
-			e.refuse(mem, repoMem)
-			continue
-		}
-		if err := e.addTree(d, mem, repoMem, nil); err != nil {
-			return nil, err
-		}
 	}
-
-	if err := e.addClaudeJSON(d, ".claude.json"); err != nil {
-		return nil, err
+	for r := range later {
+		if !first[r] {
+			e.Shadowed = append(e.Shadowed, r.Path)
+		}
 	}
 	sort.Strings(e.Refused)
+	sort.Strings(e.Shadowed)
 	return e, nil
 }
 
-func (e *Export) addFile(d nofollow.Dir, rel, repoPath string) error {
+// addFile exports the file at data dir path rel as repoPath, as rule r
+// says: with Keys, only those keys of it. A JSON file that does not parse
+// is kept as the repo has it instead, since its program may be halfway
+// through rewriting it; one with none of the keys has nothing to export,
+// and the repo's copy reads as deleted.
+func (e *Export) addFile(d nofollow.Dir, rel, repoPath string, r *sandboxcfg.Rule) error {
 	data, mode, err := d.ReadFile(rel)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -121,56 +147,9 @@ func (e *Export) addFile(d nofollow.Dir, rel, repoPath string) error {
 	case err != nil:
 		return err
 	}
-	e.Files[repoPath] = File{Data: data, Exec: mode&0o111 != 0}
-	return nil
-}
-
-// addTree exports every regular file under the directory rel as prefix +
-// its path under rel. skip, when set, prunes a directory by that path.
-func (e *Export) addTree(d nofollow.Dir, rel, prefix string, skip func(sub string) bool) error {
-	return d.Walk(rel, func(p string, ent fs.DirEntry) error {
-		sub := strings.TrimPrefix(p, rel+"/")
-		repoPath := prefix + sub
-		switch {
-		case ent.Name() == ".DS_Store" || (ent.IsDir() && ent.Name() == ".git"):
-			if ent.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		case ent.IsDir():
-			if skip != nil && skip(sub) {
-				return fs.SkipDir
-			}
-			return nil
-		case !safeRel(repoPath):
-			return nil
-		case ent.Type()&fs.ModeSymlink != 0:
-			// A file or a directory: whatever the repo has of either stays.
-			e.refuse(p, repoPath)
-			e.Keep[repoPath+"/"] = true
-			return nil
-		case !ent.Type().IsRegular():
-			return nil // a socket, a FIFO: never synced
-		}
-		return e.addFile(d, p, repoPath)
-	})
-}
-
-// addClaudeJSON exports ClaudeJSONKeys of .claude.json. With none of them
-// set there is nothing to export, and the repo's copy reads as deleted;
-// a file that does not parse is kept as the repo has it instead, since
-// Claude Code may be halfway through rewriting it.
-func (e *Export) addClaudeJSON(d nofollow.Dir, rel string) error {
-	data, _, err := d.ReadFile(rel)
-	if errors.Is(err, fs.ErrNotExist) {
+	if r.Merge != sandboxcfg.MergeJSON || len(r.Keys) == 0 {
+		e.Files[repoPath] = File{Data: data, Exec: mode&0o111 != 0}
 		return nil
-	}
-	if errors.Is(err, nofollow.ErrNotPlain) {
-		e.refuse(rel, RepoClaudeJSON)
-		return nil
-	}
-	if err != nil {
-		return err
 	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
@@ -178,11 +157,11 @@ func (e *Export) addClaudeJSON(d nofollow.Dir, rel string) error {
 	v, err := decode(data)
 	m, ok := v.(map[string]any)
 	if err != nil || !ok {
-		e.Keep[RepoClaudeJSON] = true
+		e.Keep[repoPath] = true
 		return nil
 	}
 	picked := map[string]any{}
-	for _, k := range ClaudeJSONKeys {
+	for _, k := range r.Keys {
 		if v, ok := m[k]; ok {
 			picked[k] = v
 		}
@@ -194,7 +173,7 @@ func (e *Export) addClaudeJSON(d nofollow.Dir, rel string) error {
 	if err != nil {
 		return err
 	}
-	e.Files[RepoClaudeJSON] = File{Data: out}
+	e.Files[repoPath] = File{Data: out}
 	return nil
 }
 

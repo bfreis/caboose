@@ -66,13 +66,17 @@ func TestWatchdogPassesThrough(t *testing.T) {
 	}
 }
 
-// syncGitApp is an App whose docker answers the sandbox's ssh command
-// question with own.
-func syncGitApp(t *testing.T, own string) *App {
+// syncGitApp is an App whose docker answers the probe for the sandbox's
+// ssh command with own, and says it has gh when gh is set.
+func syncGitApp(t *testing.T, own string, gh ...bool) *App {
 	t.Helper()
 	bin := t.TempDir()
 	fake := filepath.Join(bin, "docker")
-	script := "#!/bin/sh\ncase \"$*\" in *core.sshCommand*) printf '%s' '" + own + "'; exit 0 ;; esac\nexit 1\n"
+	ghLine := ""
+	if len(gh) > 0 && gh[0] {
+		ghLine = "gh"
+	}
+	script := "#!/bin/sh\ncase \"$*\" in *GIT_SSH_COMMAND*) printf '%s\\n%s' '" + own + "' '" + ghLine + "'; exit 0 ;; esac\nexit 1\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +124,18 @@ func TestSyncGitCommand(t *testing.T) {
 	own := syncGitApp(t, "ssh -i /k").newSyncGit(true)
 	if o := args(own, true); slices.ContainsFunc(o, func(s string) bool { return strings.HasPrefix(s, "GIT_SSH_COMMAND=") }) {
 		t.Errorf("overrode the sandbox's own ssh command: %q", o)
+	}
+
+	// The sandbox's global git config is never read; gh's helper is
+	// passed instead, when there is a gh.
+	for _, g := range []*syncGit{auto, manual, own} {
+		if a := args(g, false); !has(a, "-e", "GIT_CONFIG_GLOBAL=/dev/null") || slices.Contains(a, "credential.helper=") {
+			t.Errorf("without gh: %q", a)
+		}
+	}
+	withGH := syncGitApp(t, "", true).newSyncGit(false)
+	if a := args(withGH, true); !has(a, "git", "-c", "credential.helper=", "-c", "credential.helper="+ghHelper, "-C", "/r", "fetch") {
+		t.Errorf("with gh: %q", a)
 	}
 }
 

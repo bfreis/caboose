@@ -7,7 +7,7 @@ Two directories of your own configure the sandbox from the inside:
 | `~/.config/caboose/start.d` | once, at container start | scripts that start daemons or set something up |
 | `~/.config/caboose/shell.d` | by every interactive bash | aliases, functions, a prompt, environment variables |
 
-Both live in the data dir, at `<data>/dot_config/caboose` (`<data>` is
+Both live in the data dir, at `<data>/home/.config/caboose` (`<data>` is
 `~/.caboose/envs/default/data` for the default environment), mounted at
 `~/.config/caboose`. So they outlive `caboose restart`, and can be edited
 from either side: on the host, or from inside the sandbox, where a session
@@ -97,4 +97,8 @@ sources `~/.bashrc`, so a login bash reads it too, unless the image has a
 `~/.bash_profile`, `~/.bash_login` or `~/.profile` of its own. A new
 `shell.d` file is read by the next shell you open; no restart needed.
 
-[`caboose sync`](sync.md) does not carry either directory.
+[`caboose sync`](sync.md) carries both, with the rest of `~/.config/caboose`,
+by default: a script written on one machine runs on the others at their next
+start. A script that needs a tool only one machine's image has fails, in
+`caboose logs`, on the others; to keep a directory to one machine, stop it
+syncing in the [sandbox config](sandbox-config.md).

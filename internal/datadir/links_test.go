@@ -11,7 +11,7 @@ import (
 	"github.com/bfreis/caboose/internal/nofollow"
 )
 
-// The container writes .claude and dot_config/git, and can leave a link
+// The container writes ~/.claude and ~/.config/git, and can leave a link
 // where the launcher writes on every launch. Through one, the launcher would
 // overwrite a host file -- or the data dir's own credential -- with the
 // instructions or a git config.
@@ -36,7 +36,7 @@ func TestInstallInstructionsNeverFollowsLinks(t *testing.T) {
 			return host
 		},
 		"hard link": func(t *testing.T, dir, dst string) string {
-			cred := filepath.Join(dir, ".claude", ".credentials.json")
+			cred := filepath.Join(dir, Credentials)
 			if err := os.WriteFile(cred, []byte("host file\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -48,10 +48,10 @@ func TestInstallInstructionsNeverFollowsLinks(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := EnsureLayout(dir); err != nil {
+			if err := EnsureLayout(dir, defKeep()); err != nil {
 				t.Fatal(err)
 			}
-			target := plant(t, dir, filepath.Join(dir, ".claude", "CLAUDE.md"))
+			target := plant(t, dir, filepath.Join(dir, ClaudeDir, "CLAUDE.md"))
 			changed, err := InstallInstructions([]byte("instructions\n"), "", roots, dir)
 			if changed || !errors.Is(err, nofollow.ErrNotPlain) {
 				t.Errorf("InstallInstructions = %v, %v; want ErrNotPlain", changed, err)
@@ -70,7 +70,7 @@ func TestWriteSandboxGitNeverFollowsLinks(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	dir := t.TempDir()
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(dir, GitConfig)

@@ -3,9 +3,9 @@ package launcher
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +13,8 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
+	"github.com/bfreis/caboose/internal/proposal"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 )
 
@@ -212,6 +214,7 @@ func (a *App) Doctor(args []string) error {
 	rootsOK := a.doctorConfig(c)
 	c.checking("the data dir")
 	a.doctorDataDir(c)
+	a.doctorSandbox(c)
 	c.checking("the Docker engine")
 	state, reachable := "", a.doctorDocker(c)
 	if reachable {
@@ -286,16 +289,72 @@ func (a *App) doctorConfig(c *checkup) bool {
 		return false
 	}
 	c.ok("roots", "%s", mountList(cfg.Roots))
-	if len(cfg.Persist) > 0 {
-		c.ok("persist", "%s", config.DescribePersist(cfg.Persist))
-	}
 	return true
+}
+
+// doctorSandbox checks the sandbox config: that it can be used, what it
+// keeps, what was skipped of it, whether it is behind this caboose, and
+// the roots it expects.
+func (a *App) doctorSandbox(c *checkup) {
+	sb, err := a.sandboxConfig()
+	if err != nil {
+		c.unchecked("keep", "%v", err)
+		return
+	}
+	edit := "edit " + sandboxcfg.HomePath + " (in the sandbox, or " + filepath.Join(a.Cfg.DataDir, datadir.SandboxConfig) + ")"
+	switch {
+	case sb.Err != nil:
+		fix := edit
+		if errors.Is(sb.Err, sandboxcfg.ErrNewerFormat) {
+			fix = "caboose update"
+		}
+		c.problem("keep", fix, "%s", sandboxProblemLines(sb)[0])
+	}
+	var kept []string
+	rules := 0
+	for _, k := range sb.Keep {
+		kept = append(kept, "~/"+k.Rel)
+		rules += len(k.Rules)
+	}
+	c.ok("keep", "%s; %s", strings.Join(kept, ", "), plural(rules, "1 sync rule", fmt.Sprintf("%d sync rules", rules)))
+	for _, p := range sb.Problems {
+		c.problem("keep", edit, "%s", proposal.Printable(p))
+	}
+	for _, k := range sb.Keep {
+		if k.File && !k.Required {
+			c.note("keep", "~/%s is kept as a file, a single-file mount: a tool that saves it by writing a new file and renaming "+
+				"it over the old one fails there ('Device or resource busy'); keep its directory instead when it has one of its own", k.Rel)
+		}
+	}
+	if sb.Err == nil && !sb.Absent {
+		pending := sandboxcfg.Pending(sb.Config)
+		switch {
+		case sb.Format < sandboxcfg.Format:
+			c.note("keep", "the sandbox config is format %d, and this caboose writes %d; '%s' brings it up to date",
+				sb.Format, sandboxcfg.Format, envCommand(a.Cfg.Env, "sandbox-config update"))
+		case len(pending) > 0:
+			var what []string
+			for _, p := range pending {
+				what = append(what, p.Summary)
+			}
+			c.note("keep", "%s since the sandbox config was written (%s); '%s' offers %s",
+				plural(len(pending), "a new default", fmt.Sprintf("%d new defaults", len(pending))), strings.Join(what, "; "),
+				envCommand(a.Cfg.Env, "sandbox-config update"), plural(len(pending), "it", "them"))
+		}
+	}
+	have := a.rootNames()
+	for _, r := range sb.Roots {
+		if !slices.Contains(have, r) {
+			c.problem("roots", SetupCommand(a.Cfg.Env, "roots"),
+				"the sandbox config expects a root named %s, which this machine has not: the synced memory of its projects is never read here", r)
+		}
+	}
 }
 
 // sandboxWrites are the files in the data dir every launch writes, which
 // it refuses to write through a link, with where the sandbox sees them.
 var sandboxWrites = []struct{ rel, inside string }{
-	{".claude/CLAUDE.md", "~/.claude/CLAUDE.md"},
+	{datadir.ClaudeDir + "/CLAUDE.md", "~/.claude/CLAUDE.md"},
 	{datadir.GitConfig, "~/.config/git/config"},
 }
 
@@ -331,11 +390,6 @@ func (a *App) doctorDataDir(c *checkup) {
 				strings.Join(skipped, ", "), filepath.Join(cfg.DataDir, datadir.StartDir), plural(len(skipped), "is", "are"),
 				plural(len(skipped), "it", "them"), "~/.config/caboose/start.d/"+strings.Join(skipped, " ~/.config/caboose/start.d/"))
 		}
-	}
-	if extra := a.unconfiguredPersist(); len(extra) > 0 {
-		c.note("persist", "%s in %s %s no longer in [persist], so not mounted; %s kept, with what %s, until you delete %s",
-			strings.Join(extra, ", "), filepath.Join(cfg.DataDir, datadir.PersistRoot), plural(len(extra), "is", "are"),
-			plural(len(extra), "it is", "they are"), plural(len(extra), "it holds", "they hold"), plural(len(extra), "it", "them"))
 	}
 	// The login is only looked at: its presence, never its contents.
 	switch in, err := datadir.LoggedIn(cfg.DataDir); {
@@ -424,30 +478,10 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 		c.problem("roots", "caboose restart"+endsSessions, "the container mounts %s; the configuration says %s",
 			mountList(mounted), mountList(cfg.Roots))
 	}
-	if d := a.persistDrift(); d != "" {
-		c.problem("persist", "caboose restart"+endsSessions, "the container %s", d)
+	if d := a.keepDrift(); d != "" {
+		c.problem("keep", "caboose restart"+endsSessions, "the container %s", d)
 	}
 	return state
-}
-
-// unconfiguredPersist are the directories in the data dir's persist/ that
-// no [persist] entry names, sorted.
-func (a *App) unconfiguredPersist() []string {
-	entries, err := os.ReadDir(filepath.Join(a.Cfg.DataDir, datadir.PersistRoot))
-	if err != nil {
-		return nil
-	}
-	named := map[string]bool{}
-	for _, p := range a.Cfg.Persist {
-		named[p.Name] = true
-	}
-	var extra []string
-	for _, e := range entries {
-		if e.IsDir() && !named[e.Name()] {
-			extra = append(extra, e.Name())
-		}
-	}
-	return extra
 }
 
 // doctorInsideScript prints the container's TZ and CABOOSE_KEEP_VERSIONS,
@@ -735,8 +769,10 @@ func (a *App) doctorPending(c *checkup, p *statesync.Pending) {
 	if len(p.Export.Refused) > 0 {
 		c.note("sync", "not synced, being symlinks or hard links (never followed): %s", strings.Join(p.Export.Refused, ", "))
 	}
-	if len(p.Export.Unsynced) > 0 {
-		c.note("sync", "not synced, being outside /work: %s", strings.Join(p.Export.Unsynced, ", "))
+	if len(p.Export.Shadowed) > 0 {
+		c.note("sync", "%s never %s anything, earlier rules of %s entry taking all %s matches (first match wins): %s",
+			plural(len(p.Export.Shadowed), "a sync rule", "sync rules"), plural(len(p.Export.Shadowed), "decides", "decide"),
+			plural(len(p.Export.Shadowed), "its", "their"), plural(len(p.Export.Shadowed), "it", "they"), strings.Join(p.Export.Shadowed, ", "))
 	}
 	if !p.Any() {
 		c.ok("sync", "nothing here waiting to be sent")

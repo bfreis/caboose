@@ -300,7 +300,7 @@ func TestSetupNoIdentity(t *testing.T) {
 // A config the container made a link is refused, not written through.
 func TestSetupRefusesALinkedConfig(t *testing.T) {
 	e := newSetupEnv(t, "default", hostSigns, false)
-	if err := datadir.EnsureLayout(e.a.Cfg.DataDir); err != nil {
+	if err := e.a.prepareDataDir(); err != nil {
 		t.Fatal(err)
 	}
 	host := filepath.Join(t.TempDir(), "host-file")

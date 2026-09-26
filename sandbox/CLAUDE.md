@@ -51,21 +51,39 @@ default, or one the user chose (`CABOOSE_BASE_IMAGE`). caboose installs
 nothing into a base, so a missing tool is the image's to add, on the host —
 not something to install from in here: propose it (below).
 
-## Most of the home does not survive a restart
+## What survives a restart: ~/.config/caboose/sandbox.toml
 
-`caboose restart` recreates the container. What outlives it is what is
-mounted from the data dir: `~/.claude`, `~/.claude.json`, Claude Code in
-`~/.local`, git, jj and gh config under `~/.config`, and `~/.ssh`
-(`known_hosts` and the sandbox's own ssh `config`; keys stay on the host,
-through the forwarded agent). Anything else under the home is lost, unless
-the environment's `config.toml` names its directory in `[persist]` — a
-host-side setting: propose it (below) rather than work around it from in
-here. `mount` in here, or `caboose status` on the host, shows what is kept.
+`caboose restart` recreates the container. What outlives it is Claude Code
+in `~/.local`, and whatever the **sandbox config**,
+`~/.config/caboose/sandbox.toml`, keeps: by default `~/.claude`,
+`~/.claude.json`, `~/.config/caboose`, git, jj and gh config under
+`~/.config`, and `~/.ssh` (`known_hosts` and ssh's config; keys stay on the
+host, through the forwarded agent). Anything else under the home is lost.
+`mount` in here, or `caboose status` on the host, shows what is kept.
+
+The sandbox config is yours to edit when asked, with no proposal: what it
+keeps lives in caboose's data dir on the host, never at a host path, so it
+reaches nothing more. It also says what of that `caboose sync` carries to
+the user's other machines, and it syncs itself, so a change reaches them
+too. The file explains its own fields. To keep a tool's settings, add
+
+```toml
+[[keep]]
+path = "~/.foo"          # directly in ~, ~/.config, ~/.local, ~/.local/share or ~/.cache
+sync = true              # only if asked to sync it too
+```
+
+Then read `~/.caboose-proposals/current/sandbox-config.txt`: when it exists,
+it lists what is wrong with the file, as of the host's last launch, which
+also rewrites it. A new `[[keep]]` entry takes effect at the next
+`caboose restart` on the host, and starts empty: say so, and configure the
+tool only after it. Never sync anything that holds a token.
 
 ## Start-up scripts and shell config: ~/.config/caboose
 
-Two directories there survive restarts and are yours to write when asked,
-with no proposal: they run as this user, in here, and reach nothing more.
+Two directories there are also yours to write when asked: they run as this
+user, in here, and reach nothing more. They sync to the user's other
+machines, with the rest of `~/.config/caboose`.
 
 - `start.d/`: executables run once at container start, one at a time in
   name order (`10-foo` before `20-bar`), in `~`; a daemon is started in the
@@ -84,15 +102,14 @@ Say what you wrote, and that a `start.d` script runs at the next start
 
 Nothing in here can change the image, `config.toml` or the roots: they
 decide what the sandbox is and what of the host it reaches. When asked to
-install a tool for good, keep a tool's settings across restarts, or mount
-another host directory, write a **proposal**; the user reviews it on the
-host with `caboose apply`, which applies it only once they say yes.
+install a tool for good, or mount another host directory, write a
+**proposal**; the user reviews it on the host with `caboose apply`, which
+applies it only once they say yes.
 
 First read `~/.caboose-proposals/current/`: `state.toml` (where the
-Dockerfile comes from, its hash, the roots and `[persist]` entries there
-are now) and `Dockerfile` (the one the next build uses). Then write
-`~/.caboose-proposals/NAME.toml` (NAME: lowercase letters, digits, `-`,
-`_`), with any of the three parts:
+Dockerfile comes from, its hash, the roots there are now) and `Dockerfile`
+(the one the next build uses). Then write `~/.caboose-proposals/NAME.toml`
+(NAME: lowercase letters, digits, `-`, `_`), with either part or both:
 
 ```toml
 title = "Install foo"                  # one line
@@ -106,9 +123,6 @@ body = '''
 ARG FOO_VERSION=2.3.0
 RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
 '''
-
-[persist]                              # directories of the home to keep
-foo = "~/.config/foo"                  # directly in ~, ~/.config, ~/.local, ~/.local/share or ~/.cache
 
 [roots]                                # one host directory to mount, at /work/NAME
 other = "~/src/other"
@@ -125,8 +139,8 @@ other = "~/src/other"
 - Then tell the user to run `caboose apply` in a host terminal (with the
   same `-e ENV` as this session's, if it has one). It rebuilds the image
   and offers `caboose restart`, which ends this session: nothing proposed
-  is in effect before that, and a directory proposed for `[persist]` starts
-  empty, so configure the tool only after the restart.
+  is in effect before that. A tool installed this way whose settings
+  should last needs a `[[keep]]` entry too (above), in the same restart.
 - No `~/.caboose-proposals` means the container is older than proposals:
   `caboose restart` on the host creates it again with one.
 

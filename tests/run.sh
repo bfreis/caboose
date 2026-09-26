@@ -33,14 +33,16 @@ read_paths() {
     IMAGE="$(printf '%s\n' "$status_now" | sed -n 's/^image *: //p')"
     DATA_DIR="${DATA_DIR:-${CABOOSE_DATA_DIR:-$HOME/.caboose/envs/default/data}}"
     CONTAINER="${CONTAINER:-${CABOOSE_CONTAINER:-caboose}}"
-    # The dir the container has mounted as ~/.local: dot_local/<platform>.
+    # The dir the container has mounted as ~/.local: local/<platform>.
     LOCAL_DIR="$(printf '%s\n' "$status_now" | sed -n 's/^local dir *: //p')"
-    LOCAL_DIR="${LOCAL_DIR:-$DATA_DIR/dot_local}"
+    LOCAL_DIR="${LOCAL_DIR:-$DATA_DIR/local}"
     VERSIONS="$LOCAL_DIR/share/claude/versions"
     BIN="$LOCAL_DIR/bin"
-    GIT_CFG="$DATA_DIR/dot_config/git/config"
-    JJ_CFG="$DATA_DIR/dot_config/jj/config.toml"
-    GH_DIR="$DATA_DIR/dot_config/gh"
+    # What the sandbox keeps of its home, at its path under ~.
+    HOME_DIR="$DATA_DIR/home"
+    GIT_CFG="$HOME_DIR/.config/git/config"
+    JJ_CFG="$HOME_DIR/.config/jj/config.toml"
+    GH_DIR="$HOME_DIR/.config/gh"
 }
 read_paths
 
@@ -90,8 +92,8 @@ cleanup_config_probes() {
         rm -f "$JJ_CFG.bak"
     fi
     rm -f "$GH_DIR/caboose-test-probe"
-    rm -f "$DATA_DIR"/dot_config/caboose/start.d/caboose-test-* \
-          "$DATA_DIR"/dot_config/caboose/shell.d/caboose-test.*
+    rm -f "$DATA_DIR"/home/.config/caboose/start.d/caboose-test-* \
+          "$DATA_DIR"/home/.config/caboose/shell.d/caboose-test.*
     return 0
 }
 
@@ -116,7 +118,7 @@ group 'sandbox instructions'
 # The launcher -- not the entrypoint, and not a bind mount -- installs the
 # tracked CLAUDE.md, substituting the one placeholder in it. A stale copy or a
 # surviving @@...@@ both point the agent at a path that does not exist.
-installed="$DATA_DIR/.claude/CLAUDE.md"
+installed="$HOME_DIR/.claude/CLAUDE.md"
 check 'the tracked CLAUDE.md was installed' 0 "$(exists "$installed")"
 check 'the placeholder was substituted' 0 \
     "$(grep -c '@@CABOOSE_DIR@@' "$installed" 2>/dev/null || true)"
@@ -237,8 +239,8 @@ group 'start.d and shell.d'
 # scripts that must run one after the other at the restart below, in name
 # order, and a shell.d pair that every bash must read, the .sh before the
 # .bash. Checked after that restart, in this group's second half.
-START_D="$DATA_DIR/dot_config/caboose/start.d"
-SHELL_D="$DATA_DIR/dot_config/caboose/shell.d"
+START_D="$HOME_DIR/.config/caboose/start.d"
+SHELL_D="$HOME_DIR/.config/caboose/shell.d"
 mkdir -p "$START_D" "$SHELL_D"
 printf '#!/bin/sh\nsleep 1; echo one >> /tmp/caboose-test-start\n' > "$START_D/caboose-test-1"
 printf '#!/bin/sh\necho two >> /tmp/caboose-test-start\n' > "$START_D/caboose-test-2"
@@ -248,16 +250,16 @@ printf 'caboose_test_shelld=sh\n' > "$SHELL_D/caboose-test.sh"
 printf 'caboose_test_shelld="$caboose_test_shelld bash"\n' > "$SHELL_D/caboose-test.bash"
 
 group 'stale runtime state'
-mkdir -p "$DATA_DIR/.claude/sessions" "$DATA_DIR/.claude/daemon"
-echo '{"pid":99999}' > "$DATA_DIR/.claude/daemon.lock"
-echo '{"pid":99999}' > "$DATA_DIR/.claude/sessions/99999.json"
-echo 'k'             > "$DATA_DIR/.claude/sessions/99999.abc.key"
-echo '{}'            > "$DATA_DIR/.claude/daemon/roster.json"
+mkdir -p "$HOME_DIR/.claude/sessions" "$HOME_DIR/.claude/daemon"
+echo '{"pid":99999}' > "$HOME_DIR/.claude/daemon.lock"
+echo '{"pid":99999}' > "$HOME_DIR/.claude/sessions/99999.json"
+echo 'k'             > "$HOME_DIR/.claude/sessions/99999.abc.key"
+echo '{}'            > "$HOME_DIR/.claude/daemon/roster.json"
 "$CC" restart >/dev/null 2>&1
 check 'PID-keyed session files cleared on restart' "" \
-    "$(ls -1 "$DATA_DIR/.claude/sessions" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
-check 'stale daemon.lock cleared' 1 "$(exists "$DATA_DIR/.claude/daemon.lock")"
-check 'stale roster.json cleared'  1 "$(exists "$DATA_DIR/.claude/daemon/roster.json")"
+    "$(ls -1 "$HOME_DIR/.claude/sessions" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+check 'stale daemon.lock cleared' 1 "$(exists "$HOME_DIR/.claude/daemon.lock")"
+check 'stale roster.json cleared'  1 "$(exists "$HOME_DIR/.claude/daemon/roster.json")"
 
 group 'start.d and shell.d, after the restart'
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -288,7 +290,7 @@ check '~/.config/gh survived the restart' 0 \
 if [ "$fail" -ne "$probes_before" ]; then
     # Tells a probe lost on the host from one the container cannot see.
     printf '        host side:\n'
-    ls -la "$DATA_DIR/dot_config" "$GH_DIR" 2>&1 | sed 's/^/          /'
+    ls -la "$HOME_DIR/.config" "$GH_DIR" 2>&1 | sed 's/^/          /'
     grep -H caboose-test "$GIT_CFG" "$JJ_CFG" 2>&1 | sed 's/^/          /'
     printf '        container side:\n'
     docker exec "$CONTAINER" sh -c 'ls -la "$HOME/.config" "$HOME/.config/gh"; \
@@ -444,7 +446,7 @@ group 'git identity'
 # dir; logs is used because it reaches ensureRunning without touching the
 # container, which bring-up has already started.
 seed_tmp1="$(mktemp -d)"
-seed_cfg=dot_config/git/config
+seed_cfg=home/.config/git/config
 
 # The host's global git config is a throwaway one, not yours, with an
 # identity and SSH signing that a launch has to leave where they are.
@@ -732,11 +734,11 @@ fi
 # Where Claude Code keeps its login is its own choice: doctor (and setup)
 # look for .claude/.credentials.json. The suite's sandbox is logged in, so
 # the file has to be there, and doctor has to say so.
-if [ -s "$DATA_DIR/.claude/.credentials.json" ]; then
-    check 'doctor finds the login where Claude Code keeps it' "Claude, in $DATA_DIR/.claude/.credentials.json" "$(doc_row login)"
+if [ -s "$HOME_DIR/.claude/.credentials.json" ]; then
+    check 'doctor finds the login where Claude Code keeps it' "Claude, in $HOME_DIR/.claude/.credentials.json" "$(doc_row login)"
 else
     printf '  \033[33mNOTE\033[0m no %s: log in to Claude in the sandbox, or Claude Code keeps its login elsewhere now\n' \
-        "$DATA_DIR/.claude/.credentials.json"
+        "$HOME_DIR/.claude/.credentials.json"
     check 'doctor says there is no login' 1 "$(doc_row login | grep -c '^note: not logged in')"
 fi
 check 'doctor changed nothing' "$id_before" "$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER")"

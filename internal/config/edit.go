@@ -21,10 +21,6 @@ type Edit struct {
 	// comments it out when Roots is nil.
 	SetRoots bool
 	Roots    map[string]string
-	// SetPersist replaces the [persist] table with Persist (name -> ~/dir),
-	// or comments it out when Persist is nil.
-	SetPersist bool
-	Persist    map[string]string
 }
 
 // EditFile applies e to a config.toml's contents, line by line, as a person
@@ -33,9 +29,8 @@ type Edit struct {
 // failing that, the key is added. A top-level key has to stay above the
 // first table, or TOML reads it as the table's, so that is where one is
 // added, and a commented line below a table is never the one uncommented.
-// The [roots] and [persist] tables are rewritten in place, keeping any
-// comment lines in them, or added at the end; removed, their lines are
-// commented out.
+// The [roots] table is rewritten in place, keeping any comment lines in
+// it, or added at the end; removed, its lines are commented out.
 //
 // Line-based editing cannot follow every TOML construct (a multi-line
 // string, say), so the result is to be checked with CheckEdit before it is
@@ -77,16 +72,14 @@ func EditFile(data []byte, e Edit) []byte {
 	if e.SetRoots {
 		lines = editTable(lines, rootsKey, e.Roots)
 	}
-	if e.SetPersist {
-		lines = editTable(lines, persistKey, e.Persist)
-	}
 	if len(lines) == 0 {
 		return nil
 	}
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
-// editTable rewrites the table key, [roots] or [persist], in lines.
+// editTable rewrites the table key ([roots]) in lines; a nil table comments
+// it out.
 func editTable(lines []string, key string, table map[string]string) []string {
 	start := -1
 	for i, l := range lines {
@@ -135,13 +128,19 @@ func editTable(lines []string, key string, table map[string]string) []string {
 
 // CheckEdit reports whether edited, config.toml as EditFile made it, reads
 // back as e meant: it parses, every key set has its value, every key unset
-// is gone, and the roots and persisted directories are e's.
+// is gone, and the roots are e's.
 func CheckEdit(path string, edited []byte, e Edit) error {
 	f, err := ParseFile(path, edited)
 	if err != nil {
 		return err
 	}
 	for k, v := range e.Set {
+		if k == formatKey {
+			if fmt.Sprint(f.Format) != fmt.Sprint(v) {
+				return fmt.Errorf("format reads back as %d, not %v", f.Format, v)
+			}
+			continue
+		}
 		want := fmt.Sprint(v)
 		switch v {
 		case true:
@@ -161,16 +160,6 @@ func CheckEdit(path string, edited []byte, e Edit) error {
 	if e.SetRoots && !maps.Equal(f.Roots, e.Roots) {
 		return fmt.Errorf("[roots] reads back as %v, not %v", f.Roots, e.Roots)
 	}
-	if e.SetPersist {
-		got := map[string]string{}
-		for _, p := range f.Persist {
-			got[p.Name] = p.Path
-		}
-		if len(e.Persist) == 0 && len(got) == 0 || maps.Equal(got, e.Persist) {
-			return nil
-		}
-		return fmt.Errorf("[persist] reads back as %v, not %v", got, e.Persist)
-	}
 	return nil
 }
 
@@ -188,7 +177,7 @@ func (e Edit) Snippet() string {
 		set   bool
 		key   string
 		table map[string]string
-	}{{e.SetRoots, rootsKey, e.Roots}, {e.SetPersist, persistKey, e.Persist}} {
+	}{{e.SetRoots, rootsKey, e.Roots}} {
 		switch {
 		case !t.set:
 		case t.table == nil:
@@ -224,8 +213,8 @@ func findLine(lines []string, re *regexp.Regexp) int {
 	return -1
 }
 
-// tomlValue writes v, a string or a bool, as TOML: a string as a basic
-// string, with \, " and control characters escaped.
+// tomlValue writes v, a string, a bool or a whole number, as TOML: a
+// string as a basic string, with \, " and control characters escaped.
 func tomlValue(v any) string {
 	s, ok := v.(string)
 	if !ok {

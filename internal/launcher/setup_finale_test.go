@@ -150,6 +150,6 @@ func TestSetupLogin(t *testing.T) {
 		if err := e.finale(e.a.setupLogin, ""); err != nil {
 			t.Fatal(err)
 		}
-		e.wantOut("! Cannot tell whether there is a login: .claude/.credentials.json is not a plain file")
+		e.wantOut("! Cannot tell whether there is a login: ~/.claude/.credentials.json is not a plain file")
 	})
 }

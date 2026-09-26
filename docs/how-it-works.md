@@ -7,7 +7,7 @@ session inside the single container, so closing the terminal detaches instead
 of killing the work, and background agents keep running.
 
 **Claude Code is not in the image.** It installs on first run into
-`~/.local` — bind-mounted from the data dir's `dot_local/<platform>`, one
+`~/.local` — bind-mounted from the data dir's `local/<platform>`, one
 per libc and arch — so it updates itself in place and survives image
 rebuilds. The container itself holds no state: everything persistent is
 bind-mounted out of the [data dir](#persistent-state-lives-outside-the-checkout),
@@ -33,19 +33,12 @@ sandbox's own git, jj, gh and ssh config — lives in the environment's data dir
 
 | on the host | in the container |
 |---|---|
-| `<data>/.claude` | `~/.claude` |
-| `<data>/.claude.json` | `~/.claude.json` |
-| `<data>/dot_local/<platform>/bin` | `~/.local/bin` |
-| `<data>/dot_local/<platform>/share/claude` | `~/.local/share/claude` |
-| `<data>/dot_local/<platform>/cache/claude` | `~/.cache/claude` (update staging) |
-| `<data>/dot_config/git` | `~/.config/git` (git's global config) |
-| `<data>/dot_config/jj` | `~/.config/jj` (jj's user config) |
-| `<data>/dot_config/gh` | `~/.config/gh` (gh's config and token; `0700`) |
-| `<data>/dot_ssh` | `~/.ssh` (`known_hosts` and the sandbox's own ssh `config`; `0700`) |
-| `<data>/persist/<name>` | each directory [`[persist]`](#keeping-more-of-the-home) names (`0700` when new) |
+| `<data>/home/<path>` | `~/<path>`, for each directory (or file) the [sandbox config](sandbox-config.md) keeps: by default `~/.claude`, `~/.claude.json`, `~/.config/caboose`, `~/.config/git`, `~/.config/jj`, `~/.config/gh` and `~/.ssh` (each `0700` when new) |
+| `<data>/local/<platform>/bin` | `~/.local/bin` |
+| `<data>/local/<platform>/share/claude` | `~/.local/share/claude` |
+| `<data>/local/<platform>/cache/claude` | `~/.cache/claude` (update staging) |
 | `<data>/sync` | `~/.caboose-sync` ([`caboose sync`](sync.md)'s git repo) |
 | `<data>/proposals` | `~/.caboose-proposals` (sessions' [proposals](proposals.md) for `caboose apply`) |
-| `<data>/dot_config/caboose` | `~/.config/caboose` (your [`start.d` and `shell.d`](startup.md)) |
 
 Deleting the container loses nothing; deleting this directory is a fresh
 install, login included.
@@ -62,7 +55,7 @@ as `~/.gitconfig` and `~/.jjconfig.toml` files. These tools save by writing a
 temp file and renaming it over the original, and a rename onto a single-file
 bind mount fails with `EBUSY`.
 
-`<data>/dot_config/git/config` starts empty; `caboose setup git` fills in
+`<data>/home/.config/git/config` starts empty; `caboose setup git` fills in
 the identity and signing (see [Setup](configuration.md#git-identity-and-commit-signing)).
 Only those: copying the host's config wholesale would drag in an
 osxkeychain credential helper and `includeIf` paths that do not exist in
@@ -80,35 +73,20 @@ notes a private key it finds there.
 ### Keeping more of the home
 
 Anything else a tool keeps under the container's home is lost when the
-container is recreated. To keep a directory, name it in the environment's
-`config.toml`:
+container is recreated. To keep a directory, add it to the
+[sandbox config](sandbox-config.md), `~/.config/caboose/sandbox.toml`:
 
 ```toml
-[persist]
-aws = "~/.aws"
-foo = "~/.config/foo"
+[[keep]]
+path = "~/.aws"
 ```
 
-Each entry is kept in `<data>/persist/<name>` and bind-mounted back at its
-path when the container is created, so a change needs `caboose restart`
-(a launch, `caboose status` and `caboose doctor` say when the container
-differs). What is kept lives in the data dir, never at the host's own
-`~/.aws`: the sandbox reaches no more of the host than it did, and the
-host's files do not become the sandbox's. For a directory shared with the
-host, use a [root](configuration.md#the-repo-root). A session can also
-[propose](proposals.md) an entry, which `caboose apply` adds.
+It is kept in `<data>/home/.aws` and bind-mounted back when the container
+is created, so a change needs `caboose restart`. The sandbox config is the
+sandbox's own: a session may add an entry itself, no proposal needed, since
+what is kept lives in the data dir, never at the host's own `~/.aws`.
 
-An entry is a directory written `~/<dir>`, directly in `~`, `~/.config`,
-`~/.local`, `~/.local/share` or `~/.cache`: Docker creates a mount's
-missing parent directories as root, which would leave the tool unable to
-write next to it. It may not be, hold or sit inside one of caboose's own
-mounts (`~/.claude`, `~/.config/git`, `~/.ssh`, ...), nor `~/.local/state`,
-which is cleared on purpose. The name is the directory's in the data dir,
-so renaming one starts it empty; a directory no entry names any more is
-left in `persist/`, with what it holds, and `caboose doctor` says so.
-[`caboose sync`](sync.md) does not carry these.
-
-The launcher also installs a global `CLAUDE.md` into `<data>/.claude/` on
+The launcher also installs a global `CLAUDE.md` into `<data>/home/.claude/` on
 every launch, telling every session in the sandbox what it is running in. It
 comes from `sandbox/CLAUDE.md` — the checkout's copy when the launcher runs
 from one, else the copy embedded in the binary — with where the roots are

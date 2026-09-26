@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
 func inode(t *testing.T, p string) uint64 {
@@ -58,22 +59,34 @@ func TestWriteInPlaceKeepsInode(t *testing.T) {
 	}
 }
 
+// defKeep are the default sandbox config's keep entries.
+func defKeep() []sandboxcfg.Keep {
+	c, err := sandboxcfg.Parse(sandboxcfg.Default(nil))
+	if err != nil {
+		panic(err)
+	}
+	return c.Keep
+}
+
 func TestEnsureLayout(t *testing.T) {
 	dir := t.TempDir()
-	keep := filepath.Join(dir, ".claude.json")
+	keep := filepath.Join(dir, ClaudeJSON)
+	if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(keep, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ino := inode(t, keep)
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range Dirs {
+	for _, d := range append([]string{HomeDir, ClaudeDir, CabooseConfig, SSHDir, Home(".config/gh"), Home(".config/jj")}, Machinery...) {
 		if fi, err := os.Stat(filepath.Join(dir, d)); err != nil || !fi.IsDir() {
 			t.Errorf("%s is not a directory", d)
 		}
 	}
-	for _, f := range append(append([]string(nil), Files...), Created...) {
+	for _, f := range []string{ClaudeJSON, GitConfig} {
 		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || !fi.Mode().IsRegular() {
 			t.Errorf("%s is not a regular file", f)
 		}
@@ -81,22 +94,29 @@ func TestEnsureLayout(t *testing.T) {
 	if read(t, keep) != "{}\n" || inode(t, keep) != ino {
 		t.Error("an existing file was replaced or truncated")
 	}
-	// The configs tools rewrite must be reachable through directory mounts;
-	// a single-file mount of them is what broke `gh auth login`.
-	for _, f := range Files {
-		if strings.Contains(f, "gitconfig") || strings.Contains(f, "jjconfig") || strings.HasPrefix(f, "dot_config/") {
-			t.Errorf("%s is a single-file mount; tools save it by rename, which a file mount refuses", f)
-		}
-	}
 	for _, f := range []string{".gitconfig", ".jjconfig.toml"} {
-		if _, err := os.Lstat(filepath.Join(dir, f)); err == nil {
-			t.Errorf("%s was created; git and jj config live under dot_config", f)
+		if _, err := os.Lstat(filepath.Join(dir, HomeDir, f)); err == nil {
+			t.Errorf("%s was created; git and jj config live under ~/.config", f)
 		}
 	}
 	// No git config means git would write ~/.gitconfig instead, outside
 	// every mount. jj creates its own, so an empty one is not planted.
 	if _, err := os.Stat(filepath.Join(dir, JJConfig)); err == nil {
 		t.Error("an empty jj config.toml was created")
+	}
+	// A user's entries, a file one included.
+	c, err := sandboxcfg.Parse([]byte("[[keep]]\npath = \"~/.cargo\"\n[[keep]]\npath = \"~/.npmrc\"\nfile = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureLayout(dir, c.Keep); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, Home(".cargo"))); err != nil || !fi.IsDir() {
+		t.Errorf("~/.cargo: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, Home(".npmrc"))); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+		t.Errorf("~/.npmrc: %v", err)
 	}
 }
 
@@ -106,10 +126,10 @@ func TestEnsureLayout(t *testing.T) {
 // even if it does not parse.
 func TestEnsureLayoutSeedsClaudeJSON(t *testing.T) {
 	dir := t.TempDir()
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(dir, ".claude.json")
+	p := filepath.Join(dir, ClaudeJSON)
 	if got := read(t, p); got != "{}\n" {
 		t.Errorf("new .claude.json = %q, want %q", got, "{}\n")
 	}
@@ -118,7 +138,7 @@ func TestEnsureLayoutSeedsClaudeJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	ino := inode(t, p)
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, p); got != "{}\n" {
@@ -131,7 +151,7 @@ func TestEnsureLayoutSeedsClaudeJSON(t *testing.T) {
 	if err := os.WriteFile(p, []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, p); got != "{" {
@@ -139,26 +159,28 @@ func TestEnsureLayoutSeedsClaudeJSON(t *testing.T) {
 	}
 }
 
-func TestGhDirIsPrivate(t *testing.T) {
+// Every kept directory is created 0700, like every place a tool may keep a
+// token (gh's is in ~/.config/gh); one that exists is left alone.
+func TestKeptDirsArePrivate(t *testing.T) {
 	old := syscall.Umask(0o002)
 	defer syscall.Umask(old)
 	dir := t.TempDir()
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	gh := filepath.Join(dir, PrivateDir)
-	if m := perm(t, gh); m != 0o700 {
-		t.Errorf("%s: mode %v, want 0700", PrivateDir, m)
+	for _, k := range defKeep() {
+		if k.File {
+			continue
+		}
+		if m := perm(t, filepath.Join(dir, HomeDir, k.Rel)); m != 0o700 {
+			t.Errorf("%s: mode %v, want 0700", k.Rel, m)
+		}
 	}
-	// Its parent is an ordinary dir, not collateral 0700.
-	if m := perm(t, filepath.Dir(gh)); m != 0o775 {
-		t.Errorf("dot_config: mode %v, want 0775", m)
-	}
-	// An existing one is left alone, like everything else here.
+	gh := filepath.Join(dir, Home(".config/gh"))
 	if err := os.Chmod(gh, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	if m := perm(t, gh); m != 0o750 {
@@ -202,7 +224,7 @@ func TestInstallInstructions(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	dst := filepath.Join(dir, ".claude", "CLAUDE.md")
+	dst := filepath.Join(dir, ClaudeDir, "CLAUDE.md")
 	if got, want := read(t, dst), "see /work/a|b&c and /work/a|b&c/x | & \\1 in `/r` at `/work`\n"; got != want {
 		t.Errorf("installed %q, want %q", got, want)
 	}
@@ -380,7 +402,7 @@ func TestWriteSandboxGitRealGit(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	dir := t.TempDir()
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	err := WriteSandboxGit(dir, g, []Change{
@@ -413,7 +435,7 @@ func TestRealGitUsesXDGConfig(t *testing.T) {
 		t.Skip("no git on PATH")
 	}
 	data := t.TempDir()
-	if err := EnsureLayout(data); err != nil {
+	if err := EnsureLayout(data, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
@@ -421,7 +443,7 @@ func TestRealGitUsesXDGConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Stands in for the directory bind mount.
-	if err := os.Symlink(filepath.Join(data, "dot_config/git"), filepath.Join(home, ".config/git")); err != nil {
+	if err := os.Symlink(filepath.Join(data, Home(".config/git")), filepath.Join(home, ".config/git")); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -445,7 +467,7 @@ func TestRealGitUsesXDGConfig(t *testing.T) {
 // existing file for writing, and neither may EnsureLayout.
 func TestEnsureLayoutReadOnlyFiles(t *testing.T) {
 	dir := t.TempDir()
-	files := append(append([]string(nil), Files...), Created...)
+	files := []string{ClaudeJSON, GitConfig}
 	for _, f := range files {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o777); err != nil {
 			t.Fatal(err)
@@ -454,7 +476,7 @@ func TestEnsureLayoutReadOnlyFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatalf("EnsureLayout: %v", err)
 	}
 	for _, f := range files {
@@ -485,7 +507,7 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 	old := syscall.Umask(0o002)
 	defer syscall.Umask(old)
 	dir := filepath.Join(t.TempDir(), "data")
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	if err := WriteSandboxGit(dir, &fakeGit{}, []Change{{Key: "user.name", Value: "Me"}}); err != nil {
@@ -494,15 +516,17 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 	if _, err := InstallInstructions([]byte("x"), "", []config.Root{{Host: "/r", Container: "/work"}}, dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range append([]string{".", "dot_config"}, Dirs...) {
-		if isPrivate(d) {
-			continue // 0700 regardless; see TestGhDirIsPrivate
-		}
+	for _, d := range append([]string{"."}, Machinery...) {
 		if m := perm(t, filepath.Join(dir, d)); m != 0o775 {
 			t.Errorf("%s: mode %v, want 0775", d, m)
 		}
 	}
-	for _, f := range append(append([]string{".claude/CLAUDE.md"}, Files...), Created...) {
+	for _, d := range []string{HomeDir, ClaudeDir, Home(".config")} {
+		if m := perm(t, filepath.Join(dir, d)); m != 0o700 {
+			t.Errorf("%s: mode %v, want 0700", d, m)
+		}
+	}
+	for _, f := range []string{ClaudeDir + "/CLAUDE.md", ClaudeJSON, GitConfig} {
 		if m := perm(t, filepath.Join(dir, f)); m != 0o664 {
 			t.Errorf("%s: mode %v, want 0664", f, m)
 		}
@@ -585,10 +609,10 @@ func TestLoggedIn(t *testing.T) {
 	}
 	// Reached through a link, or a link itself: not a login.
 	other := t.TempDir()
-	if err := os.Rename(filepath.Join(dir, ".claude"), filepath.Join(other, ".claude")); err != nil {
+	if err := os.Rename(filepath.Join(dir, ClaudeDir), filepath.Join(other, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(other, ".claude"), filepath.Join(dir, ".claude")); err != nil {
+	if err := os.Symlink(filepath.Join(other, ".claude"), filepath.Join(dir, ClaudeDir)); err != nil {
 		t.Fatal(err)
 	}
 	if in, err := LoggedIn(dir); in || err == nil {
@@ -602,41 +626,11 @@ func TestSSHDirIsPrivate(t *testing.T) {
 	old := syscall.Umask(0o002)
 	defer syscall.Umask(old)
 	dir := t.TempDir()
-	if err := EnsureLayout(dir); err != nil {
+	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
 	if m := perm(t, filepath.Join(dir, SSHDir)); m != 0o700 {
 		t.Errorf("%s: mode %v, want 0700", SSHDir, m)
-	}
-}
-
-func TestEnsurePersist(t *testing.T) {
-	old := syscall.Umask(0o002)
-	defer syscall.Umask(old)
-	dir := t.TempDir()
-	aws, _ := config.ParsePersist("aws", "~/.aws")
-	foo, _ := config.ParsePersist("foo", "~/.config/foo")
-	if err := os.MkdirAll(filepath.Join(dir, PersistDir("foo")), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, PersistDir("foo"), "keep"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsurePersist(dir, []config.Persist{aws, foo}); err != nil {
-		t.Fatal(err)
-	}
-	if m := perm(t, filepath.Join(dir, PersistDir("aws"))); m != 0o700 {
-		t.Errorf("new: mode %v, want 0700", m)
-	}
-	// One that exists keeps its mode and what it holds.
-	if m := perm(t, filepath.Join(dir, PersistDir("foo"))); m != 0o755 {
-		t.Errorf("existing: mode %v, want it left at 0755", m)
-	}
-	if read(t, filepath.Join(dir, PersistDir("foo"), "keep")) != "x" {
-		t.Error("an existing entry's contents changed")
-	}
-	if err := EnsurePersist(t.TempDir(), nil); err != nil {
-		t.Errorf("no entries: %v", err)
 	}
 }
 

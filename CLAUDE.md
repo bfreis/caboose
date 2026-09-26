@@ -57,14 +57,14 @@ is in use, after the image check passes on it. On `CABOOSE_BASE_IMAGE` the
 `Dockerfile`'s hash plays no part; the base's image ID does. The layer is
 also labelled with the kind of base, its name and ID, the host UID/GID and
 the platform the check found (`linux-arm64-musl`, ...), which picks the
-`dot_local/<platform>` a new container mounts; `USE_BUILTIN_RIPGREP=0` is
+`local/<platform>` a new container mounts; `USE_BUILTIN_RIPGREP=0` is
 set at `docker run` on musl. Labels are inherited through `FROM`, and a
 user's base may be built from a caboose image, so the layer sets every
 label in `assets.LayerLabels`, `""` where one does not apply, and the
 launcher reads empty as unset: a new label goes in that list.
 
 `sandbox/CLAUDE.md` is the exception: a launcher run from a checkout copies
-it into the data dir's `.claude/CLAUDE.md` on every start, so the next session
+it into the data dir's `home/.claude/CLAUDE.md` on every start, so the next session
 picks it up with no rebuild and no restart. An installed binary uses the copy
 embedded in it instead.
 
@@ -83,8 +83,9 @@ embedded in it instead.
 | `cmd/caboose`, `internal/` | the host launcher, in Go: subcommands and their help, from one table (`cmd/caboose/args.go`; nothing reaches claude but through `caboose claude`), environments and `config.toml` (`internal/config`), container lifecycle, bind mounts, SSH agent forwarding, repo roots at fixed `/work` paths, tmux attach, `caboose build` |
 | `internal/shelltest` | the POSIX shells the tests run the shell scripts with: `/bin/sh` and whichever others the machine has, but never a BusyBox that runs its own applets before `PATH` (Debian's and Ubuntu's), which would bypass the tests' stub tools |
 | `internal/proposal` | what a session proposes for `caboose apply` (`internal/launcher/apply.go`): the TOML format, its checks (an allowlist of parts, no control or bidi characters), reading through `nofollow` from the data dir's `proposals/` (mounted at `~/.caboose-proposals`), and `current/`, what the host tells sessions a proposal is made against |
-| `internal/nofollow` | file access under a directory the container can also write (the data dir's `.claude`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
-| `internal/statesync` | `caboose sync`: the allowlist, which project keys sync (those under `/work`), JSON merge by key, and the export/merge/apply cycle in the data dir's `sync/`; files are handled on the host, git runs in the container (`docker exec`, repo mounted at `~/.caboose-sync`); tested against real git |
+| `internal/sandboxcfg` | the sandbox config, `~/.config/caboose/sandbox.toml`: `[[keep]]` entries (what of the home is kept, and mounted) and their sync rules (globs, first match wins, excludes, merge drivers), checked entry by entry; its defaults, format and line-based edits (`caboose sync add/rm`) |
+| `internal/nofollow` | file access under a directory the container can also write (the data dir's `home/`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
+| `internal/statesync` | `caboose sync`: the sandbox config's rules applied to the data dir's `home/` and to what a remote sends, JSON merge by key, and the export/merge/apply cycle in the data dir's `sync/`; files are handled on the host, git runs in the container (`docker exec`, repo mounted at `~/.caboose-sync`); tested against real git |
 | `embed.go` | the `//go:embed` list: the files the launcher carries with it and builds the image from |
 | `Makefile` | the maintenance entry points; also builds `./caboose` (gitignored) |
 | `internal/version` | the launcher's version, commit and date: ldflags when stamped (make, goreleaser), else what the Go toolchain recorded, else `dev` |
@@ -106,7 +107,7 @@ outside the repo.
 
 - **Claude Code is not in the image.** It installs into `~/.local`
   (`bin` and `share/claude`, plus `~/.cache/claude`, bind-mounted from
-  the data dir's `dot_local/<platform>/{bin,share/claude,cache/claude}`) so it
+  the data dir's `local/<platform>/{bin,share/claude,cache/claude}`) so it
   updates itself in place. Do not reintroduce `npm install -g
   @anthropic-ai/claude-code` — a root-owned install would force
   `DISABLE_AUTOUPDATER=1`. The split by platform is because a build only
@@ -147,10 +148,11 @@ outside the repo.
   and a rename onto a single-file bind mount fails with `EBUSY` ("could
   not write config file /home/agent/.gitconfig: Device or resource busy"
   from `gh auth login`, and `git config --global` broken with it). They
-  live under `dot_config/` at their XDG paths, and `~/.ssh` is the
-  whole of `dot_ssh`. Keep `~/.gitconfig` from ever existing
-  in the image, too: git writes `~/.config/git/config` only while it is
-  absent. `.claude.json` is the one remaining file mount.
+  are kept at their XDG paths (`~/.config/git`, ...), each a directory
+  `[[keep]]` entry. Keep `~/.gitconfig` from ever existing in the image,
+  too: git writes `~/.config/git/config` only while it is absent.
+  `.claude.json` is a file entry caboose itself needs; a user's file entry
+  is allowed, and doctor notes the risk.
 - **The image's build contexts are an allowlist.** `caboose build` writes the
   embedded files to empty temp dirs (one per context) and builds there,
   never from the checkout, so nothing unlisted can drift into a context. A
@@ -160,12 +162,18 @@ outside the repo.
   `EMBEDDED` in the `Makefile` so edits to it rebuild the launcher.
   Forgetting the first two fails loudly — in `go test` and at build time —
   which is the point.
-- **What `caboose sync` syncs is an allowlist, and a remote is untrusted.**
-  Adding a synced path means `LiveTarget` and `ExportLive` in
-  `internal/statesync` (and the table in `docs/sync.md`); anything not there is
-  never exported, and a path a remote sends that `LiveTarget` refuses is
-  never written — nor deleted from the repo, since a newer caboose may sync
-  it. It still sits in the sync repo, where git obeys a `.gitattributes`
+- **What `caboose sync` syncs is the sandbox config's rules, and a remote
+  is untrusted.** Syncing a new path is a rule in the sandbox config, never
+  code; what code decides is `sandboxcfg.Denied` (the login, whatever a
+  rule says), the merge drivers, and the secret scan. A file no rule on
+  this machine names is never exported, and a path a remote sends that
+  `LiveTarget` refuses is never written — nor deleted from the repo, since
+  another machine's rules, or a newer caboose, may sync it. A path this
+  machine has only just started syncing (named by its rules, not by the
+  last sync's, kept in the repo's `.git/caboose-rules.toml`) is adopted from
+  the repo, never read as deleted. The sync's own git never reads the
+  sandbox's git config (`GIT_CONFIG_GLOBAL=/dev/null`): it can arrive by
+  sync, and must not redirect the push. It still sits in the sync repo, where git obeys a `.gitattributes`
   and runs no hooks only because every git call passes
   `core.hooksPath=/dev/null`: the first line of `.git/info/attributes`
   unsets every content-changing or program-running attribute for all
@@ -173,8 +181,8 @@ outside the repo.
   tree: the sync repo is the data dir's `sync/`, and results are applied file
   by file.
 - **A proposal is the sandbox asking; only the host decides.** What a
-  session may propose is an allowlist -- a Dockerfile section, `[persist]`
-  entries, one root (`internal/proposal`) -- and anything more is refused
+  session may propose is an allowlist -- a Dockerfile section, one root
+  (`internal/proposal`) -- and anything more is refused
   whole, never shown as a question. Never add a proposable part that
   widens what the sandbox reaches without a refusal list of its own, as a
   root has (`checkProposedRoot`: home, hidden dirs of it, caboose's own
@@ -185,7 +193,7 @@ outside the repo.
   `proposal.Printable`.
 - **The host never follows a path the container can write.** Anything
   the launcher reads or writes inside a mounted dir of the data dir
-  (`.claude`, `dot_config/*`, `sync/`, ...) goes through
+  (`home/`, `sync/`, `proposals/`) goes through
   `internal/nofollow`, not `os`: the container can put a symlink or a hard
   link anywhere there, and `os.Root` alone follows one that stays inside
   the root -- the data dir holds `.credentials.json` and gh's token. The
@@ -203,19 +211,24 @@ outside the repo.
   when `docker info` names either engine. Setup writes signing without
   `gpg.ssh.program` (`datadir.SigningChanges`) for the same reason: the
   host's is a Mac binary.
-- **`[persist]` keeps sandbox state, never host paths.** Each entry is a
-  directory under the container's home, kept in the data dir's
-  `persist/<name>` (`datadir.PersistDir`) and mounted back at container
-  creation; never let one name a host path -- that is what roots are for,
-  and it would hand the sandbox host files. `config.ParsePersist` refuses
-  anything in, holding, or inside one of caboose's own mounts
-  (`config.ReservedHome`, which a test holds to the mounts
-  `createContainer` makes: add a new home mount there too) and anything
-  whose parent is not in `config.PersistParents` -- the directories
-  `layer-user.sh` creates owned by the agent, since docker would create a
-  deeper one's parents as root. `~/.ssh` (`dot_ssh`, `0700`) holds
-  `known_hosts` and the sandbox's own ssh config, never keys: doctor notes
-  one it finds (`datadir.PrivateKeysIn`, through `nofollow`).
+- **The sandbox config keeps sandbox state, never host paths, and is the
+  sandbox's.** Each `[[keep]]` entry is a path under the container's home,
+  kept at the same path under the data dir's `home/` and mounted back at
+  container creation; never let one name a host path -- that is what roots
+  are for, and it would hand the sandbox host files -- and never give the
+  sandbox config a field that reaches the host (a root's path, the image):
+  a session writes it, and it syncs from other machines. `sandboxcfg`
+  refuses an entry in, holding, or inside one of caboose's own mounts
+  (`sandboxcfg.Reserved`, which a test holds to the mounts
+  `createContainer` makes: add a new home mount there too) and one whose
+  parent is not in `sandboxcfg.Parents` -- the directories `layer-user.sh`
+  creates owned by the agent, since docker would create a deeper one's
+  parents as root. A bad entry is skipped, never the whole file; a file
+  that cannot be used is replaced by the last good copy
+  (`datadir.LoadSandboxConfig`), and nothing syncs until it is fixed.
+  `~/.ssh` holds `known_hosts` and the sandbox's own ssh config, never
+  keys: doctor notes one it finds (`datadir.PrivateKeysIn`, through
+  `nofollow`).
 - **A launch never writes the sandbox's git identity.** `caboose setup
   git` is its only writer (`datadir.WriteSandboxGit`); a launch and doctor
   only say when there is none. Never seed it from the host: that would
@@ -245,8 +258,7 @@ outside the repo.
   environment in `internal/config`, never from a fixed name: the default
   one is `caboose` only through `config.ContainerFor`. A setting belongs in
   `config.toml` (`fileKeys`) and as a `CABOOSE_` variable, the variable
-  winning; `[roots]` and `[persist]`, tables, are the ones without a
-  variable (`CABOOSE_REPO_ROOT` overrides `[roots]` with a single root).
+  winning; `[roots]`, a table, is the one without a variable (`CABOOSE_REPO_ROOT` overrides `[roots]` with a single root).
 - **caboose updates itself; the container does not move with it.** An
   install made by `install.sh` (`selfupdate.Layout.Managed`) checks at
   most daily in a detached `caboose update --background`, and a checkout's
@@ -264,7 +276,7 @@ outside the repo.
   every existing install stops updating. Prereleases are never
   `releases/latest`, so neither installer takes one unasked.
 - **`start.d` and `shell.d` are the user's, and the sandbox's.** Both sit
-  in the data dir's `dot_config/caboose`, mounted at `~/.config/caboose`,
+  in the data dir's `home/.config/caboose`, mounted at `~/.config/caboose`,
   and a session may write them: they run as the agent, in the container,
   and widen nothing, which is why they are not a proposal. The host never
   runs them and reads them only through `nofollow`

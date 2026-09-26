@@ -1,8 +1,9 @@
 # Syncing between machines
 
 `caboose sync` keeps the part of the data dir worth carrying around —
-memories, settings, skills — in step across machines, through any git remote
-the host can push to. Set the remote once, on each machine:
+memories, settings, skills, start-up scripts, whatever else you name — in
+step across machines, through any git remote the host can push to. Set the
+remote once, on each machine:
 
     caboose sync --remote git@github.com:you/caboose-state.git
 
@@ -12,21 +13,32 @@ since the last sync, takes the other machines', and writes back only the
 files that changed. Use a **private** repo: memories are notes about your
 projects.
 
-What syncs, and nothing else:
+What syncs is what the [sandbox config](sandbox-config.md)'s rules say,
+and nothing else. By default:
 
-| in the data dir | merged |
+| in the sandbox | merged |
 |---|---|
-| `.claude/projects/<project>/memory/` | as text; lines each side added to a `MEMORY.md` index are both kept |
-| `.claude/settings.json` | key by key |
-| `.claude/skills/`, `agents/`, `commands/` | as text, file by file — not `skills/synced/`, Claude Code's own cache of the skills your account provides |
-| the `mcpServers` key of `.claude.json` | key by key; the rest of that file never leaves the machine |
+| `~/.claude/projects/-work*/memory/` | as text; lines each side added to a `MEMORY.md` index are both kept |
+| `~/.claude/settings.json` | key by key |
+| `~/.claude/skills/`, `agents/`, `commands/` | as text, file by file — not `skills/synced/`, Claude Code's own cache of the skills your account provides |
+| the `mcpServers` key of `~/.claude.json` | key by key; the rest of that file never leaves the machine |
+| `~/.config/caboose/` | as text: the sandbox config itself, and [`start.d` and `shell.d`](startup.md) |
 
-It is an allowlist: the credential, transcripts, prompt history, the Claude
-Code binaries, git/jj/gh config and anything new that appears in `~/.claude`
-stay put, and an export that looks like it holds a token (an Anthropic,
-GitHub or AWS key, a private key, an OAuth token field) is refused before
-anything is committed. A file the remote adds outside the allowlist is never
-written.
+To sync more, or less, change the rules: `caboose sync add ~/.cargo/config.toml`
+and `caboose sync rm ~/.claude/commands` edit the sandbox config for you, and
+it syncs too, so a rule added on one machine reaches the others with the
+files it names. `caboose sync status` shows what a sync would send and
+take, and changes nothing.
+
+Everything else stays put: the credential, transcripts, prompt history, the
+Claude Code binaries, gh's token, and anything new that appears in
+`~/.claude`. `~/.claude/.credentials.json` never syncs whatever a rule
+says, and an export that looks like it holds a token (an Anthropic, GitHub
+or AWS key, a private key, an OAuth token field) is refused before anything
+is committed. A file the remote has that no rule here names is never
+written, and stays in the sync repo for the machines that sync it; one this
+machine has only just started syncing is taken from the repo, not read as
+deleted.
 
 **Links are never followed.** The sandbox can write `.claude`, so the
 launcher, which does the file work on the host, takes nothing there at its
@@ -40,8 +52,9 @@ a remote committed.
 memory under a key made from its path, and the sandbox's paths are the same
 on every machine (`/work/...`, [How it works](how-it-works.md)), so `you/project`
 under the repo root is `-work-you-project` on each, and the sync stores it
-as it is. With `[roots]`, name them alike everywhere. Projects outside
-`/work` (a session started elsewhere) do not sync, and the sync names them.
+as it is. With `[roots]`, name them alike everywhere; the sandbox config's
+`roots` lists the names, and `caboose doctor` says when a machine lacks one.
+Projects outside `/work` (a session started elsewhere) do not sync.
 
 **Conflicts.** Settings merge key by key, and text files with git's merge,
 so edits to different keys or different lines just combine. When both
@@ -82,22 +95,25 @@ stopped, as a launch would.
 the files, but every git command runs in the container through `docker
 exec`, so the host needs no git, and neither your host's git config, hooks
 and credential helpers nor anything a remote sends come near it. Pushes use
-what the sandbox has: the forwarded SSH agent, `gh`'s token, and the
-sandbox's own git config (`<data>/dot_config/git`). That is why the
-image must have git (2.28 or later).
+what the sandbox has: the forwarded SSH agent, and `gh`'s token when gh is
+in the image. The sandbox's own git config is not read at all: it can
+arrive by sync, and a `url.*.insteadOf` or a credential helper in it must
+not redirect the sync's own push. That is why the image must have git
+(2.28 or later).
 
 Over SSH, the sync's ssh keeps the remote's host key in
 `<data>/sync/.git/known_hosts`, so the sandbox asks about it once, on the
 first `caboose sync` from a terminal, and not again when the container is
 recreated. That file is the sync's own, apart from the sandbox's
-`~/.ssh/known_hosts`. A `core.sshCommand` in the sandbox's
-git config is left alone, known hosts and all.
+`~/.ssh/known_hosts`. A `GIT_SSH_COMMAND` the container's environment sets
+is left alone, known hosts and all.
 
 The sync keeps its own git repo in `<data>/sync/`, mounted in the
 container at `~/.caboose-sync`. The data dir itself is never a work tree,
 so no checkout, reset or stray ignore rule can ever touch the credential
 or transcripts in it, and git never checks anything out over it: a sync
-exports the allowlist into that repo, commits, fetches, merges there, and
-applies the result file by file. Delete `sync/` to start
+exports what the rules name into that repo (each file at `home/<its path
+under ~>`), commits, fetches, merges there, and applies the result file by
+file. Delete `sync/` to start
 over; the next sync merges with the remote as a new machine would, and
 nothing in the data dir is lost.

@@ -77,7 +77,7 @@ func TestApplyNothingPending(t *testing.T) {
 
 func TestApplyNeedsATerminal(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
-	p := e.propose("foo.toml", "title = \"t\"\n[persist]\nfoo = \"~/.config/foo\"\n")
+	p := e.propose("foo.toml", "title = \"t\"\n[roots]\nfoo = \"~/src/foo\"\n")
 	e.a.Terminal = func() (io.ReadCloser, error) { return nil, errors.New("no terminal") }
 	if err := e.a.Apply(); err == nil || !strings.Contains(err.Error(), "no terminal") {
 		t.Fatalf("err = %v", err)
@@ -87,19 +87,19 @@ func TestApplyNeedsATerminal(t *testing.T) {
 	}
 }
 
-// A section and a directory to keep, on an environment with no Dockerfile
-// of its own: the preset is written with the section, which apply says
-// first, [persist] gets the entry, and the proposal is gone.
-func TestApplySectionAndPersist(t *testing.T) {
+// A section, on an environment with no Dockerfile of its own: the preset
+// is written with the section, which apply says first, and the proposal is
+// gone.
+func TestApplySection(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	p := e.propose("foo.toml", "title = \"Install foo\"\nreason = \"for the docs\"\ndockerfile_sha256 = \""+presetHash(t)+"\"\n"+
-		fooSection+"\n[persist]\nfoo = \"~/.config/foo\"\n")
+		fooSection+"\n")
 	// Apply it; don't build.
 	if err := e.apply("1\nn\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("Install foo", "for the docs", "caboose's preset", "+ # caboose:section foo foo 2.3",
-		"no longer reach it", "~/.config/foo", "Applied foo", "Not built")
+		"no longer reach it", "Applied foo", "Not built")
 	df, err := os.ReadFile(filepath.Join(e.a.Cfg.EnvDir, "image", "Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
@@ -110,15 +110,15 @@ func TestApplySectionAndPersist(t *testing.T) {
 	if h, ok := assets.ReadHeader(df); !ok || h.ID != assets.PresetID() {
 		t.Errorf("the preset's header is gone: %+v", h)
 	}
-	if c := e.configFile(); !strings.Contains(c, "[persist]\nfoo = \"~/.config/foo\"\n") {
-		t.Errorf("config.toml:\n%s", c)
+	if c := e.configFile(); c != "" {
+		t.Errorf("config.toml written:\n%s", c)
 	}
 	if _, err := os.Stat(p); !os.IsNotExist(err) {
 		t.Errorf("the proposal is still there: %v", err)
 	}
 	// Sessions now see the new Dockerfile, and its hash.
 	state, _ := os.ReadFile(filepath.Join(e.a.Cfg.DataDir, proposal.Dir, proposal.CurrentDir, "state.toml"))
-	for _, want := range []string{`dockerfile = "image/Dockerfile"`, proposal.Hash(df), `foo = "~/.config/foo"`} {
+	for _, want := range []string{`dockerfile = "image/Dockerfile"`, proposal.Hash(df)} {
 		if !strings.Contains(string(state), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, state)
 		}
@@ -273,24 +273,6 @@ func TestProposedRootRefusals(t *testing.T) {
 	e.a.Cfg.File = &config.File{Roots: map[string]string{"dev": "~/dev"}}
 	if _, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "dev", Path: "~/ok"}); len(refusals) != 1 || !strings.Contains(refusals[0], "named dev already") {
 		t.Errorf("refusals %q", refusals)
-	}
-}
-
-// [persist] entries: one already there is no change, one that clashes is
-// refused.
-func TestApplyPersistClashes(t *testing.T) {
-	e := newSetupEnv(t, "default", "", false)
-	e.a.Cfg.File = &config.File{Persist: []config.Persist{{Name: "foo", Path: "~/.config/foo", Rel: ".config/foo"}}}
-	e.propose("a.toml", "title = \"t\"\n[persist]\nfoo = \"~/.foo\"\n")
-	e.propose("b.toml", "title = \"t\"\n[persist]\nbar = \"~/.config/foo\"\n")
-	e.propose("c.toml", "title = \"t\"\n[persist]\nfoo = \"~/.config/foo\"\n")
-	// Leave each pending.
-	if err := e.apply("2\n2\n2\n"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	e.wantOut("already has foo, as ~/.config/foo, not ~/.foo", "already keeps ~/.config/foo, as foo", "nothing left in it to apply")
-	if e.configFile() != "" {
-		t.Error("config.toml written")
 	}
 }
 

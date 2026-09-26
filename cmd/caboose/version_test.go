@@ -439,7 +439,7 @@ func TestFirstLaunchBuildsTheImage(t *testing.T) {
 		t.Errorf("docker calls: %s", got)
 	}
 	// The image just built is mounted its platform's Claude Code dir.
-	if _, err := os.Stat(filepath.Join(home, ".caboose/envs/default/data/dot_local/linux-arm64/share/claude")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, ".caboose/envs/default/data/local/linux-arm64/share/claude")); err != nil {
 		t.Errorf("no platform dir for the image: %v", err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/tty"
 )
@@ -31,7 +32,17 @@ import (
 //
 //	caboose sync                 sync with the remote already set
 //	caboose sync --remote URL    set (or replace) the remote, then sync
+//	caboose sync status          what would be sent, and taken (sandbox.go)
+//	caboose sync add|rm PATH     a sync rule, added or removed (sandbox.go)
 func (a *App) Sync(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "status":
+			return a.SyncStatus(args[1:])
+		case "add", "rm":
+			return a.SyncEdit(args[0], args[1:])
+		}
+	}
 	var remote string
 	switch {
 	case len(args) == 0:
@@ -40,7 +51,7 @@ func (a *App) Sync(args []string) error {
 	case len(args) == 1 && strings.HasPrefix(args[0], "--remote=") && len(args[0]) > len("--remote="):
 		remote = strings.TrimPrefix(args[0], "--remote=")
 	default:
-		return Die("usage: caboose sync [--remote URL]")
+		return Die("usage: caboose sync [--remote URL] | status | add PATH | rm PATH")
 	}
 	// Up, as a launch brings it up (never building an image), but with no
 	// session in it.
@@ -100,6 +111,7 @@ func (a *App) Sync(args []string) error {
 	var se *statesync.SecretsError
 	switch {
 	case err == nil:
+		a.afterSync(r)
 		return nil
 	case errors.As(err, &se):
 		return Die("%v", err)
@@ -119,10 +131,11 @@ func (a *App) Sync(args []string) error {
 func (a *App) newSyncer(g *syncGit) *statesync.Syncer {
 	host, _ := os.Hostname()
 	return &statesync.Syncer{
-		DataDir: a.Cfg.DataDir,
-		Host:    host,
-		Git:     g.command, // on a nil g, a call panics rather than run host git
-		GitDir:  statesync.ContainerDir,
+		DataDir:  a.Cfg.DataDir,
+		Host:     host,
+		Defaults: sandboxcfg.Default(a.rootNames()),
+		Git:      g.command, // on a nil g, a call panics rather than run host git
+		GitDir:   statesync.ContainerDir,
 	}
 }
 
@@ -267,8 +280,11 @@ func (a *App) reportSync(r *statesync.Report) {
 	} else if r.Pushed {
 		a.Note("pushed")
 	}
-	if len(r.Unsynced) > 0 {
-		a.Note("not synced, being outside /work: %s", strings.Join(r.Unsynced, ", "))
+	if len(r.Shadowed) > 0 {
+		a.Note("sync rules that never decide anything, earlier ones taking all they match: %s", strings.Join(r.Shadowed, ", "))
+	}
+	if r.SandboxConfig {
+		a.Note("the sync changed the sandbox config; a change to what it keeps takes effect at the next 'caboose restart'")
 	}
 	if len(r.Refused) > 0 {
 		a.Note("not synced, being symlinks or hard links (never followed): %s", strings.Join(r.Refused, ", "))
@@ -359,7 +375,7 @@ func (a *App) editConflict(c statesync.Conflict, term *os.File) (statesync.Resol
 		a.Note("conflict markers are still in it; edit again, or pick a side")
 		return statesync.Resolution{}, false
 	}
-	if strings.HasSuffix(c.Path, ".json") {
+	if c.JSON {
 		if err := statesync.ValidJSON(out); err != nil {
 			a.Note("that is not valid JSON (%v); edit again, or pick a side", err)
 			return statesync.Resolution{}, false

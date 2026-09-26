@@ -1,20 +1,20 @@
 # Proposals: changes a session asks for
 
 A session in the sandbox cannot change what the sandbox is: the image, the
-directories it keeps across containers, the host directories it can see.
-Those live on the host (`config.toml`, the environment's `image/`), and they
-decide how much of your machine the sandbox reaches — which is exactly what
-an injected instruction, arriving in a README or a web page, would want to
-widen.
+host directories it can see. Those live on the host (`config.toml`, the
+environment's `image/`), and they decide how much of your machine the
+sandbox reaches — which is exactly what an injected instruction, arriving
+in a README or a web page, would want to widen. (What the sandbox keeps of
+its own home is another matter: that is its [sandbox config](sandbox-config.md),
+which a session edits itself.)
 
 So a session **proposes** the change, and you apply it on the host:
 
-1. In a session: *"install foo, and keep its config"*. The session writes a
-   proposal into `~/.caboose-proposals/` and tells you to run
-   `caboose apply`. It can stay open.
+1. In a session: *"install foo"*. The session writes a proposal into
+   `~/.caboose-proposals/` and tells you to run `caboose apply`. It can
+   stay open.
 2. In a host terminal: `caboose apply` shows each proposal whole — the
-   Dockerfile change as a diff, the directories to keep, the root to mount
-   — and applies it, leaves it pending or deletes it, as you say. Then it
+   Dockerfile change as a diff, the root to mount — and applies it, leaves it pending or deletes it, as you say. Then it
    builds the image if the Dockerfile changed.
 3. It offers `caboose restart`, which moves the container onto the changes
    and ends running sessions (it says how many; the default is no). Back
@@ -28,7 +28,6 @@ A launch says when proposals are waiting: `2 pending proposals (foo, other):
 | | What it does | Before you say yes |
 |---|---|---|
 | a Dockerfile section | installs something in the image | shown as a diff of the Dockerfile |
-| `[persist]` entries | keeps directories of the home across containers | the checks `config.toml` itself applies |
 | one root | mounts a host directory at `/work/NAME` | refusals and warnings below, and you type the root's name |
 
 Nothing else. A proposal that names anything more — the docker socket, a
@@ -91,9 +90,6 @@ ARG FOO_VERSION=2.3.0
 RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
 '''
 
-[persist]
-foo = "~/.config/foo"
-
 [roots]
 other = "~/src/other"
 ```
@@ -101,8 +97,7 @@ other = "~/src/other"
 `current/` next to them is written by the host at every launch and after
 every `apply`: `Dockerfile`, the one the next build uses (caboose's preset
 when the environment has none of its own), and `state.toml`, with where it
-comes from, its hash, and the roots and `[persist]` entries `config.toml`
-has. It is only information: changing it changes nothing, and `apply`
+comes from, its hash, and the roots `config.toml` has. It is only information: changing it changes nothing, and `apply`
 checks every proposal against the real files. The sandbox's
 `~/.claude/CLAUDE.md` tells sessions all of this.
 

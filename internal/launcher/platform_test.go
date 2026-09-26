@@ -64,9 +64,9 @@ func claudeMounts(t *testing.T, log, data string) map[string]string {
 func wantPlatformMounts(t *testing.T, got map[string]string, platform string) {
 	t.Helper()
 	want := map[string]string{
-		"/home/agent/.local/bin":          "dot_local/" + platform + "/bin",
-		"/home/agent/.local/share/claude": "dot_local/" + platform + "/share/claude",
-		"/home/agent/.cache/claude":       "dot_local/" + platform + "/cache/claude",
+		"/home/agent/.local/bin":          "local/" + platform + "/bin",
+		"/home/agent/.local/share/claude": "local/" + platform + "/share/claude",
+		"/home/agent/.cache/claude":       "local/" + platform + "/cache/claude",
 	}
 	for dst, w := range want {
 		if got[dst] != w {
@@ -122,7 +122,7 @@ func TestCreateContainerRefusesUnknownPlatform(t *testing.T) {
 			if mounts := claudeMounts(t, log, data); len(mounts) != 0 {
 				t.Errorf("docker run happened: %v", mounts)
 			}
-			if _, err := os.Lstat(filepath.Join(data, "dot_local")); err == nil {
+			if _, err := os.Lstat(filepath.Join(data, "local")); err == nil {
 				t.Error("a platform dir was created")
 			}
 		})
@@ -132,8 +132,8 @@ func TestCreateContainerRefusesUnknownPlatform(t *testing.T) {
 // A launch against a running container creates no platform dir: those are
 // made only for the image a container is created from.
 func TestLaunchCreatesNoPlatformDirUnderARunningContainer(t *testing.T) {
-	a, data, _ := runningFake(t, "dot_local/linux-arm64")
-	for _, d := range []string{"dot_local/linux-arm64/bin", "dot_local/linux-arm64/share/claude"} {
+	a, data, _ := runningFake(t, "local/linux-arm64")
+	for _, d := range []string{"local/linux-arm64/bin", "local/linux-arm64/share/claude"} {
 		if err := os.MkdirAll(filepath.Join(data, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -141,9 +141,9 @@ func TestLaunchCreatesNoPlatformDirUnderARunningContainer(t *testing.T) {
 	if err := a.ensureRunning(false); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(data, "dot_local"))
+	entries, _ := os.ReadDir(filepath.Join(data, "local"))
 	if len(entries) != 1 {
-		t.Errorf("dot_local now holds %v", entries)
+		t.Errorf("local now holds %v", entries)
 	}
 }
 
@@ -186,8 +186,8 @@ func mkdirs(t *testing.T, root string, dirs ...string) {
 }
 
 func TestStatusShowsPlatforms(t *testing.T) {
-	a, data, out := runningFake(t, "dot_local/linux-arm64")
-	mkdirs(t, data, "dot_local/linux-arm64/share/claude", "dot_local/linux-arm64/bin", "dot_local/linux-x64-musl/share/claude")
+	a, data, out := runningFake(t, "local/linux-arm64")
+	mkdirs(t, data, "local/linux-arm64/share/claude", "local/linux-arm64/bin", "local/linux-x64-musl/share/claude")
 	if err := a.Status(); err != nil {
 		t.Fatal(err)
 	}
@@ -197,9 +197,9 @@ func TestStatusShowsPlatforms(t *testing.T) {
 		"container : box (running)\n",
 		"data dir  : " + data + "\n",
 		"platform  : linux-arm64\n",
-		"local dir : " + data + "/dot_local/linux-arm64\n",
-		"\t" + data + "/dot_local/linux-arm64/share/claude\n",
-		"\ndisk used per platform (dot_local/<platform>, each with its own versions):\n",
+		"local dir : " + data + "/local/linux-arm64\n",
+		"\t" + data + "/local/linux-arm64/share/claude\n",
+		"\ndisk used per platform (local/<platform>, each with its own versions):\n",
 		"\tlinux-arm64  (mounted)\n",
 		"\tlinux-x64-musl\n",
 	} {
@@ -215,23 +215,23 @@ func TestStatusShowsPlatforms(t *testing.T) {
 // caboose prune reports the mounted platform's usage, and points at the other
 // platforms' dirs without touching them.
 func TestPruneNotesOtherPlatforms(t *testing.T) {
-	a, data, out := runningFake(t, "dot_local/linux-arm64")
-	mkdirs(t, data, "dot_local/linux-arm64/share/claude", "dot_local/linux-arm64/bin", "dot_local/linux-x64-musl/share/claude")
+	a, data, out := runningFake(t, "local/linux-arm64")
+	mkdirs(t, data, "local/linux-arm64/share/claude", "local/linux-arm64/bin", "local/linux-x64-musl/share/claude")
 	var errb bytes.Buffer
 	a.Stderr = &errb
 	if err := a.Prune(); err != nil {
 		t.Fatalf("%v\n%s", err, errb.String())
 	}
-	if !strings.HasPrefix(out.String(), "caboose: now using ") || !strings.Contains(out.String(), data+"/dot_local/linux-arm64/share/claude") {
+	if !strings.HasPrefix(out.String(), "caboose: now using ") || !strings.Contains(out.String(), data+"/local/linux-arm64/share/claude") {
 		t.Errorf("stdout %q", out.String())
 	}
 	e := errb.String()
-	if !strings.Contains(e, "caboose: "+data+"/dot_local/linux-x64-musl also holds ") ||
+	if !strings.Contains(e, "caboose: "+data+"/local/linux-x64-musl also holds ") ||
 		!strings.Contains(e, "delete it by hand if no image of yours needs it any more") ||
-		strings.Contains(e, "dot_local/linux-arm64 also") {
+		strings.Contains(e, "local/linux-arm64 also") {
 		t.Errorf("stderr:\n%s", e)
 	}
-	if _, err := os.Stat(filepath.Join(data, "dot_local/linux-x64-musl/share/claude")); err != nil {
+	if _, err := os.Stat(filepath.Join(data, "local/linux-x64-musl/share/claude")); err != nil {
 		t.Error("another platform's dir was touched")
 	}
 }
@@ -252,7 +252,7 @@ printf '%s\n' "$*" >> "` + log + `"
 case "$*" in
   "inspect --type=container -f {{.State.Status}} box") echo running; exit 0 ;;
   "inspect --type=container box --format "*)
-    printf '%s\t%s\n' /home/agent/.local/bin "` + data + `/dot_local/linux-arm64/bin" /work "` + tmp + `"; exit 0 ;;
+    printf '%s\t%s\n' /home/agent/.local/bin "` + data + `/local/linux-arm64/bin" /work "` + tmp + `"; exit 0 ;;
 esac
 if [ "$1 $2 $3 $4" = "exec box bash -c" ]; then
   shift 4

@@ -53,7 +53,7 @@ That is an allowlist by construction: a file `layer.Dockerfile` starts to
 build fails (the base `Dockerfile` COPYs nothing, and a test keeps it that
 way). The image is labelled with the launcher version, hashes of those
 contexts, the base's name and ID, and the platform, which is what
-`caboose version` compares and what picks the `dot_local` dir to mount.
+`caboose version` compares and what picks the `local/<platform>` dir to mount.
 `imagecheck.sh`, the probe `caboose check-image` runs, is embedded too but is
 part of neither image: an edit to it needs only the launcher rebuilt.
 

@@ -31,10 +31,9 @@ type State struct {
 	Dockerfile []byte
 	// BaseImage is CABOOSE_BASE_IMAGE, on SourceBaseImage.
 	BaseImage string
-	// RepoRoot, or else Roots, and Persist are config.toml's, as written.
+	// RepoRoot, or else Roots, are config.toml's, as written.
 	RepoRoot string
 	Roots    map[string]string
-	Persist  map[string]string
 }
 
 // stateFile is State as state.toml has it.
@@ -44,7 +43,6 @@ type stateFile struct {
 	BaseImage        string            `toml:"base_image,omitempty"`
 	RepoRoot         string            `toml:"repo_root,omitempty"`
 	Roots            map[string]string `toml:"roots,omitempty"`
-	Persist          map[string]string `toml:"persist,omitempty"`
 }
 
 const stateHeader = `# Written by caboose on the host, at every launch and after 'caboose apply':
@@ -63,7 +61,7 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 // the Dockerfile when there is one (a stale one removed when not). Every
 // write goes through nofollow: the container can write the directory too.
 func WriteCurrent(dataDir string, s State) error {
-	sf := stateFile{Dockerfile: s.Source, BaseImage: s.BaseImage, RepoRoot: s.RepoRoot, Roots: s.Roots, Persist: s.Persist}
+	sf := stateFile{Dockerfile: s.Source, BaseImage: s.BaseImage, RepoRoot: s.RepoRoot, Roots: s.Roots}
 	if s.Dockerfile != nil {
 		sf.DockerfileSHA256 = Hash(s.Dockerfile)
 	}

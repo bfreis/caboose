@@ -120,8 +120,12 @@ func (a *App) Status() error {
 	case c.EnvDir != "":
 		fmt.Fprintf(out, "config    : none (%s/%s would be read)\n", c.EnvDir, config.FileName)
 	}
-	for _, p := range c.Persist {
-		fmt.Fprintf(out, "persist   : ~/%s -> %s/%s\n", p.Rel, c.DataDir, datadir.PersistDir(p.Name))
+	if sb, err := a.sandboxConfig(); err == nil {
+		var kept []string
+		for _, k := range sb.Keep {
+			kept = append(kept, "~/"+k.Rel)
+		}
+		fmt.Fprintf(out, "keeps     : %s (in %s/%s)\n", strings.Join(kept, ", "), c.DataDir, datadir.HomeDir)
 	}
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	if state != "running" {
@@ -132,7 +136,7 @@ func (a *App) Status() error {
 		a.Note("%s; run 'caboose restart' (this kills running sessions).", p)
 	}
 	a.warnIfImageDrifted()
-	a.warnIfPersistDrifted()
+	a.warnIfKeepDrifted()
 
 	claude, err := a.Docker.RawOutput("exec", c.Container, "claude", "--version")
 	if err != nil {

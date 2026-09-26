@@ -23,9 +23,6 @@ ARG FOO_VERSION=2.3.0
 RUN curl -fsSL https://example.invalid/foo.tgz | tar -xz -C /usr/local/bin foo
 '''
 
-[persist]
-foo = "~/.config/foo"
-
 [roots]
 other = "~/src/other"
 `
@@ -41,15 +38,11 @@ func TestParse(t *testing.T) {
 	if p.Section == nil || p.Section.Name != "foo" || p.Section.Title != "foo 2.3" || !strings.Contains(p.Section.Body, "FOO_VERSION") {
 		t.Errorf("section %+v", p.Section)
 	}
-	if len(p.Persist) != 1 || p.Persist[0].Name != "foo" || p.Persist[0].Rel != ".config/foo" {
-		t.Errorf("persist %+v", p.Persist)
-	}
 	if p.Root == nil || *p.Root != (Root{"other", "~/src/other"}) {
 		t.Errorf("root %+v", p.Root)
 	}
 	// Each part alone is a proposal too.
 	for _, s := range []string{
-		"title = \"t\"\n[persist]\nfoo = \"~/.foo\"\n",
 		"title = \"t\"\n[roots]\nx = \"/x\"\n",
 		"title = \"t\"\ndockerfile_sha256 = \"" + sha + "\"\n[section]\nname = \"a\"\ntitle = \"A\"\nbody = \"RUN x\"\n",
 	} {
@@ -72,9 +65,8 @@ func TestParseRefuses(t *testing.T) {
 		{"p.toml", "title = \"t\"\n[roots]\nx = \"/x\"\ny = \"/y\"\n", "more than one root"},
 		{"p.toml", "title = \"t\"\n[roots]\nX = \"/x\"\n", "not a root name"},
 		{"p.toml", "title = \"t\"\n[roots]\nx = \"\"\n", "names no directory"},
-		{"p.toml", "title = \"t\"\n[persist]\nfoo = \"/etc\"\n", "under the home"},
-		{"p.toml", "title = \"t\"\n[persist]\nfoo = \"~/.ssh\"\n", "caboose's own"},
-		{"p.toml", "title = \"t\"\n[persist]\na = \"~/.foo\"\nb = \"~/.foo\"\n", "both name"},
+		// What the sandbox keeps is the sandbox config's, not a proposal's.
+		{"p.toml", "title = \"t\"\n[persist]\nfoo = \"~/.foo\"\n", "sandbox.toml, with no proposal"},
 		{"p.toml", "title = \"t\"\n[section]\nname = \"a\"\ntitle = \"A\"\nbody = \"RUN x\"\n", "needs dockerfile_sha256"},
 		{"p.toml", "title = \"t\"\ndockerfile_sha256 = \"x\"\n[roots]\nx = \"/x\"\n", "without a [section]"},
 		{"p.toml", "title = \"t\"\n" + sec + "body = \"FROM evil\"\n", "FROM"},
@@ -167,7 +159,7 @@ func TestList(t *testing.T) {
 func TestWriteCurrent(t *testing.T) {
 	data := t.TempDir()
 	df := []byte("FROM x\n")
-	s := State{Source: SourceImageDir, Dockerfile: df, Roots: map[string]string{"dev": "~/dev"}, Persist: map[string]string{"foo": "~/.config/foo"}}
+	s := State{Source: SourceImageDir, Dockerfile: df, Roots: map[string]string{"dev": "~/dev"}}
 	if err := WriteCurrent(data, s); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +168,7 @@ func TestWriteCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`dockerfile = "image/Dockerfile"`, `dockerfile_sha256 = "` + Hash(df) + `"`, "[roots]", `dev = "~/dev"`, "[persist]", `foo = "~/.config/foo"`} {
+	for _, want := range []string{`dockerfile = "image/Dockerfile"`, `dockerfile_sha256 = "` + Hash(df) + `"`, "[roots]", `dev = "~/dev"`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, b)
 		}

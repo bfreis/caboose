@@ -24,18 +24,16 @@
 // Mounts:
 //
 //	$CABOOSE_DATA_DIR                  (default ~/.caboose/envs/<env>/data)
-//	$CABOOSE_DATA_DIR/.claude         -> ~/.claude
-//	$CABOOSE_DATA_DIR/.claude.json    -> ~/.claude.json
-//	$CABOOSE_DATA_DIR/dot_local/<platform>/bin           -> ~/.local/bin
-//	$CABOOSE_DATA_DIR/dot_local/<platform>/share/claude  -> ~/.local/share/claude
-//	$CABOOSE_DATA_DIR/dot_local/<platform>/cache/claude  -> ~/.cache/claude
+//	$CABOOSE_DATA_DIR/home/<path>     -> ~/<path>, for each [[keep]] entry of the
+//	    sandbox config (~/.config/caboose/sandbox.toml): ~/.claude, ~/.claude.json,
+//	    ~/.config/caboose (start.d, shell.d, the sandbox config), ~/.config/git,
+//	    ~/.config/jj, ~/.config/gh, ~/.ssh by default, and whatever the user adds
+//	$CABOOSE_DATA_DIR/local/<platform>/bin           -> ~/.local/bin
+//	$CABOOSE_DATA_DIR/local/<platform>/share/claude  -> ~/.local/share/claude
+//	$CABOOSE_DATA_DIR/local/<platform>/cache/claude  -> ~/.cache/claude
 //	    (<platform> is the image's Claude Code build: linux-x64, linux-arm64-musl, ...)
-//	$CABOOSE_DATA_DIR/dot_config/git  -> ~/.config/git  (identity and signing: caboose setup git)
-//	$CABOOSE_DATA_DIR/dot_config/jj   -> ~/.config/jj
-//	$CABOOSE_DATA_DIR/dot_config/gh   -> ~/.config/gh   (0700: holds the gh token)
 //	$CABOOSE_DATA_DIR/sync            -> ~/.caboose-sync (caboose sync's repo; git runs it in here)
 //	$CABOOSE_DATA_DIR/proposals       -> ~/.caboose-proposals (sessions' proposals for caboose apply)
-//	$CABOOSE_DATA_DIR/dot_config/caboose -> ~/.config/caboose (start.d, shell.d)
 //	$CABOOSE_REPO_ROOT                -> /work
 //	    (or, with a [roots] table in config.toml, each root -> /work/<name>)
 //
@@ -73,6 +71,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
 )
 
@@ -135,6 +134,8 @@ type App struct {
 	// inSetup is set while caboose setup runs: a launch's "not set up"
 	// line would only interrupt it.
 	inSetup bool
+	// sb is the sandbox config, once read (App.sandboxConfig).
+	sb *datadir.Sandbox
 	// lossConfirmed is set once the user has said yes to ending the
 	// running sessions (caboose apply's restart): confirmSessionLoss does
 	// not ask again.

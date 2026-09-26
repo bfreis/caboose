@@ -22,7 +22,7 @@ type Pending struct {
 	// Deleted are repo paths the work tree holds that this machine syncs,
 	// and whose live source is gone.
 	Deleted []string
-	// Export is the export compared: its Refused and Unsynced, and
+	// Export is the export compared: its Refused and Shadowed, and
 	// ScanSecrets, say what a sync would make of it.
 	Export *Export
 }
@@ -35,10 +35,15 @@ func (p *Pending) Any() bool { return len(p.Changed)+len(p.Deleted) > 0 }
 // Both are read without following a link: a work tree path that is not a
 // plain file reads as changed, as the next sync rewrites it.
 func (s *Syncer) Pending() (*Pending, error) {
-	e, err := ExportLive(s.DataDir)
+	c, err := s.rules()
 	if err != nil {
 		return nil, err
 	}
+	e, err := ExportLive(s.DataDir, c)
+	if err != nil {
+		return nil, err
+	}
+	prev := s.prevRules()
 	p := &Pending{Export: e}
 	repo := s.repo()
 	for path, f := range e.Files {
@@ -62,9 +67,9 @@ func (s *Syncer) Pending() (*Pending, error) {
 		if _, ok := e.Files[path]; ok || e.kept(path) {
 			return nil
 		}
-		// Only what this machine syncs can read as deleted: the rest is
-		// another machine's, or a newer caboose's, as commitExport has it.
-		if _, err := LiveTarget(path); err != nil {
+		// Only what this machine synced last time too can read as
+		// deleted, as commitExport has it.
+		if !deletable(c, prev, path) {
 			return nil
 		}
 		p.Deleted = append(p.Deleted, path)
@@ -130,4 +135,32 @@ func (s *Syncer) Divergence() (Divergence, error) {
 		return Divergence{}, fmt.Errorf("git rev-list --count: unexpected %q", out)
 	}
 	return Divergence{Remote: true, Ahead: ahead, Behind: behind}, nil
+}
+
+// Incoming lists what the remote branch, as last fetched, has changed since
+// HEAD and it parted: taken, the repo paths this machine's rules sync;
+// others, the ones they do not (another machine's rules, a newer
+// caboose's), which a sync leaves in the repo. No network: Fetch first.
+func (s *Syncer) Incoming() (taken, others []string, err error) {
+	c, err := s.rules()
+	if err != nil {
+		return nil, nil, err
+	}
+	g := s.git()
+	remote := "refs/remotes/origin/" + Branch
+	if has, err := g.ok("rev-parse", "-q", "--verify", remote); err != nil || !has {
+		return nil, nil, err
+	}
+	out, err := g.out("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", "HEAD..."+remote)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, p := range zsplit(out) {
+		if _, err := LiveTarget(c, p); err == nil {
+			taken = append(taken, p)
+		} else {
+			others = append(others, p)
+		}
+	}
+	return taken, others, nil
 }

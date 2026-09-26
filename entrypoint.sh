@@ -27,7 +27,7 @@ log() { printf 'caboose: %s\n' "$*" >&2; }
 
 # Anthropic's native installer drops the binary in ~/.local/share/claude/
 # versions/<v> and points ~/.local/bin/claude at it. Both are bind-mounted from
-# the data dir's dot_local/<platform>, so this runs once per platform for the
+# the data dir's local/<platform>, so this runs once per platform for the
 # life of the data dir — not once per image rebuild.
 ensure_claude_installed() {
     if [ -e "$CLAUDE_BIN" ]; then
@@ -183,7 +183,7 @@ clear_installer_downloads() {
 }
 
 # The user's start-up scripts: ~/.config/caboose/start.d, mounted from the
-# data dir's dot_config/caboose/start.d. One at a time, in name order (byte
+# data dir's home/.config/caboose/start.d. One at a time, in name order (byte
 # order, whatever the locale), like run-parts: each runs to its end before
 # the next starts, so 20-b may count on what 10-a did, and a daemon is
 # started in the background by its script (`foo &`). Every

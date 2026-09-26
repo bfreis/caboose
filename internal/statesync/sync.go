@@ -5,16 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
 // Dir is the sync repo, relative to the data dir.
@@ -30,24 +33,24 @@ const LockFile = "sync.lock"
 // Branch is the remote branch every machine syncs through.
 const Branch = "main"
 
-// attributes are the sync repo's merge rules, in .git/info/attributes. That
-// file outranks any .gitattributes, and a remote can send one of those: it
-// is not synced (nothing outside the allowlist is), but it sits in the repo,
-// and git would obey it -- running filter, merge or diff drivers the user's
-// own git config defines (git-lfs, say), converting line endings, or
-// changing how memory merges. So the first line unsets, for every path,
-// each attribute that can change content or run a program, and the rest
-// set only what the sync means:
-//
-//   - JSON is never merged as text: two machines' edits are merged key by
-//     key (MergeJSON), and `binary` leaves both sides for that.
-//   - A MEMORY.md index is a list of one-line pointers, so a line each side
-//     added is kept by `union` rather than conflicting at the end of the
-//     file.
-const attributes = `* -filter -text -eol -ident -working-tree-encoding -diff merge=text
-*.json merge=binary
-claude/projects/*/memory/MEMORY.md merge=union
-`
+// baseAttributes start the sync repo's merge rules, in .git/info/attributes.
+// That file outranks any .gitattributes, and a remote can send one of
+// those: it is not synced (nothing no rule names is), but it sits in the
+// repo, and git would obey it -- running filter, merge or diff drivers the
+// user's own git config defines (git-lfs, say), converting line endings,
+// or changing how memory merges. So the first line unsets, for every path,
+// each attribute that can change content or run a program, and the rules'
+// own follow it (sandboxcfg.Config.GitAttributes): a JSON file is never
+// merged as text -- two machines' edits are merged key by key (MergeJSON),
+// and `binary` leaves both sides for that -- and a union file keeps the
+// lines each side added rather than conflicting at its end.
+const baseAttributes = "* -filter -text -eol -ident -working-tree-encoding -diff merge=text\n"
+
+// rulesFile, in the sync repo's .git, is the sandbox config the last
+// successful sync ran with: a repo path its rules did not name, and this
+// machine's do now, is one this machine has just started syncing, whose
+// file is not here yet -- to be taken from the repo, not read as deleted.
+const rulesFile = ".git/caboose-rules.toml"
 
 var (
 	// ErrNoRemote is returned when the sync repo has no remote yet.
@@ -57,6 +60,10 @@ var (
 	ErrAborted = errors.New("sync aborted")
 	// ErrLocked is returned while another sync holds the lock.
 	ErrLocked = errors.New("another caboose is syncing this data dir")
+	// ErrSandboxConfig is returned when the sandbox config cannot be read
+	// as it is: a sync with the rules of an older copy could undo what the
+	// new one says, on every machine.
+	ErrSandboxConfig = errors.New("the sandbox config cannot be used")
 )
 
 // Conflict is a file both machines changed in ways that could not be merged.
@@ -64,6 +71,9 @@ var (
 type Conflict struct {
 	Path               string
 	Base, Ours, Theirs []byte
+	// JSON is set for a file its rule merges as JSON: what is written
+	// to settle it has to parse.
+	JSON bool
 	// Keys are the JSON keys in conflict; nil for a text file, or a JSON
 	// one that did not parse (Note says why).
 	Keys []string
@@ -150,8 +160,53 @@ type Syncer struct {
 	// as that git sees it, "" for RepoDir.
 	Git    Command
 	GitDir string
+	// Sandbox is the sandbox config whose rules say what syncs; nil reads
+	// the data dir's (datadir.LoadSandboxConfig).
+	Sandbox *datadir.Sandbox
+	// Defaults, when set, is written as the sandbox config when a sync
+	// that took what the remote has still leaves none: no machine had one
+	// to bring. It goes out in the same sync.
+	Defaults []byte
 
 	g *git
+}
+
+// sandbox is the sandbox config in effect, read once.
+func (s *Syncer) sandbox() (*datadir.Sandbox, error) {
+	if s.Sandbox == nil {
+		sb, err := datadir.LoadSandboxConfig(s.DataDir, nil)
+		if err != nil {
+			return nil, err
+		}
+		s.Sandbox = sb
+	}
+	return s.Sandbox, nil
+}
+
+// rules is the sandbox config's rules, when it can be used as it is.
+func (s *Syncer) rules() (*sandboxcfg.Config, error) {
+	sb, err := s.sandbox()
+	if err != nil {
+		return nil, err
+	}
+	if sb.Err != nil {
+		return nil, fmt.Errorf("%w: %s %v; fix it (or 'caboose update', for a newer format) and sync again", ErrSandboxConfig, sandboxcfg.HomePath, sb.Err)
+	}
+	return sb.Config, nil
+}
+
+// prevRules is the sandbox config the last successful sync ran with, nil
+// when there is none to read.
+func (s *Syncer) prevRules() *sandboxcfg.Config {
+	data, _, err := s.repo().ReadFile(rulesFile)
+	if err != nil {
+		return nil
+	}
+	c, err := sandboxcfg.Parse(data)
+	if err != nil {
+		return nil
+	}
+	return c
 }
 
 // Report is what a sync did.
@@ -162,11 +217,15 @@ type Report struct {
 	Merged bool
 	// Applied are the data dir paths the sync wrote or deleted.
 	Applied []string
-	// Ignored are repo paths this machine does not sync (from a newer
-	// caboose, or not valid here); they are left in the repo untouched.
+	// Ignored are repo paths this machine does not sync (another
+	// machine's rules, a newer caboose's, or not valid here); they are
+	// left in the repo untouched.
 	Ignored []string
-	// Unsynced are project keys with memory outside /work.
-	Unsynced []string
+	// SandboxConfig is set when the sync changed the sandbox config: a
+	// keep entry it added takes effect at the next restart.
+	SandboxConfig bool
+	// Shadowed are rules that never decide anything (Export.Shadowed).
+	Shadowed []string
 	// Refused are data dir paths not synced for not being plain files and
 	// directories (Export.Refused), both ways: never read, never written.
 	Refused []string
@@ -256,7 +315,11 @@ func (s *Syncer) Init() error {
 			return err
 		}
 	}
-	if err := s.repo().WriteFile(".git/info/attributes", []byte(attributes), 0o644); err != nil {
+	attrs := baseAttributes
+	if c, err := s.rules(); err == nil {
+		attrs += c.GitAttributes(RepoHome)
+	}
+	if err := s.repo().WriteFile(".git/info/attributes", []byte(attrs), 0o644); err != nil {
 		return err
 	}
 	if has, _ := g.ok("rev-parse", "-q", "--verify", "HEAD"); !has {
@@ -336,6 +399,9 @@ func (s *Syncer) Sync() (*Report, error) {
 	if s.Remote() == "" {
 		return nil, ErrNoRemote
 	}
+	if _, err := s.rules(); err != nil {
+		return nil, err
+	}
 	r := &Report{}
 	if err := s.clean(); err != nil {
 		return nil, err
@@ -350,11 +416,44 @@ func (s *Syncer) Sync() (*Report, error) {
 		if err := s.pull(r); err != nil {
 			return r, err
 		}
+		if err := s.adopt(r); err != nil {
+			return r, err
+		}
+		if err := s.writeDefaults(r); err != nil {
+			return r, err
+		}
 		err := s.push(r)
-		if err == nil || attempt == 2 || !s.remoteMoved() {
+		if err == nil {
+			return r, s.saveRules()
+		}
+		if attempt == 2 || !s.remoteMoved() {
 			return r, err
 		}
 	}
+}
+
+// writeDefaults writes Defaults as the sandbox config when there is still
+// none, and commits it.
+func (s *Syncer) writeDefaults(r *Report) error {
+	if s.Defaults == nil {
+		return nil
+	}
+	if _, err := s.live().Lstat(datadir.SandboxConfig); !errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err := s.live().WriteFile(datadir.SandboxConfig, s.Defaults, 0o644); err != nil {
+		return err
+	}
+	return s.commitExport(r)
+}
+
+// saveRules records the sandbox config this sync ran with (rulesFile).
+func (s *Syncer) saveRules() error {
+	sb, err := s.sandbox()
+	if err != nil {
+		return err
+	}
+	return s.repo().WriteFile(rulesFile, sb.Data, 0o644)
 }
 
 // remoteMoved fetches, and reports whether the remote branch now has
@@ -385,13 +484,17 @@ func (s *Syncer) clean() error {
 	return g.run("clean", "-q", "-fdx")
 }
 
-// commitExport mirrors the allowlist into the work tree and commits it.
+// commitExport mirrors what syncs into the work tree and commits it.
 func (s *Syncer) commitExport(r *Report) error {
-	e, err := ExportLive(s.DataDir)
+	c, err := s.rules()
 	if err != nil {
 		return err
 	}
-	r.Unsynced, r.Refused = e.Unsynced, e.Refused
+	e, err := ExportLive(s.DataDir, c)
+	if err != nil {
+		return err
+	}
+	r.Refused, r.Shadowed = e.Refused, e.Shadowed
 	if err := e.ScanSecrets(); err != nil {
 		return err
 	}
@@ -400,13 +503,15 @@ func (s *Syncer) commitExport(r *Report) error {
 	if err != nil {
 		return err
 	}
+	prev := s.prevRules()
 	for _, p := range zsplit(tracked) {
 		if _, ok := e.Files[p]; ok || e.kept(p) {
 			continue
 		}
-		// Only paths this machine syncs can read as deleted here; the
-		// rest are another machine's, or a newer caboose's, to keep.
-		if _, err := LiveTarget(p); err != nil {
+		// Only paths this machine synced last time too can read as
+		// deleted here; the rest are another machine's, a newer
+		// caboose's, or new to this one (adopt takes those).
+		if !deletable(c, prev, p) {
 			continue
 		}
 		if err := s.repo().Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -427,6 +532,20 @@ func (s *Syncer) commitExport(r *Report) error {
 	}
 	r.Committed = true
 	return g.run("commit", "-q", "-m", "Sync from "+hostLabel(s.Host))
+}
+
+// deletable reports whether repo path p, whose live file is gone, reads as
+// deleted: this machine syncs it now (c), and did at its last sync (prev).
+// One it has only just started syncing is on its way in, not out.
+func deletable(c, prev *sandboxcfg.Config, p string) bool {
+	if _, err := LiveTarget(c, p); err != nil {
+		return false
+	}
+	if prev == nil {
+		return false
+	}
+	_, err := LiveTarget(prev, p)
+	return err == nil
 }
 
 func fileMode(exec bool) os.FileMode {
@@ -463,7 +582,69 @@ func (s *Syncer) pull(r *Report) error {
 		return err
 	}
 	r.Merged = true
+	return s.applyAll(old, r)
+}
+
+// applyAll applies what changed since old; and when that changed the
+// sandbox config itself, applies it again under the new rules, which may
+// sync what the old ones left in the repo.
+func (s *Syncer) applyAll(old string, r *Report) error {
+	if err := s.apply(old, r); err != nil {
+		return err
+	}
+	if !slices.Contains(r.Applied, datadir.SandboxConfig) {
+		return nil
+	}
+	r.SandboxConfig = true
+	sb, err := datadir.LoadSandboxConfig(s.DataDir, nil)
+	if err != nil || sb.Err != nil {
+		// Kept by the old rules: doctor and the next launch say why.
+		return nil
+	}
+	s.Sandbox, r.Ignored = sb, nil
 	return s.apply(old, r)
+}
+
+// adopt takes from the repo each file this machine has only just started
+// syncing -- its rules name it, the last sync's did not -- that it does not
+// have: those are other machines' files, not ones deleted here.
+func (s *Syncer) adopt(r *Report) error {
+	c, err := s.rules()
+	if err != nil {
+		return err
+	}
+	prev := s.prevRules()
+	modes, err := s.modes()
+	if err != nil {
+		return err
+	}
+	for _, p := range slices.Sorted(maps.Keys(modes)) {
+		t, err := LiveTarget(c, p)
+		if err != nil || modes[p] != "100644" && modes[p] != "100755" {
+			continue
+		}
+		if prev != nil {
+			if _, err := LiveTarget(prev, p); err == nil {
+				continue
+			}
+		}
+		if _, err := s.live().Lstat(t.Rel); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		data, err := s.git().out("cat-file", "blob", "HEAD:"+p)
+		if err != nil {
+			return err
+		}
+		switch err := s.write(t, data, false, modes[p] == "100755"); {
+		case errors.Is(err, nofollow.ErrNotPlain):
+			r.Refused = appendNew(r.Refused, t.Rel)
+		case err != nil:
+			return fmt.Errorf("applying %s: %w", p, err)
+		default:
+			r.Applied = appendNew(r.Applied, t.Rel)
+		}
+	}
+	return nil
 }
 
 // merge merges the remote into HEAD, settling conflicts. On ErrAborted (or
@@ -503,7 +684,12 @@ func (s *Syncer) settle(p string) error {
 		return err
 	}
 	var res Resolution
-	if strings.HasSuffix(p, ".json") && c.Ours != nil && c.Theirs != nil {
+	if rules, err := s.rules(); err == nil {
+		if t, err := LiveTarget(rules, p); err == nil {
+			c.JSON = t.Rule.Merge == sandboxcfg.MergeJSON
+		}
+	}
+	if c.JSON && c.Ours != nil && c.Theirs != nil {
 		merged, keys, err := MergeJSON(c.Base, c.Ours, c.Theirs, NoSide)
 		switch {
 		case err != nil:
@@ -579,6 +765,10 @@ func (s *Syncer) resolve(p string, res Resolution) error {
 // apply writes to the data dir what changed in the repo since old, which is
 // what the data dir held when this sync exported it.
 func (s *Syncer) apply(old string, r *Report) error {
+	c, err := s.rules()
+	if err != nil {
+		return err
+	}
 	g := s.git()
 	out, err := g.out("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z", old, "HEAD")
 	if err != nil {
@@ -591,7 +781,7 @@ func (s *Syncer) apply(old string, r *Report) error {
 	}
 	for i := 0; i+1 < len(fields); i += 2 {
 		status, p := fields[i], fields[i+1]
-		t, err := LiveTarget(p)
+		t, err := LiveTarget(c, p)
 		// Only files: a symlink (120000) or a submodule a remote
 		// committed is nothing this machine writes.
 		if mode := modes[p]; err != nil || (status != "D" && mode != "100644" && mode != "100755") {
@@ -605,6 +795,10 @@ func (s *Syncer) apply(old string, r *Report) error {
 			}
 		}
 		err = s.write(t, data, status == "D", modes[p] == "100755")
+		if errors.Is(err, errKeptFile) {
+			r.Ignored = appendNew(r.Ignored, p)
+			continue
+		}
 		if errors.Is(err, nofollow.ErrNotPlain) {
 			// Left as it is; the next export keeps the repo's copy
 			// rather than reading it as changed.
@@ -614,7 +808,7 @@ func (s *Syncer) apply(old string, r *Report) error {
 		if err != nil {
 			return fmt.Errorf("applying %s: %w", p, err)
 		}
-		r.Applied = append(r.Applied, t.Rel)
+		r.Applied = appendNew(r.Applied, t.Rel)
 	}
 	sort.Strings(r.Ignored)
 	sort.Strings(r.Refused)
@@ -646,52 +840,44 @@ func appendNew(list []string, s string) []string {
 	return append(list, s)
 }
 
+// errKeptFile is write's refusal to delete a keep entry that is a file: a
+// single-file bind mount, which the container would go on reading, deleted.
+// The next export sends it again.
+var errKeptFile = errors.New("a kept file is never deleted by a sync")
+
 // write puts one file into the data dir, or deletes it. A path that is, or
 // runs through, a symlink or a hard link is nofollow.ErrNotPlain, and left
 // alone: a symlink someone made is theirs, and is never written through.
 func (s *Syncer) write(t Target, data []byte, del, exec bool) error {
-	if t.ClaudeJSON {
-		return s.writeClaudeJSON(t.Rel, data, del)
+	if t.Keys() {
+		return s.writeKeys(t, data, del)
 	}
 	live := s.live()
-	if del {
-		if fi, err := live.Lstat(t.Rel); err == nil && !fi.Mode().IsRegular() {
-			return &fs.PathError{Op: "remove", Path: t.Rel, Err: nofollow.ErrNotPlain}
-		}
-		if err := live.Remove(t.Rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		s.pruneEmpty(path.Dir(t.Rel), stopDir(t.Rel))
-		return nil
-	}
 	fi, err := live.Lstat(t.Rel)
 	switch {
 	case err == nil && !fi.Mode().IsRegular():
 		return &fs.PathError{Op: "write", Path: t.Rel, Err: nofollow.ErrNotPlain}
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return err
+	case del && t.InPlace:
+		return errKeptFile
+	case del:
+		if err := live.Remove(t.Rel); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		s.pruneEmpty(path.Dir(t.Rel), t.Stop)
+		return nil
+	case t.InPlace && err == nil:
+		// A file mount is pinned to its inode: never replaced.
+		return live.WriteInPlace(t.Rel, data)
 	}
 	// Written beside it and renamed over it, so a symlink swapped in since
 	// the check is replaced, not followed.
 	return live.WriteFile(t.Rel, data, fileMode(exec))
 }
 
-// stopDir is the directory deletions never prune: the synced dir a path is
-// in (skills/, a project's memory/), which must survive being emptied.
-func stopDir(rel string) string {
-	parts := strings.Split(rel, "/")
-	n := 2 // .claude/<dir>
-	if len(parts) > 2 && parts[1] == "projects" {
-		n = 4 // .claude/projects/<key>/memory
-	}
-	if len(parts) < n {
-		n = len(parts)
-	}
-	return strings.Join(parts[:n], "/")
-}
-
 // pruneEmpty removes dir and its empty parents, up to but not including
-// stop, all relative to the data dir.
+// stop (Target.Stop), all relative to the data dir.
 func (s *Syncer) pruneEmpty(dir, stop string) {
 	for dir != stop && strings.HasPrefix(dir, stop+"/") {
 		if s.live().Remove(dir) != nil {
@@ -701,11 +887,11 @@ func (s *Syncer) pruneEmpty(dir, stop string) {
 	}
 }
 
-// writeClaudeJSON merges the synced keys into .claude.json (rel) in place:
-// it is a single-file bind mount, so a rename over it would fail, and every
-// key not synced is this machine's alone.
-func (s *Syncer) writeClaudeJSON(rel string, data []byte, del bool) error {
-	cur, _, err := s.live().ReadFile(rel)
+// writeKeys merges the synced keys of a JSON file (t.Rule.Keys) into the
+// live one: every key not synced is this machine's alone. In place for a
+// kept file, a single-file bind mount that a rename over would break.
+func (s *Syncer) writeKeys(t Target, data []byte, del bool) error {
+	cur, _, err := s.live().ReadFile(t.Rel)
 	missing := errors.Is(err, fs.ErrNotExist)
 	if err != nil && !missing {
 		return err
@@ -715,7 +901,7 @@ func (s *Syncer) writeClaudeJSON(rel string, data []byte, del bool) error {
 		v, err := decode(cur)
 		m, ok := v.(map[string]any)
 		if err != nil || !ok {
-			return fmt.Errorf("%s does not parse as a JSON object; left as it is", rel)
+			return fmt.Errorf("%s does not parse as a JSON object; left as it is", t.Rel)
 		}
 		live = m
 	}
@@ -724,11 +910,11 @@ func (s *Syncer) writeClaudeJSON(rel string, data []byte, del bool) error {
 		v, err := decode(data)
 		m, ok := v.(map[string]any)
 		if err != nil || !ok {
-			return fmt.Errorf("the synced %s is not a JSON object", RepoClaudeJSON)
+			return fmt.Errorf("the synced ~/%s is not a JSON object", t.Home)
 		}
 		synced = m
 	}
-	for _, k := range ClaudeJSONKeys {
+	for _, k := range t.Rule.Keys {
 		if v, ok := synced[k]; ok {
 			live[k] = v
 		} else {
@@ -742,10 +928,10 @@ func (s *Syncer) writeClaudeJSON(rel string, data []byte, del bool) error {
 	if bytes.Equal(out, cur) {
 		return nil
 	}
-	if missing {
-		return s.live().WriteFile(rel, out, 0o644)
+	if missing || !t.InPlace {
+		return s.live().WriteFile(t.Rel, out, 0o644)
 	}
-	return s.live().WriteInPlace(rel, out)
+	return s.live().WriteInPlace(t.Rel, out)
 }
 
 // push sends HEAD to the remote branch.

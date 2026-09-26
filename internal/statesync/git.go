@@ -12,8 +12,8 @@ import (
 // gitConfig overrides what a user's global git config could otherwise do to
 // the sync repo: sign commits (and prompt for a passphrase), run hooks,
 // rewrite line endings, or detect renames the merge should not guess at.
-// Remotes, credentials and url rewrites still come from the user's config,
-// which is how a push reaches their server.
+// In the container the global config is not read at all (the launcher's
+// syncGit): it can arrive by sync, and must not steer the sync's own push.
 var gitConfig = []string{
 	"-c", "commit.gpgsign=false",
 	"-c", "tag.gpgsign=false",

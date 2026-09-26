@@ -34,6 +34,15 @@ var fileKeys = map[string]string{
 // name, each mounted at /work/<name>, in place of repo_root.
 const rootsKey = "roots"
 
+// formatKey is config.toml's structure, a whole number. A file without
+// one is from before it had one, and read as FileFormat.
+const formatKey = "format"
+
+// FileFormat is the config.toml structure this caboose reads and writes. A
+// file of a newer one is refused: it may mean something this caboose
+// cannot tell.
+const FileFormat = 1
+
 // File is an environment's config.toml as read: each setting's value by its
 // CABOOSE_ name, as an environment variable would give it.
 type File struct {
@@ -41,8 +50,8 @@ type File struct {
 	Vals map[string]string
 	// Roots is the [roots] table: host path by name, as written.
 	Roots map[string]string
-	// Persist is the [persist] table, checked, in name order.
-	Persist []Persist
+	// Format is the file's format key, 0 when it has none.
+	Format int
 }
 
 // readFile reads path, or returns nil when there is none. Every key must be
@@ -76,10 +85,15 @@ func ParseFile(path string, data []byte) (*File, error) {
 			}
 			continue
 		}
-		if k == persistKey {
-			if f.Persist, err = readPersist(path, v); err != nil {
-				return nil, err
+		if k == formatKey {
+			n, ok := v.(int64)
+			switch {
+			case !ok || n < 1:
+				return nil, fmt.Errorf("%s: format must be a whole number, 1 or more", path)
+			case n > FileFormat:
+				return nil, fmt.Errorf("%s is format %d, and this caboose reads up to format %d: 'caboose update' installs one that reads it", path, n, FileFormat)
 			}
+			f.Format = int(n)
 			continue
 		}
 		name, ok := fileKeys[k]
@@ -108,7 +122,7 @@ func ParseFile(path string, data []byte) (*File, error) {
 			known = append(known, k)
 		}
 		sort.Strings(known)
-		known = append(known, "["+rootsKey+"]", "["+persistKey+"]")
+		known = append(known, formatKey, "["+rootsKey+"]")
 		return nil, fmt.Errorf("%s: unknown setting %s (known: %s)", path,
 			strings.Join(unknown, ", "), strings.Join(known, ", "))
 	}
@@ -149,7 +163,11 @@ func ValidRootName(name string) bool { return envName.MatchString(name) }
 // Template is the config.toml `caboose setup` writes: every setting,
 // commented out, at its default.
 const Template = `# This environment's settings. Each can also be set for one shell by the
-# CABOOSE_ variable in brackets, which wins over this file.
+# CABOOSE_ variable in brackets, which wins over this file. What the sandbox
+# keeps of its home, and what of that syncs, is not here: that is the
+# sandbox's own ~/.config/caboose/sandbox.toml.
+
+format = 1    # this file's structure
 
 # The directory holding your projects, mounted into the container at /work.
 # [CABOOSE_REPO_ROOT]
@@ -159,14 +177,6 @@ const Template = `# This environment's settings. Each can also be set for one sh
 #[roots]
 #dev = "~/dev"
 #work = "~/work"
-
-# Directories under the container's home to keep across restarts, for tools
-# that keep their config there. Each is kept in the data dir (persist/<name>),
-# never on the host's own path, and must sit directly in ~, ~/.config,
-# ~/.local, ~/.local/share or ~/.cache. A change needs 'caboose restart'.
-#[persist]
-#aws = "~/.aws"
-#foo = "~/.config/foo"
 
 # An image to build the sandbox on, instead of caboose's own default.
 # [CABOOSE_BASE_IMAGE]

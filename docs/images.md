@@ -187,7 +187,7 @@ build`.
 ## Switching between images
 
 Claude Code's builds only run on the libc and arch they were built for, so
-the data dir keeps one install per platform, in `dot_local/<platform>`
+the data dir keeps one install per platform, in `local/<platform>`
 (`linux-x64`, `linux-arm64`, `linux-x64-musl`, `linux-arm64-musl`). A
 container mounts the one its image's platform label names. The first
 container on a new platform installs Claude Code into its dir; switching
@@ -200,4 +200,4 @@ Each platform in use keeps its own `CABOOSE_KEEP_VERSIONS` versions, at
 ~224MB each. `caboose status` shows the disk used per platform dir, and
 `caboose prune` only prunes the mounted one and names the others. A platform
 dir no image uses any more is never deleted for you; remove
-the data dir's `dot_local/<platform>` by hand once you're sure.
+the data dir's `local/<platform>` by hand once you're sure.

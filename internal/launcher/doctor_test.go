@@ -89,7 +89,7 @@ func TestDoctorSyncBothWays(t *testing.T) {
 	c := here.doctorSync("")
 	key := statesync.ProjectKey("/work/p")
 	wantLines(t, c,
-		"  ! sync  2 changes here not sent yet (claude/projects/"+key+"/memory/mine.md, claude/projects/"+key+
+		"  ! sync  2 changes here not sent yet (home/.claude/projects/"+key+"/memory/mine.md, home/.claude/projects/"+key+
 			"/memory/more.md); 'caboose sync' syncs",
 		"  ! sync  the remote has changes not taken yet; 'caboose sync' syncs")
 	// Nothing taken, nothing sent: a fetch is all doctor does.
@@ -125,8 +125,8 @@ func TestDoctorSyncManyChanges(t *testing.T) {
 		here.write(filepath.Join(here.data, memRel("p", f)), f)
 	}
 	wantLines(t, here.doctorSync("--offline"),
-		"  ! sync  5 changes here not sent yet (claude/projects/"+statesync.ProjectKey("/work/p")+
-			"/memory/a.md, claude/projects/"+statesync.ProjectKey("/work/p")+"/memory/b.md, claude/projects/"+
+		"  ! sync  5 changes here not sent yet (home/.claude/projects/"+statesync.ProjectKey("/work/p")+
+			"/memory/a.md, home/.claude/projects/"+statesync.ProjectKey("/work/p")+"/memory/b.md, home/.claude/projects/"+
 			statesync.ProjectKey("/work/p")+"/memory/c.md, and 2 more); the next launch with nothing running syncs, or 'caboose sync'",
 		"  – sync  not checked: the remote: --offline")
 	if here.ranGit() {
@@ -200,9 +200,9 @@ func TestDoctorSyncSecretsAndLinks(t *testing.T) {
 	}
 	c := here.doctorSync("--offline")
 	wantLines(t, c,
-		"  ✗ sync  refusing to sync; these look like they hold a credential: claude/projects/"+
+		"  ✗ sync  refusing to sync; these look like they hold a credential: home/.claude/projects/"+
 			statesync.ProjectKey("/work/p")+"/memory/leak.md (remove it and sync again; nothing was committed)",
-		"  ! sync  not synced, being symlinks or hard links (never followed): .claude/projects/"+
+		"  ! sync  not synced, being symlinks or hard links (never followed): home/.claude/projects/"+
 			statesync.ProjectKey("/work/q")+"/memory")
 }
 

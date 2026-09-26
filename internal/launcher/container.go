@@ -185,55 +185,6 @@ func mountList(roots []config.Root) string {
 // sshDir is where the container has the sandbox's ~/.ssh.
 const sshDir = config.ContainerHome + "/.ssh"
 
-// mountedPersist is what the container has mounted from the data dir's
-// persist/: the [persist] entries it was created with. ok is false when the
-// container cannot be asked (it does not exist, or docker does not answer):
-// then the configuration is about to be the truth.
-func (a *App) mountedPersist() (ps []config.Persist, ok bool) {
-	mounts, err := a.Docker.Mounts(a.Cfg.Container)
-	if err != nil || len(mounts) == 0 {
-		return nil, false
-	}
-	// Docker records a source as it was given, which may be the data dir's
-	// physical path rather than the configured one.
-	roots := []string{filepath.Join(a.Cfg.DataDir, datadir.PersistRoot)}
-	if p, err := config.Physical(a.Cfg.DataDir); err == nil && p != a.Cfg.DataDir {
-		roots = append(roots, filepath.Join(p, datadir.PersistRoot))
-	}
-	for _, m := range mounts {
-		for _, r := range roots {
-			if filepath.Dir(filepath.Clean(m.Source)) == r {
-				rel := strings.TrimPrefix(m.Destination, config.ContainerHome+"/")
-				ps = append(ps, config.Persist{Name: filepath.Base(m.Source), Path: "~/" + rel, Rel: rel, Container: m.Destination})
-				break
-			}
-		}
-	}
-	return ps, true
-}
-
-// persistDrift says how the running container's persisted directories
-// differ from the configuration's, as what follows "the container", or ""
-// when they do not (or it cannot say).
-func (a *App) persistDrift() string {
-	mounted, ok := a.mountedPersist()
-	if !ok || config.SamePersist(mounted, a.Cfg.Persist) {
-		return ""
-	}
-	return fmt.Sprintf("persists %s; the configuration says %s",
-		config.DescribePersist(mounted), config.DescribePersist(a.Cfg.Persist))
-}
-
-// warnIfPersistDrifted says when the running container keeps other
-// directories than the configuration now asks for. Only a warning, as for
-// the roots: the fix, a restart, kills sessions.
-func (a *App) warnIfPersistDrifted() {
-	if d := a.persistDrift(); d != "" {
-		a.Note("the container %s.", d)
-		a.Note("run 'caboose restart' to remount (this kills running sessions).")
-	}
-}
-
 // warnIfRootsDrifted says when the running container mounts other roots, or
 // mounts them elsewhere, than the configuration now says: a root changed,
 // added or removed since the container was created. Only a warning, as for
@@ -249,13 +200,19 @@ func (a *App) warnIfRootsDrifted() {
 
 // prepareDataDir and syncSandboxInstructions are cheap and idempotent, so
 // they run on every launch and also repair a data dir that lost a piece --
-// not just freshly created ones.
+// not just freshly created ones. What is kept, and so created and mounted,
+// is the sandbox config's (keep.go), whose defaults are written here when
+// there is none and no sync could bring one.
 func (a *App) prepareDataDir() error {
-	if err := datadir.EnsureLayout(a.Cfg.DataDir); err != nil {
-		return Die("preparing %s: %v", a.Cfg.DataDir, err)
+	if err := a.writeSandboxDefaults(); err != nil {
+		return Die("%v", err)
 	}
-	if err := datadir.EnsurePersist(a.Cfg.DataDir, a.Cfg.Persist); err != nil {
-		return Die("preparing %s/%s: %v", a.Cfg.DataDir, datadir.PersistRoot, err)
+	sb, err := a.sandboxConfig()
+	if err != nil {
+		return Die("%v", err)
+	}
+	if err := datadir.EnsureLayout(a.Cfg.DataDir, sb.Keep); err != nil {
+		return Die("preparing %s: %v", a.Cfg.DataDir, err)
 	}
 	return nil
 }
@@ -323,7 +280,7 @@ func (a *App) syncSandboxInstructions() error {
 		return Die("installing sandbox CLAUDE.md: %v", err)
 	}
 	if changed {
-		a.Note("installed sandbox CLAUDE.md into %s/.claude/CLAUDE.md", a.Cfg.DataDir)
+		a.Note("installed sandbox CLAUDE.md into %s/%s/CLAUDE.md", a.Cfg.DataDir, datadir.ClaudeDir)
 	}
 	return nil
 }
@@ -405,10 +362,16 @@ func (a *App) createContainer(mayBuild bool) error {
 	args = append(args, a.sshAgentArgs()...)
 
 	d := c.DataDir
-	args = append(args,
-		"-v", d+"/.claude:/home/agent/.claude",
-		"-v", d+"/.claude.json:/home/agent/.claude.json",
-	)
+	// What the sandbox keeps of its home: the sandbox config's [[keep]]
+	// entries, each kept in the data dir's home/, never at a host path of
+	// the sandbox's choosing, so it reaches no more of the host than it
+	// did. Directories, but for a file entry or two: git, jj and gh save by
+	// rename, which a single-file mount refuses with EBUSY.
+	sb, err := a.sandboxConfig()
+	if err != nil {
+		return Die("%v", err)
+	}
+	args = append(args, keepMounts(d, sb)...)
 	// The Claude Code build for this image's platform (datadir's platform.go
 	// has why each piece is split, the update staging included).
 	pm := datadir.PlatformMounts(platform)
@@ -416,26 +379,11 @@ func (a *App) createContainer(mayBuild bool) error {
 		"-v", d+"/"+pm[0]+":/home/agent/.local/bin",
 		"-v", d+"/"+pm[1]+":/home/agent/.local/share/claude",
 		"-v", d+"/"+pm[2]+":/home/agent/.cache/claude",
-		// Directories, not the config files in them: git, jj and gh save by
-		// rename, which a single-file mount refuses with EBUSY.
-		"-v", d+"/dot_config/git:/home/agent/.config/git",
-		"-v", d+"/dot_config/jj:/home/agent/.config/jj",
-		"-v", d+"/dot_config/gh:/home/agent/.config/gh",
-		// known_hosts and the sandbox's own ssh config; no keys (datadir.SSHDir).
-		"-v", d+"/"+datadir.SSHDir+":"+sshDir,
 		// caboose sync's repo: the container's git runs it (launcher/sync.go).
 		"-v", d+"/"+datadir.SyncDir+":"+statesync.ContainerDir,
 		// Where sessions propose what only the host can change (apply.go).
 		"-v", d+"/"+datadir.ProposalsDir+":"+proposal.ContainerDir,
-		// The user's start.d and shell.d (entrypoint.sh, shellrc.bash).
-		"-v", d+"/"+datadir.CabooseConfig+":/home/agent/.config/caboose",
 	)
-	// config.toml's [persist]: each kept in the data dir, never at a host
-	// path of the user's choosing, so the sandbox reaches no more of the
-	// host than it did.
-	for _, p := range c.Persist {
-		args = append(args, "-v", d+"/"+datadir.PersistDir(p.Name)+":"+p.Container)
-	}
 	// Each root at a path of its own that is the same on every machine:
 	// /work, or /work/<name> for several (config.WorkDir).
 	for _, r := range c.Roots {
@@ -688,6 +636,9 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		return err
 	}
 	a.exportProposals()
+	if sb, err := a.sandboxConfig(); err == nil {
+		a.noteSandboxConfig(sb)
+	}
 	a.notePendingProposals()
 	created := false
 	switch a.state() {
@@ -696,7 +647,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 			return err
 		}
 		a.warnIfRootsDrifted()
-		a.warnIfPersistDrifted()
+		a.warnIfKeepDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {
 			return err

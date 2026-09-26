@@ -88,7 +88,7 @@ func TestSyncCommand(t *testing.T) {
 	data, remote, git := syncEnv(t, mountedHere)
 	// The project's key as the sandbox has it: under /work, whatever HOME is.
 	key := statesync.ProjectKey("/work/proj")
-	mem := filepath.Join(data, ".claude", "projects", key, "memory")
+	mem := filepath.Join(data, "home", ".claude", "projects", key, "memory")
 	if err := os.MkdirAll(mem, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestSyncCommand(t *testing.T) {
 			t.Errorf("stderr lacks %q:\n%s", w, errs)
 		}
 	}
-	got, err := exec.Command(git, "--git-dir", remote, "show", "main:claude/projects/"+key+"/memory/m.md").CombinedOutput()
+	got, err := exec.Command(git, "--git-dir", remote, "show", "main:home/.claude/projects/"+key+"/memory/m.md").CombinedOutput()
 	if err != nil || string(got) != "a fact\n" {
 		t.Errorf("the remote holds %q (%v)", got, err)
 	}

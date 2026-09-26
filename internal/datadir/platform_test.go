@@ -15,7 +15,7 @@ func TestEnsurePlatformLayout(t *testing.T) {
 	if err := EnsurePlatformLayout(dir, "linux-x64-musl"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"dot_local/linux-x64-musl/bin", "dot_local/linux-x64-musl/share/claude", "dot_local/linux-x64-musl/cache/claude"}
+	want := []string{"local/linux-x64-musl/bin", "local/linux-x64-musl/share/claude", "local/linux-x64-musl/cache/claude"}
 	if got := PlatformMounts("linux-x64-musl"); !reflect.DeepEqual(got, want) {
 		t.Errorf("PlatformMounts = %q", got)
 	}
@@ -25,7 +25,7 @@ func TestEnsurePlatformLayout(t *testing.T) {
 		}
 	}
 	// Created with the umask, like the rest of the layout.
-	if m := perm(t, filepath.Join(dir, "dot_local/linux-x64-musl")); m != 0o775 {
+	if m := perm(t, filepath.Join(dir, "local/linux-x64-musl")); m != 0o775 {
 		t.Errorf("mode %v, want 0775", m)
 	}
 	if err := EnsurePlatformLayout(dir, "../x"); err == nil {
@@ -34,10 +34,10 @@ func TestEnsurePlatformLayout(t *testing.T) {
 	// EnsureLayout, which runs on every launch, creates no platform dir:
 	// those are made for the image a container is created from.
 	fresh := t.TempDir()
-	if err := EnsureLayout(fresh); err != nil {
+	if err := EnsureLayout(fresh, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range []string{"dot_local"} {
+	for _, d := range []string{"local"} {
 		if _, err := os.Lstat(filepath.Join(fresh, d)); err == nil {
 			t.Errorf("EnsureLayout created %s", d)
 		}
@@ -47,14 +47,14 @@ func TestEnsurePlatformLayout(t *testing.T) {
 func TestPlatformDirsIn(t *testing.T) {
 	dir := t.TempDir()
 	if got, err := PlatformDirsIn(dir); err != nil || got != nil {
-		t.Errorf("no dot_local: %q, %v", got, err)
+		t.Errorf("no local/: %q, %v", got, err)
 	}
 	for _, d := range []string{"linux-x64-musl", "linux-arm64", "bin", "share", ".tmp-linux-x64", "linux-sparc"} {
-		if err := os.MkdirAll(filepath.Join(dir, "dot_local", d), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, "local", d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "dot_local/linux-x64"), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "local/linux-x64"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := PlatformDirsIn(dir); err != nil || !reflect.DeepEqual(got, []string{"linux-arm64", "linux-x64-musl"}) {
@@ -63,10 +63,10 @@ func TestPlatformDirsIn(t *testing.T) {
 }
 
 func TestMountedLocalDir(t *testing.T) {
-	if d, p, ok := MountedLocalDir("/d/dot_local/linux-arm64/bin"); !ok || d != "/d/dot_local/linux-arm64" || p != "linux-arm64" {
+	if d, p, ok := MountedLocalDir("/d/local/linux-arm64/bin"); !ok || d != "/d/local/linux-arm64" || p != "linux-arm64" {
 		t.Errorf("platform dir: %q, %q, %v", d, p, ok)
 	}
-	for _, src := range []string{"/d/dot_local/bin", "/elsewhere/bin"} {
+	for _, src := range []string{"/d/local/bin", "/elsewhere/bin"} {
 		if d, p, ok := MountedLocalDir(src); ok || d != "" || p != "" {
 			t.Errorf("MountedLocalDir(%q) = %q, %q, %v; want no platform dir", src, d, p, ok)
 		}

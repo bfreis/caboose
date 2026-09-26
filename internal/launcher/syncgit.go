@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bfreis/caboose/internal/statesync"
@@ -44,6 +45,13 @@ exit "$s"`
 const knownHosts = statesync.ContainerDir + "/.git/known_hosts"
 
 // syncGit runs the sync's git in the container.
+//
+// It never reads the sandbox's global git config (GIT_CONFIG_GLOBAL is
+// /dev/null): that file can arrive by sync from another machine, and an
+// url.*.insteadOf, a core.sshCommand or a credential helper in it would
+// redirect the sync's own push. What the sync needs of it is passed on the
+// command line instead: gh's credential helper, when gh is in the image,
+// for an HTTPS remote. Identity is the sync repo's own (statesync.Init).
 type syncGit struct {
 	a *App
 	// auto is a sync nobody is watching: nothing may prompt, and what
@@ -52,15 +60,27 @@ type syncGit struct {
 	deadline time.Time
 	// ssh is GIT_SSH_COMMAND for every call, "" to leave ssh alone.
 	ssh string
+	// gh is set when the container has gh, whose credential helper an
+	// HTTPS remote then uses.
+	gh bool
 }
+
+// syncGitProbe prints the container's own ssh command for git, from its
+// environment, and then "gh" when gh is on its PATH: one exec, bash
+// builtins only.
+const syncGitProbe = `printf '%s\n' "${GIT_SSH_COMMAND-}${GIT_SSH-}"; command -v gh >/dev/null && printf gh; true`
+
+// ghHelper is gh's credential helper, as git config spells it.
+const ghHelper = "!gh auth git-credential"
 
 // newSyncGit is the git for one sync: auto for one run at launch.
 func (a *App) newSyncGit(auto bool) *syncGit {
 	g := &syncGit{a: a, auto: auto, deadline: time.Now().Add(syncBudget)}
-	// The sandbox's own ssh command, when it has one, is the user's to
+	out, _ := a.Docker.RawOutput("exec", a.Cfg.Container, "bash", "-c", syncGitProbe)
+	own, rest, _ := strings.Cut(out, "\n")
+	g.gh = strings.TrimSpace(rest) == "gh"
+	// An ssh command the container's environment sets is the user's to
 	// keep; git would take GIT_SSH_COMMAND over it.
-	own, _ := a.Docker.Output("exec", a.Cfg.Container, "bash", "-c",
-		`printf '%s' "${GIT_SSH_COMMAND-}${GIT_SSH-}"; git config --get core.sshCommand`)
 	if own == "" {
 		g.ssh = "ssh -o 'UserKnownHostsFile=" + knownHosts + " ~/.ssh/known_hosts'"
 		if auto {
@@ -78,6 +98,7 @@ func (g *syncGit) command(remote, interactive bool, args ...string) *exec.Cmd {
 	if !g.auto && interactive && tty.IsTerminal(os.Stdin.Fd()) {
 		argv = append(argv, "-t")
 	}
+	argv = append(argv, "-e", "GIT_CONFIG_GLOBAL=/dev/null")
 	if g.auto {
 		argv = append(argv, "-e", "GIT_TERMINAL_PROMPT=0")
 	}
@@ -88,7 +109,13 @@ func (g *syncGit) command(remote, interactive bool, args ...string) *exec.Cmd {
 	if g.auto && remote {
 		argv = append(argv, "bash", "-c", watchdog, "watchdog", strconv.Itoa(g.remaining()))
 	}
-	argv = append(append(argv, "git"), args...)
+	argv = append(argv, "git")
+	if g.gh {
+		// The empty one first: it clears any helper the image's system
+		// config names, so gh's is the only one asked.
+		argv = append(argv, "-c", "credential.helper=", "-c", "credential.helper="+ghHelper)
+	}
+	argv = append(argv, args...)
 	return exec.Command(g.a.Docker.Path, argv...)
 }
 

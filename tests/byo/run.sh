@@ -241,14 +241,14 @@ binary_libc() {
 # CONTAINER path /home/agent/.local/share/claude/versions/<v> (see
 # datadir.HasInstall), so only its last component is used.
 installed() {
-    local link; link="$(readlink "$DATA/dot_local/$1/bin/claude" 2>/dev/null)" || return 0
-    [ -n "$link" ] && printf '%s\n' "$DATA/dot_local/$1/share/claude/versions/${link##*/}"
+    local link; link="$(readlink "$DATA/local/$1/bin/claude" 2>/dev/null)" || return 0
+    [ -n "$link" ] && printf '%s\n' "$DATA/local/$1/share/claude/versions/${link##*/}"
 }
 # snapshot <platform>: what a reinstall or an update would change -- the
 # versions (names, sizes, mtimes) and where the launcher symlink points.
 snapshot() {
-    LC_ALL=C ls -l "$DATA/dot_local/$1/share/claude/versions" 2>&1
-    readlink "$DATA/dot_local/$1/bin/claude" 2>&1
+    LC_ALL=C ls -l "$DATA/local/$1/share/claude/versions" 2>&1
+    readlink "$DATA/local/$1/bin/claude" 2>&1
 }
 
 printf 'caboose BYO image suite: %s\n' "$CC"
@@ -347,8 +347,8 @@ check 'on CABOOSE_BASE_IMAGE' 1 "$(has "$ERR" "building the caboose layer on '$D
 check 'after checking that base' 1 "$(has "$ERR" "checking base image '$DEB_BASE'")"
 # noteInstall found no bin/claude in the platform dir before the container
 # started, so waitUntilReady says, on its first poll, that it installs.
-check "it said it installs into dot_local/$GLIBC" 1 \
-    "$(has "$ERR" "first run on $GLIBC — installing Claude Code into $DATA/dot_local/$GLIBC")"
+check "it said it installs into local/$GLIBC" 1 \
+    "$(has "$ERR" "first run on $GLIBC — installing Claude Code into $DATA/local/$GLIBC")"
 record_image "$IMAGE"
 check 'the container is running' running \
     "$(docker inspect --type=container -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
@@ -359,16 +359,16 @@ check "its base-id label is that base's ID" \
 check 'no base-hash label: the embedded Dockerfile played no part' '' \
     "$(label "$IMAGE" io.github.bfreis.caboose.base-hash)"
 check 'claude --version works by docker exec too' "$DEB_VERSION" "$(cexec claude --version)"
-check "dot_local/$GLIBC/bin/claude is the installer's symlink" 0 \
-    "$(if [ -L "$DATA/dot_local/$GLIBC/bin/claude" ]; then echo 0; else echo 1; fi)"
+check "local/$GLIBC/bin/claude is the installer's symlink" 0 \
+    "$(if [ -L "$DATA/local/$GLIBC/bin/claude" ]; then echo 0; else echo 1; fi)"
 glibc_bin="$(installed "$GLIBC")"
-check "and points at a version in dot_local/$GLIBC" 0 "$(exists "${glibc_bin:-/nonexistent}")"
+check "and points at a version in local/$GLIBC" 0 "$(exists "${glibc_bin:-/nonexistent}")"
 check 'which is a glibc build' glibc "$(binary_libc "${glibc_bin:-/nonexistent}")"
-check 'no musl dir yet' 1 "$(exists "$DATA/dot_local/$MUSL")"
+check 'no musl dir yet' 1 "$(exists "$DATA/local/$MUSL")"
 check_installs 'the entrypoint installed it' 1
 cc "$DEB" status
 check "status: platform $GLIBC" "$GLIBC" "$(field platform)"
-check "status: local dir is dot_local/$GLIBC" "$DATA/dot_local/$GLIBC" "$(field 'local dir')"
+check "status: local dir is local/$GLIBC" "$DATA/local/$GLIBC" "$(field 'local dir')"
 cc "$DEB" version
 check 'version: the image matches' matches "$(field local | first)"
 check 'version: the container is on it' "$CONTAINER (running, on the current image)" "$(field container)"
@@ -399,8 +399,8 @@ note "restart: recreates the container, installs Claude Code ($MUSL)"
 cc "$ALP" FORCE=1 restart
 check_rc 'restart moves the container onto it' 0
 check 'without building again' 0 "$(has "$ERR" "building the caboose layer")"
-check "saying it installs into dot_local/$MUSL" 1 \
-    "$(has "$ERR" "first run on $MUSL — installing Claude Code into $DATA/dot_local/$MUSL")"
+check "saying it installs into local/$MUSL" 1 \
+    "$(has "$ERR" "first run on $MUSL — installing Claude Code into $DATA/local/$MUSL")"
 cc "$ALP" claude --version
 check_rc 'claude --version runs on musl (the proof)' 0
 check 'and answers as Claude Code' 1 "$(has "$OUT" '(Claude Code)')"
@@ -408,15 +408,15 @@ check 'the container really is Alpine' 0 \
     "$(docker exec "$CONTAINER" test -f /etc/alpine-release >/dev/null 2>&1; echo $?)"
 check_installs 'the entrypoint installed a build for it' 1
 musl_bin="$(installed "$MUSL")"
-check "dot_local/$MUSL holds the install" 0 "$(exists "${musl_bin:-/nonexistent}")"
+check "local/$MUSL holds the install" 0 "$(exists "${musl_bin:-/nonexistent}")"
 check 'which is a musl build' musl "$(binary_libc "${musl_bin:-/nonexistent}")"
-check "dot_local/$GLIBC is untouched" "$glibc_before" "$(snapshot "$GLIBC")"
+check "local/$GLIBC is untouched" "$glibc_before" "$(snapshot "$GLIBC")"
 check 'USE_BUILTIN_RIPGREP=0 on musl' 0 "$(cexec printenv USE_BUILTIN_RIPGREP)"
 check 'the image has the rg it points claude at' 0 \
     "$(docker exec "$CONTAINER" sh -c 'command -v rg' >/dev/null 2>&1; echo $?)"
 cc "$ALP" status
 check "status: platform $MUSL" "$MUSL" "$(field platform)"
-check "status: local dir is dot_local/$MUSL" "$DATA/dot_local/$MUSL" "$(field 'local dir')"
+check "status: local dir is local/$MUSL" "$DATA/local/$MUSL" "$(field 'local dir')"
 cc "$ALP" version
 check 'version: the container is on the current image' \
     "$CONTAINER (running, on the current image)" "$(field container)"
@@ -459,8 +459,8 @@ check 'the launcher announced no install' 0 "$(has "$ERR" "installing Claude Cod
 # A fresh container, so its log is this boot's only.
 check_installs 'the entrypoint installed nothing' 0
 check 'it came up ready' 1 "$(docker logs "$CONTAINER" 2>&1 | grep -cF 'caboose: ready')"
-check "dot_local/$GLIBC is as it was" "$glibc_before" "$(snapshot "$GLIBC")"
-check "dot_local/$MUSL is left as it was" "$musl_before" "$(snapshot "$MUSL")"
+check "local/$GLIBC is as it was" "$glibc_before" "$(snapshot "$GLIBC")"
+check "local/$MUSL is left as it was" "$musl_before" "$(snapshot "$MUSL")"
 cc "$DEB" claude --version
 check_rc 'claude --version works again' 0
 check 'the same version as before' "$DEB_VERSION" "$(tr -d '\r' <"$OUT")"

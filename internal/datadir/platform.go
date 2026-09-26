@@ -12,14 +12,14 @@ import (
 )
 
 // Claude Code's native builds only run on the libc and arch they were built
-// for, and they live in the persisted ~/.local. With one shared dot_local, a
+// for, and they live in the persisted ~/.local. With one shared local/, a
 // data dir first used with a glibc image and then with a musl one would find
 // the glibc claude installed, skip the install and fail to exec it. So
-// everything built for one platform lives under dot_local/<platform>/:
+// everything built for one platform lives under local/<platform>/:
 //
-//	dot_local/<platform>/bin           -> ~/.local/bin
-//	dot_local/<platform>/share/claude  -> ~/.local/share/claude
-//	dot_local/<platform>/cache/claude  -> ~/.cache/claude
+//	local/<platform>/bin           -> ~/.local/bin
+//	local/<platform>/share/claude  -> ~/.local/share/claude
+//	local/<platform>/cache/claude  -> ~/.cache/claude
 //
 // ~/.cache/claude is split too, although it is not under ~/.local: it is
 // Claude Code's update staging (cache/claude/staging), where a new version's
@@ -32,8 +32,10 @@ import (
 // staging into versions crosses mounts either way.)
 //
 // ~/.local/state is not persisted (it holds per-boot locks), which is why
-// ~/.local is not simply one mount of dot_local/<platform>.
-const LocalRoot = "dot_local"
+// ~/.local is not simply one mount of local/<platform>. It is caboose's
+// machinery, not something the sandbox config keeps, so it sits beside
+// home/ rather than in it.
+const LocalRoot = "local"
 
 // The pieces of a platform dir, relative to it, each its own mount.
 const (
@@ -82,7 +84,7 @@ func EnsurePlatformLayout(dir, platform string) error {
 	return nil
 }
 
-// PlatformDirsIn lists the platform dirs dot_local holds, sorted. Anything
+// PlatformDirsIn lists the platform dirs local/ holds, sorted. Anything
 // else in it is not listed.
 func PlatformDirsIn(dir string) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(dir, LocalRoot))
