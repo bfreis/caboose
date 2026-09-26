@@ -1,0 +1,45 @@
+# Pushing a v* tag builds the launcher for darwin/linux x amd64/arm64 and
+# publishes a GitHub release with the archives, checksums.txt and
+# install.sh -- what every install made by install.sh updates itself from,
+# once the release is the latest. All of it is configured in
+# .goreleaser.yaml.
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: write
+
+# Two tags pushed together would race on which release is the latest.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # goreleaser needs the tags and history for the changelog.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # A tag publishes whatever it points at, green or not.
+      - name: go test
+        run: go test ./...
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

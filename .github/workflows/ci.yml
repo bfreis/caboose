@@ -1,0 +1,48 @@
+# The checks `make lint` and `make go-test` run, minus staticcheck. The
+# integration suite (tests/run.sh) needs a real docker and a built image, so
+# it stays a local `make test`.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # vet and test above compile the linux build only; half the release
+      # targets are darwin, with their own tty code.
+      - name: go vet (darwin)
+        run: GOOS=darwin go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: shellcheck
+        run: shellcheck -S warning entrypoint.sh tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh

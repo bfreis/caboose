@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="22.5 18.5 200 132" width="200" height="132">
+  <g stroke="#FBEFD9" stroke-width="7" stroke-linejoin="round"><g fill="#FBEFD9">
+    <circle cx="74" cy="132" r="13"/><circle cx="166" cy="132" r="13"/>
+    <rect x="36" y="112" width="168" height="9" rx="2"/>
+    <rect x="28" y="108" width="20" height="5" rx="1.5"/><rect x="192" y="108" width="20" height="5" rx="1.5"/>
+    <rect x="30" y="80" width="3" height="30"/><rect x="207" y="80" width="3" height="30"/>
+    <rect x="30" y="80" width="18" height="3" rx="1.5"/><rect x="192" y="80" width="18" height="3" rx="1.5"/>
+    <rect x="44" y="56" width="152" height="8" rx="3"/>
+    <rect x="90" y="24" width="60" height="8" rx="3"/>
+  </g>
+  <circle cx="74" cy="132" r="4" fill="#FBEFD9"/><circle cx="166" cy="132" r="4" fill="#FBEFD9"/>
+  <rect x="48" y="63" width="144" height="50" rx="3" fill="#FBEFD9"/><rect x="64" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="76" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="88" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="100" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="112" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="124" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="136" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="148" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="160" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="172" y="70" width="4" height="38" rx="2" fill="#FBEFD9"/><rect x="48" y="63" width="8" height="8" rx="1.5" fill="#FBEFD9"/><rect x="184" y="63" width="8" height="8" rx="1.5" fill="#FBEFD9"/><rect x="48" y="105" width="8" height="8" rx="1.5" fill="#FBEFD9"/><rect x="184" y="105" width="8" height="8" rx="1.5" fill="#FBEFD9"/><rect x="96" y="31" width="48" height="26" fill="#FBEFD9"/><rect x="102" y="36" width="36" height="17" rx="2" fill="#FBEFD9"/>
+  <path d="M108 40 l6 4.5 -6 4.5" fill="none" stroke="#FBEFD9" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="118" y="47.5" width="12" height="2.6" rx="1.3" fill="#FBEFD9"/><circle cx="212" cy="74" r="5" fill="#FBEFD9"/></g>
+  <g fill="#2A2521">
+    <circle cx="74" cy="132" r="13"/><circle cx="166" cy="132" r="13"/>
+    <rect x="36" y="112" width="168" height="9" rx="2"/>
+    <rect x="28" y="108" width="20" height="5" rx="1.5"/><rect x="192" y="108" width="20" height="5" rx="1.5"/>
+    <rect x="30" y="80" width="3" height="30"/><rect x="207" y="80" width="3" height="30"/>
+    <rect x="30" y="80" width="18" height="3" rx="1.5"/><rect x="192" y="80" width="18" height="3" rx="1.5"/>
+    <rect x="44" y="56" width="152" height="8" rx="3"/>
+    <rect x="90" y="24" width="60" height="8" rx="3"/>
+  </g>
+  <circle cx="74" cy="132" r="4" fill="#8A817A"/><circle cx="166" cy="132" r="4" fill="#8A817A"/>
+  <rect x="48" y="63" width="144" height="50" rx="3" fill="#C8472F"/><rect x="64" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="76" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="88" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="100" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="112" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="124" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="136" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="148" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="160" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="172" y="70" width="4" height="38" rx="2" fill="#9E3322"/><rect x="48" y="63" width="8" height="8" rx="1.5" fill="#9E3322"/><rect x="184" y="63" width="8" height="8" rx="1.5" fill="#9E3322"/><rect x="48" y="105" width="8" height="8" rx="1.5" fill="#9E3322"/><rect x="184" y="105" width="8" height="8" rx="1.5" fill="#9E3322"/><rect x="96" y="31" width="48" height="26" fill="#C8472F"/><rect x="102" y="36" width="36" height="17" rx="2" fill="#FBEFD9"/>
+  <path d="M108 40 l6 4.5 -6 4.5" fill="none" stroke="#C8472F" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="118" y="47.5" width="12" height="2.6" rx="1.3" fill="#C8472F"/><circle cx="212" cy="74" r="5" fill="#F2B233"/>
+</svg>

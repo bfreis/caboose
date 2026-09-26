@@ -1,0 +1,82 @@
+# Release build for the caboose launcher: `goreleaser release --clean`, run by
+# .github/workflows/release.yml on a v* tag. A local dry run that publishes
+# nothing is `goreleaser release --snapshot --clean --skip=publish` (dist/).
+#
+# Only the launcher is released, with install.sh, which installs it. The
+# image is not: the binary carries the Dockerfile, entrypoint.sh and
+# tmux.conf embedded, and builds the image on the user's machine the first
+# time it runs. An install made by install.sh updates itself from these
+# releases (internal/selfupdate), so the archives' names, their layout
+# (caboose at the root) and checksums.txt are what it downloads: change them
+# only together with it, and with install.sh.
+version: 2
+
+project_name: caboose
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - id: caboose
+    main: ./cmd/caboose
+    binary: caboose
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      # "v" + .Version, not .Tag: the same string as the tag for a release
+      # (the workflow only runs on v<digit> tags), and v0.0.0-SNAPSHOT-<sha> for
+      # a --snapshot, where .Tag would be the last real tag. The "v" matches
+      # what `git describe` and `go install ...@vX` report.
+      - -X github.com/bfreis/caboose/internal/version.Version=v{{ .Version }}
+      - -X github.com/bfreis/caboose/internal/version.Commit={{ .Commit }}
+      - -X github.com/bfreis/caboose/internal/version.Date={{ .CommitDate }}
+    # Times from the commit, not the clock (here, in the stamped Date, and in
+    # the archive entries below), so a rebuild of the same tag gives the same
+    # archives. The Makefile stamps the commit date too.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      owner: root
+      group: root
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: README.md
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        info:
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  github:
+    owner: bfreis
+    name: caboose
+  # A tag like v1.0.0-rc.1 is published as a prerelease, which is never
+  # releases/latest: neither install.sh nor an update takes it unasked.
+  prerelease: auto
+  # releases/latest/download/install.sh is the one-line install.
+  extra_files:
+    - glob: ./install.sh

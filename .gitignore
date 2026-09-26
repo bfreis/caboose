@@ -1,0 +1,30 @@
+# Generated and per-machine. Nothing in here is source.
+#
+# Persistent sandbox state — the account's live OAuth credential, prompt
+# history, session transcripts, the ~224MB Claude Code binaries — is not
+# here to ignore: it lives in $CABOOSE_DATA_DIR, by default under
+# ~/.caboose, outside this checkout on purpose. A tracked .gitignore cannot
+# protect live state — checking out a commit that predates the file
+# un-ignores everything it covered, and the next snapshot takes it.
+#
+# The sandbox's own CLAUDE.md is tracked at sandbox/CLAUDE.md and copied into
+# the data dir's .claude/ by the launcher on every start.
+
+# Claude Code worktree scratch space, created inside whatever checkout it is
+# working in. Empty here today; a `git add -A` must not start tracking it.
+/.claude/worktrees/
+
+# The launcher, built from cmd/caboose by `make launcher`. It sits at the repo
+# root, where PATH symlinks and the Makefile expect it, but it is build output.
+# caboose.platform records the GOOS/GOARCH it was built for, so a binary from
+# another platform (the sandbox shares this checkout) gets rebuilt.
+/caboose
+/caboose.platform
+
+# The version the launcher was stamped with at its last `make launcher`,
+# recorded next to caboose.platform so a binary with a stale stamp gets rebuilt.
+/caboose.version
+
+# goreleaser's output: the release archives and checksums
+# from `goreleaser release` (or a `--snapshot` dry run). Build output only.
+/dist/
