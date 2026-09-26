@@ -18,5 +18,5 @@ import "embed"
 // `caboose build`, which keeps the allowlist property .dockerignore gave
 // the checkout-based build: nothing unlisted can drift into the context.
 //
-//go:embed Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf sandbox/CLAUDE.md imagecheck.sh
+//go:embed Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh
 var Files embed.FS

@@ -90,6 +90,8 @@ cleanup_config_probes() {
         rm -f "$JJ_CFG.bak"
     fi
     rm -f "$GH_DIR/caboose-test-probe"
+    rm -f "$DATA_DIR"/dot_config/caboose/start.d/caboose-test-* \
+          "$DATA_DIR"/dot_config/caboose/shell.d/caboose-test.*
     return 0
 }
 
@@ -230,6 +232,21 @@ restore
 check 'real version survived the suite' 0 "$(exists "$VERSIONS/$real")"
 check 'and so did every other real one' "$reals" "$(versions_now)"
 
+group 'start.d and shell.d'
+# Written on the host, into the data dir, as a user would: two start-up
+# scripts that must run one after the other at the restart below, in name
+# order, and a shell.d pair that every bash must read, the .sh before the
+# .bash. Checked after that restart, in this group's second half.
+START_D="$DATA_DIR/dot_config/caboose/start.d"
+SHELL_D="$DATA_DIR/dot_config/caboose/shell.d"
+mkdir -p "$START_D" "$SHELL_D"
+printf '#!/bin/sh\nsleep 1; echo one >> /tmp/caboose-test-start\n' > "$START_D/caboose-test-1"
+printf '#!/bin/sh\necho two >> /tmp/caboose-test-start\n' > "$START_D/caboose-test-2"
+printf '#!/bin/sh\necho never >> /tmp/caboose-test-start\n' > "$START_D/caboose-test-3"
+chmod +x "$START_D/caboose-test-1" "$START_D/caboose-test-2"
+printf 'caboose_test_shelld=sh\n' > "$SHELL_D/caboose-test.sh"
+printf 'caboose_test_shelld="$caboose_test_shelld bash"\n' > "$SHELL_D/caboose-test.bash"
+
 group 'stale runtime state'
 mkdir -p "$DATA_DIR/.claude/sessions" "$DATA_DIR/.claude/daemon"
 echo '{"pid":99999}' > "$DATA_DIR/.claude/daemon.lock"
@@ -241,6 +258,23 @@ check 'PID-keyed session files cleared on restart' "" \
     "$(ls -1 "$DATA_DIR/.claude/sessions" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 check 'stale daemon.lock cleared' 1 "$(exists "$DATA_DIR/.claude/daemon.lock")"
 check 'stale roster.json cleared'  1 "$(exists "$DATA_DIR/.claude/daemon/roster.json")"
+
+group 'start.d and shell.d, after the restart'
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ "$(cexec cat /tmp/caboose-test-start | wc -l | tr -d ' ')" -ge 2 ] && break
+    sleep 1
+done
+check 'start.d ran its executables one at a time, in name order' 'one two' \
+    "$(cexec cat /tmp/caboose-test-start | tr '\n' ' ' | sed 's/ $//')"
+check 'and said so in the container log' 1 \
+    "$(docker logs "$CONTAINER" 2>&1 | grep -c 'caboose: start.d/caboose-test-2: running')"
+check 'tini signals the whole process group on stop' TINI_KILL_PROCESS_GROUP=1 \
+    "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | grep '^TINI_KILL_PROCESS_GROUP=')"
+check 'an interactive bash reads shell.d, the .sh first' 'sh bash' \
+    "$(cexec bash -ic 'echo "caboose-test:$caboose_test_shelld"' | sed -n 's/^caboose-test://p')"
+check 'and so does a login bash (a tmux window)' 'sh bash' \
+    "$(cexec bash -lc 'echo "caboose-test:$caboose_test_shelld"' | sed -n 's/^caboose-test://p')"
+rm -f "$START_D"/caboose-test-* "$SHELL_D"/caboose-test.*
 # The probes the 'tool config' group wrote from inside, read from inside a
 # fresh container: what `gh auth login` and `git config --global` save has to
 # outlive a recreation.

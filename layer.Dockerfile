@@ -41,6 +41,9 @@ COPY entrypoint.sh /usr/local/bin/caboose-entrypoint
 # happens to an entry that already holds the UID or GID. It stays in the
 # image, as a record of how the user was made.
 COPY layer-user.sh /usr/local/lib/caboose/layer-user.sh
+
+# The shell.d loader, which the ~/.bashrc layer-user.sh sets up sources.
+COPY shellrc.bash /usr/local/lib/caboose/shellrc.bash
 RUN ["/bin/sh", "-c", "exec /bin/sh /usr/local/lib/caboose/layer-user.sh \"$CABOOSE_UID\" \"$CABOOSE_GID\""]
 
 # Bind-mounted from the host (see the launcher for the full list). Claude Code

@@ -402,6 +402,7 @@ esac
 		"/home/agent/.ssh":                "dir dot_ssh",
 		"/home/agent/.caboose-sync":       "dir sync",
 		"/home/agent/.caboose-proposals":  "dir proposals",
+		"/home/agent/.config/caboose":     "dir dot_config/caboose",
 		"/home/agent/.aws":                "dir persist/aws",
 		"/home/agent/.config/foo":         "dir persist/foo",
 	}

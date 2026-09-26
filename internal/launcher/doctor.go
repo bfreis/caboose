@@ -318,6 +318,20 @@ func (a *App) doctorDataDir(c *checkup) {
 			plural(len(keys), "a private key file", "private key files"), strings.Join(keys, ", "),
 			filepath.Join(cfg.DataDir, datadir.SSHDir), plural(len(keys), "it", "them"), "~/.ssh/"+strings.Join(keys, " ~/.ssh/"))
 	}
+	// start.d, as the entrypoint will run it at the next container start.
+	switch run, skipped, err := datadir.StartScripts(cfg.DataDir); {
+	case err != nil:
+		c.unchecked("start.d", "%v", err)
+	default:
+		if len(run) > 0 {
+			c.ok("start.d", "%s, run at container start%s", strings.Join(run, ", "), plural(len(run), "", ", in that order"))
+		}
+		if len(skipped) > 0 {
+			c.note("start.d", "%s in %s %s not executable, so not run at container start; to run %s: chmod +x %s",
+				strings.Join(skipped, ", "), filepath.Join(cfg.DataDir, datadir.StartDir), plural(len(skipped), "is", "are"),
+				plural(len(skipped), "it", "them"), "~/.config/caboose/start.d/"+strings.Join(skipped, " ~/.config/caboose/start.d/"))
+		}
+	}
 	if extra := a.unconfiguredPersist(); len(extra) > 0 {
 		c.note("persist", "%s in %s %s no longer in [persist], so not mounted; %s kept, with what %s, until you delete %s",
 			strings.Join(extra, ", "), filepath.Join(cfg.DataDir, datadir.PersistRoot), plural(len(extra), "is", "are"),

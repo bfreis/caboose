@@ -280,8 +280,44 @@ fi
 # root-owned, and every other tool that keeps config there would fail. The
 # list is the launcher's mounts (internal/launcher/container.go).
 for d in .claude .local/bin .local/share/claude .local/state .cache/claude \
-         .config/git .config/jj .config/gh; do
+         .config/git .config/jj .config/gh .config/caboose; do
     mkdir -p "$R$home/$d" || die "cannot create $home/$d"
 done
+
+# --- shell ----------------------------------------------------------------
+
+# Every interactive bash reads ~/.config/caboose/shell.d, through the loader
+# layer.Dockerfile puts at $shellrc: one line in ~/.bashrc sources it, added
+# once to the ~/.bashrc the image has, if any, or to a new one. A login
+# bash (a tmux window) reads no ~/.bashrc of its own accord, only the first
+# of ~/.bash_profile, ~/.bash_login and ~/.profile; with none of them, a
+# ~/.bash_profile that sources ~/.bashrc is added. One the image has is left
+# as it is.
+shellrc=/usr/local/lib/caboose/shellrc.bash
+rc_line="if [ -r $shellrc ]; then . $shellrc; fi"
+bashrc=$R$home/.bashrc
+[ ! -L "$bashrc" ] || die "$home/.bashrc is a symlink: the layer adds a line to it, so the image must not have one there"
+have=no
+lines=no
+nonl=no
+if [ -f "$bashrc" ]; then
+    # A last line with no newline is read too, and noted.
+    while IFS= read -r l || { [ -n "$l" ] && nonl=yes; }; do
+        [ "$l" = "$rc_line" ] && have=yes
+        lines=yes
+    done < "$bashrc"
+fi
+if [ "$have" = no ]; then
+    add="# caboose: ~/.config/caboose/shell.d (see $shellrc)$nl$rc_line$nl"
+    # After a blank line, and the newline the file may lack.
+    [ "$lines" = no ] || add="$nl$add"
+    [ "$nonl" = no ] || add="$nl$add"
+    printf '%s' "$add" >> "$bashrc" || die "cannot write $home/.bashrc"
+fi
+if [ ! -e "$R$home/.bash_profile" ] && [ ! -e "$R$home/.bash_login" ] && [ ! -e "$R$home/.profile" ] &&
+   [ ! -L "$R$home/.bash_profile" ]; then
+    write "$R$home/.bash_profile" "# caboose: a login bash reads ~/.bashrc too$nl""if [ -f ~/.bashrc ]; then . ~/.bashrc; fi$nl"
+fi
+
 chown -R "$uid:$gid" "$R$home" || die "cannot chown $home"
 exit 0

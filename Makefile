@@ -19,7 +19,7 @@ CC       := ./$(LAUNCHER)
 # here is what makes that automatic. Test files do not reach the binary.
 GO_SRC   := go.mod $(wildcard go.sum) \
             $(shell find . -name '*.go' -not -name '*_test.go' -not -path './.*')
-EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf sandbox/CLAUDE.md imagecheck.sh
+EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh
 GO_LDFLAGS ?=
 
 .DEFAULT_GOAL := help
@@ -130,14 +130,14 @@ shell: $(CC)
 # machine nothing is known about yet, and shellcheck reads their #!/bin/sh
 # as a request to hold them to POSIX sh.
 lint:
-	@set -e; for f in entrypoint.sh tests/run.sh tests/byo/run.sh; do \
+	@set -e; for f in entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh; do \
 	    bash -n "$$f" && echo "  ok  $$f"; \
 	  done; \
 	  for f in imagecheck.sh layer-user.sh install.sh; do \
 	    sh -n "$$f" && echo "  ok  $$f"; \
 	  done; \
 	  if command -v shellcheck >/dev/null 2>&1; then \
-	    shellcheck -S warning entrypoint.sh tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh \
+	    shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh \
 	      && echo "  ok  shellcheck"; \
 	  else \
 	    echo "  --  shellcheck not installed, skipped"; \

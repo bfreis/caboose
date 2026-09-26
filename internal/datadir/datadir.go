@@ -42,7 +42,22 @@ var Dirs = []string{
 	SSHDir,
 	SyncDir,
 	ProposalsDir,
+	StartDir,
+	ShellDir,
 }
+
+// CabooseConfig is the sandbox's ~/.config/caboose, the user's own
+// configuration of it: StartDir and ShellDir. Mounted whole, as one
+// directory, and written from both sides -- by hand on the host, or by a
+// session -- so the host only ever reads it through nofollow.
+const CabooseConfig = "dot_config/caboose"
+
+// StartDir holds the scripts the entrypoint runs at container start, in
+// name order (run_start_scripts in entrypoint.sh).
+const StartDir = CabooseConfig + "/start.d"
+
+// ShellDir holds what every interactive bash reads (shellrc.bash).
+const ShellDir = CabooseConfig + "/shell.d"
 
 // ProposalsDir is where sessions leave proposals for 'caboose apply'
 // (internal/proposal), mounted so that they can write them. Created here
@@ -180,6 +195,38 @@ func PrivateKeysIn(dir string) ([]string, error) {
 		}
 	}
 	return keys, nil
+}
+
+// StartScripts lists StartDir as the entrypoint's run_start_scripts will
+// see it, in the order it runs them: run holds what it runs, skipped the
+// files it passes over for not being executable. Dotfiles, backups (*~)
+// and directories are neither. A symlink is listed in run: the container
+// follows it, and the host, reading through nofollow, does not look.
+func StartScripts(dir string) (run, skipped []string, err error) {
+	entries, err := nofollow.Dir(dir).ReadDir(StartDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") {
+			continue
+		}
+		switch t := e.Type(); {
+		case t&fs.ModeSymlink != 0:
+			run = append(run, name)
+		case t.IsRegular():
+			if info, err := e.Info(); err == nil && info.Mode()&0o111 != 0 {
+				run = append(run, name)
+			} else {
+				skipped = append(skipped, name)
+			}
+		}
+	}
+	return run, skipped, nil
 }
 
 // privateKeyHeader is how every private key format ssh reads starts:

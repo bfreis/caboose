@@ -143,7 +143,7 @@ func TestBuildOnDefaultBase(t *testing.T) {
 	if bs[1].argv != want {
 		t.Errorf("layer build\n%s\nwant\n%s", bs[1].argv, want)
 	}
-	if bs[1].context != "entrypoint.sh layer-user.sh layer.Dockerfile tmux.conf" {
+	if bs[1].context != "entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf" {
 		t.Errorf("layer context held %q", bs[1].context)
 	}
 	ctxDir(t, bs[0].argv)

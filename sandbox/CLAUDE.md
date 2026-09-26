@@ -62,6 +62,24 @@ the environment's `config.toml` names its directory in `[persist]` — a
 host-side setting: propose it (below) rather than work around it from in
 here. `mount` in here, or `caboose status` on the host, shows what is kept.
 
+## Start-up scripts and shell config: ~/.config/caboose
+
+Two directories there survive restarts and are yours to write when asked,
+with no proposal: they run as this user, in here, and reach nothing more.
+
+- `start.d/`: executables run once at container start, one at a time in
+  name order (`10-foo` before `20-bar`), in `~`; a daemon is started in the
+  background by its script (`foo &`), or the ones after it wait. Output is
+  in `caboose logs` on the host. Run one by hand to try it now.
+- `shell.d/`: read by every interactive bash, this tool's snapshot of the
+  shell included. `*.sh` must work in bash and zsh alike (aliases, exports,
+  plain functions); `*.bash` is for bash only. A new file reaches the next
+  shell. An alias here changes what your own commands do, so add only what
+  was asked for.
+
+Say what you wrote, and that a `start.d` script runs at the next start
+(`caboose restart` on the host), unless it was run by hand.
+
 ## Changing the sandbox: propose it, the user applies it
 
 Nothing in here can change the image, `config.toml` or the roots: they

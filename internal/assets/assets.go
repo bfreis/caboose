@@ -39,6 +39,7 @@ var (
 		{Name: "layer-user.sh", Mode: 0o755},
 		{Name: "entrypoint.sh", Mode: 0o755},
 		{Name: "tmux.conf", Mode: 0o644},
+		{Name: "shellrc.bash", Mode: 0o644},
 	}
 )
 

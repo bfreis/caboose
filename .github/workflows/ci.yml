@@ -45,4 +45,4 @@ jobs:
         run: go test ./...
 
       - name: shellcheck
-        run: shellcheck -S warning entrypoint.sh tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh
+        run: shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh

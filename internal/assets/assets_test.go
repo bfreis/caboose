@@ -55,7 +55,7 @@ func TestWriteContextsWriteOnlyTheirFiles(t *testing.T) {
 		want  string
 	}{
 		{WriteBaseContext, "Dockerfile"},
-		{WriteLayerContext, "entrypoint.sh layer-user.sh layer.Dockerfile tmux.conf"},
+		{WriteLayerContext, "entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf"},
 	} {
 		dir := t.TempDir()
 		if err := tc.write(dir); err != nil {

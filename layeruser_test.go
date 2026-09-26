@@ -87,6 +87,10 @@ const (
 	rootShadow  = "root:*:19000:0:99999:7:::\n"
 	rootGshadow = "root:*::\n"
 	dialout     = "dialout:x:20:\n"
+
+	rcLine      = "if [ -r /usr/local/lib/caboose/shellrc.bash ]; then . /usr/local/lib/caboose/shellrc.bash; fi\n"
+	rcBlock     = "# caboose: ~/.config/caboose/shell.d (see /usr/local/lib/caboose/shellrc.bash)\n" + rcLine
+	bashProfile = "# caboose: a login bash reads ~/.bashrc too\nif [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
 )
 
 func TestLayerUser(t *testing.T) {
@@ -104,7 +108,25 @@ func TestLayerUser(t *testing.T) {
 				"etc/group":   rootGroup + "agent:x:1000:\n",
 				"etc/shadow":  rootShadow + "agent:!:::::::\n",
 				"etc/gshadow": rootGshadow + "agent:!::\n",
+
+				"home/agent/.bashrc":       rcBlock,
+				"home/agent/.bash_profile": bashProfile,
 			}},
+		// The image's own shell files: ~/.bashrc gets the line, after a
+		// blank one and the newline it lacked; a ~/.profile means a login
+		// bash is the image's business, and no ~/.bash_profile is added.
+		{"shell files of the image's", "1000", "1000",
+			files{"etc/passwd": rootPasswd, "etc/group": rootGroup,
+				"home/agent/.bashrc": "alias ll='ls -l'", "home/agent/.profile": "PATH=$PATH:/x\n"},
+			files{
+				"home/agent/.bashrc":       "alias ll='ls -l'\n\n" + rcBlock,
+				"home/agent/.profile":      "PATH=$PATH:/x\n",
+				"home/agent/.bash_profile": "<absent>",
+			}},
+		{"a bashrc ending in a newline", "1000", "1000",
+			files{"etc/passwd": rootPasswd, "etc/group": rootGroup, "home/agent/.bashrc": "# mine\n",
+				"home/agent/.bash_login": ""},
+			files{"home/agent/.bashrc": "# mine\n\n" + rcBlock, "home/agent/.bash_profile": "<absent>"}},
 		// ubuntu:24.04 and later ship a user and group ubuntu at 1000: the
 		// user is taken over, the group reused as it is.
 		{"uid held by ubuntu", "1000", "1000",
@@ -273,7 +295,7 @@ func TestLayerUser(t *testing.T) {
 					}
 				}
 				for _, d := range []string{".claude", ".local/bin", ".local/share/claude", ".local/state",
-					".cache/claude", ".config/git", ".config/jj", ".config/gh"} {
+					".cache/claude", ".config/git", ".config/jj", ".config/gh", ".config/caboose"} {
 					if fi, err := os.Stat(filepath.Join(im.root, "home/agent", d)); err != nil || !fi.IsDir() {
 						t.Errorf("no ~/%s: %v", d, err)
 					}

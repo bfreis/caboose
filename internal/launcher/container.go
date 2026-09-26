@@ -357,6 +357,10 @@ func (a *App) createContainer(mayBuild bool) error {
 		// Reap zombies: a long-lived container accumulates them from agents,
 		// MCP servers and tool subprocesses in a way a --rm one never did.
 		"--init",
+		// And on docker stop, signal the entrypoint's whole process group,
+		// not the entrypoint alone: what a start.d script left running is
+		// in it, and would otherwise die by SIGKILL, never hearing a TERM.
+		"-e", "TINI_KILL_PROCESS_GROUP=1",
 	}
 
 	// Claude Code's musl build cannot run the ripgrep it bundles, and is
@@ -423,6 +427,8 @@ func (a *App) createContainer(mayBuild bool) error {
 		"-v", d+"/"+datadir.SyncDir+":"+statesync.ContainerDir,
 		// Where sessions propose what only the host can change (apply.go).
 		"-v", d+"/"+datadir.ProposalsDir+":"+proposal.ContainerDir,
+		// The user's start.d and shell.d (entrypoint.sh, shellrc.bash).
+		"-v", d+"/"+datadir.CabooseConfig+":/home/agent/.config/caboose",
 	)
 	// config.toml's [persist]: each kept in the data dir, never at a host
 	// path of the user's choosing, so the sandbox reaches no more of the

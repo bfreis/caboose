@@ -7,9 +7,9 @@ means day to day is in the installed `~/.claude/CLAUDE.md`, whose source is
 
 ## Changes here need a rebuild, and it has to happen on the host
 
-`Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh` and
-`tmux.conf` are baked into the image. The launcher is a Go binary,
-`./caboose`, built from `cmd/` and `internal/` and gitignored, with those
+`Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
+`tmux.conf` and `shellrc.bash` are baked into the image. The launcher is a
+Go binary, `./caboose`, built from `cmd/` and `internal/` and gitignored, with those
 files, `sandbox/CLAUDE.md` and `imagecheck.sh` embedded in it; the bind
 mounts it sets up are fixed when the container is created. None of it is
 read live, so an edit alone changes nothing:
@@ -30,8 +30,8 @@ the checkout — a stale `./caboose` would build the old image.
 A running container cannot rebuild the image it runs from, and recreating the
 container kills the session doing the asking — so whenever you touch
 `Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
-`tmux.conf` or the launcher's Go code, **say that a host terminal has to
-run `make build && make restart`**, or the change looks applied and isn't
+`tmux.conf`, `shellrc.bash` or the launcher's Go code, **say that a host
+terminal has to run `make build && make restart`**, or the change looks applied and isn't
 (`imagecheck.sh` is in no image: it needs only the launcher rebuilt). Never
 build `./caboose` in here: the checkout is shared with the host, so a linux
 binary there replaces the host's own, and `make launcher` refuses inside the
@@ -75,7 +75,8 @@ embedded in it instead.
 | `Dockerfile` | the default base image: OS packages and toolchains, nothing agent-specific; its optional parts are marked sections, which `caboose setup image` cuts it down to (`internal/assets/preset.go`) |
 | `layer.Dockerfile` | the layer built on every base: the agent user, its home, the entrypoint, `tmux.conf`, `HOME`/`PATH`/`LANG` |
 | `layer-user.sh` | the layer's user setup, POSIX sh editing /etc/passwd, group, shadow directly; tested by `layeruser_test.go` |
-| `entrypoint.sh` | container entrypoint; bootstraps Claude Code, clears stale session state, prunes versions, idles as PID 1 |
+| `entrypoint.sh` | container entrypoint; bootstraps Claude Code, clears stale session state, prunes versions, runs the user's `start.d` in the background, idles under tini |
+| `shellrc.bash` | the `shell.d` loader every interactive bash sources, through the line `layer-user.sh` adds to `~/.bashrc`; tested by `shellrc_test.go` |
 | `tmux.conf` | tmux configuration baked into the image, set up to own no keys |
 | `imagecheck.sh` | the image probe, POSIX sh, run by `caboose check-image` and before every layer build; reports facts only, embedded but in no image |
 | `internal/imagecheck` | the requirements table the probe's output is judged against (the requirements table in `docs/images.md` mirrors it), and the checklist |
@@ -262,6 +263,18 @@ outside the repo.
   under `~/.local` are read by both installers; change them together, or
   every existing install stops updating. Prereleases are never
   `releases/latest`, so neither installer takes one unasked.
+- **`start.d` and `shell.d` are the user's, and the sandbox's.** Both sit
+  in the data dir's `dot_config/caboose`, mounted at `~/.config/caboose`,
+  and a session may write them: they run as the agent, in the container,
+  and widen nothing, which is why they are not a proposal. The host never
+  runs them and reads them only through `nofollow`
+  (`datadir.StartScripts`, for doctor). `start.d` runs one script at a time
+  in byte order, never through a pipe (a daemon would hold it open), and
+  after the ready file, so it never holds up a launch; tini signals the
+  entrypoint's whole process group (`TINI_KILL_PROCESS_GROUP`) so what the
+  scripts left running hears the stop. `shellrc.bash` sources at the top
+  level, not in a function, where a file's `declare`s would turn local, so
+  every name of its own is `__caboose_`-prefixed and unset after.
 - **`sandbox/CLAUDE.md` is sandbox-wide.** It is read by every session in
   every project, so project-specific instructions — including everything in
   this file — do not belong there. It also ships to every user, so it names

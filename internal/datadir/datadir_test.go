@@ -678,3 +678,37 @@ func TestPrivateKeysIn(t *testing.T) {
 		t.Errorf("keys = %q, want %q", keys, want)
 	}
 }
+
+// StartScripts sees start.d as the entrypoint runs it: executables and
+// links in byte order, files that are not executable apart, and dotfiles,
+// backups and directories not at all.
+func TestStartScripts(t *testing.T) {
+	dir := t.TempDir()
+	if run, skipped, err := StartScripts(dir); err != nil || run != nil || skipped != nil {
+		t.Fatalf("no start.d: %v %v %v", run, skipped, err)
+	}
+	sd := filepath.Join(dir, StartDir)
+	if err := os.MkdirAll(filepath.Join(sd, "25-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, mode := range map[string]os.FileMode{
+		"20-b": 0o755, "10-a": 0o700, "B": 0o755, "15-plain": 0o644, "30-c~": 0o755, ".hidden": 0o755,
+	} {
+		if err := os.WriteFile(filepath.Join(sd, name), nil, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("/nowhere", filepath.Join(sd, "40-link")); err != nil {
+		t.Fatal(err)
+	}
+	run, skipped, err := StartScripts(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"10-a", "20-b", "40-link", "B"}; !reflect.DeepEqual(run, want) {
+		t.Errorf("run = %v, want %v", run, want)
+	}
+	if want := []string{"15-plain"}; !reflect.DeepEqual(skipped, want) {
+		t.Errorf("skipped = %v, want %v", skipped, want)
+	}
+}

@@ -81,6 +81,7 @@ caboose help               # every command
 | [Commands](docs/commands.md) | every command, and `caboose doctor` |
 | [Configuration](docs/configuration.md) | `config.toml`, repo roots, environments, `caboose setup`, git identity |
 | [How it works](docs/how-it-works.md) | the container, persistent state, tmux, terminal rendering |
+| [Start-up scripts and shell config](docs/startup.md) | `start.d` run at container start, `shell.d` read by every bash |
 | [Proposals](docs/proposals.md) | sessions asking for a tool, a kept directory or a root; `caboose apply` |
 | [Use your own image](docs/images.md) | building on another image, and what it must contain |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |

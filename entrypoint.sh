@@ -7,11 +7,16 @@
 #       behind by a previous container, signals readiness, then idles so the
 #       container outlives any individual session.
 #
+#   caboose-entrypoint --cc-start
+#       Runs ~/.config/caboose/start.d, as the supervisor does once it is
+#       ready (run_start_scripts). In the foreground, for the tests.
+#
 #   caboose-entrypoint [claude args...]
 #       What `docker exec` runs: hand off to the persisted claude binary.
 set -euo pipefail
 
 READY_FILE=/tmp/.caboose-ready
+START_DIR="$HOME/.config/caboose/start.d"
 CLAUDE_BIN="$HOME/.local/bin/claude"
 VERSIONS_DIR="$HOME/.local/share/claude/versions"
 # Each version is a ~224MB self-contained binary and the updater never removes
@@ -177,10 +182,50 @@ clear_installer_downloads() {
     return 0
 }
 
+# The user's start-up scripts: ~/.config/caboose/start.d, mounted from the
+# data dir's dot_config/caboose/start.d. One at a time, in name order (byte
+# order, whatever the locale), like run-parts: each runs to its end before
+# the next starts, so 20-b may count on what 10-a did, and a daemon is
+# started in the background by its script (`foo &`). Every
+# executable file runs; dotfiles, backups (*~) and anything not executable
+# are skipped. Their output goes to the container's log (`caboose logs`)
+# as it is, unprefixed: a pipe through a prefixer would stay open as long
+# as a daemon holding it lives, and never end. A script that fails is
+# logged, and the next one runs.
+#
+# The supervisor runs this in the background, after the ready file, so a
+# slow script does not hold up a launch. What a script leaves running is in
+# the supervisor's process group, which the launcher has tini signal as a
+# whole (TINI_KILL_PROCESS_GROUP), so a daemon gets its TERM on docker stop.
+run_start_scripts() {
+    [ -d "$START_DIR" ] || return 0
+    local f name rc files lc_all="${LC_ALL-}" had_lc_all="${LC_ALL+x}"
+    # The glob sorts by the collation; C is byte order. LC_ALL, since it
+    # would override LC_COLLATE, and put back before any script runs.
+    LC_ALL=C
+    files=("$START_DIR"/*)
+    if [ -n "$had_lc_all" ]; then LC_ALL="$lc_all"; else unset LC_ALL; fi
+    for f in "${files[@]}"; do
+        name="${f##*/}"
+        case "$name" in *~) continue ;; esac
+        [ -f "$f" ] && [ -x "$f" ] || continue
+        log "start.d/$name: running"
+        rc=0
+        (cd "$HOME" && exec "$f") </dev/null || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log "start.d/$name: exited $rc"
+        fi
+    done
+    return 0
+}
+
 case "${1:-}" in
     --cc-prune)
         prune_old_versions
         clear_installer_downloads
+        ;;
+    --cc-start)
+        run_start_scripts
         ;;
     --cc-supervise)
         ensure_claude_installed
@@ -189,6 +234,7 @@ case "${1:-}" in
         clear_installer_downloads
         : > "$READY_FILE"
         log "ready — $("$CLAUDE_BIN" --version 2>/dev/null || echo 'claude version unknown')"
+        run_start_scripts &
         # No `exec`: a bare `sleep` as PID 1 ignores SIGTERM, making
         # `docker stop` wait out its full timeout before SIGKILL. Trap it.
         trap 'exit 0' TERM INT

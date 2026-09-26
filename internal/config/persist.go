@@ -40,7 +40,7 @@ var PersistParents = []string{"", ".config", ".local", ".local/share", ".cache"}
 var ReservedHome = []string{
 	".claude", ".claude.json",
 	".local/bin", ".local/share/claude", ".local/state", ".cache/claude",
-	".config/git", ".config/jj", ".config/gh",
+	".config/git", ".config/jj", ".config/gh", ".config/caboose",
 	".ssh", ".caboose-sync", ".caboose-proposals",
 }
 

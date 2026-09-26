@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func needBash(t *testing.T) {
@@ -157,5 +158,72 @@ func TestEntrypointPruneEmpty(t *testing.T) {
 	cmd.Env = append(os.Environ(), "HOME="+home)
 	if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
 		t.Errorf("--cc-prune: %v\n%s", err, out)
+	}
+}
+
+// --cc-start runs ~/.config/caboose/start.d the way the supervisor does:
+// every executable file, one at a time in byte order, in the home, carrying
+// on past a failure, skipping dotfiles, backups, directories and files that
+// are not executable, and not waiting for what a script leaves running.
+func TestEntrypointStart(t *testing.T) {
+	needBash(t)
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config/caboose/start.d")
+	if err := os.MkdirAll(filepath.Join(dir, "25-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ran := filepath.Join(home, "ran")
+	script := func(name string, mode os.FileMode, body string) {
+		t.Helper()
+		sh := "#!/bin/sh\necho \"" + name + " $PWD\" >> '" + ran + "'\n" + body
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(sh), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script("20-b", 0o755, "sleep 5 >/dev/null 2>&1 &\n")
+	script("10-a", 0o755, "exit 4\n")
+	script("B", 0o755, "")
+	script("a", 0o755, "")
+	script("15-noexec", 0o644, "")
+	script("30-c~", 0o755, "")
+	script(".hidden", 0o755, "")
+
+	ep, err := filepath.Abs("entrypoint.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", ep, "--cc-start")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--cc-start: %v\n%s", err, out)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("--cc-start took %v: it waited for what a script left running", d)
+	}
+	got, _ := os.ReadFile(ran)
+	want := "10-a " + home + "\n20-b " + home + "\nB " + home + "\na " + home + "\n"
+	if string(got) != want {
+		t.Errorf("ran:\n%s\nwant:\n%s", got, want)
+	}
+	for _, line := range []string{"caboose: start.d/10-a: running", "caboose: start.d/10-a: exited 4", "caboose: start.d/20-b: running"} {
+		if !strings.Contains(string(out), line+"\n") {
+			t.Errorf("no %q in:\n%s", line, out)
+		}
+	}
+	if strings.Contains(string(out), "20-b: exited") {
+		t.Errorf("20-b exited 0, but:\n%s", out)
+	}
+}
+
+// With no start.d at all, --cc-start is a quiet no-op.
+func TestEntrypointStartNone(t *testing.T) {
+	needBash(t)
+	cmd := exec.Command("bash", "entrypoint.sh", "--cc-start")
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir())
+	if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
+		t.Errorf("--cc-start: %v\n%s", err, out)
 	}
 }

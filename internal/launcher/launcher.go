@@ -35,6 +35,7 @@
 //	$CABOOSE_DATA_DIR/dot_config/gh   -> ~/.config/gh   (0700: holds the gh token)
 //	$CABOOSE_DATA_DIR/sync            -> ~/.caboose-sync (caboose sync's repo; git runs it in here)
 //	$CABOOSE_DATA_DIR/proposals       -> ~/.caboose-proposals (sessions' proposals for caboose apply)
+//	$CABOOSE_DATA_DIR/dot_config/caboose -> ~/.config/caboose (start.d, shell.d)
 //	$CABOOSE_REPO_ROOT                -> /work
 //	    (or, with a [roots] table in config.toml, each root -> /work/<name>)
 //

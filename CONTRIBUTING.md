@@ -31,8 +31,8 @@ one throwaway data dir, and so installs Claude Code once per platform. It
 runs on the host too. CI runs gofmt, go vet, go test and shellcheck.
 
 **Changes to the image need a rebuild, on the host.** `Dockerfile`,
-`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh` and `tmux.conf` are
-baked into the image, which is built from the copies embedded in the
+`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `tmux.conf` and
+`shellrc.bash` are baked into the image, which is built from the copies embedded in the
 launcher, so an edit needs `make build && make
 restart` (make rebuilds the launcher for you). A launcher change takes effect
 on the next run, but anything it decides at container creation — mounts,
@@ -46,7 +46,7 @@ binary can go unexpanded.
 The image is not built from the checkout. `caboose build` writes the
 files embedded in the binary into empty temp dirs and builds there — the
 `Dockerfile` alone for the base, then `layer.Dockerfile`, `layer-user.sh`,
-`entrypoint.sh` and `tmux.conf` for the layer — so nothing else in the tree
+`entrypoint.sh`, `tmux.conf` and `shellrc.bash` for the layer — so nothing else in the tree
 — `.git`, `.jj`, whatever is lying around — can reach the Docker daemon.
 That is an allowlist by construction: a file `layer.Dockerfile` starts to
 `COPY` has to be added to `embed.go` and the layer's context too, or the
@@ -67,7 +67,8 @@ image is always built locally.
 | `Dockerfile` | the default base image: OS packages, toolchains, jj |
 | `layer.Dockerfile`, `layer-user.sh` | the layer on every base: the agent user, its home, the entrypoint |
 | `imagecheck.sh` | the probe `caboose check-image` and every build run in the base; `internal/imagecheck` holds the requirements |
-| `entrypoint.sh` | bootstraps Claude Code, clears stale state, prunes versions, idles |
+| `entrypoint.sh` | bootstraps Claude Code, clears stale state, prunes versions, runs `start.d`, idles |
+| `shellrc.bash` | the `shell.d` loader, sourced from the `~/.bashrc` the layer sets up |
 | `tmux.conf` | tmux set up to own no keys, baked into the image |
 | `cmd/caboose`, `internal/` | host launcher, in Go: container lifecycle, mounts, tmux attach, image build |
 | `embed.go` | the files embedded in the launcher, which is all the image build can see |
