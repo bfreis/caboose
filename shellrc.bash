@@ -48,7 +48,9 @@ if [ -d "$HOME/.config/caboose/shell.d" ]; then
         for __caboose_g in "${__caboose_list[@]}"; do
             [ -f "$__caboose_g" ] && [ -r "$__caboose_g" ] || continue
             # No word on a non-zero status: `command -v x && alias ...`
-            # ends that way wherever x is missing.
+            # ends that way wherever x is missing. The files are the
+            # user's, so there is nothing for shellcheck to follow.
+            # shellcheck source=/dev/null
             . "$__caboose_g"
         done
     done
