@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
+	"github.com/bfreis/caboose/internal/tty"
 )
 
 // The sandbox config's own commands: caboose sync add/rm, which edit its
@@ -80,7 +82,9 @@ func (a *App) SyncEdit(op string, args []string) error {
 
 // SyncStatus is caboose sync status: what this machine would send, and, if
 // the container runs (the sync's git runs there), what the remote has for
-// it to take. It changes nothing but what a fetch writes into the sync repo.
+// it to take. It changes nothing but what a fetch writes into the sync repo
+// (and, from a terminal, a host key accepted when ssh asks, as caboose sync
+// would).
 func (a *App) SyncStatus(args []string) error {
 	if len(args) > 0 {
 		return Die("usage: caboose sync status")
@@ -129,11 +133,25 @@ func (a *App) SyncStatus(args []string) error {
 	if err := a.checkSyncMount(); err != nil {
 		return err
 	}
-	g := a.newSyncGit(true)
-	g.deadline = time.Now().Add(doctorBudget)
+	// From a terminal the fetch is caboose sync's: it may ask to accept the
+	// remote's host key, or for credentials, and is not cut short. Only a
+	// status nobody can answer (a script, a pipe) fails instead of asking.
+	interactive := tty.IsTerminal(os.Stdin.Fd()) && tty.IsTerminal(os.Stderr.Fd())
+	g := a.newSyncGit(!interactive)
+	if interactive {
+		s.Stderr = os.Stderr
+	} else {
+		g.deadline = time.Now().Add(doctorBudget)
+	}
 	s.Git = g.command
 	if err := s.Fetch(); err != nil {
-		fmt.Fprintf(out, "to take : not checked: %s\n", proposal.Printable(firstLine(err.Error())))
+		if interactive {
+			// git said why on the terminal, above.
+			fmt.Fprintf(out, "to take : not checked: the fetch failed, as git says above\n")
+			return nil
+		}
+		what, fix := fetchFailure(err)
+		fmt.Fprintf(out, "to take : not checked: %s; %s\n", proposal.Printable(what), fix)
 		return nil
 	}
 	taken, others, err := s.Incoming()

@@ -159,7 +159,7 @@ func TestDoctorSyncProblems(t *testing.T) {
 		{"host key", "hostkey", "  ✗ sync  the remote's SSH host key is not accepted yet",
 			"caboose sync, from a terminal: it asks once to accept the key"},
 		{"no answer", "slow", "  ✗ sync  no answer from the remote in 1s",
-			"check the network (or the remote), then 'caboose doctor' again"},
+			"check the network (or the remote), then try again"},
 		{"no mount", "nomount", "  ✗ sync  the container has no sync mount for this data dir",
 			"caboose restart" + endsSessions},
 	} {
