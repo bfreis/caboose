@@ -125,7 +125,7 @@ var requirements = []requirement{
 	{name: "tool:test", label: "test", tool: true, why: "the launcher's readiness check execs it"},
 	{name: "tool:uname", label: "uname", tool: true, why: "Claude Code's installer picks the build with it"},
 	{name: "tool:mkdir", label: "mkdir", tool: true, why: "Claude Code's installer"},
-	{name: "tool:chmod", label: "chmod", tool: true, why: "Claude Code's installer"},
+	{name: "tool:chmod", label: "chmod", tool: true, why: "Claude Code's installer; the launcher opens Docker Desktop's SSH agent socket with it"},
 	{name: "tool:cut", label: "cut", tool: true, why: "Claude Code's installer"},
 	{name: "tool:sed", label: "sed", tool: true, why: "Claude Code's installer"},
 	{name: "tool:tr", label: "tr", tool: true, why: "Claude Code's installer"},

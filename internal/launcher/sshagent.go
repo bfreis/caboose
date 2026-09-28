@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -115,11 +116,35 @@ func (a *App) agentStatus() (status string, usable bool) {
 		return "forwarded, " + plural(n, "1 key", strconv.Itoa(n)+" keys"), true
 	case code == 1:
 		return "forwarded, but the agent holds no keys", false
+	case code == 2 && strings.Contains(err.Error(), "Permission denied"):
+		return "forwarded, but the sandbox's user may not use it (permission denied)", false
 	case code == 2:
 		return "forwarded, but not reachable from the container", false
 	default:
 		// No ssh-add in the image: nothing to tell from.
 		return "forwarded (not checked: no ssh-add in the image)", true
+	}
+}
+
+// openAgentSocket lets the sandbox's user reach hostServicesAgent where the
+// engine makes it root:root 0660, as Docker Desktop does; OrbStack's is open
+// already. It runs on every launch, not only when the launch starts the
+// container: the engine makes the socket anew each time it starts, and
+// restarts the container itself (--restart unless-stopped), so a launch
+// after an engine restart finds it running with the socket closed again.
+// It changes nothing when that user can write the socket already: under
+// gVisor, where the container runs as root, it never has to. The chmod reaches the socket in the engine's VM, for
+// every container there, but so does root in any of them already.
+func (a *App) openAgentSocket() {
+	mounts, err := a.Docker.Mounts(a.Cfg.Container)
+	if err != nil || !slices.Contains(mounts, docker.Mount{Destination: containerAgent, Source: hostServicesAgent}) {
+		return
+	}
+	if _, err := a.Docker.Output("exec", a.Cfg.Container, "test", "-w", containerAgent); err == nil {
+		return
+	}
+	if _, err := a.Docker.Output("exec", "-u", "0", a.Cfg.Container, "chmod", "0666", containerAgent); err != nil {
+		a.Note("SSH agent: could not open %s to the sandbox's user: %v", containerAgent, err)
 	}
 }
 
@@ -132,10 +157,11 @@ func (a *App) warnIfAgentUnusable() {
 		return
 	}
 	a.Note("SSH agent: %s.", status)
-	if goos == "darwin" {
+	if goos == "darwin" && !strings.Contains(status, "permission denied") {
 		a.Note("  %s forwards the agent it was started with. For 1Password's, make", or(a.macEngine(), "the Docker engine"))
-		a.Note("  SSH_AUTH_SOCK point at it for apps started outside a terminal (1Password:")
-		a.Note("  \"Configure SSH_AUTH_SOCK globally\", https://developer.1password.com/docs/ssh/agent/compatibility/),")
+		a.Note("  SSH_AUTH_SOCK point at it for apps started outside a terminal: the launch")
+		a.Note("  agent in 1Password's \"Configure SSH_AUTH_SOCK globally\" (a section of")
+		a.Note("  https://www.1password.dev/ssh/agent/compatibility/, not a setting),")
 		a.Note("  then restart %s; 'caboose status' shows the agent again.", or(a.macEngine(), "it"))
 	}
 }

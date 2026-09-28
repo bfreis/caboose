@@ -572,9 +572,11 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 func (a *App) agentFix(status string) string {
 	engine := or(a.macEngine(), "the Docker engine")
 	switch {
+	case strings.Contains(status, "permission denied"):
+		return "caboose, in any project: a launch opens the socket to the sandbox's user"
 	case goos == "darwin":
 		return "make SSH_AUTH_SOCK point at your agent for apps started outside a terminal (1Password: " +
-			"\"Configure SSH_AUTH_SOCK globally\"), then restart " + engine
+			"the launch agent under \"Configure SSH_AUTH_SOCK globally\" in https://www.1password.dev/ssh/agent/compatibility/), then restart " + engine
 	case strings.Contains(status, "no keys"):
 		return "add a key to the host's agent (ssh-add)"
 	}

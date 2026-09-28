@@ -685,6 +685,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 	if err := a.waitUntilReady(); err != nil {
 		return err
 	}
+	a.openAgentSocket()
 	// The mount is fixed at creation, so that is when to say it is useless.
 	if created {
 		a.warnIfAgentUnusable()

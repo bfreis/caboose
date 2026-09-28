@@ -173,3 +173,69 @@ func TestWarnIfAgentUnusable(t *testing.T) {
 		}
 	}
 }
+
+// agentMount answers inspect with the forwarded agent's mount from src.
+func agentMount(src string) string {
+	return `[ "$1 $2" = "inspect --type=container" ] && { printf '%s\t%s\n' ` + containerAgent + ` "` + src + `"; exit 0; }`
+}
+
+// Docker Desktop's forwarded agent is root:root 0660: the launch opens it
+// to the sandbox's user, and only when that user cannot write it already.
+func TestOpenAgentSocket(t *testing.T) {
+	const chmod = "exec -u 0 box chmod 0666 " + containerAgent
+	for _, tc := range []struct {
+		name, src string
+		writable  bool
+		want      bool
+	}{
+		{"closed", hostServicesAgent, false, true},
+		{"already open", hostServicesAgent, true, false},
+		{"the host's own socket", "/tmp/agent.sock", false, false},
+		{"no agent mounted", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "log")
+			body := `echo "$*" >> ` + log + "\n"
+			if tc.src != "" {
+				body += agentMount(tc.src) + "\n"
+			}
+			if tc.writable {
+				body += `[ "$*" = "exec box test -w ` + containerAgent + `" ] && exit 0` + "\n"
+			}
+			body += `[ "$*" = "` + chmod + `" ] && exit 0`
+			a, errb := agentApp(t, "darwin", body, "", nil)
+			a.openAgentSocket()
+			got, _ := os.ReadFile(log)
+			if strings.Contains(string(got), chmod) != tc.want {
+				t.Errorf("chmod run: %v, want %v; docker calls:\n%s", !tc.want, tc.want, got)
+			}
+			if errb.Len() != 0 {
+				t.Errorf("said:\n%s", errb.String())
+			}
+		})
+	}
+}
+
+// A chmod that fails is said, not swallowed: the agent stays unusable.
+func TestOpenAgentSocketSaysWhenItCannot(t *testing.T) {
+	a, errb := agentApp(t, "darwin", agentMount(hostServicesAgent)+"\necho 'chmod: Operation not permitted' >&2", "", nil)
+	a.openAgentSocket()
+	if !strings.Contains(errb.String(), "Operation not permitted") {
+		t.Errorf("said:\n%s", errb.String())
+	}
+}
+
+// Permission denied is its own status, with its own fix: the engine's
+// SSH_AUTH_SOCK is not what is wrong.
+func TestAgentStatusPermissionDenied(t *testing.T) {
+	body := `[ "$*" = "exec box ssh-add -l" ] && { echo 'Error connecting to agent: Permission denied' >&2; exit 2; }` +
+		"\n" + statusBody(containerAgent, "", 0)
+	a, _ := agentApp(t, "darwin", info("Docker Desktop")+"\n"+body, "", nil)
+	status, usable := a.agentStatus()
+	if usable || !strings.Contains(status, "permission denied") {
+		t.Fatalf("agentStatus = %q, %v", status, usable)
+	}
+	if fix := a.agentFix(status); strings.Contains(fix, "SSH_AUTH_SOCK") || !strings.Contains(fix, "a launch opens") {
+		t.Errorf("fix %q", fix)
+	}
+}
