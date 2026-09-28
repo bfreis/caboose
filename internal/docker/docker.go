@@ -14,9 +14,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"syscall"
 )
+
+// goos is runtime.GOOS, a variable so that tests can play the Mac.
+var goos = runtime.GOOS
+
+// hostMnt is where Docker Desktop's VM has the Mac's filesystem.
+const hostMnt = "/host_mnt"
 
 // CLI runs the docker binary found at Path ("docker" resolves via $PATH).
 type CLI struct {
@@ -251,6 +258,11 @@ func (c *CLI) Mounts(name string) ([]Mount, error) {
 }
 
 // ParseMounts parses "destination<TAB>source" lines.
+//
+// On a Mac, Docker Desktop records most bind-mount sources as its VM sees
+// them, /Users/u/dev as /host_mnt/Users/u/dev, and some as they were given:
+// the prefix is taken off, so a source is always the Mac's path, as
+// OrbStack reports it. No Mac path starts with /host_mnt (/ is read-only).
 func ParseMounts(out string) []Mount {
 	var ms []Mount
 	for _, line := range strings.Split(out, "\n") {
@@ -258,6 +270,9 @@ func ParseMounts(out string) []Mount {
 			continue
 		}
 		dest, src, _ := strings.Cut(line, "\t")
+		if goos == "darwin" && strings.HasPrefix(src, hostMnt+"/") {
+			src = strings.TrimPrefix(src, hostMnt)
+		}
 		ms = append(ms, Mount{Destination: dest, Source: src})
 	}
 	return ms

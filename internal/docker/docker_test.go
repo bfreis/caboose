@@ -24,6 +24,28 @@ func TestParseMounts(t *testing.T) {
 	}
 }
 
+// Docker Desktop records most Mac bind-mount sources as its VM sees them,
+// under /host_mnt, and a few as given; both must read as the Mac's path.
+func TestParseMountsUndoesDockerDesktopsHostMnt(t *testing.T) {
+	for _, tc := range []struct {
+		goos, src, want string
+	}{
+		{"darwin", "/host_mnt/Users/u/dev", "/Users/u/dev"},
+		{"darwin", "/Users/u/dev", "/Users/u/dev"},
+		{"darwin", "/host_mntx/a", "/host_mntx/a"},
+		{"darwin", "/run/host-services/ssh-auth.sock", "/run/host-services/ssh-auth.sock"},
+		{"linux", "/host_mnt/Users/u/dev", "/host_mnt/Users/u/dev"},
+	} {
+		old := goos
+		goos = tc.goos
+		got := ParseMounts("/work\t" + tc.src + "\n")
+		goos = old
+		if len(got) != 1 || got[0].Source != tc.want {
+			t.Errorf("%s: %s gave %v, want %s", tc.goos, tc.src, got, tc.want)
+		}
+	}
+}
+
 func TestExitCode(t *testing.T) {
 	err := exec.Command("sh", "-c", "exit 3").Run()
 	if got := ExitCode(err); got != 3 {
