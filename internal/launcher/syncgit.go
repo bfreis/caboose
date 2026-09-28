@@ -109,7 +109,14 @@ func (g *syncGit) command(remote, interactive bool, args ...string) *exec.Cmd {
 	if g.auto && remote {
 		argv = append(argv, "bash", "-c", watchdog, "watchdog", strconv.Itoa(g.remaining()))
 	}
-	argv = append(argv, "git")
+	// Docker Desktop's file sharing reports a mount's root as owned by
+	// root:root for a moment after the host changes something under it,
+	// and the host writes the sync repo between git calls: git then refuses
+	// the repo as "dubious ownership". The check guards against a repo of
+	// another user's, and this one's .git is the sandbox's user's to write
+	// anyway, so it adds nothing here. Only on the command line: that is
+	// protected config, and the global config is not read.
+	argv = append(argv, "git", "-c", "safe.directory="+statesync.ContainerDir)
 	if g.gh {
 		// The empty one first: it clears any helper the image's system
 		// config names, so gh's is the only one asked.
