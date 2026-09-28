@@ -151,7 +151,17 @@ func (s *Syncer) Incoming() (taken, others []string, err error) {
 	if has, err := g.ok("rev-parse", "-q", "--verify", remote); err != nil || !has {
 		return nil, nil, err
 	}
-	out, err := g.out("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", "HEAD..."+remote)
+	// Where they parted, or the empty tree when they never met: a machine
+	// that has just joined a remote others sync with has only its own
+	// start commit, and everything the remote holds is new to it.
+	base, err := g.str("merge-base", "HEAD", remote)
+	if exitCode(err) == 1 {
+		base, err = g.str("hash-object", "-t", "tree", "/dev/null")
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	out, err := g.out("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base, remote)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -190,5 +191,42 @@ func TestRemoteHint(t *testing.T) {
 	}
 	if got := (&Syncer{DataDir: t.TempDir()}).RemoteHint(); got != "" {
 		t.Errorf("with no repo: RemoteHint = %q", got)
+	}
+}
+
+// A machine that joins a remote others have synced with has a history of
+// its own, unrelated to the remote's until its first sync merges them:
+// everything the remote holds is what it would take.
+func TestIncomingOnAMachineThatJustJoined(t *testing.T) {
+	needGit(t)
+	remote := newRemote(t)
+	a := newMachine(t, "a", remote)
+	a.write(".claude/settings.json", `{"a":1}`)
+	a.sync()
+
+	b := newMachine(t, "b", remote)
+	if err := b.s.Fetch(); err != nil {
+		t.Fatal(err)
+	}
+	taken, _, err := b.s.Incoming()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(taken, "home/.claude/settings.json") {
+		t.Fatalf("taken %v, want a's settings.json", taken)
+	}
+
+	// Once joined, only what changed since they parted.
+	b.sync()
+	a.write(mem("p", "MEMORY.md"), "- one\n")
+	a.sync()
+	if err := b.s.Fetch(); err != nil {
+		t.Fatal(err)
+	}
+	if taken, _, err = b.s.Incoming(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"home/" + mem("p", "MEMORY.md")}; !reflect.DeepEqual(taken, want) {
+		t.Fatalf("taken %v, want %v", taken, want)
 	}
 }
