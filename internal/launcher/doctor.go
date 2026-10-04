@@ -218,6 +218,7 @@ func (a *App) Doctor(args []string) error {
 	c.checking("the Docker engine")
 	state, reachable := "", a.doctorDocker(c)
 	if reachable {
+		a.doctorIsolation(c)
 		c.checking("the image")
 		a.doctorImage(c)
 		c.checking("the container")
@@ -285,6 +286,9 @@ func (a *App) doctorConfig(c *checkup) bool {
 			"CABOOSE_BASE_IMAGE names the same image as CABOOSE_IMAGE ('%s'): the build would build over its own base", cfg.Image)
 	}
 	a.doctorRunArgs(c)
+	if err := checkIsolation(cfg); err != nil {
+		c.problem("isolation", "fix "+isolationOrigin(cfg), "%v", err)
+	}
 	if err := cfg.ResolveRoots(); err != nil {
 		c.problem("roots", "point the roots at directories that exist ("+cfg.RootsOrigin()+")", "%s", firstLine(err.Error()))
 		return false
@@ -502,6 +506,7 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	if d := a.runArgsDrift(); d != "" {
 		c.problem("run args", "caboose restart"+endsSessions, "%s", d)
 	}
+	a.doctorContainerIsolation(c)
 	return state
 }
 

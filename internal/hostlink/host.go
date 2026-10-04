@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -65,6 +66,12 @@ type Config struct {
 	Log     *log.Logger
 	// Listen opens a forward's listener; nil is TCP on 127.0.0.1.
 	Listen func(port int) (net.Listener, error)
+	// Relay are the roots whose changes to relay into the container; nil
+	// relays nothing.
+	Relay []Root
+	// Watch starts watching the roots' host directories; nil is
+	// WatchRoots.
+	Watch func(dirs []string) (Watcher, error)
 }
 
 // Host serves one session.
@@ -116,6 +123,10 @@ func Run(sess *agentproto.Session, cfg Config) error {
 				return fmt.Errorf("%w: %d, this caboose %d ('caboose restart' rebuilds the image)", ErrVersion, m.Version, agentproto.Version)
 			}
 			helloed = true
+			if w := h.watch(); w != nil {
+				defer w.Close()
+				go h.relayChanges(w)
+			}
 			continue
 		}
 		switch m.Type {
@@ -126,6 +137,29 @@ func Run(sess *agentproto.Session, cfg Config) error {
 		}
 	}
 	return sess.Err()
+}
+
+// watch starts watching the relay's roots, or says why it cannot: the link
+// still serves everything else.
+func (h *Host) watch() Watcher {
+	if len(h.cfg.Relay) == 0 {
+		return nil
+	}
+	start := h.cfg.Watch
+	if start == nil {
+		start = WatchRoots
+	}
+	var dirs []string
+	for _, r := range h.cfg.Relay {
+		dirs = append(dirs, r.Host)
+	}
+	w, err := start(dirs)
+	if err != nil {
+		h.cfg.Log.Printf("cannot watch %s (%v): changes made here will not reach watchers in the sandbox", strings.Join(dirs, ", "), err)
+		return nil
+	}
+	h.cfg.Log.Printf("relaying changes under %s into the sandbox", strings.Join(dirs, ", "))
+	return w
 }
 
 func (h *Host) closeAll() {

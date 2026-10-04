@@ -22,6 +22,7 @@ keeps of its home, and what of that syncs, is not here: it is the
 | `no_tmux` | `CABOOSE_NO_TMUX` | unset | skip tmux: native rendering, but no detach/reattach |
 | `auto_sync` | `CABOOSE_AUTO_SYNC` | unset | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
 | `tz` | `CABOOSE_TZ` | host's zone | timezone inside the container |
+| `isolation` | `CABOOSE_ISOLATION` | `docker` | what keeps the sandbox from this machine: `docker` (runc) or `gvisor` (runsc); see [isolation](#isolation) |
 | `docker_sock` | `CABOOSE_DOCKER_SOCK` | unset | mount the host docker socket — **removes the isolation**, see caveats |
 | `docker_run_args` | `CABOOSE_DOCKER_RUN_ARGS` | unset | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments). The variable is split at whitespace |
 | `forward_ports` | `CABOOSE_FORWARD_PORTS` | `3000-3999 5173 8000-8999` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, or `none`; see [the host link](host-link.md#ports) |
@@ -66,12 +67,13 @@ docker would take the next argument as another flag's value. Refused:
 
 - short flags (`-e`): write the long one (`--env=...`);
 - the flags caboose sets or depends on: `--name`, `--hostname`,
-  `--user`, `--entrypoint`, `--init`, `--restart`, `--rm`, `--detach`,
+  `--user`, `--runtime` (see [isolation](#isolation)), `--entrypoint`,
+  `--init`, `--restart`, `--rm`, `--detach`,
   `--interactive`, `--tty`, `--attach`, `--platform`, `--pull`,
   `--cidfile`, and `--env-file` and `--label-file`, whose contents caboose
   cannot check;
 - `--env` for a variable caboose sets (`HOME`, `PATH`, `TZ`,
-  `SSH_AUTH_SOCK`, anything `CABOOSE_` or `TINI_`), and `--label` for
+  `SSH_AUTH_SOCK`, `IS_SANDBOX`, anything `CABOOSE_` or `TINI_`), and `--label` for
   caboose's own (`io.github.bfreis.caboose.*`);
 - a `--volume`, `--mount` or `--tmpfs` at, inside or around one of
   caboose's mounts (the roots under `/work`, the kept parts of the home,
@@ -84,6 +86,59 @@ some arguments (`--privileged`, `--cap-add`, `--device`, `--volume`,
 `--network=host`, ...) give the sandbox more of the host, which `caboose
 doctor` notes. Only the host can set them: they are not in the sandbox's
 own config, and a session cannot propose them.
+
+## Isolation
+
+`isolation` says what stands between the sandbox and this machine:
+
+- `docker`, the default: the container runs under docker's own runtime,
+  runc, and shares this machine's kernel (on a Mac, the engine's VM's).
+- `gvisor`: the same container under [gVisor](https://gvisor.dev)'s
+  `runsc`, a kernel of its own in user space, so a kernel bug the sandbox
+  finds is gVisor's, not the host's.
+
+```toml
+isolation = "gvisor"
+```
+
+`gvisor` needs `runsc` registered with docker (in `docker info`'s
+runtimes); a launch without it stops and says so, and `caboose doctor`
+lists it as a problem. [`caboose setup isolation`](#setup) registers it
+on OrbStack; elsewhere, install gVisor as [its guide](https://gvisor.dev/docs/user_guide/install/)
+says (Docker Desktop is not supported yet). Like the roots, the isolation is fixed when the container is
+created: `caboose restart` applies a change, and until then a launch,
+`caboose status` and `caboose doctor` say the container has another. A
+container created under `gvisor` needs `runsc` for as long as it exists:
+if docker loses it while the container is stopped, the next launch
+recreates the container with the configured isolation (no session is
+lost: it was stopped), or, when that cannot work either, says what to do. It is
+set here or by its variable only, never in the sandbox config: a session
+cannot choose how it is isolated.
+
+Under gVisor, the container runs as the agent user where that user can
+write its mounts. Some engines (OrbStack, and probably Docker Desktop) show
+mounted files as owned by whoever looks, which under gVisor is gVisor's own
+process, so the agent could not write its own home. There the container
+runs as root instead, a root that exists only inside gVisor's kernel; files
+it writes on the mounts still belong to you on this machine. caboose finds
+out which by trying, as it creates the container, and `caboose doctor`
+says when it runs as root.
+
+OrbStack's file sharing answers a directory read again from the start,
+through the same open handle, with what it said the first time, and
+gVisor reads every directory that way. So caboose's `runsc` runs with
+`--dcache=0`: gVisor then forgets a directory as soon as nothing uses it,
+and a new directory listed while empty shows the files added to it later.
+It costs a little on every path lookup (some 0.2s on an incremental
+`go vet` of caboose itself). A directory some process keeps open, such as
+a shell's working directory, can still list as it was: if a file seems
+to be missing, `stat` it by name before taking it for gone.
+
+gVisor turns none of this machine's edits under the roots into inotify
+events inside, so a dev server or a watch-mode test in the sandbox would
+not see a file you save in your editor. The [host link](host-link.md#file-changes)
+makes up for it: under `gvisor` it watches the roots here and has the
+agent raise an event inside for each file that changed.
 
 ## The repo root
 
@@ -150,8 +205,8 @@ image are named plain `caboose`.
 ## Setup
 
 ```sh
-caboose setup                  # every section: roots, image, git, sync, and the
-                               # container and the login along the way
+caboose setup                  # every section: roots, image, isolation, git, sync,
+                               # and the container and the login along the way
 caboose setup git              # only the git identity and signing
 ```
 
@@ -191,8 +246,24 @@ and setup shows the lines to change by hand.
   kept by default; replacing it shows the difference and asks. After a
   change it offers to build; moving the container onto the new image is
   `caboose restart`, which it leaves to you.
+- **isolation** asks for the [isolation](#isolation) and writes it, even
+  when it is the default: `gvisor` when docker has `runsc` and a container
+  runs under it (tried with the image, when there is one), else `docker`.
+  Where docker has no `runsc` and the engine is OrbStack, it offers to
+  download gVisor's latest release (`runsc` and what it runs beside it,
+  some 150MB), checked against its published sha512, into
+  `~/.caboose/runsc/<arch>/` (outside every mount, shared by every
+  environment), then shows how `~/.orbstack/config/docker.json` would
+  change and asks before writing it (the file as it was is kept as
+  `docker.json.before-caboose`) and restarting OrbStack's Docker engine,
+  which stops every running container. OrbStack's VM sees your home at
+  the same path, so nothing is installed in it. Elsewhere it says how to
+  get `runsc`. When the engine runs the `runsc` it registered with flags
+  an older caboose gave it, or `docker.json` no longer lists it (so the
+  engine's next restart would drop it), it says so and offers to put it
+  right the same way.
 - **git**: the identity and signing, [below](#git-identity-and-commit-signing).
-- **the container**, in a whole run only, after the image: a running one
+- **the container**, in a whole run only, after the isolation: a running one
   is left alone, a stopped one started, and an absent one created when you
   say so (building the image first if there is none). git lists the
   forwarded agent's keys from it, and sync runs its git in it.

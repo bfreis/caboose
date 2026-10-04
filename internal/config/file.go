@@ -32,6 +32,7 @@ var fileKeys = map[string]string{
 	"docker_run_args": "DOCKER_RUN_ARGS",
 	"forward_ports":   "FORWARD_PORTS",
 	"open_urls":       "OPEN_URLS",
+	"isolation":       "ISOLATION",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -204,6 +205,11 @@ format = 1    # this file's structure
 # How many Claude Code versions to keep installed (~224MB each).
 # [CABOOSE_KEEP_VERSIONS]
 #keep_versions = 2
+
+# What keeps the sandbox from this machine: "docker" (runc, the default,
+# which shares this machine's kernel) or "gvisor" (runsc, a kernel of its
+# own; docker must have runsc registered). [CABOOSE_ISOLATION]
+#isolation = "gvisor"
 
 # Mount the host's docker socket: root-equivalent access to the host.
 # [CABOOSE_DOCKER_SOCK]

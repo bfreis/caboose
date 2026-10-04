@@ -350,10 +350,16 @@ check 'container locale is UTF-8, not POSIX' C.UTF-8 \
 # trades a silent credential leak for a loud build failure, but only if it
 # keeps up with the COPYs. (go test ./internal/assets checks the other half,
 # the BaseContext and LayerContext lists.)
-embedded=" $(sed -n 's|^//go:embed ||p' "$ROOT/embed.go" | tr '\n' ' ') "
+# An embedded directory covers what is under it (agent-bin, whose COPY
+# names the file by ${TARGETARCH}).
+embedded="$(sed -n 's|^//go:embed ||p' "$ROOT/embed.go")"
 missing=""
 while IFS= read -r src; do
-    case "$embedded" in *" $src "*) ;; *) missing="$missing $src" ;; esac
+    found=""
+    for e in $embedded; do
+        case "$src" in "$e" | "$e"/*) found=1 ;; esac
+    done
+    [ -n "$found" ] || missing="$missing $src"
 done < <(awk '$1 == "COPY" { print $2 }' "$ROOT/Dockerfile" "$ROOT/layer.Dockerfile")
 check 'every COPY source is embedded in the launcher' "" "$missing"
 
@@ -400,8 +406,13 @@ check 'the image carries a version label' 1 \
 layer_label="$(label io.github.bfreis.caboose.layer-hash)"
 base_label="$(label io.github.bfreis.caboose.base-hash)"
 check 'the image carries a full layer hash' 64 "${#layer_label}"
-check 'and, built on the default base, a full base hash' 64 "${#base_label}"
-check 'and says outright it is on the default base' default "$(label io.github.bfreis.caboose.base-kind)"
+# The environment may build its base from its own image/ dir instead of
+# the embedded Dockerfile: the same kind of base to the suite, a full hash
+# either way, and version says which.
+base_kind=default
+case "$(ver_field base)" in *"(built from "*) base_kind=env ;; esac
+check 'and, built on caboose'"'"'s base, a full base hash' 64 "${#base_label}"
+check "and says outright it is on that base ($base_kind)" "$base_kind" "$(label io.github.bfreis.caboose.base-kind)"
 check 'the image records the host user it was built for' "$(id -u):$(id -g)" \
     "$(label io.github.bfreis.caboose.uid):$(label io.github.bfreis.caboose.gid)"
 # The suite runs on the default base, which is named <image>-base and
@@ -425,10 +436,17 @@ check 'the base has no entrypoint of ours' 1 \
 check 'the base has no agent user' 1 \
     "$(docker run --rm --entrypoint /bin/sh "$BASE" -c 'grep -q "^agent:" /etc/passwd' >/dev/null 2>&1; echo $?)"
 # Files written into bind mounts must come out as the host user's, which is
-# what the layer's UID/GID are for.
-check 'the container runs as the host UID' "$(id -u)" "$(cexec id -u)"
-check 'with the host GID as its group' "$(id -g)" "$(cexec id -g)"
-check 'as agent' agent "$(cexec id -un)"
+# what the layer's UID/GID are for. Under gVisor on an engine that hides the
+# mounts from the agent, the container runs as root instead (its user
+# label says so), and the engine maps what root writes to the host user.
+if [ "$(docker inspect --type=container -f '{{index .Config.Labels "io.github.bfreis.caboose.user"}}' "$CONTAINER")" = 0:0 ]; then
+    check 'the container runs as root, as its label says' 0:0 "$(cexec id -u):$(cexec id -g)"
+    check 'as root' root "$(cexec id -un)"
+else
+    check 'the container runs as the host UID' "$(id -u)" "$(cexec id -u)"
+    check 'with the host GID as its group' "$(id -g)" "$(cexec id -g)"
+    check 'as agent' agent "$(cexec id -un)"
+fi
 check "agent's home is /home/agent, and its shell bash" '/home/agent bash' \
     "$(cexec sh -c 'grep "^agent:" /etc/passwd | cut -d: -f6,7 | sed "s|:.*/| |"')"
 check 'and it owns its home' "$(id -u)" "$(cexec stat -c %u /home/agent)"
@@ -770,6 +788,36 @@ docker exec "$CONTAINER" tmux kill-session -t drift-canary 2>/dev/null
 docker image rm -f caboose-drift-fixture >/dev/null 2>&1 || true
 check 'no drift reported against the real image' 0 \
     "$(cd "$ROOT" && "$CC" status 2>&1 | grep -c 'older image')"
+
+group 'isolation = gvisor'
+# Only where docker has runsc registered: registering it is not the
+# launcher's. The user is the probe's to choose -- the agent where it can
+# write its mounts under gVisor (a Linux host), root where it cannot
+# (OrbStack) -- so what is checked is that the container runs as the label
+# says, and that whoever that is can write the login's kind of file.
+if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; then
+    CABOOSE_ISOLATION=gvisor FORCE=1 "$CC" restart >/dev/null 2>&1
+    check 'the container runs under runsc' runsc \
+        "$(docker inspect --type=container -f '{{.HostConfig.Runtime}}' "$CONTAINER")"
+    check 'it is labelled gvisor' gvisor \
+        "$(docker inspect --type=container -f '{{index .Config.Labels "io.github.bfreis.caboose.isolation"}}' "$CONTAINER")"
+    user_label="$(docker inspect --type=container -f '{{index .Config.Labels "io.github.bfreis.caboose.user"}}' "$CONTAINER")"
+    want_uid="$(label io.github.bfreis.caboose.uid)"
+    [ "$user_label" = 0:0 ] && want_uid=0
+    check 'it runs as the user its label says' "$want_uid" "$(cexec id -u)"
+    check 'that user writes a 600 file in ~/.claude' ok \
+        "$(cexec sh -c 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
+    check 'doctor names the isolation' 'gvisor (runsc)' \
+        "$(cd "$ROOT" && CABOOSE_ISOLATION=gvisor "$CC" doctor --offline 2>/dev/null | sed -n 's/^  ✓ isolation  *//p')"
+    # Unless the environment's own config.toml says gvisor too.
+    if [ "$(cd "$ROOT" && "$CC" status 2>/dev/null | sed -n 's/^isolation : //p')" = docker ]; then
+        check 'a launch without it says the container is gvisor' 1 \
+            "$(cd "$ROOT" && "$CC" status 2>&1 | grep -c 'created with isolation gvisor')"
+    fi
+    FORCE=1 "$CC" restart >/dev/null 2>&1
+else
+    printf '  \033[33mSKIP\033[0m docker has no runsc runtime\n'
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -66,7 +66,7 @@ building from a checkout.
 ```sh
 caboose                    # start or attach the session for this project
 caboose claude --resume    # pass arguments to claude
-caboose setup              # roots, image, git identity, sync
+caboose setup              # roots, image, isolation, git identity, sync
 caboose apply              # review and apply the changes sessions proposed
 caboose doctor             # what is wrong, and the command that fixes it
 caboose status             # container, sessions, disk use

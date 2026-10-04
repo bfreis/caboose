@@ -401,6 +401,7 @@ func (r *linkRunner) once() error {
 	r.sess = sess
 	cfg := r.cfg
 	r.mu.Unlock()
+	cfg.Relay = r.relayRoots()
 	r.log.Printf("linked to %s", a.Cfg.Container)
 	runErr := hostlink.Run(sess, cfg)
 	r.mu.Lock()
@@ -420,6 +421,22 @@ func (r *linkRunner) once() error {
 		return fmt.Errorf("%v (the agent said: %s)", runErr, said)
 	}
 	return runErr
+}
+
+// relayRoots are the roots whose changes the link relays into the
+// container: those it has mounted, when it was created under an isolation
+// that turns none of the host's edits into inotify events inside (gVisor).
+// Under runc the engine passes them on itself.
+func (r *linkRunner) relayRoots() []hostlink.Root {
+	iso, _, ok := r.a.createdIsolation()
+	if !ok || iso != isolationGVisor {
+		return nil
+	}
+	var roots []hostlink.Root
+	for _, m := range r.a.mountedRoots() {
+		roots = append(roots, hostlink.Root{Host: m.Host, Container: m.Container})
+	}
+	return roots
 }
 
 // limitedWriter keeps the first n bytes written to it.

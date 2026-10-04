@@ -100,6 +100,14 @@ const (
 	// a JSON list, "" for none. Set on every container, so one inherited
 	// from a base never reads as the container's.
 	LabelRunArgs = "io.github.bfreis.caboose.run-args"
+	// LabelIsolation and LabelUser are on the container too: the isolation
+	// it was created with (config.Isolation) and the user it runs as, ""
+	// for the image's agent user, "0:0" where gVisor gives the agent no way
+	// to write its mounts. Set on every container, as LabelRunArgs is; a
+	// container without them is from before them, and ran as docker, as
+	// the agent.
+	LabelIsolation = "io.github.bfreis.caboose.isolation"
+	LabelUser      = "io.github.bfreis.caboose.user"
 )
 
 // Compat is the version of what the launcher expects of a container it did

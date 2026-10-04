@@ -24,7 +24,14 @@ const (
 	// TypeForwards is the host's list of what it forwards, sent whenever
 	// that changes.
 	TypeForwards = "forwards"
+	// TypeChanged is the host's list of paths in the container that
+	// changed on the host, for the agent to make watchers inside see. An
+	// agent that does not know it ignores it, so it needs no new Version.
+	TypeChanged = "changed"
 )
+
+// MaxChanged is the most paths one TypeChanged message carries.
+const MaxChanged = 512
 
 // Request operations.
 const (
@@ -49,6 +56,8 @@ type Message struct {
 
 	Ports    []int     `json:"ports,omitempty"`
 	Forwards []Forward `json:"forwards,omitempty"`
+
+	Paths []string `json:"paths,omitempty"`
 }
 
 // Forward is one port the host was asked to forward, and what came of it.

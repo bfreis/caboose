@@ -88,9 +88,10 @@ embedded in it instead.
 | `internal/sandboxcfg` | the sandbox config, `~/.config/caboose/sandbox.toml`: `[[keep]]` entries (what of the home is kept, and mounted) and their sync rules (globs, first match wins, excludes, merge drivers), checked entry by entry; its defaults, format and line-based edits (`caboose sync add/rm`) |
 | `internal/nofollow` | file access under a directory the container can also write (the data dir's `home/`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
 | `internal/statesync` | `caboose sync`: the sandbox config's rules applied to the data dir's `home/` and to what a remote sends, JSON merge by key, and the export/merge/apply cycle in the data dir's `sync/`; files are handled on the host, git runs in the container (`docker exec`, repo mounted at `~/.caboose-sync`); tested against real git |
-| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify` and `ports` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, and connects the host's streams to them |
+| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify` and `ports` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, connects the host's streams to them, and touches the paths the host says changed (`touch.go`) |
 | `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
-| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, opens http(s) URLs as `open_urls` says, shows notifications; `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
+| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`); `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
+| `internal/fswatch` | the host's watcher for that relay: FSEvents through purego on a Mac (the launcher has no cgo), inotify on Linux; only paths, never what happened |
 | `agent-bin/` | `caboose-agent` for amd64 and arm64, from `make agent`, gitignored but for its README; embedded in the launcher, and the layer COPYs the one for its `TARGETARCH` |
 | `embed.go` | the `//go:embed` list: the files the launcher carries with it and builds the image from |
 | `Makefile` | the maintenance entry points; also builds `./caboose` (gitignored) |
@@ -246,6 +247,28 @@ outside the repo.
   in `ownedFlags` there. The container is labelled with them
   (`assets.LabelRunArgs`, set even when empty) to tell when a restart is
   due.
+- **The isolation is `config.toml`'s, and it picks the user.**
+  `isolation` (`docker`, `gvisor`) is the host's key, like
+  `docker_run_args`, never the sandbox config's. `--runtime` is in
+  `ownedFlags` because the runtime decides who can write the mounts:
+  `createContainer` probes it (`agentCanWrite`, `launcher/isolation.go`)
+  and runs as `0:0` with `IS_SANDBOX=1` only where the agent cannot, and
+  only under gVisor, whose root is inside its own kernel. Never run as root
+  under runc, and never pick the user by engine name. The container is
+  labelled with both (`assets.LabelIsolation`, `LabelUser`), set even
+  when empty. Under gVisor a closed terminal's tmux client lingers, so a
+  launch records each attach by host PID in the data dir's `attached/`
+  (`launcher/attach.go`) and takes back a session whose clients all
+  belong to ended launches; that dir stays out of every mount, or the
+  sandbox could plant records. The `runsc` that `caboose setup isolation`
+  downloads for OrbStack (`launcher/runsc.go`) is run by the engine as
+  root in its VM, so it lives in `CABOOSE_HOME/runsc/`, outside every
+  data dir and mount; the engine's daemon config is the user's, edited
+  only after showing the difference and asking, keys kept in order. A
+  container keeps its runtime for life, so a stopped one whose runtime
+  docker has lost can never start: a launch recreates it with the
+  configured isolation (`runtimeGone`), and any failed `docker start` says
+  what to do (`startFailed`). Never leave the user at a bare docker error.
 - **A launch never writes the sandbox's git identity.** `caboose setup
   git` is its only writer (`datadir.WriteSandboxGit`); a launch and doctor
   only say when there is none. Never seed it from the host: that would
@@ -317,6 +340,16 @@ outside the repo.
   starts it detached (`startLink`) because the attach `exec`s docker and
   leaves no process to hold it. The agent's protocol has a `Version`: an
   image from another launcher is refused, not half-served.
+- **The file-change relay must not change what it touches.** Under
+  gVisor the link relays the host's changes under the roots
+  (`hostlink/relay.go`), and the agent raises an event for each by setting
+  its mode to what it is (`agent/touch.go`). That touch reaches the host
+  as a change too; the relay drops it only because type, mode, size and
+  mtime are what it last sent the path with. A touch that moves any of
+  them (a utimes to "now", a write) loops forever. Setting the mtime to
+  its own value raises the better event, `IN_MODIFY`, but races a host
+  edit landing between the stat and the set, and leaves new contents with
+  an old mtime.
 - **`sandbox/CLAUDE.md` is sandbox-wide.** It is read by every session in
   every project, so project-specific instructions — including everything in
   this file — do not belong there. It also ships to every user, so it names

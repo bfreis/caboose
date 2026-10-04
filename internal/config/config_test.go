@@ -32,7 +32,7 @@ func TestDefaults(t *testing.T) {
 		Image: "caboose", Container: "caboose", DataDir: "/h/.caboose/envs/default/data",
 		Roots:        []Root{{Host: "/h/dev", Container: "/work"}},
 		ReadyTimeout: "600", KeepVersions: "2", Home: "/h",
-		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask"}
+		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: "docker"}
 	c.Getenv = nil
 	if !reflect.DeepEqual(*c, want) {
 		t.Errorf("got %+v\nwant %+v", *c, want)

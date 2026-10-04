@@ -387,8 +387,8 @@ func TestSetupSyncNone(t *testing.T) {
 	e.wantOut("· Nothing changed")
 }
 
-// A whole run asks roots, then the image, brings the container up, then
-// git and sync, and ends at the login; at the defaults (and declining to
+// A whole run asks roots, the image and the isolation, brings the
+// container up, then git and sync, and ends at the login; at the defaults (and declining to
 // create the container) it writes nothing but the template.
 func TestSetupWholeRunOrder(t *testing.T) {
 	e := newSetupEnv(t, "default", "[user]\n\tname = Me\n\temail = me@example.invalid\n", false)
@@ -397,14 +397,14 @@ func TestSetupWholeRunOrder(t *testing.T) {
 	}
 	out := e.errb.String()
 	last := -1
-	for _, h := range []string{"\n  Roots ", "\n  Image ", "\n  Container ", "\n  Git ", "\n  Sync ", "is set up", "\n  Claude login "} {
+	for _, h := range []string{"\n  Roots ", "\n  Image ", "\n  Isolation ", "\n  Container ", "\n  Git ", "\n  Sync ", "is set up", "\n  Claude login "} {
 		i := strings.Index(out, h)
 		if i <= last {
 			t.Errorf("%q out of order (at %d, after %d):\n%s", h, i, last, out)
 		}
 		last = i
 	}
-	e.wantOut("· Not created: the first launch creates it", "! Not logged in yet. Run caboose in a project under ", "Roots 1/6", "Claude login 6/6")
+	e.wantOut("· Not created: the first launch creates it", "! Not logged in yet. Run caboose in a project under ", "Roots 1/7", "Claude login 7/7")
 	if b, _ := os.ReadFile(e.configPath()); string(b) != config.Template {
 		t.Errorf("config.toml:\n%s", b)
 	}

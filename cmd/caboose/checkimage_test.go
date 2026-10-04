@@ -214,6 +214,12 @@ func TestCheckImageUnreachable(t *testing.T) {
 }
 
 func TestCheckImageNoShell(t *testing.T) {
+	// With no probe output, the host user is this process's, and root adds
+	// refusals of its own -- as it is in a sandbox under gVisor, on an
+	// engine where the agent cannot write its mounts.
+	if os.Getuid() == 0 || os.Getgid() == 0 {
+		t.Skip("running as root, which the host-user check refuses too")
+	}
 	scriptedDocker(t, `case "$1" in
   version) exit 0 ;;
   image) echo '{}'; exit 0 ;;

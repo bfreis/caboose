@@ -16,13 +16,13 @@ import (
 
 // SetupSections are the parts of caboose setup that can be run alone, in
 // the order a whole run takes them.
-var SetupSections = []string{"roots", "image", "git", "sync"}
+var SetupSections = []string{"roots", "image", "isolation", "git", "sync"}
 
 // Setup is `caboose setup [SECTION...]`: it sets up the environment,
 // creating it first if it does not exist (after asking), then asks each
 // section's questions, every one with what is there now as its default,
 // and writes only what an answer changed. With no sections, all of them,
-// and more: the container is brought up after the image (setupStart), and
+// and more: the container is brought up after the isolation (setupStart), and
 // the run ends at the Claude login (setupLogin).
 //
 // It needs a terminal: there is no way to answer otherwise, and no answers
@@ -79,7 +79,9 @@ func (a *App) setupRun(p *prompter, sections []string) error {
 		case "roots":
 			err = a.setupRoots(p)
 		case "image":
-			if err = a.setupImage(p); err == nil && whole {
+			err = a.setupImage(p)
+		case "isolation":
+			if err = a.setupIsolation(p); err == nil && whole {
 				err = a.setupStart(p)
 			}
 		case "git":

@@ -31,7 +31,8 @@ var ownedFlags = map[string]string{
 	"detach":      "caboose runs the container detached",
 	"rm":          "the container is long-lived, and caboose removes it itself",
 	"entrypoint":  "the image's entrypoint is caboose's",
-	"user":        "the container runs as the agent user the image made",
+	"user":        "the container runs as the agent user the image made, or as isolation needs",
+	"runtime":     "set by isolation in config.toml, which also picks the user it needs",
 	"interactive": "the container runs detached",
 	"tty":         "the container runs detached",
 	"attach":      "the container runs detached",
@@ -58,7 +59,7 @@ var shortFlags = map[byte]string{
 // ownedEnv are the variables caboose or its image sets, beyond those in its
 // own -e arguments; ownedEnvPrefixes, the prefixes of its own.
 var (
-	ownedEnv         = []string{"HOME", "PATH", "TZ", "SSH_AUTH_SOCK", "USE_BUILTIN_RIPGREP"}
+	ownedEnv         = []string{"HOME", "PATH", "TZ", "SSH_AUTH_SOCK", "USE_BUILTIN_RIPGREP", "IS_SANDBOX"}
 	ownedEnvPrefixes = []string{"CABOOSE_", "TINI_"}
 )
 

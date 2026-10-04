@@ -162,6 +162,9 @@ lint:
 	    echo "  !!  gofmt: $$unformatted"; exit 1; \
 	  fi; echo "  ok  gofmt"; \
 	  go vet ./... && echo "  ok  go vet"; \
+	  for os in linux darwin; do \
+	    [ "$$os" = "$$(go env GOOS)" ] || { GOOS=$$os go vet ./... && echo "  ok  go vet ($$os)"; }; \
+	  done; \
 	  if command -v staticcheck >/dev/null 2>&1; then \
 	    staticcheck ./... && echo "  ok  staticcheck"; \
 	  else \

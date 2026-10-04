@@ -52,8 +52,9 @@ already running ignores them, and says so.`},
 		Summary: "set up the environment (creating it, after asking)",
 		Help: `Asks for what the defaults do not know, on the terminal, each question
 showing what is there now as its default: the repo roots, what the sandbox
-is built on, its git identity and commit signing, and whether and where to
-sync. Naming SECTIONs -- roots, image, git, sync -- asks only those. A
+is built on, what isolates it (and, on OrbStack, getting gVisor's runsc),
+its git identity and commit signing, and whether and where to sync. Naming
+SECTIONs -- roots, image, isolation, git, sync -- asks only those. A
 whole run also brings the container up and ends at the Claude login. Only
 what an answer changed is written, so a re-run is safe; with no terminal
 it refuses.`},

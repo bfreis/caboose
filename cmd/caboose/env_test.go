@@ -92,7 +92,7 @@ func TestSetupArgs(t *testing.T) {
 		{[]string{"setup", "-e", "work", "git"}, "the environment goes before the command: 'caboose -e work setup'"},
 		{[]string{"setup", "--env=work"}, "the environment goes before the command: 'caboose -e work setup'"},
 		{[]string{"setup", "--env"}, "the environment goes before the command: 'caboose -e NAME setup'"},
-		{[]string{"setup", "login"}, "usage: caboose setup [roots | image | git | sync]... ('login' is not a section)"},
+		{[]string{"setup", "login"}, "usage: caboose setup [roots | image | isolation | git | sync]... ('login' is not a section)"},
 		{[]string{"setup", "git", "git"}, "('git' is named twice)"},
 	} {
 		if code, _, errs := runIt(tc.argv...); code != 1 || !strings.Contains(errs, tc.want) {

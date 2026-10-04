@@ -119,6 +119,11 @@ type Config struct {
 	// OpenURLs is CABOOSE_OPEN_URLS: whether the sandbox may open URLs in
 	// this machine's browser, "ask", "allow" or "off".
 	OpenURLs string
+	// Isolation is CABOOSE_ISOLATION: what keeps the sandbox from the
+	// host, "docker" (runc, the default) or "gvisor" (runsc). The launcher
+	// checks it (launcher/isolation.go); never the sandbox config's, since
+	// a session writes that.
+	Isolation string
 
 	// Home is $HOME, as the rest of the launcher sees it.
 	Home string
@@ -314,6 +319,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		BaseImage:    vals["BASE_IMAGE"],
 		ForwardPorts: or(vals["FORWARD_PORTS"], DefaultForwardPorts),
 		OpenURLs:     or(vals["OPEN_URLS"], "ask"),
+		Isolation:    or(vals["ISOLATION"], "docker"),
 		Home:         home,
 		Getenv:       getenv,
 	}

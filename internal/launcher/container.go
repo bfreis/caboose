@@ -298,6 +298,9 @@ func (a *App) createContainer(mayBuild bool) error {
 	if err := checkRunArgs(c.DockerRunArgs, nil, c.Roots); err != nil {
 		return a.runArgsError(err)
 	}
+	if err := a.checkRuntime(); err != nil {
+		return err
+	}
 	labels, err := a.ensureImage(mayBuild)
 	if err != nil {
 		return err
@@ -393,6 +396,13 @@ func (a *App) createContainer(mayBuild bool) error {
 	for _, r := range c.Roots {
 		args = append(args, "-v", r.Host+":"+r.Container)
 	}
+	// The runtime and the user it needs, probed against the image just
+	// ensured (isolation.go).
+	iso, err := a.isolationArgs()
+	if err != nil {
+		return err
+	}
+	args = append(args, iso...)
 	// The user's own arguments, last, so they are checked against all of
 	// caboose's, and labelled, so a change to them shows (runargs.go).
 	if err := checkRunArgs(c.DockerRunArgs, args, c.Roots); err != nil {
@@ -663,12 +673,20 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		a.warnIfRootsDrifted()
 		a.warnIfKeepDrifted()
 		a.warnIfRunArgsDrifted()
+		a.warnIfIsolationDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {
 			return err
 		}
 		created = true
 	default:
+		if rt := a.runtimeGone(); rt != "" {
+			if err := a.recreateForRuntime(rt, mayBuild); err != nil {
+				return err
+			}
+			created = true
+			break
+		}
 		// The dir it has mounted may have been emptied since (deleting a
 		// platform dir is how to force a reinstall).
 		a.install = pendingInstall{}
@@ -678,8 +696,8 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		if err := a.checkExisting(); err != nil {
 			return err
 		}
-		if err := a.Docker.Run("start", a.Cfg.Container); err != nil {
-			return dockerFailed(err)
+		if _, err := a.Docker.Output("start", a.Cfg.Container); err != nil {
+			return startFailed(a.Cfg.Container, err)
 		}
 	}
 	if err := a.waitUntilReady(); err != nil {

@@ -4,7 +4,7 @@
 |---|---|
 | `caboose` | start or attach the session for the current directory (run it *in* the repo) |
 | `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
-| `caboose setup [roots \| image \| git \| sync]...` | set up the environment, creating it first (it asks); see [Setup](configuration.md#setup) |
+| `caboose setup [roots \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks); see [Setup](configuration.md#setup) |
 | `caboose apply` | review the changes sessions proposed (a tool in the image, a directory to keep, a root), and apply them; see [Proposals](proposals.md) |
 | `caboose doctor [--offline]` | what, if anything, is wrong, and the command that fixes each problem; see [below](#when-something-is-wrong) |
 | `caboose status` | container, version, platform, live sessions, disk use |

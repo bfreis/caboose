@@ -9,6 +9,7 @@ package agent
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,12 +40,15 @@ type Link struct {
 	sess     *agentproto.Session
 	procRoot string
 	interval time.Duration
+	workDir  string
 
 	mu       sync.Mutex
 	nextID   uint64
 	pending  map[uint64]chan agentproto.Message
 	ports    []int
 	forwards []agentproto.Forward
+
+	changed chan []string
 }
 
 // Config is what a Link needs beyond its stdio.
@@ -52,6 +56,7 @@ type Config struct {
 	Socket   string        // SocketPath, or another for tests
 	ProcRoot string        // "/proc", or a fixture
 	Interval time.Duration // between port scans
+	WorkDir  string        // WorkDir, or another for tests
 }
 
 // RunLink runs the link over in and out until the host goes away.
@@ -60,7 +65,9 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 		sess:     agentproto.NewSession(in, out, false),
 		procRoot: cfg.ProcRoot,
 		interval: cfg.Interval,
+		workDir:  cmp.Or(cfg.WorkDir, WorkDir),
 		pending:  map[uint64]chan agentproto.Message{},
+		changed:  make(chan []string, changedQueue),
 	}
 	defer l.sess.Close()
 	if err := l.sess.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}); err != nil {
@@ -74,6 +81,7 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 	go l.serveClients(ln)
 	go l.watchPorts()
 	go l.acceptStreams()
+	go l.touchChanged()
 	l.readControl()
 	if err := l.sess.Err(); err != nil && !errors.Is(err, agentproto.ErrClosed) {
 		return err
@@ -120,6 +128,11 @@ func (l *Link) readControl() {
 			l.mu.Lock()
 			l.forwards = m.Forwards
 			l.mu.Unlock()
+		case agentproto.TypeChanged:
+			select {
+			case l.changed <- m.Paths:
+			default:
+			}
 		}
 	}
 }

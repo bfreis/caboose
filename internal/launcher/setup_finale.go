@@ -18,8 +18,8 @@ func (a *App) reloadRoots() error {
 	return c.ResolveRoots()
 }
 
-// setupStart brings the container up, in a whole run, between the image
-// and git: git lists the forwarded agent's keys from it, and sync runs its
+// setupStart brings the container up, in a whole run, between the
+// isolation and git (both decide how it is created): git lists the forwarded agent's keys from it, and sync runs its
 // git in it. A running container is left as it is; a stopped one is
 // started; an absent one is created only when asked, since that builds
 // the image when there is none. Nothing here fails setup: a container

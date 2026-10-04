@@ -153,6 +153,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		"repo root : /h/dev -> /work\n" +
 		"data dir  : /h/.caboose\n" +
 		"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +
+		"isolation : docker\n" +
 		"version   : " + version.Get().Version + "\n" +
 		"\nnot running — start it by running caboose in a repo.\n"
 	if out.String() != want {

@@ -1,10 +1,11 @@
-# The host link: ports, URLs, notifications
+# The host link: ports, URLs, notifications, file changes
 
 A server the agent starts in the sandbox is reachable from your browser, at
 the same port on `localhost`; `caboose-agent open URL` in the sandbox opens
-a page in your browser; `caboose-agent notify TEXT` shows a notification.
-All three go through the host link: `caboose-agent` in the container, and
-`caboose link` on your machine.
+a page in your browser; `caboose-agent notify TEXT` shows a notification;
+and under gVisor, a file you save here is seen by the watchers in the
+sandbox. All of it goes through the host link: `caboose-agent` in the
+container, and `caboose link` on your machine.
 
 ## How it runs
 
@@ -66,6 +67,33 @@ On a Mac these use `open` and `osascript`; on Linux `xdg-open`,
 `notify-send`, and `zenity` or `kdialog` for the dialog (with neither, set
 `open_urls` to `"allow"` or `"off"`).
 
+## File changes
+
+Under `isolation = "gvisor"`, an edit made on this machine under the roots
+never becomes an inotify event in the sandbox: a dev server's reload, a
+watch-mode test or a `--watch` build there would not see it. So the link
+watches the roots the container mounts (FSEvents on a Mac, inotify on
+Linux) and sends the agent the paths that changed. The agent sets each
+one's mode to what it already is, which raises `IN_ATTRIB` inside and
+leaves the file's contents and times alone; for a file deleted or renamed
+away, it does that to its directory. Under `docker` the engine passes
+events on itself, and the link relays nothing.
+
+Watchers that take any event on a file as a change see it: Node's
+`fs.watch` and the tools built on it, for instance. One that ignores
+attribute changes does not: Go's fsnotify reports them as `Chmod`, which
+some tools skip. For those, the tool's polling mode, where it has one,
+works under any isolation.
+
+Limits: a deleted file raises nothing itself, so a watcher sees its
+directory change, not the file's name (tools that look at the directory
+again when it changes notice); nothing in a `.git` directory is relayed; a burst of more than 64
+changes in one directory is relayed as that directory, and of more than
+4096 at once as the roots themselves, for watchers to look again. A file
+the sandbox writes is seen here too, and relayed back, so a watcher there
+sees that change twice. `link.log` says which roots it watches, or why it
+cannot.
+
 ## What the sandbox can and cannot do with it
 
 Everything the agent sends is treated as untrusted, as everything from the
@@ -80,4 +108,7 @@ sandbox is:
 - requests are rate-limited, a URL opens only as the setting says, and a
   dialog is one at a time;
 - the protocol is framed and bounded: a frame over 64KiB, a stream past
-  its window, or any other violation ends the link.
+  its window, or any other violation ends the link;
+- file changes go one way, from the host: the agent only touches paths
+  under `/work` the host names, never through a symlink, and only regular
+  files and directories.
