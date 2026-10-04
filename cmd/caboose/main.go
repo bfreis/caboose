@@ -27,6 +27,13 @@ import (
 var sourceDir string
 
 func main() {
+	// Docker Desktop's CLI follows a failed `docker exec -t` with an
+	// advert for Docker Debug ("What's next: ..."), under whatever caboose
+	// or git said about the failure. Every docker caboose runs, the attach
+	// included, inherits this; a value of the user's own is kept.
+	if _, set := os.LookupEnv("DOCKER_CLI_HINTS"); !set {
+		os.Setenv("DOCKER_CLI_HINTS", "false")
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 

@@ -572,9 +572,11 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 func (a *App) agentFix(status string) string {
 	engine := or(a.macEngine(), "the Docker engine")
 	switch {
+	case strings.Contains(status, "permission denied"):
+		return "caboose, in any project: a launch opens the socket to the sandbox's user"
 	case goos == "darwin":
 		return "make SSH_AUTH_SOCK point at your agent for apps started outside a terminal (1Password: " +
-			"\"Configure SSH_AUTH_SOCK globally\"), then restart " + engine
+			"the launch agent under \"Configure SSH_AUTH_SOCK globally\" in https://www.1password.dev/ssh/agent/compatibility/), then restart " + engine
 	case strings.Contains(status, "no keys"):
 		return "add a key to the host's agent (ssh-add)"
 	}
@@ -749,15 +751,8 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 	}
 	c.checking("fetching from the sync remote")
 	if err := s.Fetch(); err != nil {
-		msg := err.Error()
-		switch {
-		case strings.Contains(msg, "Host key verification failed"):
-			c.problem("sync", "caboose sync, from a terminal: it asks once to accept the key", "the remote's SSH host key is not accepted yet")
-		case strings.Contains(msg, "no answer from the remote"):
-			c.problem("sync", "check the network (or the remote), then 'caboose doctor' again", "no answer from the remote in %s", doctorBudget)
-		default:
-			c.problem("sync", "'caboose sync' shows the whole error", "cannot fetch from the remote: %s", strings.TrimPrefix(firstLine(msg), "git fetch -q origin: "))
-		}
+		what, fix := fetchFailure(err)
+		c.problem("sync", fix, "%s", what)
 		return
 	}
 	d, err := s.Divergence()
@@ -815,4 +810,17 @@ func (a *App) syncHow() string {
 		return "the next launch with nothing running syncs, or 'caboose sync'"
 	}
 	return "'caboose sync' syncs"
+}
+
+// fetchFailure is what a failed fetch from the sync remote means, and what
+// fixes it, as doctor and caboose sync status say it.
+func fetchFailure(err error) (what, fix string) {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "Host key verification failed"):
+		return "the remote's SSH host key is not accepted yet", "caboose sync, from a terminal: it asks once to accept the key"
+	case strings.Contains(msg, "no answer from the remote"):
+		return fmt.Sprintf("no answer from the remote in %s", doctorBudget), "check the network (or the remote), then try again"
+	}
+	return "cannot fetch from the remote: " + strings.TrimPrefix(firstLine(msg), "git fetch -q origin: "), "'caboose sync' shows the whole error"
 }

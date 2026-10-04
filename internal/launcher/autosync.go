@@ -141,7 +141,8 @@ func syncedLine(r *statesync.Report) string {
 	return "synced: " + strings.Join(did, ", ")
 }
 
+// firstLine is s's first line, without the \r ssh ends each with.
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
-	return line
+	return strings.TrimRight(line, "\r")
 }

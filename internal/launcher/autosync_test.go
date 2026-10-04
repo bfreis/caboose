@@ -350,3 +350,34 @@ func TestAutoSyncWaitsForARunningSync(t *testing.T) {
 		}
 	}
 }
+
+// ssh ends its messages with \r\n, which would show as \u000D once made
+// printable, or send the cursor back over the line on a terminal.
+func TestFirstLineDropsCarriageReturns(t *testing.T) {
+	for in, want := range map[string]string{
+		"git fetch -q origin: Host key verification failed.\r\nfatal: Could not read from remote repository.\r\n": "git fetch -q origin: Host key verification failed.",
+		"one\ntwo":    "one",
+		"\n  one  \n": "one",
+		"one\r":       "one",
+	} {
+		if got := firstLine(in); got != want {
+			t.Errorf("firstLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A fetch refused for want of a host key says what fixes it, and nothing of
+// ssh's own wording is shown raw.
+func TestFetchFailure(t *testing.T) {
+	for _, tc := range []struct{ err, what, fix string }{
+		{"git fetch -q origin: Host key verification failed.\r\nfatal: Could not read from remote repository.\r\n",
+			"the remote's SSH host key is not accepted yet", "caboose sync, from a terminal"},
+		{"git fetch -q origin: no answer from the remote in 5s", "no answer from the remote", "check the network"},
+		{"git fetch -q origin: ERROR: Repository not found.\r\n", "cannot fetch from the remote: ERROR: Repository not found.", "caboose sync"},
+	} {
+		what, fix := fetchFailure(errors.New(tc.err))
+		if !strings.HasPrefix(what, tc.what) || strings.Contains(what, "\r") || !strings.Contains(fix, tc.fix) {
+			t.Errorf("%q: %q, %q", tc.err, what, fix)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/statesync"
 )
 
 // runWatchdog runs the watchdog script with the host's bash, as the
@@ -102,7 +103,7 @@ func TestSyncGitCommand(t *testing.T) {
 	for _, want := range [][]string{
 		{"-e", "GIT_TERMINAL_PROMPT=0"},
 		{"-e", ssh + " -o BatchMode=yes"},
-		{"box", "bash", "-c", watchdog, "watchdog", "20", "git", "-C", "/r", "fetch"},
+		{"box", "bash", "-c", watchdog, "watchdog", "20", "git", "-c", "safe.directory=" + statesync.ContainerDir, "-C", "/r", "fetch"},
 	} {
 		if !has(remote, want...) {
 			t.Errorf("auto, remote: %q lacks %q", remote, want)
@@ -111,7 +112,7 @@ func TestSyncGitCommand(t *testing.T) {
 	if slices.Contains(remote, "-t") {
 		t.Errorf("auto asks for a terminal: %q", remote)
 	}
-	if local := args(auto, false); !has(local, "box", "git", "-C") || slices.Contains(local, watchdog) {
+	if local := args(auto, false); !has(local, "box", "git", "-c", "safe.directory="+statesync.ContainerDir, "-C") || slices.Contains(local, watchdog) {
 		t.Errorf("auto, local: %q", local)
 	}
 
@@ -134,7 +135,7 @@ func TestSyncGitCommand(t *testing.T) {
 		}
 	}
 	withGH := syncGitApp(t, "", true).newSyncGit(false)
-	if a := args(withGH, true); !has(a, "git", "-c", "credential.helper=", "-c", "credential.helper="+ghHelper, "-C", "/r", "fetch") {
+	if a := args(withGH, true); !has(a, "git", "-c", "safe.directory="+statesync.ContainerDir, "-c", "credential.helper=", "-c", "credential.helper="+ghHelper, "-C", "/r", "fetch") {
 		t.Errorf("with gh: %q", a)
 	}
 }

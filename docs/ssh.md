@@ -14,7 +14,7 @@ that is what caboose mounts. It is the only way a third-party agent such as
 **1Password**'s reaches a container. The engine forwards the agent it was
 started with, so 1Password's has to be the `SSH_AUTH_SOCK` of apps started
 outside a terminal: 1Password documents that as ["Configure SSH_AUTH_SOCK
-globally"](https://developer.1password.com/docs/ssh/agent/compatibility/)
+globally"](https://www.1password.dev/ssh/agent/compatibility/)
 (a launch agent), after which the engine needs a restart. With another
 engine on a Mac, the host's `$SSH_AUTH_SOCK` is mounted when it is a
 socket, which works for macOS's own agent at most. On Linux the agent's
