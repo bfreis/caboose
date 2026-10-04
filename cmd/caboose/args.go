@@ -116,6 +116,18 @@ with no terminal it refuses.`},
 		Summary: "the container's log (ARGS go to docker logs)"},
 	{Name: "shell", Usage: "[ARGS]", Args: passArgs,
 		Summary: "a bash prompt in the container (ARGS go to bash)"},
+	{Name: "link", Usage: "[--restart]", Args: ownArgs,
+		Summary: "forward the sandbox's ports, open its URLs",
+		Help: `The host's end of the link to caboose-agent in the container: while the
+container runs, a port something listens on in the sandbox is forwarded to
+the same port on this machine's localhost when forward_ports allows it,
+and 'caboose-agent open URL' or 'notify TEXT' in the sandbox opens an
+http(s) URL here (after asking, as open_urls says) or shows a notification.
+Every launch starts one in the background, logging to the data dir's
+link.log, and replaces one running with other settings; run in a
+terminal, it logs there instead. One runs at a time. It rereads
+config.toml by itself when that changes. --restart stops the running one
+and starts another in the background.`},
 	{Name: "prune", Args: noArgs,
 		Summary: "delete old Claude Code versions now"},
 	{Name: "sync", Usage: "[ARGS]", Args: ownArgs,

@@ -86,6 +86,7 @@ caboose help               # every command
 | [Use your own image](docs/images.md) | building on another image, and what it must contain |
 | [The sandbox config](docs/sandbox-config.md) | what the sandbox keeps of its home, and what of that syncs |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |
+| [The host link](docs/host-link.md) | ports forwarded to your localhost, URLs and notifications from the sandbox |
 | [SSH agent and commit signing](docs/ssh.md) | agent forwarding on macOS and Linux, 1Password, signing |
 | [Caveats](docs/caveats.md) | what to know before you rely on it, including the docker socket |
 | [Contributing](CONTRIBUTING.md) | building, testing and releasing caboose |

@@ -24,6 +24,8 @@ keeps of its home, and what of that syncs, is not here: it is the
 | `tz` | `CABOOSE_TZ` | host's zone | timezone inside the container |
 | `docker_sock` | `CABOOSE_DOCKER_SOCK` | unset | mount the host docker socket — **removes the isolation**, see caveats |
 | `docker_run_args` | `CABOOSE_DOCKER_RUN_ARGS` | unset | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments). The variable is split at whitespace |
+| `forward_ports` | `CABOOSE_FORWARD_PORTS` | `3000-3999 5173 8000-8999` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, or `none`; see [the host link](host-link.md#ports) |
+| `open_urls` | `CABOOSE_OPEN_URLS` | `ask` | whether the sandbox may open URLs in your browser: `ask`, `allow` or `off`; see [the host link](host-link.md#urls-and-notifications) |
 | | `CABOOSE_ENV` | `default` | the environment; `--env` wins over it |
 | | `CABOOSE_HOME` | `~/.caboose` | where environments live |
 | | `CABOOSE_DATA_DIR` | `$CABOOSE_HOME/envs/<env>/data` | the data dir, named outright |

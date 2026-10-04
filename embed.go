@@ -14,9 +14,12 @@ import "embed"
 // (imagecheck.sh, which is not part of any image: internal/assets'
 // BaseContext and LayerContext decide what is).
 //
+// agent-bin holds caboose-agent for each architecture, built by `make
+// agent` before the launcher (its README says so when they are missing).
+//
 // Only what is listed here can ever reach a `docker build` run by
 // `caboose build`, which keeps the allowlist property .dockerignore gave
 // the checkout-based build: nothing unlisted can drift into the context.
 //
-//go:embed Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh
+//go:embed Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh agent-bin
 var Files embed.FS

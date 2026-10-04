@@ -16,6 +16,8 @@ project_name: caboose
 before:
   hooks:
     - go mod tidy -diff
+    # caboose-agent for each architecture, which the launcher embeds.
+    - make agent
 
 builds:
   - id: caboose

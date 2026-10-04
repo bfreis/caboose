@@ -28,3 +28,7 @@
 # goreleaser's output: the release archives and checksums
 # from `goreleaser release` (or a `--snapshot` dry run). Build output only.
 /dist/
+
+# caboose-agent for each architecture, from `make agent`, embedded in the
+# launcher. Build output; agent-bin/README.md is the one tracked file.
+/agent-bin/caboose-agent-*

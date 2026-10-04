@@ -21,6 +21,7 @@ var Settings = []string{
 	"IMAGE", "CONTAINER", "DATA_DIR", "REPO_ROOT", "READY_TIMEOUT",
 	"KEEP_VERSIONS", "DOCKER_SOCK", "TZ", "SESSION", "PROJECT", "NO_TMUX",
 	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC", "DOCKER_RUN_ARGS",
+	"FORWARD_PORTS", "OPEN_URLS",
 }
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -110,6 +111,14 @@ type Config struct {
 	// DockerRunArgsFrom names what set DockerRunArgs, for messages:
 	// CABOOSE_DOCKER_RUN_ARGS, or the config file by its path.
 	DockerRunArgsFrom string
+	// ForwardPorts is CABOOSE_FORWARD_PORTS: the ports listening in the
+	// sandbox that the link helper forwards to this machine's localhost,
+	// as ports and ranges ("3000-3999 5173"), or "none". The launcher
+	// parses it (launcher/link.go).
+	ForwardPorts string
+	// OpenURLs is CABOOSE_OPEN_URLS: whether the sandbox may open URLs in
+	// this machine's browser, "ask", "allow" or "off".
+	OpenURLs string
 
 	// Home is $HOME, as the rest of the launcher sees it.
 	Home string
@@ -303,6 +312,8 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		NoAutoBuild:  vals["NO_AUTO_BUILD"],
 		AutoSync:     vals["AUTO_SYNC"],
 		BaseImage:    vals["BASE_IMAGE"],
+		ForwardPorts: or(vals["FORWARD_PORTS"], DefaultForwardPorts),
+		OpenURLs:     or(vals["OPEN_URLS"], "ask"),
 		Home:         home,
 		Getenv:       getenv,
 	}
@@ -325,6 +336,10 @@ var envName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 // ValidEnv reports whether name can be an environment's: it becomes a
 // directory name and part of a container's and an image's.
 func ValidEnv(name string) bool { return envName.MatchString(name) }
+
+// DefaultForwardPorts are the ports forwarded when forward_ports is not
+// set: the ranges dev servers tend to use.
+const DefaultForwardPorts = "3000-3999 5173 8000-8999"
 
 // ImageDirName is an environment's own image's build context, in its EnvDir.
 const ImageDirName = "image"

@@ -8,7 +8,9 @@ means day to day is in the installed `~/.claude/CLAUDE.md`, whose source is
 ## Changes here need a rebuild, and it has to happen on the host
 
 `Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
-`tmux.conf` and `shellrc.bash` are baked into the image. The launcher is a
+`tmux.conf`, `shellrc.bash` and `caboose-agent` (built from
+`cmd/caboose-agent`, `internal/agent` and `internal/agentproto` into
+`agent-bin/` by `make agent`) are baked into the image. The launcher is a
 Go binary, `./caboose`, built from `cmd/` and `internal/` and gitignored, with those
 files, `sandbox/CLAUDE.md` and `imagecheck.sh` embedded in it; the bind
 mounts it sets up are fixed when the container is created. None of it is
@@ -30,7 +32,7 @@ the checkout — a stale `./caboose` would build the old image.
 A running container cannot rebuild the image it runs from, and recreating the
 container kills the session doing the asking — so whenever you touch
 `Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
-`tmux.conf`, `shellrc.bash` or the launcher's Go code, **say that a host
+`tmux.conf`, `shellrc.bash`, the agent's or the launcher's Go code, **say that a host
 terminal has to run `make build && make restart`**, or the change looks applied and isn't
 (`imagecheck.sh` is in no image: it needs only the launcher rebuilt). Never
 build `./caboose` in here: the checkout is shared with the host, so a linux
@@ -86,6 +88,10 @@ embedded in it instead.
 | `internal/sandboxcfg` | the sandbox config, `~/.config/caboose/sandbox.toml`: `[[keep]]` entries (what of the home is kept, and mounted) and their sync rules (globs, first match wins, excludes, merge drivers), checked entry by entry; its defaults, format and line-based edits (`caboose sync add/rm`) |
 | `internal/nofollow` | file access under a directory the container can also write (the data dir's `home/`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
 | `internal/statesync` | `caboose sync`: the sandbox config's rules applied to the data dir's `home/` and to what a remote sends, JSON merge by key, and the export/merge/apply cycle in the data dir's `sync/`; files are handled on the host, git runs in the container (`docker exec`, repo mounted at `~/.caboose-sync`); tested against real git |
+| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify` and `ports` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, and connects the host's streams to them |
+| `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
+| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, opens http(s) URLs as `open_urls` says, shows notifications; `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
+| `agent-bin/` | `caboose-agent` for amd64 and arm64, from `make agent`, gitignored but for its README; embedded in the launcher, and the layer COPYs the one for its `TARGETARCH` |
 | `embed.go` | the `//go:embed` list: the files the launcher carries with it and builds the image from |
 | `Makefile` | the maintenance entry points; also builds `./caboose` (gitignored) |
 | `internal/version` | the launcher's version, commit and date: ldflags when stamped (make, goreleaser), else what the Go toolchain recorded, else `dev` |
@@ -298,6 +304,19 @@ outside the repo.
   scripts left running hears the stop. `shellrc.bash` sources at the top
   level, not in a function, where a file's `declare`s would turn local, so
   every name of its own is `__caboose_`-prefixed and unset after.
+- **The host link trusts nothing the agent sends.** `caboose-agent` runs
+  in the sandbox, so everything `internal/hostlink` reads is the
+  container's: which ports forward is `forward_ports` in `config.toml`,
+  never the agent's list; forwards listen on `127.0.0.1` only; a URL is
+  `hostlink.CheckURL`'s (http(s), no credentials, printable) and asks
+  first unless `open_urls` says otherwise; text shown goes through
+  `proposal.Printable` and is cut short; AppleScript gets it as `argv`,
+  never spliced into the script. A new request type needs the same:
+  decided by the host's config, bounded, rate-limited. The link is a
+  `docker exec`, never a socket of the host's mounted in, and a launch
+  starts it detached (`startLink`) because the attach `exec`s docker and
+  leaves no process to hold it. The agent's protocol has a `Version`: an
+  image from another launcher is refused, not half-served.
 - **`sandbox/CLAUDE.md` is sandbox-wide.** It is read by every session in
   every project, so project-specific instructions — including everything in
   this file — do not belong there. It also ships to every user, so it names

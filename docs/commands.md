@@ -15,6 +15,7 @@
 | `caboose restart` | recreate the container, to pick up a rebuilt image or new mounts |
 | `caboose stop` | stop the container |
 | `caboose detach` | detach this project's session, leaving it running |
+| `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; every launch starts one in the background, and `--restart` replaces it; see [The host link](host-link.md) |
 | `caboose prune` | delete old Claude Code versions now |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |

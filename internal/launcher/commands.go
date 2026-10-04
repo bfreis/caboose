@@ -409,6 +409,9 @@ func (a *App) Attach(args []string) error {
 
 	terminal := tty.IsTerminal(os.Stdin.Fd()) && tty.IsTerminal(os.Stdout.Fd())
 	a.beforeAttach(terminal)
+	// The host's end of caboose-agent's link, detached: it outlives this
+	// launch, and serves the container while it runs.
+	a.startLink()
 
 	if !terminal {
 		// No tty to attach a tmux client to — run claude directly so piped

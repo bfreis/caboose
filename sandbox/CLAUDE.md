@@ -79,6 +79,18 @@ also rewrites it. A new `[[keep]]` entry takes effect at the next
 `caboose restart` on the host, and starts empty: say so, and configure the
 tool only after it. Never sync anything that holds a token.
 
+## Reaching the host: ports, URLs, notifications
+
+A server listening in here is forwarded to the same port on the host's
+`localhost` while it runs, if the host's `forward_ports` allows the port
+(by default 3000-3999, 5173 and 8000-8999), whatever address it is bound
+to: tell the user to open `http://localhost:PORT`. `caboose-agent ports`
+lists what listens and what is forwarded. `caboose-agent open URL` opens an
+http(s) URL in the user's browser (usually after a dialog there), and
+`caboose-agent notify TEXT` shows them a notification. All of it needs the
+host's `caboose link`, which every launch starts; "no host is linked"
+means it is not running.
+
 ## Start-up scripts and shell config: ~/.config/caboose
 
 Two directories there are also yours to write when asked: they run as this

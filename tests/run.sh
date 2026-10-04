@@ -113,6 +113,8 @@ check 'container is running' running \
     "$(docker inspect --type=container -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
 check 'claude resolves through the exec path' 0 \
     "$(docker exec "$CONTAINER" /usr/local/bin/caboose-entrypoint --version >/dev/null 2>&1; echo $?)"
+check 'caboose-agent is in the image, for this architecture' 0 \
+    "$(docker exec "$CONTAINER" /usr/local/bin/caboose-agent --help >/dev/null 2>&1; echo $?)"
 
 group 'sandbox instructions'
 # The launcher -- not the entrypoint, and not a bind mount -- installs the

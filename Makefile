@@ -22,6 +22,14 @@ GO_SRC   := go.mod $(wildcard go.sum) \
 EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh
 GO_LDFLAGS ?=
 
+# caboose-agent, the sandbox's end of the link, for each architecture the
+# image can be: linux binaries, embedded in the launcher (embed.go) and
+# COPYed into the layer. Built wherever make runs, the sandbox included --
+# they are linux binaries everywhere, and gitignored.
+AGENT_ARCHS := amd64 arm64
+AGENT_BINS  := $(foreach a,$(AGENT_ARCHS),agent-bin/caboose-agent-linux-$(a))
+AGENT_SRC   := go.mod $(shell find cmd/caboose-agent internal/agent internal/agentproto -name '*.go' -not -name '*_test.go')
+
 .DEFAULT_GOAL := help
 
 ## help: list targets
@@ -86,7 +94,14 @@ $(VERSION_STAMP): FORCE
 # so an -X in it overrides the stamped value. The stamp may end early (no
 # commit, no date): a read past its end fails and leaves the variable empty, and an empty -X is what version.resolve expects
 # of an unknown commit or date.
-$(LAUNCHER): $(GO_SRC) $(EMBEDDED) $(PLATFORM_STAMP) $(VERSION_STAMP)
+agent-bin/caboose-agent-linux-%: $(AGENT_SRC)
+	@CGO_ENABLED=0 GOOS=linux GOARCH=$* go build -trimpath -ldflags '-s -w' -o $@ ./cmd/caboose-agent \
+	  && echo "  built $@"
+
+## agent: build caboose-agent for each architecture (the launcher embeds them)
+agent: $(AGENT_BINS)
+
+$(LAUNCHER): $(GO_SRC) $(EMBEDDED) $(AGENT_BINS) $(PLATFORM_STAMP) $(VERSION_STAMP)
 	@{ read -r v; read -r c; read -r d; } < $(VERSION_STAMP); \
 	  CGO_ENABLED=0 go build -o $@ -ldflags \
 	    "-X $(VERSION_PKG).Version=$$v -X $(VERSION_PKG).Commit=$$c -X $(VERSION_PKG).Date=$$d "'$(GO_LDFLAGS)' \
@@ -154,7 +169,8 @@ lint:
 	  fi
 
 ## go-test: run the Go unit tests (no docker, safe anywhere)
-go-test:
+# The agent first: the image's context hashes cover its binaries.
+go-test: $(AGENT_BINS)
 	@go test ./...
 
 ## test: build, then run the integration suite (recreates the container)
@@ -169,5 +185,5 @@ test: build
 test-byo: $(CC)
 	@CABOOSE_BIN=$(CC) ./tests/byo/run.sh
 
-.PHONY: FORCE help launcher build restart stop status prune logs shell lint go-test test test-byo
+.PHONY: FORCE help agent launcher build restart stop status prune logs shell lint go-test test test-byo
 FORCE:

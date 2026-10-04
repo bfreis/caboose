@@ -40,8 +40,16 @@ var (
 		{Name: "entrypoint.sh", Mode: 0o755},
 		{Name: "tmux.conf", Mode: 0o644},
 		{Name: "shellrc.bash", Mode: 0o644},
+		// Both, whatever the platform: the layer COPYs the one for its
+		// TARGETARCH, and the hash covers the image on either.
+		{Name: AgentBinary("amd64"), Mode: 0o755},
+		{Name: AgentBinary("arm64"), Mode: 0o755},
 	}
 )
+
+// AgentBinary is caboose-agent for arch (amd64, arm64), in the embedded
+// files and in the layer's context.
+func AgentBinary(arch string) string { return "agent-bin/caboose-agent-linux-" + arch }
 
 // LayerDockerfile is the layer's Dockerfile, in the embedded FS and in its
 // build context; `docker build -f` names it.
@@ -151,7 +159,10 @@ func writeContext(fsys fs.FS, files []ContextFile, dir string) error {
 	for _, f := range files {
 		data, err := fs.ReadFile(fsys, f.Name)
 		if err != nil {
-			return fmt.Errorf("embedded %s: %w", f.Name, err)
+			return fmt.Errorf("embedded %s: %w%s", f.Name, err, missingHint(f.Name))
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f.Name)), 0o755); err != nil {
+			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, f.Name), data, f.Mode); err != nil {
 			return err
@@ -163,6 +174,15 @@ func writeContext(fsys fs.FS, files []ContextFile, dir string) error {
 		}
 	}
 	return nil
+}
+
+// missingHint explains a missing agent binary: a launcher built without
+// `make agent` first.
+func missingHint(name string) string {
+	if filepath.Dir(name) == "agent-bin" {
+		return " (this launcher was built without its agent: build it with make, which runs `make agent` first)"
+	}
+	return ""
 }
 
 // Hash tags: the scheme each hash is made under, so that none of them can
@@ -226,7 +246,7 @@ func contextHash(fsys fs.FS, tag string, files []ContextFile) (string, error) {
 	for _, f := range files {
 		data, err := fs.ReadFile(fsys, f.Name)
 		if err != nil {
-			return "", fmt.Errorf("embedded %s: %w", f.Name, err)
+			return "", fmt.Errorf("embedded %s: %w%s", f.Name, err, missingHint(f.Name))
 		}
 		frame([]byte(f.Name))
 		binary.BigEndian.PutUint32(n[:4], uint32(f.Mode))

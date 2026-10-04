@@ -109,6 +109,10 @@ func (c *CLI) Pipe(input []byte, args ...string) error {
 	return cmd.Run()
 }
 
+// Command is docker with args, not yet started, for a caller that needs
+// its pipes: the link helper's long-running exec.
+func (c *CLI) Command(args ...string) *exec.Cmd { return exec.Command(c.Path, args...) }
+
 // Exec replaces the current process with docker, so signals, the TTY and
 // the exit code belong to docker and not to a Go parent process. It returns
 // only on failure.

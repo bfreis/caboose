@@ -41,8 +41,15 @@ func TestContextsHoldEveryCopySource(t *testing.T) {
 			if len(fields) >= 2 && (fields[0] == "COPY" || fields[0] == "ADD") {
 				if tc.dockerfile == "Dockerfile" {
 					t.Errorf("the base Dockerfile has %s", sc.Text())
-				} else if !have[fields[1]] {
-					t.Errorf("%s COPYs %s, which is not in its context", tc.dockerfile, fields[1])
+					continue
+				}
+				// A source named by the build's architecture must be there
+				// for every architecture caboose builds for.
+				for _, arch := range []string{"amd64", "arm64"} {
+					src := strings.ReplaceAll(fields[1], "${TARGETARCH}", arch)
+					if !have[src] {
+						t.Errorf("%s COPYs %s, which is not in its context", tc.dockerfile, src)
+					}
 				}
 			}
 		}
@@ -55,7 +62,7 @@ func TestWriteContextsWriteOnlyTheirFiles(t *testing.T) {
 		want  string
 	}{
 		{WriteBaseContext, "Dockerfile"},
-		{WriteLayerContext, "entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf"},
+		{WriteLayerContext, "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf"},
 	} {
 		dir := t.TempDir()
 		if err := tc.write(dir); err != nil {

@@ -41,6 +41,10 @@ jobs:
       - name: go vet (darwin)
         run: GOOS=darwin go vet ./...
 
+      # The launcher embeds caboose-agent, and the image hashes cover it.
+      - name: caboose-agent
+        run: make agent
+
       - name: go test
         run: go test ./...
 

@@ -42,6 +42,12 @@ COPY entrypoint.sh /usr/local/bin/caboose-entrypoint
 # image, as a record of how the user was made.
 COPY layer-user.sh /usr/local/lib/caboose/layer-user.sh
 
+# caboose-agent, the sandbox's end of the link to the host (caboose link):
+# static, so it needs nothing of the base. TARGETARCH is the build's own
+# architecture, which BuildKit sets; the context holds both builds.
+ARG TARGETARCH
+COPY agent-bin/caboose-agent-linux-${TARGETARCH} /usr/local/bin/caboose-agent
+
 # The shell.d loader, which the ~/.bashrc layer-user.sh sets up sources.
 COPY shellrc.bash /usr/local/lib/caboose/shellrc.bash
 RUN ["/bin/sh", "-c", "exec /bin/sh /usr/local/lib/caboose/layer-user.sh \"$CABOOSE_UID\" \"$CABOOSE_GID\""]

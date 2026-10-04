@@ -30,6 +30,8 @@ var fileKeys = map[string]string{
 	"auto_sync":     "AUTO_SYNC",
 	// A list, or a string split at whitespace as the variable is.
 	"docker_run_args": "DOCKER_RUN_ARGS",
+	"forward_ports":   "FORWARD_PORTS",
+	"open_urls":       "OPEN_URLS",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -221,4 +223,13 @@ format = 1    # this file's structure
 # --flag=value; caboose's own flags are refused. Some remove isolation, as
 # the docker socket does. [CABOOSE_DOCKER_RUN_ARGS, split at whitespace]
 #docker_run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun"]
+
+# Which ports listening in the sandbox are forwarded to the same port on
+# this machine's localhost: ports and ranges, or "none". A running link
+# rereads this file when it changes. [CABOOSE_FORWARD_PORTS]
+#forward_ports = "3000-3999 5173 8000-8999"
+
+# Whether the sandbox may open URLs in this machine's browser: "ask" (a
+# dialog each time), "allow" or "off". [CABOOSE_OPEN_URLS]
+#open_urls = "ask"
 `

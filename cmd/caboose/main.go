@@ -84,6 +84,14 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		// Machine-wide, like the binary it replaces: no environment.
 		return exit(stderr, app.Update(inv.Args))
 	}
+	if inv.Command == "link" {
+		// A detached helper a launch starts: no update check, and nothing
+		// said on a terminal it does not have.
+		if err := cfg.CheckEnv(config.OSFS{}); err != nil {
+			return exit(stderr, launcher.Die("%v", err))
+		}
+		return exit(stderr, app.Link(inv.Args))
+	}
 	// Every other command may start an update in the background, and says
 	// once that one happened.
 	app.AutoUpdate()

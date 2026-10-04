@@ -31,7 +31,8 @@ func TestDefaults(t *testing.T) {
 	want := Config{Env: "default", CabooseHome: "/h/.caboose", EnvDir: "/h/.caboose/envs/default",
 		Image: "caboose", Container: "caboose", DataDir: "/h/.caboose/envs/default/data",
 		Roots:        []Root{{Host: "/h/dev", Container: "/work"}},
-		ReadyTimeout: "600", KeepVersions: "2", Home: "/h"}
+		ReadyTimeout: "600", KeepVersions: "2", Home: "/h",
+		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask"}
 	c.Getenv = nil
 	if !reflect.DeepEqual(*c, want) {
 		t.Errorf("got %+v\nwant %+v", *c, want)
