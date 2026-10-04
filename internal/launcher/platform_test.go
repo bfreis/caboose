@@ -1,61 +1,35 @@
 package launcher
 
 import (
-	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/bfreis/caboose/internal/assets"
-	"github.com/bfreis/caboose/internal/config"
-	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
 )
 
-// platformFake is a docker for creating a container from image img: no
-// container exists, `image inspect` prints labels, and `run` logs each -v,
-// and each -e as "ENV VAR=value".
-func platformFake(t *testing.T, labels string) (a *App, data, log string, errb *bytes.Buffer) {
+// creating is a boxApp under iso with no sandbox yet, whose image has
+// labels.
+func creating(t *testing.T, iso string, labels map[string]string) *boxApp {
 	t.Helper()
-	tmp := t.TempDir()
-	data = filepath.Join(tmp, "data")
-	log = filepath.Join(tmp, "log")
-	script := `#!/bin/sh
-case "$1" in
-  inspect) exit 1 ;;
-  image) echo '` + labels + `'; exit 0 ;;
-  run)
-    while [ $# -gt 0 ]; do
-      [ "$1" = -v ] && { printf '%s\n' "$2" >> "` + log + `"; shift; }
-      [ "$1" = -e ] && { printf 'ENV %s\n' "$2" >> "` + log + `"; shift; }
-      shift
-    done ;;
-esac
-`
-	fake := filepath.Join(tmp, "docker")
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	errb = &bytes.Buffer{}
-	a = &App{
-		Cfg: &config.Config{Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
-			DataDir: data, KeepVersions: "2", Getenv: func(string) string { return "" }},
-		Docker: &docker.CLI{Path: fake},
-		Stdout: &bytes.Buffer{}, Stderr: errb,
-	}
-	return a, data, log, errb
+	b := newBoxApp(t, iso, &backendtest.Fake{})
+	b.setImage(t, boxImageID, labels)
+	return b
 }
 
-// claudeMounts reads the three platform mounts back out of the fake's log,
-// data-dir-relative.
-func claudeMounts(t *testing.T, log, data string) map[string]string {
-	t.Helper()
-	b, _ := os.ReadFile(log)
+// claudeMounts are the three platform mounts of the Spec b's sandbox was
+// created from, data-dir-relative.
+func claudeMounts(b *boxApp) map[string]string {
 	mounts := map[string]string{}
-	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		src, dst, _ := strings.Cut(l, ":")
-		if strings.HasPrefix(dst, "/home/agent/.local/") || strings.HasPrefix(dst, "/home/agent/.cache/") {
-			mounts[dst] = strings.TrimPrefix(src, data+"/")
+	spec, _ := b.box.Spec()
+	for _, m := range spec.Mounts {
+		if strings.HasPrefix(m.Target, "/home/agent/.local/") || strings.HasPrefix(m.Target, "/home/agent/.cache/") {
+			mounts[m.Target] = strings.TrimPrefix(m.Source, b.data+"/")
 		}
 	}
 	return mounts
@@ -80,100 +54,95 @@ func wantPlatformMounts(t *testing.T, got map[string]string, platform string) {
 
 // The image's platform label names the dir.
 func TestCreateContainerPlatformFromLabel(t *testing.T) {
-	a, data, log, errb := platformFake(t, `{"`+assets.LabelPlatform+`":"linux-x64-musl"}`)
-	if err := a.createContainer(false); err != nil {
-		t.Fatalf("%v\n%s", err, errb)
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := creating(t, iso, currentLabels("linux-x64-musl"))
+			if err := b.createContainer(false); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			wantPlatformMounts(t, claudeMounts(b), "linux-x64-musl")
+		})
 	}
-	wantPlatformMounts(t, claudeMounts(t, log, data), "linux-x64-musl")
 }
 
 // The musl build is told to use the image's ripgrep, at creation and from
 // the label; a glibc image is told nothing.
 func TestCreateContainerRipgrepOnMusl(t *testing.T) {
-	for platform, want := range map[string]bool{"linux-x64-musl": true, "linux-arm64-musl": true, "linux-x64": false, "linux-arm64": false} {
-		a, _, log, errb := platformFake(t, `{"`+assets.LabelPlatform+`":"`+platform+`"}`)
-		if err := a.createContainer(false); err != nil {
-			t.Fatalf("%v\n%s", err, errb)
-		}
-		b, _ := os.ReadFile(log)
-		if got := strings.Contains(string(b), "ENV USE_BUILTIN_RIPGREP=0\n"); got != want {
-			t.Errorf("%s: USE_BUILTIN_RIPGREP=0 set %v, want %v", platform, got, want)
-		}
-		if n := strings.Count(string(b), "USE_BUILTIN_RIPGREP"); n > 1 {
-			t.Errorf("%s: set %d times", platform, n)
+	for _, iso := range isolations {
+		for platform, want := range map[string]bool{"linux-x64-musl": true, "linux-arm64-musl": true, "linux-x64": false, "linux-arm64": false} {
+			b := creating(t, iso, currentLabels(platform))
+			if err := b.createContainer(false); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			spec, _ := b.box.Spec()
+			if got := slices.Contains(spec.Env, "USE_BUILTIN_RIPGREP=0"); got != want {
+				t.Errorf("%s, %s: USE_BUILTIN_RIPGREP=0 set %v, want %v", iso, platform, got, want)
+			}
+			if n := slices.IndexFunc(spec.Env, func(e string) bool { return strings.HasPrefix(e, "USE_BUILTIN_RIPGREP") }); n >= 0 &&
+				slices.ContainsFunc(spec.Env[n+1:], func(e string) bool { return strings.HasPrefix(e, "USE_BUILTIN_RIPGREP") }) {
+				t.Errorf("%s, %s: set twice: %q", iso, platform, spec.Env)
+			}
 		}
 	}
 }
 
 // An image without a platform it can name is none caboose build made: no
-// container is created from it, and no platform dir either.
+// sandbox is created from it, and no platform dir either.
 func TestCreateContainerRefusesUnknownPlatform(t *testing.T) {
-	for _, tc := range []struct{ name, labels, want string }{
-		{"no labels", "null", "image 'img' was not built by caboose build (it has no platform label): run 'caboose build'"},
-		{"no platform label", `{"` + assets.LabelVersion + `":"v1"}`, "it has no platform label"},
-		{"another platform", `{"` + assets.LabelPlatform + `":"windows-x64"}`, `its platform label says "windows-x64"`},
+	withPlatform := func(p string) map[string]string {
+		l := currentLabels(p)
+		if p == "" {
+			delete(l, assets.LabelPlatform)
+		}
+		return l
+	}
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{"no labels", nil, "image 'img' was not built by caboose build (it has no platform label): run 'caboose build'"},
+		{"no platform label", withPlatform(""), "it has no platform label"},
+		{"another platform", withPlatform("windows-x64"), `its platform label says "windows-x64"`},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a, data, log, _ := platformFake(t, tc.labels)
-			err := a.createContainer(false)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("err = %v, want %q", err, tc.want)
+		for _, iso := range isolations {
+			t.Run(tc.name+"/"+iso, func(t *testing.T) {
+				b := creating(t, iso, tc.labels)
+				err := b.createContainer(false)
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("err = %v, want %q", err, tc.want)
+				}
+				if len(b.box.Specs) != 0 {
+					t.Errorf("created: %+v", b.box.Specs)
+				}
+				if _, err := os.Lstat(filepath.Join(b.data, "local")); err == nil {
+					t.Error("a platform dir was created")
+				}
+			})
+		}
+	}
+}
+
+// A launch against a running sandbox creates no platform dir: those are
+// made only for the image a sandbox is created from.
+func TestLaunchCreatesNoPlatformDirUnderARunningContainer(t *testing.T) {
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := newBoxApp(t, iso, runningBox(iso))
+			b.mountLocal("local/linux-arm64")
+			mkdirs(t, b.data, "local/linux-arm64/bin", "local/linux-arm64/share/claude")
+			if err := b.ensureRunning(false); err != nil {
+				t.Fatal(err)
 			}
-			if mounts := claudeMounts(t, log, data); len(mounts) != 0 {
-				t.Errorf("docker run happened: %v", mounts)
+			entries, _ := os.ReadDir(filepath.Join(b.data, "local"))
+			if len(entries) != 1 {
+				t.Errorf("local now holds %v", entries)
 			}
-			if _, err := os.Lstat(filepath.Join(data, "local")); err == nil {
-				t.Error("a platform dir was created")
+			if len(b.box.Calls) != 0 {
+				t.Errorf("calls %q", b.box.Calls)
 			}
 		})
 	}
-}
-
-// A launch against a running container creates no platform dir: those are
-// made only for the image a container is created from.
-func TestLaunchCreatesNoPlatformDirUnderARunningContainer(t *testing.T) {
-	a, data, _ := runningFake(t, "local/linux-arm64")
-	for _, d := range []string{"local/linux-arm64/bin", "local/linux-arm64/share/claude"} {
-		if err := os.MkdirAll(filepath.Join(data, d), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := a.ensureRunning(false); err != nil {
-		t.Fatal(err)
-	}
-	entries, _ := os.ReadDir(filepath.Join(data, "local"))
-	if len(entries) != 1 {
-		t.Errorf("local now holds %v", entries)
-	}
-}
-
-// runningFake is a docker whose container box is running with local (a
-// data-dir-relative dir holding bin/) mounted at ~/.local, and which answers
-// everything else with success and no output.
-func runningFake(t *testing.T, local string) (a *App, data string, out *bytes.Buffer) {
-	t.Helper()
-	tmp := t.TempDir()
-	data = filepath.Join(tmp, "data")
-	script := `#!/bin/sh
-case "$*" in
-  "inspect --type=container -f {{.State.Status}} box") echo running ;;
-  "inspect --type=container box --format "*)
-    printf '%s\t%s\n' /home/agent/.local/bin "` + data + "/" + local + `/bin" /work "` + tmp + `" ;;
-esac
-exit 0
-`
-	fake := filepath.Join(tmp, "docker")
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	out = &bytes.Buffer{}
-	a = &App{
-		Cfg: &config.Config{Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}}, ReadyTimeout: "0",
-			DataDir: data, KeepVersions: "2", Getenv: func(string) string { return "" }},
-		Docker: &docker.CLI{Path: fake},
-		Stdout: out, Stderr: &bytes.Buffer{},
-	}
-	return a, data, out
 }
 
 func mkdirs(t *testing.T, root string, dirs ...string) {
@@ -186,112 +155,114 @@ func mkdirs(t *testing.T, root string, dirs ...string) {
 }
 
 func TestStatusShowsPlatforms(t *testing.T) {
-	a, data, out := runningFake(t, "local/linux-arm64")
-	mkdirs(t, data, "local/linux-arm64/share/claude", "local/linux-arm64/bin", "local/linux-x64-musl/share/claude")
-	if err := a.Status(); err != nil {
-		t.Fatal(err)
-	}
-	s := out.String()
-	for _, w := range []string{
-		// The lines tests/run.sh parses stay as they were.
-		"container : box (running)\n",
-		"data dir  : " + data + "\n",
-		"platform  : linux-arm64\n",
-		"local dir : " + data + "/local/linux-arm64\n",
-		"\t" + data + "/local/linux-arm64/share/claude\n",
-		"\ndisk used per platform (local/<platform>, each with its own versions):\n",
-		"\tlinux-arm64  (mounted)\n",
-		"\tlinux-x64-musl\n",
-	} {
-		if !strings.Contains(s, w) {
-			t.Errorf("status lacks %q:\n%s", w, s)
-		}
-	}
-	if strings.Index(s, "linux-arm64  (mounted)") > strings.Index(s, "\tlinux-x64-musl\n") {
-		t.Errorf("platforms not sorted:\n%s", s)
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := newBoxApp(t, iso, runningBox(iso))
+			b.mountLocal("local/linux-arm64")
+			data := b.data
+			mkdirs(t, data, "local/linux-arm64/share/claude", "local/linux-arm64/bin", "local/linux-x64-musl/share/claude")
+			if err := b.Status(); err != nil {
+				t.Fatal(err)
+			}
+			s, _ := b.said()
+			for _, w := range []string{
+				// The lines tests/run.sh parses stay as they were.
+				b.App.nounLabel() + " box (running)\n",
+				"data dir  : " + data + "\n",
+				"platform  : linux-arm64\n",
+				"local dir : " + data + "/local/linux-arm64\n",
+				"\t" + data + "/local/linux-arm64/share/claude\n",
+				"\ndisk used per platform (local/<platform>, each with its own versions):\n",
+				"\tlinux-arm64  (mounted)\n",
+				"\tlinux-x64-musl\n",
+			} {
+				if !strings.Contains(s, w) {
+					t.Errorf("status lacks %q:\n%s", w, s)
+				}
+			}
+			if strings.Index(s, "linux-arm64  (mounted)") > strings.Index(s, "\tlinux-x64-musl\n") {
+				t.Errorf("platforms not sorted:\n%s", s)
+			}
+		})
 	}
 }
 
-// caboose prune reports the mounted platform's usage, and points at the other
-// platforms' dirs without touching them.
+// caboose prune prunes in the sandbox with the current
+// CABOOSE_KEEP_VERSIONS, reports the mounted platform's usage, and points
+// at the other platforms' dirs without touching them.
 func TestPruneNotesOtherPlatforms(t *testing.T) {
-	a, data, out := runningFake(t, "local/linux-arm64")
-	mkdirs(t, data, "local/linux-arm64/share/claude", "local/linux-arm64/bin", "local/linux-x64-musl/share/claude")
-	var errb bytes.Buffer
-	a.Stderr = &errb
-	if err := a.Prune(); err != nil {
-		t.Fatalf("%v\n%s", err, errb.String())
-	}
-	if !strings.HasPrefix(out.String(), "caboose: now using ") || !strings.Contains(out.String(), data+"/local/linux-arm64/share/claude") {
-		t.Errorf("stdout %q", out.String())
-	}
-	e := errb.String()
-	if !strings.Contains(e, "caboose: "+data+"/local/linux-x64-musl also holds ") ||
-		!strings.Contains(e, "delete it by hand if no image of yours needs it any more") ||
-		strings.Contains(e, "local/linux-arm64 also") {
-		t.Errorf("stderr:\n%s", e)
-	}
-	if _, err := os.Stat(filepath.Join(data, "local/linux-x64-musl/share/claude")); err != nil {
-		t.Error("another platform's dir was touched")
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := newBoxApp(t, iso, runningBox(iso))
+			b.mountLocal("local/linux-arm64")
+			data := b.data
+			mkdirs(t, data, "local/linux-arm64/share/claude", "local/linux-arm64/bin", "local/linux-x64-musl/share/claude")
+			if err := b.Prune(nil); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			out, e := b.said()
+			if !strings.HasPrefix(out, "caboose: now using ") || !strings.Contains(out, data+"/local/linux-arm64/share/claude") {
+				t.Errorf("stdout %q", out)
+			}
+			if !strings.Contains(e, "caboose: "+data+"/local/linux-x64-musl also holds ") ||
+				!strings.Contains(e, "for a platform this "+b.noun()+" does not use;") ||
+				!strings.Contains(e, "delete it by hand if no image of yours needs it any more") ||
+				strings.Contains(e, "local/linux-arm64 also") {
+				t.Errorf("stderr:\n%s", e)
+			}
+			if _, err := os.Stat(filepath.Join(data, "local/linux-x64-musl/share/claude")); err != nil {
+				t.Error("another platform's dir was touched")
+			}
+			i := slices.IndexFunc(b.box.Execs, func(s backend.ExecSpec) bool {
+				return slices.Equal(s.Argv, []string{Entrypoint, "--cc-prune"})
+			})
+			if i < 0 || !slices.Equal(b.box.Execs[i].Env, []string{"CABOOSE_KEEP_VERSIONS=2"}) {
+				t.Errorf("pruned with: %+v", b.box.Execs)
+			}
+		})
 	}
 }
 
-// caboose status reads the container's environment and lists its versions with
-// bash alone: printenv and ls are not image requirements (a BYO image may
-// lack them), bash is. The fake runs each `docker exec box bash -c` for
-// real, in an environment of its own, and fails anything else it is asked
-// to exec.
+// caboose status reads the sandbox's environment and lists its versions
+// with bash alone: printenv and ls are not image requirements (a BYO image
+// may lack them), bash is. The sandbox runs each bash -c for real, in an
+// environment of its own, and fails anything else.
 func TestStatusNeedsOnlyBash(t *testing.T) {
-	tmp := t.TempDir()
-	data := filepath.Join(tmp, "data")
-	home := filepath.Join(tmp, "home")
-	mkdirs(t, home, ".local/share/claude/versions/2.1.9", ".local/share/claude/versions/2.1.10")
-	log := filepath.Join(tmp, "log")
-	script := `#!/bin/sh
-printf '%s\n' "$*" >> "` + log + `"
-case "$*" in
-  "inspect --type=container -f {{.State.Status}} box") echo running; exit 0 ;;
-  "inspect --type=container box --format "*)
-    printf '%s\t%s\n' /home/agent/.local/bin "` + data + `/local/linux-arm64/bin" /work "` + tmp + `"; exit 0 ;;
-esac
-if [ "$1 $2 $3 $4" = "exec box bash -c" ]; then
-  shift 4
-  exec env -i HOME="` + home + `" TZ=Europe/Paris CABOOSE_KEEP_VERSIONS=3 bash -c "$1"
-fi
-[ "$1" = exec ] && exit 1
-exit 0
-`
-	fake := filepath.Join(tmp, "docker")
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var out, errb bytes.Buffer
-	a := &App{
-		Cfg: &config.Config{Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}}, DataDir: data, KeepVersions: "2",
-			Getenv: func(string) string { return "" }, TZ: "Europe/Paris"},
-		Docker: &docker.CLI{Path: fake},
-		Stdout: &out, Stderr: &errb,
-	}
-	if err := a.Status(); err != nil {
-		t.Fatal(err)
-	}
-	s := out.String()
-	for _, w := range []string{
-		"timezone  : Europe/Paris (host: Europe/Paris)\n",
-		"(retaining 3):\n",
-		"  2.1.10\n  2.1.9\n",
-	} {
-		if !strings.Contains(s, w) {
-			t.Errorf("status lacks %q:\n%s", w, s)
-		}
-	}
-	if !strings.Contains(errb.String(), "container was created with CABOOSE_KEEP_VERSIONS=3, shell has 2.") {
-		t.Errorf("stderr:\n%s", errb.String())
-	}
-	b, _ := os.ReadFile(log)
-	for _, bad := range []string{"printenv", "ls -1"} {
-		if strings.Contains(string(b), bad) {
-			t.Errorf("status ran %s:\n%s", bad, b)
-		}
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			box := runningBox(iso)
+			b := newBoxApp(t, iso, box)
+			b.mountLocal("local/linux-arm64")
+			home := filepath.Join(b.tmp, "home")
+			mkdirs(t, home, ".local/share/claude/versions/2.1.9", ".local/share/claude/versions/2.1.10")
+			box.Exec = func(s backend.ExecSpec) *exec.Cmd {
+				if len(s.Argv) == 3 && s.Argv[0] == "bash" && s.Argv[1] == "-c" {
+					return exec.Command("env", "-i", "HOME="+home, "TZ=Europe/Paris", "CABOOSE_KEEP_VERSIONS=3", "bash", "-c", s.Argv[2])
+				}
+				return backendtest.Fail()
+			}
+			b.Cfg.TZ = "Europe/Paris"
+			if err := b.Status(); err != nil {
+				t.Fatal(err)
+			}
+			s, errs := b.said()
+			for _, w := range []string{
+				"timezone  : Europe/Paris (host: Europe/Paris)\n",
+				"(retaining 3):\n",
+				"  2.1.10\n  2.1.9\n",
+			} {
+				if !strings.Contains(s, w) {
+					t.Errorf("status lacks %q:\n%s", w, s)
+				}
+			}
+			if !strings.Contains(errs, b.noun()+" was created with CABOOSE_KEEP_VERSIONS=3, shell has 2.") {
+				t.Errorf("stderr:\n%s", errs)
+			}
+			for _, e := range box.Execs {
+				if e.Argv[0] == "printenv" || e.Argv[0] == "ls" {
+					t.Errorf("status ran %q", e.Argv)
+				}
+			}
+		})
 	}
 }

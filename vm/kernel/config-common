@@ -1,0 +1,269 @@
+## caboose's guest kernel: the options every architecture shares.
+##
+## vm/kernel/Dockerfile merges this and config-$ARCH onto allnoconfig
+## (scripts/kconfig/merge_config.sh -n), so anything not named here is
+## off, and check-config then fails the build if the final .config
+## disagrees with any line below: a name Kconfig does not know, or an
+## option whose dependencies are not met, stops the build rather than
+## vanish. Lines starting with ## are notes; "# CONFIG_X is not set" is
+## an option asked off. internal/vm/kernelconfig_test.go holds the
+## decisions below (modules, io_uring, lockdown, ...) in place.
+##
+## EXPERT is on so that the options it hides can be turned off (io_uring,
+## VT): allnoconfig then clears every one of them not listed here, which
+## is why the plain syscalls and filesystems are spelled out.
+
+## --- General -------------------------------------------------------------
+CONFIG_LOCALVERSION="-caboose"
+# CONFIG_LOCALVERSION_AUTO is not set
+CONFIG_DEFAULT_HOSTNAME="caboose"
+CONFIG_EXPERT=y
+CONFIG_SMP=y
+CONFIG_NR_CPUS=64
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_NO_HZ_IDLE=y
+CONFIG_PREEMPT_VOLUNTARY=y
+CONFIG_PRINTK=y
+CONFIG_BUG=y
+CONFIG_ELF_CORE=y
+CONFIG_COREDUMP=y
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+CONFIG_BINFMT_MISC=y
+CONFIG_MULTIUSER=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_POSIX_TIMERS=y
+CONFIG_FUTEX=y
+CONFIG_EPOLL=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EVENTFD=y
+CONFIG_SHMEM=y
+CONFIG_AIO=y
+CONFIG_FHANDLE=y
+CONFIG_ADVISE_SYSCALLS=y
+CONFIG_MEMBARRIER=y
+CONFIG_MEMFD_CREATE=y
+CONFIG_RSEQ=y
+CONFIG_KCMP=y
+CONFIG_CACHESTAT_SYSCALL=y
+CONFIG_FILE_LOCKING=y
+CONFIG_CRC_OPTIMIZATIONS=y
+## Readable oopses; kptr_restrict keeps the addresses hidden.
+CONFIG_KALLSYMS=y
+## Not the pressure stall information cgroups read: /proc/pressure.
+CONFIG_PSI=y
+# CONFIG_SGETMASK_SYSCALL is not set
+# CONFIG_IO_URING is not set
+# CONFIG_MODULES is not set
+
+## --- Boot and devices ----------------------------------------------------
+## The initramfs is the launcher's: an uncompressed newc cpio.
+CONFIG_BLK_DEV_INITRD=y
+# CONFIG_RD_GZIP is not set
+# CONFIG_RD_BZIP2 is not set
+# CONFIG_RD_LZMA is not set
+# CONFIG_RD_XZ is not set
+# CONFIG_RD_LZO is not set
+# CONFIG_RD_LZ4 is not set
+# CONFIG_RD_ZSTD is not set
+CONFIG_BLOCK=y
+CONFIG_PCI=y
+CONFIG_PCI_MSI=y
+CONFIG_PCI_HOST_GENERIC=y
+CONFIG_DEVTMPFS=y
+## The agent mounts /dev itself.
+# CONFIG_DEVTMPFS_MOUNT is not set
+# CONFIG_FW_LOADER is not set
+CONFIG_TTY=y
+CONFIG_UNIX98_PTYS=y
+# CONFIG_LEGACY_PTYS is not set
+# CONFIG_VT is not set
+# CONFIG_LEGACY_TIOCSTI is not set
+# CONFIG_LDISC_AUTOLOAD is not set
+# CONFIG_DEVMEM is not set
+# CONFIG_DEVPORT is not set
+## The wall clock at boot: without an RTC a guest starts in 1970 until
+## the agent's clock keeper steps it. The hypervisor's RTC (config-ARCH
+## names its driver) sets the time before init runs; the guest never
+## writes it back (no RTC_SYSTOHC), and /dev/rtcN is left out.
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_HCTOSYS=y
+CONFIG_RTC_HCTOSYS_DEVICE="rtc0"
+CONFIG_RTC_INTF_SYSFS=y
+# CONFIG_RTC_SYSTOHC is not set
+# CONFIG_RTC_INTF_DEV is not set
+
+## --- Virtio: what the hypervisor gives the guest -------------------------
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO_PCI=y
+# CONFIG_VIRTIO_PCI_LEGACY is not set
+# CONFIG_VIRTIO_MMIO is not set
+CONFIG_BLK_DEV=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_NETDEVICES=y
+CONFIG_NET_CORE=y
+CONFIG_VIRTIO_NET=y
+## hvc0, the console.
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_VIRTIO=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
+CONFIG_FUSE_FS=y
+CONFIG_VIRTIO_FS=y
+
+## --- Filesystems ---------------------------------------------------------
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_FS_POSIX_ACL=y
+CONFIG_EXT4_FS_SECURITY=y
+CONFIG_OVERLAY_FS=y
+CONFIG_PROC_FS=y
+CONFIG_PROC_SYSCTL=y
+# CONFIG_PROC_KCORE is not set
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_TMPFS_XATTR=y
+CONFIG_INOTIFY_USER=y
+CONFIG_FANOTIFY=y
+
+## --- cgroups v2 and namespaces: dockerd and runc -------------------------
+CONFIG_CGROUPS=y
+CONFIG_MEMCG=y
+CONFIG_BLK_CGROUP=y
+CONFIG_BLK_DEV_THROTTLING=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_FAIR_GROUP_SCHED=y
+CONFIG_CFS_BANDWIDTH=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CPUSETS=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_CGROUP_BPF=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_JIT=y
+CONFIG_BPF_JIT_ALWAYS_ON=y
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+CONFIG_NAMESPACES=y
+CONFIG_UTS_NS=y
+CONFIG_TIME_NS=y
+CONFIG_IPC_NS=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_KEYS=y
+
+## --- Networking ----------------------------------------------------------
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_UNIX=y
+CONFIG_PACKET=y
+## ip=dhcp on the command line: the kernel's own DHCP client.
+CONFIG_IP_PNP=y
+CONFIG_IP_PNP_DHCP=y
+CONFIG_VETH=y
+CONFIG_TUN=y
+CONFIG_BRIDGE=y
+CONFIG_VLAN_8021Q=y
+CONFIG_BRIDGE_VLAN_FILTERING=y
+## Overlay networks (swarm, docker network create -d overlay).
+CONFIG_VXLAN=y
+CONFIG_NET_UDP_TUNNEL=y
+
+## --- Netfilter: dockerd's iptables (nft or legacy) and nftables ----------
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_BRIDGE_NETFILTER=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_NAT=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NFT_COMPAT=y
+CONFIG_NFT_CT=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_NFT_REJECT=y
+CONFIG_NETFILTER_XTABLES=y
+CONFIG_NETFILTER_XTABLES_LEGACY=y
+CONFIG_NETFILTER_XT_MARK=y
+CONFIG_NETFILTER_XT_NAT=y
+CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+CONFIG_NETFILTER_XT_TARGET_REDIRECT=y
+CONFIG_NETFILTER_XT_TARGET_CHECKSUM=y
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+CONFIG_NETFILTER_XT_MATCH_STATE=y
+CONFIG_NETFILTER_XT_MATCH_MULTIPORT=y
+CONFIG_NETFILTER_XT_MATCH_COMMENT=y
+CONFIG_NETFILTER_XT_MATCH_IPVS=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_IPTABLES_LEGACY=y
+CONFIG_IP_NF_FILTER=y
+CONFIG_IP_NF_NAT=y
+CONFIG_IP_NF_MANGLE=y
+CONFIG_IP_NF_RAW=y
+CONFIG_IP_NF_TARGET_MASQUERADE=y
+CONFIG_IP_NF_TARGET_REDIRECT=y
+CONFIG_IP_NF_TARGET_REJECT=y
+CONFIG_IP6_NF_IPTABLES=y
+CONFIG_IP6_NF_IPTABLES_LEGACY=y
+CONFIG_IP6_NF_FILTER=y
+CONFIG_IP6_NF_NAT=y
+CONFIG_IP6_NF_MANGLE=y
+CONFIG_IP6_NF_RAW=y
+CONFIG_IP6_NF_TARGET_MASQUERADE=y
+CONFIG_IP6_NF_TARGET_REJECT=y
+## IPVS: swarm's service load balancing.
+CONFIG_IP_VS=y
+CONFIG_IP_VS_IPV6=y
+CONFIG_IP_VS_NFCT=y
+CONFIG_IP_VS_PROTO_TCP=y
+CONFIG_IP_VS_PROTO_UDP=y
+CONFIG_IP_VS_RR=y
+
+## --- Security and hardening ----------------------------------------------
+CONFIG_SECURITY=y
+CONFIG_SECURITYFS=y
+## Lockdown, integrity: no way to write the running kernel from userland.
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
+CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_SECURITY_DMESG_RESTRICT=y
+# CONFIG_SECURITY_SELINUX is not set
+# CONFIG_AUDIT is not set
+CONFIG_RANDOMIZE_BASE=y
+CONFIG_RANDOMIZE_KSTACK_OFFSET=y
+CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT=y
+CONFIG_STACKPROTECTOR=y
+CONFIG_STACKPROTECTOR_STRONG=y
+CONFIG_VMAP_STACK=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_FORTIFY_SOURCE=y
+CONFIG_INIT_STACK_ALL_ZERO=y
+CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
+# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set
+CONFIG_SLAB_FREELIST_RANDOM=y
+CONFIG_SLAB_FREELIST_HARDENED=y
+CONFIG_SHUFFLE_PAGE_ALLOCATOR=y
+CONFIG_LIST_HARDENED=y
+CONFIG_BUG_ON_DATA_CORRUPTION=y
+CONFIG_SCHED_STACK_END_CHECK=y
+## RANDSTRUCT would take a random seed per build, and builds must match.
+CONFIG_RANDSTRUCT_NONE=y
+# CONFIG_KEXEC is not set
+# CONFIG_KEXEC_FILE is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_DEBUG_FS is not set
+# CONFIG_USERFAULTFD is not set
+# CONFIG_IKCONFIG is not set
+# CONFIG_KPROBES is not set

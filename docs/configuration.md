@@ -22,11 +22,15 @@ keeps of its home, and what of that syncs, is not here: it is the
 | `no_tmux` | `CABOOSE_NO_TMUX` | unset | skip tmux: native rendering, but no detach/reattach |
 | `auto_sync` | `CABOOSE_AUTO_SYNC` | unset | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
 | `tz` | `CABOOSE_TZ` | host's zone | timezone inside the container |
-| `isolation` | `CABOOSE_ISOLATION` | `docker` | what keeps the sandbox from this machine: `docker` (runc) or `gvisor` (runsc); see [isolation](#isolation) |
+| `isolation` | `CABOOSE_ISOLATION` | `docker` | what keeps the sandbox from this machine: `docker` (runc), `gvisor` (runsc) or `vm` (a VM of caboose's own, on a Mac); see [isolation](#isolation) |
+| `vm_cpus`, `vm_memory` | `CABOOSE_VM_CPUS`, `CABOOSE_VM_MEMORY` | half the CPUs; half the memory, at most `8G` | the `vm` isolation's size: CPUs, and memory as `"8G"` or `"4096M"` |
 | `docker_sock` | `CABOOSE_DOCKER_SOCK` | unset | mount the host docker socket — **removes the isolation**, see caveats |
 | `docker_run_args` | `CABOOSE_DOCKER_RUN_ARGS` | unset | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments). The variable is split at whitespace |
 | `forward_ports` | `CABOOSE_FORWARD_PORTS` | `3000-3999 5173 8000-8999` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, or `none`; see [the host link](host-link.md#ports) |
 | `open_urls` | `CABOOSE_OPEN_URLS` | `ask` | whether the sandbox may open URLs in your browser: `ask`, `allow` or `off`; see [the host link](host-link.md#urls-and-notifications) |
+| `egress_proxy` | `CABOOSE_EGRESS_PROXY` | `on` | under `isolation = "vm"`, whether the sandbox's outbound connections are made from this machine, so a VPN's routes and DNS apply: `on` or `off` (the VM's own NAT); ignored under `docker` and `gvisor`; see [the host link](host-link.md#outbound-connections) |
+| `egress_ports` | `CABOOSE_EGRESS_PORTS` | `22 80 443` | the ports the sandbox may reach that way, as `forward_ports` is written, or `none` |
+| `egress_allow` | `CABOOSE_EGRESS_ALLOW` | unset | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
 | | `CABOOSE_ENV` | `default` | the environment; `--env` wins over it |
 | | `CABOOSE_HOME` | `~/.caboose` | where environments live |
 | | `CABOOSE_DATA_DIR` | `$CABOOSE_HOME/envs/<env>/data` | the data dir, named outright |
@@ -96,6 +100,9 @@ own config, and a session cannot propose them.
 - `gvisor`: the same container under [gVisor](https://gvisor.dev)'s
   `runsc`, a kernel of its own in user space, so a kernel bug the sandbox
   finds is gVisor's, not the host's.
+- `vm`, on a Mac with Apple silicon: the sandbox is a VM of caboose's own,
+  on Apple's Virtualization.framework, with no Docker at all; see
+  [The vm isolation](#the-vm-isolation).
 
 ```toml
 isolation = "gvisor"
@@ -105,7 +112,22 @@ isolation = "gvisor"
 runtimes); a launch without it stops and says so, and `caboose doctor`
 lists it as a problem. [`caboose setup isolation`](#setup) registers it
 on OrbStack; elsewhere, install gVisor as [its guide](https://gvisor.dev/docs/user_guide/install/)
-says (Docker Desktop is not supported yet). Like the roots, the isolation is fixed when the container is
+says (Docker Desktop is not supported yet), registering it with the flags
+the sandbox needs, then reload docker:
+
+```sh
+sudo runsc install -- --host-uds=open --net-raw --allow-packet-socket-write
+sudo systemctl reload docker
+```
+
+`--host-uds=open` lets the sandbox connect to the SSH agent caboose
+forwards, a Unix socket of this machine's, which gVisor refuses
+otherwise; the others let Docker run inside the sandbox. A runsc
+registered without `--host-uds=open` still runs the sandbox, but
+`caboose setup isolation` and `caboose doctor` say it cannot reach the
+agent, and how to add the flag (to runsc's `runtimeArgs` in
+`/etc/docker/daemon.json`; a running sandbox gets it at
+`caboose restart`). Like the roots, the isolation is fixed when the container is
 created: `caboose restart` applies a change, and until then a launch,
 `caboose status` and `caboose doctor` say the container has another. A
 container created under `gvisor` needs `runsc` for as long as it exists:
@@ -139,6 +161,66 @@ events inside, so a dev server or a watch-mode test in the sandbox would
 not see a file you save in your editor. The [host link](host-link.md#file-changes)
 makes up for it: under `gvisor` it watches the roots here and has the
 agent raise an event inside for each file that changed.
+
+### The vm isolation
+
+Under `isolation = "vm"` the sandbox is a Linux VM: a kernel of its own,
+its image as a read-only disk, and a fresh scratch disk for what it writes,
+so nothing it writes outside the mounts outlives `caboose restart`. It
+needs no Docker engine, and runs these:
+
+- `caboose-vmm`, next to `caboose`, which owns the VM. A release installs
+  it there, signed with the virtualization entitlement; in a checkout,
+  `make vmm` builds and signs it on the Mac (`make launcher` does too,
+  there). `caboose setup isolation` and `caboose doctor` ask it
+  (`caboose-vmm --check`) whether this Mac and its signature let it run
+  a VM, and say what to do when they do not: macOS 13 or later, Apple
+  silicon, and a caboose-vmm of the launcher's own version, signed.
+- the guest's kernel (kernel.org's Linux 6.18 LTS, unpatched, built by
+  caboose from `vm/kernel`: no modules, lockdown on) and the builder's disk,
+  which `caboose build` builds the image in. A release build fetches its
+  own version's the first time vm needs them (a few hundred MB, checked
+  against the release's `checksums.txt`) into `~/.caboose/vm/<version>/`,
+  and keeps only those of the versions installed. In a checkout,
+  `make vm-kernel` and `make vm-builder` (with Docker, once each) put them
+  in `vm-dist/`. Beside the kernel, `kernel-arm64.SOURCE` says where its
+  source and config are.
+
+The launcher looks for the last two in `~/.caboose/vm/<version>/arm64/`,
+`~/.caboose/vm/arm64/`, then the checkout's `vm-dist/`. `caboose build` then builds the same image as
+under docker, in a builder VM of its own (the first build about a minute
+and a half; one after a caboose update some fifteen seconds), and keeps
+it in the data dir's `vm/images/` as a disk. A launch boots the sandbox in
+about a second.
+
+**Docker inside.** The VM is the sandbox, so it runs its own `dockerd`:
+no socket of this machine's, no Docker-in-Docker. The default image has
+it (its `dockerd` section, with buildx and compose, and a `sudo` section),
+and the sandbox starts it when it boots; for [your own
+image](images.md#requirements-for-your-own-image), `caboose check-image`
+says whether it has one. Its images live on a disk of
+their own, the data dir's `vm/volumes/docker.img`, which `caboose restart`
+keeps, as a laptop's Docker keeps its images; to start afresh, `caboose
+prune --docker` deletes it for an empty one, after saying what it frees
+and asking (it stops a running VM first, listing its sessions). A start
+also makes an empty one when the file is missing. Inner containers can bind-mount `/work` paths
+as they are, and a port one publishes is forwarded to this machine like
+any other port listening in the sandbox. `caboose status` says whether
+dockerd is up, on its `dockerd` line (under docker and gvisor its `docker`
+line is about this machine's engine instead, whose socket the sandbox
+may have); its log is `/var/log/caboose-dockerd.log` in the sandbox.
+
+The sandbox runs as root inside the VM: its shares show every file as
+root's, so the agent user could not tell its own. Files it writes on the
+mounts are yours on the Mac. The Mac's edits under the roots reach the
+sandbox's watchers through the [host link](host-link.md#file-changes), and
+so does your [SSH agent](ssh.md) (any command that starts the VM starts
+the link too). The docker socket cannot be mounted into a VM, and `docker_run_args` mean nothing there: a launch refuses
+them, and `vm_cpus` and `vm_memory` size the VM instead. `caboose logs`
+shows the VM's console (`--tail N`). The data dir's path must be short
+enough for the VM's socket (macOS allows 103 bytes); `caboose doctor`
+says when it is not. Where caboose would say "container" -- `caboose
+status`, `version`, `doctor`, `stop`, `restart` -- it says "VM".
 
 ## The repo root
 
@@ -247,8 +329,10 @@ and setup shows the lines to change by hand.
   change it offers to build; moving the container onto the new image is
   `caboose restart`, which it leaves to you.
 - **isolation** asks for the [isolation](#isolation) and writes it, even
-  when it is the default: `gvisor` when docker has `runsc` and a container
-  runs under it (tried with the image, when there is one), else `docker`.
+  when it is the default: the strongest that works, `vm` when this Mac has
+  [what it runs](#the-vm-isolation), else `gvisor` when docker has `runsc`
+  and a container runs under it (tried with the image, when there is one),
+  else `docker`.
   Where docker has no `runsc` and the engine is OrbStack, it offers to
   download gVisor's latest release (`runsc` and what it runs beside it,
   some 150MB), checked against its published sha512, into
@@ -258,10 +342,17 @@ and setup shows the lines to change by hand.
   `docker.json.before-caboose`) and restarting OrbStack's Docker engine,
   which stops every running container. OrbStack's VM sees your home at
   the same path, so nothing is installed in it. Elsewhere it says how to
-  get `runsc`. When the engine runs the `runsc` it registered with flags
+  get `runsc`, and when docker's lacks `--host-uds=open`, how to add it. When the engine runs the `runsc` it registered with flags
   an older caboose gave it, or `docker.json` no longer lists it (so the
   engine's next restart would drop it), it says so and offers to put it
-  right the same way.
+  right the same way. gVisor downloaded this way never updates by
+  itself: each run checks it against the sha512 gVisor publishes for its
+  latest release and, when that is newer (or the download predates
+  caboose recording which release it was), offers to download it in its
+  place, checked the same way and swapped in whole. The engine needs no
+  restart for it, but a sandbox already running under it goes on in the
+  old release until `caboose restart`. `caboose doctor` notes when the
+  release is over 60 days old.
 - **git**: the identity and signing, [below](#git-identity-and-commit-signing).
 - **the container**, in a whole run only, after the isolation: a running one
   is left alone, a stopped one started, and an absent one created when you

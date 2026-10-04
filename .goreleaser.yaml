@@ -2,13 +2,19 @@
 # .github/workflows/release.yml on a v* tag. A local dry run that publishes
 # nothing is `goreleaser release --snapshot --clean --skip=publish` (dist/).
 #
-# Only the launcher is released, with install.sh, which installs it. The
-# image is not: the binary carries the Dockerfile, entrypoint.sh and
-# tmux.conf embedded, and builds the image on the user's machine the first
-# time it runs. An install made by install.sh updates itself from these
-# releases (internal/selfupdate), so the archives' names, their layout
-# (caboose at the root) and checksums.txt are what it downloads: change them
-# only together with it, and with install.sh.
+# Only the launcher is released, with install.sh, which installs it, and on
+# macOS caboose-vmm beside it in the same archive: the vm isolation's VM
+# runner, a binary of its own because it alone carries the virtualization
+# entitlement. Both darwin binaries are signed by macsign.sh, with
+# rcodesign, which the release workflow installs: with a Developer ID and
+# notarized when the workflow has the signing secrets (CONTRIBUTING.md),
+# else caboose-vmm ad-hoc and the launcher as the linker left it. The image is not: the binary carries the Dockerfile,
+# entrypoint.sh and tmux.conf embedded, and builds the image on the user's
+# machine the first time it runs. An install made by install.sh updates
+# itself from these releases (internal/selfupdate), so the archives' names,
+# their layout (caboose, and caboose-vmm when there is one, at the root)
+# and checksums.txt are what it downloads: change them only together with
+# it, and with install.sh.
 version: 2
 
 project_name: caboose
@@ -18,6 +24,12 @@ before:
     - go mod tidy -diff
     # caboose-agent for each architecture, which the launcher embeds.
     - make agent
+    # vm's kernel and builder disk, one asset per guest architecture
+    # (arm64: Apple silicon), fetched by a release build the first time vm
+    # needs them. Built here with docker, unless VM_ASSETS_PREBUILT=1:
+    # release.yml builds them on an arm64 runner and puts the asset in
+    # vm-release/, and this only checks it.
+    - make vm-assets VM_VERSION={{ .Version }} VM_ARCH=arm64 VM_ASSETS_PREBUILT={{ envOrDefault "VM_ASSETS_PREBUILT" "" }}
 
 builds:
   - id: caboose
@@ -42,9 +54,44 @@ builds:
     # the archive entries below), so a rebuild of the same tag gives the same
     # archives. The Makefile stamps the commit date too.
     mod_timestamp: "{{ .CommitTimestamp }}"
+    # Signed before it is archived, so the archives and checksums.txt hold
+    # the signed binary. Nothing happens without a Developer ID: no
+    # --adhoc.
+    hooks:
+      post:
+        - cmd: '{{ if eq .Os "darwin" }}sh macsign.sh caboose "{{ .Path }}"{{ else }}true{{ end }}'
+          output: true
+
+  # The vm isolation's runner, macOS only. Signed with the
+  # com.apple.security.virtualization entitlement, without which
+  # Virtualization.framework refuses it, ad-hoc when there is no Developer
+  # ID; the identifier is set, as rcodesign would otherwise leave the
+  # linker's a.out.
+  - id: caboose-vmm
+    main: ./cmd/caboose-vmm
+    binary: caboose-vmm
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/bfreis/caboose/internal/version.Version=v{{ .Version }}
+      - -X github.com/bfreis/caboose/internal/version.Commit={{ .Commit }}
+      - -X github.com/bfreis/caboose/internal/version.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    hooks:
+      post:
+        - cmd: sh macsign.sh --adhoc caboose-vmm "{{ .Path }}" cmd/caboose-vmm/entitlements.plist
+          output: true
 
 archives:
   - formats: [tar.gz]
+    # caboose-vmm is darwin's only: a darwin archive holds two binaries, a
+    # linux one caboose alone.
+    allow_different_binary_count: true
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     builds_info:
       owner: root
@@ -64,6 +111,9 @@ archives:
 
 checksum:
   name_template: checksums.txt
+  # vm's asset is checked as the archives are.
+  extra_files:
+    - glob: ./vm-release/caboose-vm_{{ .Version }}_*.tar.gz
 
 changelog:
   sort: asc
@@ -73,12 +123,15 @@ changelog:
       - "^test:"
 
 release:
+  # The repository the workflow runs in, so a private mirror's run
+  # publishes there and never on the public repository.
   github:
-    owner: bfreis
-    name: caboose
+    owner: '{{ envOrDefault "RELEASE_OWNER" "bfreis" }}'
+    name: '{{ envOrDefault "RELEASE_REPO" "caboose" }}'
   # A tag like v1.0.0-rc.1 is published as a prerelease, which is never
   # releases/latest: neither install.sh nor an update takes it unasked.
   prerelease: auto
   # releases/latest/download/install.sh is the one-line install.
   extra_files:
     - glob: ./install.sh
+    - glob: ./vm-release/caboose-vm_{{ .Version }}_*.tar.gz

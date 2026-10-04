@@ -21,7 +21,11 @@ So a session **proposes** the change, and you apply it on the host:
    in, `caboose` starts a session, and `/resume` picks up the conversation.
 
 A launch says when proposals are waiting: `2 pending proposals (foo, other):
-'caboose apply' reviews them`.
+'caboose apply' reviews them`. While the container runs, the [host
+link](host-link.md) also shows a notification when a session writes a new
+one, naming its title and the `caboose apply` to run (at most one every 30
+seconds; what arrives in between is named in the next). It only tells you:
+nothing is applied until you run `caboose apply` and say yes.
 
 ## What can be proposed
 

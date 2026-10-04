@@ -7,6 +7,11 @@
 #
 #   tests/run.sh          run everything
 #   FORCE=1 tests/run.sh  run even with live sessions
+#   ONLY=vm tests/run.sh  run the isolation vm group alone (a Mac; `make
+#                         test-vm`), which uses a throwaway environment and
+#                         leaves the real one alone; VM_TEST_BUILD_TIMEOUT,
+#                         VM_TEST_BOOT_TIMEOUT and VM_TEST_CMD_TIMEOUT (seconds)
+#                         bound its steps
 #   CABOOSE_BIN=path/to/caboose tests/run.sh
 #                         test another launcher build (relative to the repo)
 #
@@ -20,6 +25,333 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CC="${CABOOSE_BIN:-$ROOT/caboose}"
 case "$CC" in /*) ;; *) CC="$ROOT/$CC" ;; esac
+pass=0; fail=0
+ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
+bad()  { printf '  \033[31mFAIL\033[0m %s\n'   "$1"; fail=$((fail + 1)); }
+check() { # check <description> <expected> <actual>
+    if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; printf '        expected: %s\n        actual:   %s\n' "$2" "$3"; fi
+}
+group() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+# `[ -e X ]; echo $?` reads naturally but trips SC2319: that $? is a
+# condition's status rather than a command's, and is easy to clobber by
+# accident. Same 0/1 answer, stated outright.
+exists() { if [ -e "$1" ]; then echo 0; else echo 1; fi; }
+
+# --- isolation = vm ---------------------------------------------------------
+# Defined up here and run last, or alone (ONLY=vm): unlike every other group
+# it never touches the real environment. Each launcher call gets a throwaway
+# CABOOSE_HOME, data dir and repo root (one mktemp -d under /tmp, short
+# enough for the VM's socket path), and a VM and image named
+# caboose-vm-test, with none of the caller's CABOOSE_* settings. The image is
+# built from scratch in the builder guest, so this group takes a while.
+#
+# A VM boot can hang where a container start cannot, so every launcher call
+# here is bounded in time (bounded), each kind by its own VM_TEST_*_TIMEOUT,
+# and the teardown stops whatever vmm and link the run left behind.
+VM_NAME=caboose-vm-test
+VM_T_BUILD="${VM_TEST_BUILD_TIMEOUT:-3600}"  # the image, base and layer, in the builder
+VM_T_BOOT="${VM_TEST_BOOT_TIMEOUT:-1500}"    # create and boot; the first waits for Claude Code
+VM_T_CMD="${VM_TEST_CMD_TIMEOUT:-180}"       # a command in a running VM, stop, sync, prune
+# The caller's CABOOSE_HOME, read before any of this changes it: where the
+# kernel and the builder disk may be, besides the checkout's vm-dist/.
+VM_REAL_HOME="${CABOOSE_HOME:-$HOME/.caboose}"
+VM_WORK="" VM_PROJ="" VM_DATA=""
+VM_UNSET=() VM_ENV=()
+
+# bounded SECS WHAT CMD...: CMD, stopped after SECS seconds with status 124
+# and a line on the terminal saying so, naming it WHAT. No timeout(1): a Mac
+# has none. CMD runs in a process group of its own (set -m), which the
+# watchdog stops whole: a child left running would hold CMD's output open,
+# and a $(...) would wait for it. The watchdog polls, so nothing of it
+# outlives CMD by more than a second, and it holds none of that output.
+bounded() {
+    local secs=$1 what=$2 flag pid w s; shift 2
+    flag="$(mktemp "${TMPDIR:-/tmp}/caboose-bounded.XXXXXX")" && rm -f "$flag"
+    set -m
+    "$@" </dev/null &
+    pid=$!
+    set +m
+    (
+        n=0
+        while [ "$n" -lt "$secs" ]; do
+            sleep 1; kill -0 "$pid" 2>/dev/null || exit 0; n=$((n + 1))
+        done
+        : > "$flag"; kill -TERM -- "-$pid"; sleep 10; kill -KILL -- "-$pid"
+    ) </dev/null >/dev/null 2>&1 &
+    w=$!
+    wait "$pid"; s=$?
+    kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+    if [ -e "$flag" ]; then
+        rm -f "$flag"
+        printf '  \033[31mTIMEOUT\033[0m after %ss: %s\n' "$secs" "$what" >&9
+        return 124
+    fi
+    return "$s"
+}
+
+# vcc SECS [NAME=VALUE...] ARGS...: the launcher in the vm group's throwaway
+# environment, from its project, with NAME=VALUE added, bounded by SECS.
+vcc() {
+    local secs=$1; shift
+    local extra=()
+    while [ $# -gt 0 ] && [[ $1 =~ ^[A-Z_][A-Z0-9_]*= ]]; do extra+=("$1"); shift; done
+    (cd "$VM_PROJ" && bounded "$secs" "caboose $*" env ${VM_UNSET[@]+"${VM_UNSET[@]}"} ${VM_ENV[@]+"${VM_ENV[@]}"} ${extra[@]+"${extra[@]}"} \
+        "$CC" "$@" </dev/null)
+}
+# vsh CMD: CMD run by bash in the VM, its output as it printed it.
+vsh() { vcc "$VM_T_CMD" shell -c "$1" 2>/dev/null | tr -d '\r'; }
+# vstate: the VM's state as status reports it (running, exited, absent).
+vstate() { vcc "$VM_T_CMD" status 2>/dev/null | sed -n 's/^VM *: .*(\(.*\))$/\1/p'; }
+
+# vm_unavailable: why the vm group cannot run here, nothing when it can.
+# The launcher says as much, but only once it is asked to start a VM, and a
+# skip has to say why without trying.
+vm_unavailable() {
+    if [ "$(uname -s)" != Darwin ]; then
+        echo "not a Mac: isolation vm runs on macOS only"; return
+    fi
+    if [ "$(uname -m)" != arm64 ]; then
+        echo "not Apple silicon ($(uname -m)): isolation vm has no builder for it yet"; return
+    fi
+    # caboose-vmm sits beside the launcher, as the launcher finds it: after
+    # its symlinks.
+    local exe="$CC" t
+    while [ -L "$exe" ]; do
+        t="$(readlink "$exe")"
+        case "$t" in /*) exe="$t" ;; *) exe="$(dirname "$exe")/$t" ;; esac
+    done
+    if [ ! -f "$(dirname "$exe")/caboose-vmm" ]; then
+        echo "no caboose-vmm beside $exe ('make vmm' builds and signs it)"; return
+    fi
+    local f
+    for f in kernel-arm64:vm-kernel builder-arm64.img:vm-builder; do
+        if [ ! -f "$ROOT/vm-dist/${f%%:*}" ] && [ ! -f "$VM_REAL_HOME/vm/arm64/${f%%:*}" ]; then
+            echo "no ${f%%:*} in $ROOT/vm-dist or $VM_REAL_HOME/vm/arm64 ('make ${f#*:}' writes it)"; return
+        fi
+    done
+}
+
+vm_setup() {
+    VM_WORK="$(mktemp -d /tmp/caboose-vm.XXXXXX)" || return 1
+    # Physical, as the launcher resolves the root: on a Mac /tmp is a
+    # symlink to /private/tmp.
+    VM_WORK="$(cd "$VM_WORK" && pwd -P)"
+    VM_HOME="$VM_WORK/home"; VM_DATA="$VM_WORK/data"; VM_ROOT="$VM_WORK/root"; VM_PROJ="$VM_ROOT/proj"
+    mkdir -p "$VM_HOME/vm/arm64" "$VM_DATA" "$VM_PROJ" || return 1
+    # The kernel and the builder disk, when the caller's CABOOSE_HOME has
+    # them: the launcher looks in CABOOSE_HOME/vm/<arch>, then the checkout.
+    local f
+    for f in kernel-arm64 builder-arm64.img; do
+        [ -f "$VM_REAL_HOME/vm/arm64/$f" ] && ln -s "$VM_REAL_HOME/vm/arm64/$f" "$VM_HOME/vm/arm64/$f"
+    done
+    # None of the caller's settings: no CABOOSE_* of theirs, no FORCE, and
+    # a CABOOSE_HOME of the group's own, so no config.toml of theirs either.
+    VM_UNSET=(-u FORCE)
+    local v
+    for v in $(compgen -e); do
+        case "$v" in CABOOSE_*) VM_UNSET+=(-u "$v") ;; esac
+    done
+    VM_ENV=(CABOOSE_HOME="$VM_HOME" CABOOSE_DATA_DIR="$VM_DATA" CABOOSE_REPO_ROOT="$VM_ROOT"
+            CABOOSE_IMAGE="$VM_NAME" CABOOSE_CONTAINER="$VM_NAME" CABOOSE_ISOLATION=vm
+            CABOOSE_READY_TIMEOUT="$VM_T_BOOT")
+}
+
+# vm_kill PID: ends a caboose process (vmm, the link) the run left behind.
+# Only one whose name says caboose: a pid file can outlive its process, and
+# its number be reused.
+vm_kill() {
+    local pid=$1
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$pid" -gt 1 ] || return 0
+    case "$(ps -p "$pid" -o comm= 2>/dev/null)" in *caboose*) ;; *) return 0 ;; esac
+    kill -TERM "$pid" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    kill -KILL "$pid" 2>/dev/null
+    return 0
+}
+# vm_pids: the pids the VMs' and the link's files name.
+vm_pids() {
+    local f
+    for f in "$VM_DATA"/vm/*/vmm.pid "$VM_DATA"/link.json; do
+        [ -f "$f" ] && sed -n -e 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' -e '/^ *[0-9][0-9]* *$/p' "$f" | head -1
+    done
+    return 0
+}
+# vm_teardown: stops the VM (bounded), then ends any vmm or link still
+# running, and removes the throwaway dir. Called at the end of the group and
+# again at exit, for a run cut short; a no-op once done.
+vm_teardown() {
+    [ -n "$VM_WORK" ] && [ -d "$VM_WORK" ] || return 0
+    vcc "$VM_T_CMD" FORCE=1 stop >/dev/null 2>&1
+    local pid
+    for pid in $(vm_pids); do vm_kill "$pid"; done
+    rm -rf "$VM_WORK" 2>/dev/null \
+        || printf '\n\033[31mWARNING\033[0m could not remove %s; delete it by hand.\n' "$VM_WORK" >&2
+    VM_WORK=""
+    return 0
+}
+# vm_show FILE: the end of a log a failed step left, for the reader.
+vm_show() { [ -s "$1" ] && tail -n 15 "$1" | sed 's/^/        | /'; return 0; }
+
+vm_group() {
+    group 'isolation = vm'
+    local why; why="$(vm_unavailable)"
+    if [ -n "$why" ]; then
+        printf '  \033[33mSKIP\033[0m %s\n' "$why"
+        return 0
+    fi
+    exec 9>&2  # bounded's TIMEOUT line, whatever a check does with stderr
+    if ! vm_setup; then
+        bad 'set up a throwaway environment'
+        return 0
+    fi
+    local out rc st
+
+    # Bring-up: the image, then a command, which creates and boots the VM.
+    # Nothing after this means anything without them.
+    vcc "$VM_T_BUILD" build >"$VM_WORK/build.log" 2>&1; rc=$?
+    check 'caboose build writes the image in the builder guest' 0 "$rc"
+    if [ "$rc" -ne 0 ]; then vm_show "$VM_WORK/build.log"; vm_teardown; return 0; fi
+    out="$(vcc "$VM_T_BOOT" shell -c 'echo up' 2>"$VM_WORK/boot.log" | tr -d '\r')"
+    check 'a shell command creates and boots the VM, and runs in it' up "$out"
+    if [ "$out" != up ]; then
+        vm_show "$VM_WORK/boot.log"; vm_show "$VM_DATA/vm/$VM_NAME/console.log"
+        vm_teardown; return 0
+    fi
+    st="$(vcc "$VM_T_CMD" status 2>/dev/null)"
+    check 'status says the VM runs' running "$(printf '%s\n' "$st" | sed -n 's/^VM *: .*(\(.*\))$/\1/p')"
+    check 'and that its isolation is vm' vm "$(printf '%s\n' "$st" | sed -n 's/^isolation : //p')"
+    vcc "$VM_T_CMD" doctor --offline >"$VM_WORK/doctor.log" 2>/dev/null
+    check 'doctor finds no problem with the isolation' 0 "$(grep -c '^  ✗ isolation' "$VM_WORK/doctor.log")"
+    grep -E '^(  ✗ |    )isolation ' "$VM_WORK/doctor.log" | sed 's/^/        | /'
+
+    # In the VM: who runs, where, and the files the host shares with it.
+    check 'it is a Linux guest' Linux "$(vsh 'uname -s')"
+    check "it runs as root in the guest, whose shares show every file as root's" 0 "$(vsh 'id -u')"
+    check 'a shell starts in the project, at its path under /work' /work/proj "$(vsh pwd)"
+    check 'that user writes a 600 file in ~/.claude' ok \
+        "$(vsh 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
+    vsh 'echo from the VM > /work/proj/caboose-test-root' >/dev/null
+    check 'a file the VM writes under the root is on the host' 'from the VM' \
+        "$(cat "$VM_PROJ/caboose-test-root" 2>/dev/null)"
+    echo 'from the host' > "$VM_PROJ/caboose-test-host"
+    check 'and one the host writes there is in the VM' 'from the host' "$(vsh 'cat /work/proj/caboose-test-host')"
+    vsh 'echo kept > ~/.claude/caboose-test-keep' >/dev/null
+    check 'what the VM writes to a kept path is in the data dir' kept \
+        "$(cat "$VM_DATA/home/.claude/caboose-test-keep" 2>/dev/null)"
+
+    # caboose sync, against a bare repo under the root: the sync's git runs
+    # in the VM, which sees it at /work/sync-remote.git. Another machine is
+    # a clone on the host.
+    local remote="$VM_ROOT/sync-remote.git" probe="$VM_DATA/home/.config/caboose/caboose-test-sync" path
+    git init -q --bare "$remote"
+    mkdir -p "$(dirname "$probe")"
+    echo 'from this machine' > "$probe"
+    vcc "$VM_T_CMD" sync --remote /work/sync-remote.git >"$VM_WORK/sync.log" 2>&1; rc=$?
+    check 'caboose sync pushes to a remote the VM reaches' 0 "$rc"
+    [ "$rc" -eq 0 ] || vm_show "$VM_WORK/sync.log"
+    path="$(git --git-dir="$remote" ls-tree -r --name-only main 2>/dev/null | grep 'caboose-test-sync$' | head -1)"
+    check 'the remote has what syncs, as it is' 'from this machine' \
+        "$(git --git-dir="$remote" show "main:$path" 2>/dev/null)"
+    if [ -n "$path" ] && git clone -q -b main "$remote" "$VM_WORK/other" 2>/dev/null; then
+        echo 'from another machine' > "$VM_WORK/other/$path"
+        git -C "$VM_WORK/other" -c user.name=caboose-test -c user.email=caboose-test@example.invalid \
+            -c commit.gpgsign=false commit -qam 'Sync from another machine' \
+            && git -C "$VM_WORK/other" push -q origin HEAD:main
+    fi
+    vcc "$VM_T_CMD" sync >"$VM_WORK/sync.log" 2>&1; rc=$?
+    check 'a second sync, with the remote it set' 0 "$rc"
+    [ "$rc" -eq 0 ] || vm_show "$VM_WORK/sync.log"
+    check 'takes what another machine pushed into the data dir' 'from another machine' "$(cat "$probe" 2>/dev/null)"
+    check 'which the VM sees' 'from another machine' "$(vsh 'cat ~/.config/caboose/caboose-test-sync')"
+
+    # caboose prune: the versions the VM's ~/.local holds, in the data dir.
+    # The suite's decoys, as in 'version pruning'; the data dir is a
+    # throwaway, so nothing real is at stake.
+    local local_dir versions reals nreals v
+    local_dir="$(printf '%s\n' "$st" | sed -n 's/^local dir *: //p')"
+    versions="$local_dir/share/claude/versions"
+    vm_versions() { ls -1 "$versions" 2>/dev/null | sort -Vr | tr '\n' ' ' | sed 's/ $//'; }
+    reals="$(vm_versions)"
+    nreals="$(ls -1 "$versions" 2>/dev/null | wc -l | tr -d ' ')"
+    check 'Claude Code is installed in the data dir' 1 "$([ -n "$local_dir" ] && [ "$nreals" -gt 0 ] && echo 1 || echo 0)"
+    for v in 0.0.9 0.0.10 0.0.11; do printf 'decoy' > "$versions/$v"; done
+    vcc "$VM_T_CMD" CABOOSE_KEEP_VERSIONS=$((nreals + 2)) prune >/dev/null 2>&1; rc=$?
+    check 'caboose prune runs in the VM' 0 "$rc"
+    check 'and keeps the newest N by version order' "$reals 0.0.11 0.0.10" "$(vm_versions)"
+    check 'claude still runs after it' 0 "$(vsh 'claude --version >/dev/null 2>&1; echo $?')"
+
+    # caboose prune --docker: the VM's dockerd keeps everything on a disk of
+    # its own in the data dir, and this deletes it for an empty one.
+    local disk="$VM_DATA/vm/volumes/docker.img"
+    local wait_dockerd='for i in {1..60}; do docker info >/dev/null 2>&1 && break; sleep 1; done'
+    if [ "$(vsh 'command -v dockerd >/dev/null && echo yes')" = yes ]; then
+        check 'dockerd in the VM builds an image' built \
+            "$(vsh "$wait_dockerd; printf 'FROM scratch\nLABEL caboose.fixture=vm\n' | docker build -q -t caboose-vm-fixture - >/dev/null 2>&1 && docker image inspect caboose-vm-fixture >/dev/null 2>&1 && echo built")"
+        check 'its disk is in the data dir' 0 "$(exists "$disk")"
+        out="$(vcc "$VM_T_CMD" prune --docker 2>&1)"
+        check 'prune --docker refuses to delete it non-interactively' 1 \
+            "$(printf '%s\n' "$out" | grep -c 'refusing to delete it non-interactively')"
+        check 'and leaves the VM running' running "$(vstate)"
+        vcc "$VM_T_CMD" FORCE=1 prune --docker >"$VM_WORK/prune.log" 2>&1; rc=$?
+        check 'FORCE=1 prune --docker deletes it' 0 "$rc"
+        [ "$rc" -eq 0 ] || vm_show "$VM_WORK/prune.log"
+        check 'stopping the VM first' exited "$(vstate)"
+        check 'and making an empty disk in its place' 0 "$(exists "$disk")"
+        check 'the next start has dockerd on the empty disk' gone \
+            "$(vcc "$VM_T_BOOT" shell -c "$wait_dockerd; docker info >/dev/null 2>&1 || exit 1; docker image inspect caboose-vm-fixture >/dev/null 2>&1 && echo kept || echo gone" 2>/dev/null | tr -d '\r')"
+    else
+        printf '  \033[33mSKIP\033[0m the image has no dockerd: prune --docker only, with nothing to delete\n'
+        vcc "$VM_T_CMD" FORCE=1 prune --docker >/dev/null 2>&1; rc=$?
+        check 'FORCE=1 prune --docker succeeds' 0 "$rc"
+    fi
+    out="$(vcc "$VM_T_CMD" CABOOSE_ISOLATION=docker prune --docker 2>&1)"
+    check 'prune --docker is refused under another isolation' 1 \
+        "$(printf '%s\n' "$out" | grep -c 'prune --docker is for isolation vm')"
+
+    # Stop, start, restart. A marker in the VM's directory tells a restart,
+    # which recreates the VM and so its directory, from a stop and start,
+    # which keep it.
+    [ "$(vstate)" = running ] || vsh true >/dev/null
+    : > "$VM_DATA/vm/$VM_NAME/caboose-test-marker"
+    vcc "$VM_T_CMD" stop >/dev/null 2>&1; rc=$?
+    check 'caboose stop stops the VM' "0 exited" "$rc $(vstate)"
+    check 'a command starts it again' up "$(vcc "$VM_T_BOOT" shell -c 'echo up' 2>/dev/null | tr -d '\r')"
+    check 'the same VM' 0 "$(exists "$VM_DATA/vm/$VM_NAME/caboose-test-marker")"
+    vcc "$VM_T_BOOT" FORCE=1 restart >"$VM_WORK/restart.log" 2>&1; rc=$?
+    check 'caboose restart recreates the VM, running' "0 running" "$rc $(vstate)"
+    [ "$rc" -eq 0 ] || vm_show "$VM_WORK/restart.log"
+    check 'a new one' 1 "$(exists "$VM_DATA/vm/$VM_NAME/caboose-test-marker")"
+    check 'which still has what was kept' kept "$(vsh 'cat ~/.claude/caboose-test-keep')"
+
+    # Teardown: the VM stops, and no vmm or link of this run is left.
+    vcc "$VM_T_CMD" stop >/dev/null 2>&1; rc=$?
+    check 'the VM stops at the end' "0 exited" "$rc $(vstate)"
+    local pid left=0
+    for pid in $(vm_pids); do
+        case "$(ps -p "$pid" -o comm= 2>/dev/null)" in *caboose-vmm*) left=$((left + 1)) ;; esac
+    done
+    check 'and no vmm is left running' 0 "$left"
+    vm_teardown
+}
+
+# ONLY=vm runs the vm group alone, before anything of the real environment
+# is read: nothing else of the suite runs, so live sessions do not matter.
+case "${ONLY:-}" in
+    '') ;;
+    vm)
+        trap vm_teardown EXIT
+        trap 'exit 130' INT TERM
+        vm_group
+        printf '\n%s passed, %s failed\n' "$pass" "$fail"
+        [ "$fail" -eq 0 ]; exit
+        ;;
+    *) printf 'tests/run.sh: no group ONLY=%s; the one it can run alone is vm\n' "$ONLY" >&2; exit 2 ;;
+esac
+
 # Must track the launcher's own choices, which involve more than a default:
 # a CABOOSE_* override, the environment's config.toml, the environment. Ask
 # the launcher rather than restating all of that here; status only reads.
@@ -46,17 +378,6 @@ read_paths() {
 }
 read_paths
 
-pass=0; fail=0
-ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
-bad()  { printf '  \033[31mFAIL\033[0m %s\n'   "$1"; fail=$((fail + 1)); }
-check() { # check <description> <expected> <actual>
-    if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; printf '        expected: %s\n        actual:   %s\n' "$2" "$3"; fi
-}
-group() { printf '\n\033[1m%s\033[0m\n' "$1"; }
-# `[ -e X ]; echo $?` reads naturally but trips SC2319: that $? is a
-# condition's status rather than a command's, and is easy to clobber by
-# accident. Same 0/1 answer, stated outright.
-exists() { if [ -e "$1" ]; then echo 0; else echo 1; fi; }
 
 # Record the real symlink target so a mid-suite abort can't leave the install
 # pointing at a decoy. Same for the tracked CLAUDE.md, which one test edits.
@@ -79,7 +400,7 @@ restore() {
 # calls restore() mid-suite, which sits between the 'tool config' group that
 # writes the probes and the restart in 'stale runtime state' that checks they
 # survived -- cleaning them there made those checks fail every time.
-trap 'restore; cleanup_config_probes' EXIT
+trap 'restore; cleanup_config_probes; vm_teardown' EXIT
 
 # Throwaway keys the 'tool config' group writes through the container, removed
 # here on the host so an aborted run cannot leave them behind. The jj key is
@@ -398,7 +719,7 @@ check 'status reports the same version' "$(ver_field version)" \
     "$(cd "$ROOT" && "$CC" status 2>/dev/null | sed -n 's/^version *: //p')"
 check 'version names the image status does' "$IMAGE" "$(ver_field image)"
 check 'the local image matches the launcher' matches "$(ver_field local | cut -d' ' -f1)"
-check 'the container is on the current image' "$CONTAINER (running, on the current image)" \
+check 'the container is on the local image' "$CONTAINER (running, on the local image)" \
     "$(ver_field container)"
 label() { docker image inspect --format "{{index .Config.Labels \"$1\"}}" "$IMAGE" 2>/dev/null; }
 check 'the image carries a version label' 1 \
@@ -818,6 +1139,8 @@ if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; th
 else
     printf '  \033[33mSKIP\033[0m docker has no runsc runtime\n'
 fi
+
+vm_group
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

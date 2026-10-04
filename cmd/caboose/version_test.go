@@ -207,15 +207,15 @@ func TestVersion(t *testing.T) {
 		{"matches whatever the base's ID", []string{current, imageIDOf("img-base", "sha256:other")}, 0,
 			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
 		{"another Dockerfile", []string{imageLabels(defaultLabels("v8", assets.LabelBaseHash+"="+otherHash))}, 0,
-			"local     : differs (built by v8, from a different Dockerfile than this launcher embeds (base context 0123456789ab, this launcher's " +
+			"local     : out of date (built by v8, from a different Dockerfile than this launcher embeds (base context 0123456789ab, this launcher's " +
 				assets.BaseHash()[:12] + "))\ncontainer : box (absent)\n",
 			[]string{"the next launch that creates the container rebuilds it", "'caboose restart' moves a running container onto it"}, false},
 		{"another layer", []string{imageLabels(defaultLabels("v8", assets.LabelLayerHash+"="+otherHash))}, 0,
-			"local     : differs (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
+			"local     : out of date (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
 				assets.LayerHash()[:12] + "))\ncontainer : box (absent)\n",
 			[]string{"'caboose build'"}, false},
 		{"built on a user's base", []string{imageLabels(byoLabels("v9", "node:22"))}, 0,
-			"local     : differs (built by v9, on CABOOSE_BASE_IMAGE 'node:22', not on the embedded Dockerfile's base)\ncontainer : box (absent)\n",
+			"local     : out of date (built by v9, on CABOOSE_BASE_IMAGE 'node:22', not on the embedded Dockerfile's base)\ncontainer : box (absent)\n",
 			[]string{"'caboose build'"}, false},
 		{"unlabelled", []string{imageLabels("null")}, 0,
 			"local     : unlabelled (not built by caboose build)\ncontainer : box (absent)\n",
@@ -232,13 +232,20 @@ func TestVersion(t *testing.T) {
 			"local     : unknown (docker could not look it up)\n",
 			[]string{"caboose: cannot inspect image 'img': docker image inspect img: invalid reference format: " +
 				"repository name (library/Img) must be lowercase\n"}, false},
-		{"container on the current image",
+		{"container on the local image",
 			[]string{current, containerRunning, imageIDIs("sha:1")}, 0,
-			"local     : matches (built by v9)\ncontainer : box (running, on the current image)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : box (running, on the local image)\n", nil, true},
 		{"container on an older image",
 			[]string{current, containerRunning, imageIDIs("sha:2")}, 0,
-			"local     : matches (built by v9)\ncontainer : box (running, on an older image)\n",
-			[]string{"'caboose restart' to move it onto the current image"}, false},
+			"local     : matches (built by v9)\ncontainer : box (running, on an older image than the local one)\n",
+			[]string{"'caboose restart' to move it onto the local image"}, false},
+		// The two lines read together: a container on the local image is as
+		// out of date as it is, rather than "current".
+		{"container on a local image out of date",
+			[]string{imageLabels(defaultLabels("v8", assets.LabelLayerHash+"="+otherHash)), containerRunning, imageIDIs("sha:1")}, 0,
+			"local     : out of date (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
+				assets.LayerHash()[:12] + "))\ncontainer : box (running, on the local image, so out of date too)\n",
+			[]string{"'caboose restart' moves a running container onto it"}, false},
 	})
 }
 
@@ -254,17 +261,17 @@ func TestVersionOnOwnBase(t *testing.T) {
 		{"matches", []string{current, here}, 0,
 			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
 		{"another layer", []string{imageLabels(byoLabels("v8", "node:22", assets.LabelLayerHash+"="+otherHash)), here}, 0,
-			"local     : differs (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
+			"local     : out of date (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
 				assets.LayerHash()[:12] + "))\ncontainer : box (absent)\n", nil, false},
 		{"another base", []string{imageLabels(byoLabels("v9", "node:20")), here}, 0,
-			"local     : differs (built by v9, on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n", nil, false},
+			"local     : out of date (built by v9, on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n", nil, false},
 		{"the default base", []string{imageLabels(defaultLabels("v9")), here}, 0,
-			"local     : differs (built by v9, on the embedded Dockerfile's base, not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n", nil, false},
+			"local     : out of date (built by v9, on the embedded Dockerfile's base, not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n", nil, false},
 	})
 	// A pull (or a rebuild) of the base since: a new ID.
 	runVersionCases(t, versionHeader(assets.LayerHash(), "node:22 (CABOOSE_BASE_IMAGE, 999900000000)"), env, []versionCase{
 		{"the base has changed", []string{current, imageIDOf("node:22", "sha256:9999000000000000")}, 0,
-			"local     : differs (built by v9, on 'node:22' as ba5e00000000, which it no longer names (now 999900000000))\ncontainer : box (absent)\n",
+			"local     : out of date (built by v9, on 'node:22' as ba5e00000000, which it no longer names (now 999900000000))\ncontainer : box (absent)\n",
 			[]string{"'caboose build'"}, false},
 	})
 	// The base gone from the local store: nothing to compare its ID with.
@@ -302,7 +309,7 @@ func TestVersionBaseBuiltFromCaboose(t *testing.T) {
 	runVersionCases(t, versionHeader(assets.ContextHash(), "img-base (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")"), nil,
 		[]versionCase{
 			{"default kind, empty hash", []string{imageLabels(defaultLabels("v8", assets.LabelBaseHash+"=="))}, 0,
-				"local     : differs (built by v8, from a different Dockerfile than this launcher embeds (base context , this launcher's " +
+				"local     : out of date (built by v8, from a different Dockerfile than this launcher embeds (base context , this launcher's " +
 					assets.BaseHash()[:12] + "))\ncontainer : box (absent)\n", nil, false},
 		})
 }
@@ -330,10 +337,10 @@ func TestVersionOtherHostUser(t *testing.T) {
 	me := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
 	runVersionCases(t, header, nil, []versionCase{
 		{"another uid", []string{imageLabels(defaultLabels("v9", assets.LabelUID+"=4242"))}, 0,
-			"local     : differs (built by v9, for another host user (uid 4242, gid " + strconv.Itoa(os.Getgid()) +
+			"local     : out of date (built by v9, for another host user (uid 4242, gid " + strconv.Itoa(os.Getgid()) +
 				"; this one is " + me + "))\ncontainer : box (absent)\n", nil, false},
 		{"another gid", []string{imageLabels(defaultLabels("v9", assets.LabelGID+"=4343"))}, 0,
-			"local     : differs (built by v9, for another host user (uid " + strconv.Itoa(os.Getuid()) +
+			"local     : out of date (built by v9, for another host user (uid " + strconv.Itoa(os.Getuid()) +
 				", gid 4343; this one is " + me + "))\ncontainer : box (absent)\n", nil, false},
 	})
 }
@@ -346,7 +353,7 @@ func TestVersionImageIsItsOwnBase(t *testing.T) {
 	header := versionHeader(assets.LayerHash(), "docker.io/library/img:latest (CABOOSE_BASE_IMAGE, 1a7e00000000)")
 	runVersionCases(t, header, env, []versionCase{
 		{"self", []string{imageLabels(byoLabels("v9", "img")), imageIDOf("docker.io/library/img:latest", "sha256:1a7e000000000000")}, 0,
-			"local     : differs (built by v9, on 'docker.io/library/img:latest' as ba5e00000000, which it no longer names (now 1a7e00000000))\ncontainer : box (absent)\n",
+			"local     : out of date (built by v9, on 'docker.io/library/img:latest' as ba5e00000000, which it no longer names (now 1a7e00000000))\ncontainer : box (absent)\n",
 			[]string{"caboose: CABOOSE_BASE_IMAGE ('docker.io/library/img:latest') names the same image as CABOOSE_IMAGE ('img')"}, false},
 	})
 }
@@ -872,7 +879,7 @@ func TestChangedBaseWithoutBuilding(t *testing.T) {
 func TestVersionChangedBaseAdvice(t *testing.T) {
 	header := versionHeader(assets.LayerHash(), "node:22 (CABOOSE_BASE_IMAGE, ba5e00000000)")
 	docker := []string{imageLabels(byoLabels("v9", "node:20")), imageIDOf("node:22", baseID)}
-	tail := "local     : differs (built by v9, on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n"
+	tail := "local     : out of date (built by v9, on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n"
 	runVersionCases(t, header, []string{"CABOOSE_BASE_IMAGE", "node:22"}, []versionCase{
 		{"rebuilt by a launch", docker, 0, tail, []string{
 			"caboose: the next launch that creates the container rebuilds it on the configured base, so\n" +

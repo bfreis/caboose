@@ -31,12 +31,25 @@
 # into) an environment's own image/Dockerfile. An off section is commented
 # out line by line, so this file builds without it. A section carries its
 # own ARGs and ENVs, and must not depend on another one.
+#
+# No download may hang the build. apt runs with retries and timeouts, and
+# every RUN that downloads defines its own fetch (a section cannot lean on
+# another, nor leave a helper behind in the image): fetch SECONDS URL
+# [CURL_ARGS...] gives up on a connection after 15s, on a transfer that
+# moves under 10 kB/s for a minute, and on one still going after SECONDS;
+# tries 3 more times, whatever the error (a connection cut halfway, too);
+# and then says which URL it could not get. So a network the build cannot
+# reach (a VPN's route, a proxy) fails in about a minute instead of never.
+# A dead transfer is the stall check's to catch: SECONDS only backs it up,
+# generous enough for a large file on a slow link (75 MB at 100 kB/s is 13
+# minutes), which a fixed cap of a few minutes cut short.
 FROM ubuntu:26.04
 
 # git comes from the archive on purpose: 2.53.0 is two releases off upstream
 # and Ubuntu patches it for CVEs, which a source build would make our problem.
 # universe is enabled in the stock ubuntu image, which is where ripgrep lives.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
         ca-certificates curl git openssh-client \
         ripgrep jq less vim procps unzip \
         build-essential python3 python3-venv \
@@ -57,9 +70,16 @@ RUN set -eux; \
       arm64) target=arm64 ;; \
       *) echo "unsupported arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${target}.tar.xz" \
-      | tar -xJ --strip-components=1 -C /usr/local \
-            --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE'; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
+    fetch 1800 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${target}.tar.xz" \
+      -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz --strip-components=1 -C /usr/local \
+        --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE'; \
+    rm /tmp/node.tar.xz; \
     corepack enable; \
     node --version; \
     npm --version
@@ -77,12 +97,17 @@ RUN set -eux; \
       arm64) target=aarch64 ;; \
       *) echo "unsupported arch" >&2; exit 1 ;; \
     esac; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
     if [ "$BUN_VERSION" = latest ]; then \
       url="https://github.com/oven-sh/bun/releases/latest/download/bun-linux-${target}.zip"; \
     else \
       url="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${target}.zip"; \
     fi; \
-    curl -fsSL -o /tmp/bun.zip "$url"; \
+    fetch 1800 "$url" -o /tmp/bun.zip; \
     unzip -q /tmp/bun.zip -d /tmp; \
     mv "/tmp/bun-linux-${target}/bun" /usr/local/bin/bun; \
     rm -rf /tmp/bun.zip "/tmp/bun-linux-${target}"; \
@@ -100,8 +125,14 @@ RUN set -eux; \
       arm64) target=arm64 ;; \
       *) echo "unsupported arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${target}.tar.gz" \
-      | tar -xz -C /usr/local; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
+    fetch 1800 "https://go.dev/dl/go${GO_VERSION}.linux-${target}.tar.gz" -o /tmp/go.tar.gz; \
+    tar -xzf /tmp/go.tar.gz -C /usr/local; \
+    rm /tmp/go.tar.gz; \
     /usr/local/go/bin/go version
 # Go's own bin, and GOPATH's: GOPATH defaults to $HOME/go, and the layer
 # fixes HOME at /home/agent. The layer prepends ~/.local/bin to this.
@@ -124,14 +155,21 @@ RUN set -eux; \
       arm64) target=arm64 ;; \
       *) echo "unsupported arch" >&2; exit 1 ;; \
     esac; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
     if [ "$GH_VERSION" = latest ]; then \
-      version="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/cli/cli/releases/latest \
-                 | sed -n 's#.*/tag/v##p')"; \
+      latest="$(fetch 30 https://github.com/cli/cli/releases/latest -o /dev/null -w '%{url_effective}')"; \
+      version="${latest##*/tag/v}"; \
     else \
       version="$GH_VERSION"; \
     fi; \
-    curl -fsSL "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${target}.tar.gz" \
-      | tar -xz --strip-components=2 -C /usr/local/bin "gh_${version}_linux_${target}/bin/gh"; \
+    fetch 1800 "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_linux_${target}.tar.gz" \
+      -o /tmp/gh.tar.gz; \
+    tar -xzf /tmp/gh.tar.gz --strip-components=2 -C /usr/local/bin "gh_${version}_linux_${target}/bin/gh"; \
+    rm /tmp/gh.tar.gz; \
     gh --version
 # caboose:end
 
@@ -144,14 +182,21 @@ RUN set -eux; \
       arm64) target=aarch64-unknown-linux-musl ;; \
       *) echo "unsupported arch" >&2; exit 1 ;; \
     esac; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
     if [ "$JJ_VERSION" = latest ]; then \
-      version="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/jj-vcs/jj/releases/latest \
-                 | sed -n 's#.*/tag/v##p')"; \
+      latest="$(fetch 30 https://github.com/jj-vcs/jj/releases/latest -o /dev/null -w '%{url_effective}')"; \
+      version="${latest##*/tag/v}"; \
     else \
       version="$JJ_VERSION"; \
     fi; \
     url="https://github.com/jj-vcs/jj/releases/download/v${version}/jj-v${version}-${target}.tar.gz"; \
-    curl -fsSL "$url" | tar -xz -C /usr/local/bin ./jj; \
+    fetch 1800 "$url" -o /tmp/jj.tar.gz; \
+    tar -xzf /tmp/jj.tar.gz -C /usr/local/bin ./jj; \
+    rm /tmp/jj.tar.gz; \
     jj --version
 # caboose:end
 
@@ -167,26 +212,104 @@ RUN set -eux; \
       arm64) target=aarch64 ;; \
       *) echo "unsupported arch" >&2; exit 1 ;; \
     esac; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
     if [ "$DOCKER_CLI_VERSION" = latest ]; then \
-      version="$(curl -fsSL "https://download.docker.com/linux/static/stable/${target}/" \
+      index="$(fetch 30 "https://download.docker.com/linux/static/stable/${target}/")"; \
+      version="$(printf '%s\n' "$index" \
                  | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' \
                  | sed 's/docker-//; s/\.tgz//' | sort -V | tail -1)"; \
     else \
       version="$DOCKER_CLI_VERSION"; \
     fi; \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${target}/docker-${version}.tgz" \
-      | tar -xz --strip-components=1 -C /usr/local/bin docker/docker; \
+    fetch 1800 "https://download.docker.com/linux/static/stable/${target}/docker-${version}.tgz" \
+      -o /tmp/docker.tgz; \
+    tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker; \
+    rm /tmp/docker.tgz; \
     docker --version
+# caboose:end
+
+# caboose:section dockerd the Docker engine (dockerd, run in the VM under isolation vm)
+# dockerd, containerd and runc from Docker's static release, with the buildx
+# and compose plugins, and iptables for its bridge. Only isolation vm starts
+# it (the entrypoint): there the sandbox is a VM of its own, level 3, and
+# its dockerd runs in the guest, its images on a disk kept across restarts.
+# Under docker and gvisor it stays unused: never the host's socket. It
+# brings the docker CLI too, so it builds without the docker section.
+ARG DOCKER_ENGINE_VERSION=latest
+RUN set -eux; \
+    apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update; \
+    apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends iptables; \
+    rm -rf /var/lib/apt/lists/*; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) target=x86_64; plugin=amd64; compose=x86_64 ;; \
+      arm64) target=aarch64; plugin=arm64; compose=aarch64 ;; \
+      *) echo "unsupported arch" >&2; exit 1 ;; \
+    esac; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
+    if [ "$DOCKER_ENGINE_VERSION" = latest ]; then \
+      index="$(fetch 30 "https://download.docker.com/linux/static/stable/${target}/")"; \
+      version="$(printf '%s\n' "$index" \
+                 | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' \
+                 | sed 's/docker-//; s/\.tgz//' | sort -V | tail -1)"; \
+    else \
+      version="$DOCKER_ENGINE_VERSION"; \
+    fi; \
+    fetch 1800 "https://download.docker.com/linux/static/stable/${target}/docker-${version}.tgz" \
+      -o /tmp/docker.tgz; \
+    tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin; \
+    rm /tmp/docker.tgz; \
+    mkdir -p /usr/local/lib/docker/cli-plugins; \
+    buildx="$(fetch 30 https://github.com/docker/buildx/releases/latest -I -o /dev/null -w '%{url_effective}')"; \
+    buildx="${buildx##*/}"; \
+    fetch 1800 "https://github.com/docker/buildx/releases/download/${buildx}/buildx-${buildx}.linux-${plugin}" \
+      -o /usr/local/lib/docker/cli-plugins/docker-buildx; \
+    fetch 1800 "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${compose}" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose; \
+    chmod 755 /usr/local/lib/docker/cli-plugins/*; \
+    dockerd --version; \
+    docker buildx version; \
+    docker compose version
+# caboose:end
+
+# caboose:section sudo sudo
+# sudo, for the tools and scripts that call it. Only where the sandbox is
+# root (isolation vm, and gvisor where the agent user cannot write its
+# mounts) does it do anything: the agent user gets no sudoers entry.
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends sudo \
+    && rm -rf /var/lib/apt/lists/*
 # caboose:end
 
 # caboose:section rust off Rust (rustup, with the stable toolchain)
 # # Rust through rustup, into /usr/local: RUSTUP_HOME and CARGO_HOME are
 # # made writable by everyone, as the official rust image does, since the
-# # agent user (not root) fetches crates into CARGO_HOME's registry.
+# # agent user (not root) fetches crates into CARGO_HOME's registry. It
+# # takes rustup-init itself, as that image does, not sh.rustup.rs: that
+# # script downloads it with a curl of its own, which has no timeout.
 # ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 # RUN set -eux; \
-#     curl -fsSL https://sh.rustup.rs \
-#       | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable; \
+#     case "$(dpkg --print-architecture)" in \
+#       amd64) target=x86_64-unknown-linux-gnu ;; \
+#       arm64) target=aarch64-unknown-linux-gnu ;; \
+#       *) echo "unsupported arch" >&2; exit 1 ;; \
+#     esac; \
+#     fetch() { \
+#       t="$1"; u="$2"; shift 2; \
+#       curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+#         || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+#     }; \
+#     fetch 1800 "https://static.rust-lang.org/rustup/dist/${target}/rustup-init" -o /tmp/rustup-init; \
+#     chmod 755 /tmp/rustup-init; \
+#     /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain stable; \
+#     rm /tmp/rustup-init; \
 #     chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"; \
 #     rustc --version; \
 #     cargo --version

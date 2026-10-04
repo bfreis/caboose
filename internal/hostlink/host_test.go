@@ -2,6 +2,7 @@ package hostlink
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -252,5 +253,90 @@ func TestRequestsAreRateLimited(t *testing.T) {
 	}
 	if !refused {
 		t.Fatal("a burst past the limit was never refused")
+	}
+}
+
+// Under vm, the host's hello names where the agent is to serve this
+// machine's SSH agent: a client there reaches it, both ways, through a
+// stream the host opens; with none named, nothing listens.
+func TestSSHAgent(t *testing.T) {
+	dir, err := os.MkdirTemp("", "cbs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	hostSock, guestSock := dir+"/host", dir+"/guest"
+	ln, err := net.Listen("unix", hostSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+	linked(t, Config{SSHAgent: guestSock, SSHAuthSock: hostSock})
+	var c net.Conn
+	for i := 0; i < 200; i++ {
+		if c, err = net.Dial("unix", guestSock); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("no SSH agent socket in the sandbox: %v", err)
+	}
+	defer c.Close()
+	// Two at once, as git's does.
+	c2, err := net.Dial("unix", guestSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	for _, conn := range []net.Conn{c, c2} {
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, err := conn.Write([]byte("\x00\x00\x00\x01\x0b")); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, 5)
+		if _, err := io.ReadFull(conn, got); err != nil || string(got) != "\x00\x00\x00\x01\x0b" {
+			t.Fatalf("through the agent: %q, %v", got, err)
+		}
+	}
+	if fi, err := os.Stat(guestSock); err != nil || fi.Mode().Perm() != 0o666 {
+		t.Errorf("the sandbox's socket: %v, %v", fi, err)
+	}
+
+	other := dir + "/none"
+	linked(t, Config{SSHAgent: other})
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(other); err == nil {
+		t.Error("an SSH agent socket with no host agent to reach")
+	}
+}
+
+// A session that ends before the agent's hello says so, for the launcher
+// to retry it soon: an agent with nothing to serve yet closes at once.
+func TestRunEndsBeforeHello(t *testing.T) {
+	hr, aw := io.Pipe()
+	ar, hw := io.Pipe()
+	sess := agentproto.NewSession(hr, hw, true)
+	defer sess.Close()
+	go func() { _, _ = io.Copy(io.Discard, ar) }()
+	done := make(chan error, 1)
+	go func() { done <- Run(sess, Config{Log: log.New(io.Discard, "", 0)}) }()
+	aw.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrNoHello) {
+			t.Errorf("err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not end")
 	}
 }

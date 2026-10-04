@@ -225,7 +225,7 @@ func NoSigningChanges() []Change {
 // "" when the host does not sign with SSH.
 //
 // Only SSH signing (gpg.format=ssh): the sandbox signs through the
-// forwarded agent (see the launcher's sshAgentArgs), so the private key
+// forwarded agent (see the launcher's sshAgentSource), so the private key
 // never enters it. gpg.ssh.program is never carried over -- on a Mac it
 // is 1Password's op-ssh-sign, which does not exist in the container; git's
 // default, ssh-keygen, signs there with the agent.

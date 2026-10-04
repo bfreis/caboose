@@ -1,0 +1,17 @@
+#!/bin/sh
+# kernel-smoke: boot /smoke/kernel with /smoke/initramfs.cpio under QEMU's
+# emulation of a virt machine, with the devices a caboose guest has that
+# QEMU can give (virtio's PCI transport, console, network, entropy), and
+# print its console. The init prints SMOKE PASS or SMOKE FAIL and powers
+# off; panic=-1 and -no-reboot end the run if it cannot, and timeout if
+# nothing does.
+set -eu
+exec timeout 300 qemu-system-aarch64 \
+	-M virt,gic-version=3 -cpu max,pauth-impdef=on -smp 2 -m 1024 \
+	-nographic -serial none -monitor none -no-reboot \
+	-kernel /smoke/kernel -initrd /smoke/initramfs.cpio \
+	-append "console=hvc0 panic=-1 ip=dhcp" \
+	-device virtio-serial-pci -chardev stdio,id=con,signal=off \
+	-device virtconsole,chardev=con \
+	-netdev user,id=net -device virtio-net-pci,netdev=net,romfile= \
+	-device virtio-rng-pci

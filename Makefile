@@ -108,8 +108,199 @@ $(LAUNCHER): $(GO_SRC) $(EMBEDDED) $(AGENT_BINS) $(PLATFORM_STAMP) $(VERSION_STA
 	    ./cmd/caboose \
 	  && echo "  built $@ $$v for $$(cat $(PLATFORM_STAMP))"
 
+# caboose-vmm, the vm isolation's VM runner: macOS only, and signed with
+# the virtualization entitlement, without which Virtualization.framework
+# refuses it (goreleaser signs the released one, through macsign.sh). It
+# sits next to ./caboose, gitignored, as a release installs it next to
+# caboose. `make launcher` on a Mac builds it too.
+#
+# Signed ad-hoc by codesign, unless DEVID_P12 names a Developer ID
+# Application .p12 and DEVID_P12_PASSWORD_FILE a file holding its
+# password: then macsign.sh signs it with them (rcodesign, which must be
+# installed, reads the .p12 itself, with no keychain), with the hardened
+# runtime, and notarizes it too when APPSTORE_API_KEY_JSON names an App
+# Store Connect API key's JSON (rcodesign encode-app-store-connect-api-key).
+DEVID_P12               ?=
+DEVID_P12_PASSWORD_FILE ?=
+APPSTORE_API_KEY_JSON   ?=
+VMM          := caboose-vmm
+ENTITLEMENTS := cmd/caboose-vmm/entitlements.plist
+ifeq ($(shell uname -s),Darwin)
+VMM_ON_MAC := $(VMM)
+$(VMM): $(GO_SRC) $(ENTITLEMENTS) macsign.sh $(VERSION_STAMP)
+	@{ read -r v; read -r c; read -r d; } < $(VERSION_STAMP); \
+	  CGO_ENABLED=0 go build -o $@ -ldflags \
+	    "-X $(VERSION_PKG).Version=$$v -X $(VERSION_PKG).Commit=$$c -X $(VERSION_PKG).Date=$$d" \
+	    ./cmd/caboose-vmm \
+	  && if [ -n "$(DEVID_P12)" ]; then \
+	       MACSIGN_P12="$(DEVID_P12)" MACSIGN_P12_PASSWORD_FILE="$(DEVID_P12_PASSWORD_FILE)" \
+	       MACSIGN_API_KEY="$(APPSTORE_API_KEY_JSON)" sh macsign.sh caboose-vmm $@ $(ENTITLEMENTS); \
+	     else \
+	       codesign -s - --force --identifier caboose-vmm --entitlements $(ENTITLEMENTS) $@; \
+	     fi \
+	  && echo "  built and signed $@ $$v"
+else
+$(VMM):
+	@echo "  !!  caboose-vmm runs VMs on macOS only: build it with 'make vmm' on a Mac" >&2; exit 1
+endif
+
+## vmm: build and sign ./caboose-vmm, the vm isolation's runner (on a Mac)
+vmm: $(VMM)
+
+# The vm isolation's builder guest, a raw ext4 disk built by docker from
+# vm/builder (docker on the host, or CI): vm-dist/builder-<arch>.img,
+# gitignored. VM_ARCH is the guest's, which is the Mac's.
+VM_ARCH ?= arm64
+
+## vm-builder: build vm-dist/builder-ARCH.img, the vm isolation's builder guest (docker, on the host)
+vm-builder:
+	@if [ -n "$(IN_SANDBOX)" ]; then echo "  !!  vm-builder drives docker: run it on the host, not in the sandbox" >&2; exit 1; fi
+	@command -v docker > /dev/null || { echo "  !!  vm-builder needs docker: run it on the host, or in CI" >&2; exit 1; }
+	@docker buildx build --platform linux/$(VM_ARCH) -o type=local,dest=vm-dist/.builder-$(VM_ARCH) vm/builder \
+	  && mv vm-dist/.builder-$(VM_ARCH)/builder.img vm-dist/builder-$(VM_ARCH).img \
+	  && rmdir vm-dist/.builder-$(VM_ARCH) \
+	  && echo "  built vm-dist/builder-$(VM_ARCH).img"
+
+# The vm isolation's guest kernel: kernel.org's 6.18 LTS, unpatched, built
+# by docker from vm/kernel (docker on the host, or CI; natively, or cross
+# on an amd64 runner) as vm-dist/kernel-ARCH, the uncompressed Image, and
+# kernel-ARCH.config, the config it resolved to. The pin is the version
+# and the sha256 of its tarball, from kernel.org's signed sha256sums.asc
+# (check its signature when bumping: CLAUDE.md says how and when).
+LINUX_VERSION := 6.18.54
+LINUX_SHA256  := 9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac
+KERNEL_SRC    := vm/kernel/Dockerfile vm/kernel/check-config $(wildcard vm/kernel/config-*)
+# More flags for its docker buildx build: --no-cache, to check that a
+# build from nothing gives the same Image.
+VM_KERNEL_BUILD_FLAGS ?=
+
+# The pin as a file, rewritten only when it changes, so a bump rebuilds
+# the kernel (and a checkout still holding an older one replaces it).
+KERNEL_PIN := vm-dist/.kernel-pin
+$(KERNEL_PIN): FORCE
+	@mkdir -p vm-dist
+	@want="$(LINUX_VERSION) $(LINUX_SHA256)"; \
+	  [ "$$(cat $@ 2>/dev/null)" = "$$want" ] || printf '%s\n' "$$want" > $@
+
+## vm-kernel: build vm-dist/kernel-ARCH, the vm isolation's guest kernel (docker, on the host)
+# Its .SOURCE is rewritten on every run, after the kernel, so the three
+# files always describe one build: a checkout that held another kernel
+# (Kata's, once) would otherwise keep that kernel's .SOURCE beside this one.
+vm-kernel: vm-dist/kernel-$(VM_ARCH) vm-dist/kernel-$(VM_ARCH).SOURCE
+	@$(call check-kernel,vm-dist)
+
+# Fails unless the Image's own banner and its .SOURCE both name
+# LINUX_VERSION, and its .config is there, in the directory $(1): run by
+# vm-kernel, and again by vm-assets just before it packs them (and on what
+# it unpacks, when they were built elsewhere), so no release ships a kernel
+# beside another's source.
+LINUX_VERSION_RE := $(subst .,\.,$(LINUX_VERSION))
+define check-kernel
+k=$(1)/kernel-$(VM_ARCH); \
+  LC_ALL=C grep -aqE 'Linux version $(LINUX_VERSION_RE)([^0-9.]|$$)' "$$k" \
+  || { echo "  !!  $$k is not Linux $(LINUX_VERSION): delete it and run make vm-kernel" >&2; exit 1; }; \
+  [ -s "$$k.config" ] \
+  || { echo "  !!  $$k.config is missing: delete $$k and run make vm-kernel" >&2; exit 1; }; \
+  [ "$$(head -n 1 "$$k.SOURCE" 2>/dev/null)" = "Linux $(LINUX_VERSION), unmodified, from" ] \
+  || { echo "  !!  $$k.SOURCE does not name Linux $(LINUX_VERSION): run make vm-kernel" >&2; exit 1; }
+endef
+
+vm-dist/kernel-$(VM_ARCH): $(KERNEL_SRC) $(KERNEL_PIN)
+	@if [ -n "$(IN_SANDBOX)" ]; then echo "  !!  vm-kernel drives docker: run it on the host, not in the sandbox" >&2; exit 1; fi
+	@command -v docker > /dev/null || { echo "  !!  vm-kernel needs docker: run it on the host, or in CI" >&2; exit 1; }
+	@t=vm-dist/.kernel-$(VM_ARCH); rm -rf "$$t"; \
+	  docker buildx build --platform linux/$(VM_ARCH) $(VM_KERNEL_BUILD_FLAGS) \
+	    --build-arg LINUX_VERSION=$(LINUX_VERSION) --build-arg LINUX_SHA256=$(LINUX_SHA256) \
+	    -o type=local,dest="$$t" vm/kernel \
+	  && mv "$$t/kernel.config" $@.config && mv "$$t/kernel" $@ && rmdir "$$t" \
+	  && echo "  built $@ (Linux $(LINUX_VERSION))"
+
+## vm-kernel-smoke: boot vm-dist/kernel-ARCH under QEMU with a test init, checking what caboose needs of it (docker)
+# The init (vm/kernel/smoke/init) checks the mounts, devices, namespaces
+# and decisions the sandbox relies on, in an initramfs written as the
+# launcher writes its own; QEMU runs in a container, emulating, so it
+# needs no KVM and runs on any host with docker, or in CI.
+vm-kernel-smoke: vm-dist/kernel-$(VM_ARCH)
+	@if [ -n "$(IN_SANDBOX)" ]; then echo "  !!  vm-kernel-smoke drives docker: run it on the host, not in the sandbox" >&2; exit 1; fi
+	@[ "$(VM_ARCH)" = arm64 ] || { echo "  !!  vm-kernel-smoke boots arm64 guests only" >&2; exit 1; }
+	@set -e; t=vm-dist/.smoke-$(VM_ARCH); rm -rf "$$t"; mkdir -p "$$t"; \
+	  CGO_ENABLED=0 GOOS=linux GOARCH=$(VM_ARCH) go build -trimpath -o "$$t/init" ./vm/kernel/smoke/init; \
+	  go run ./vm/kernel/smoke/initramfs "$$t/init" > "$$t/initramfs.cpio"; \
+	  cp vm-dist/kernel-$(VM_ARCH) "$$t/kernel"; \
+	  img=$$(docker build -q vm/kernel/smoke); \
+	  docker run --rm -v "$$PWD/$$t:/smoke:ro" "$$img" | tee "$$t/console.log"; \
+	  if grep -q '^SMOKE PASS' "$$t/console.log"; then \
+	    echo "  ok  vm-dist/kernel-$(VM_ARCH) booted and passed (console: $$t/console.log)"; \
+	  else \
+	    echo "  !!  vm-dist/kernel-$(VM_ARCH) failed its smoke test: see the FAIL lines above, or $$t/console.log" >&2; exit 1; \
+	  fi
+
+## vm-kernel-pin: print the guest kernel's pin, LINUX_VERSION and LINUX_SHA256
+vm-kernel-pin:
+	@echo "$(LINUX_VERSION) $(LINUX_SHA256)"
+
+# Where the kernel's source is, shipped beside it: the tarball it was
+# built from, kept with every config a release built from it in a release
+# of its own (kernel-VERSION, made by release.yml in the repository the
+# release is), and the recipe at the commit that built it.
+RELEASE_OWNER ?= bfreis
+RELEASE_REPO  ?= caboose
+KERNEL_SOURCE_URL := https://github.com/$(RELEASE_OWNER)/$(RELEASE_REPO)/releases/tag/kernel-$(LINUX_VERSION)
+vm-dist/kernel-$(VM_ARCH).SOURCE: vm-dist/kernel-$(VM_ARCH) $(KERNEL_PIN) FORCE
+	@commit=$$(git rev-parse HEAD); \
+	  printf '%s\n' \
+	  "Linux $(LINUX_VERSION), unmodified, from" \
+	  "https://cdn.kernel.org/pub/linux/kernel/v$(firstword $(subst ., ,$(LINUX_VERSION))).x/linux-$(LINUX_VERSION).tar.xz" \
+	  "(sha256 $(LINUX_SHA256))." \
+	  "" \
+	  "The exact tarball, and this config as kernel-$(VM_ARCH)-$(VM_VERSION).config:" \
+	  "$(KERNEL_SOURCE_URL)" \
+	  "" \
+	  "Its config is kernel-$(VM_ARCH).config beside this file, the full resolved" \
+	  "config. It was built by vm/kernel/ at caboose $(VM_VERSION), commit $$commit:" \
+	  "https://github.com/$(RELEASE_OWNER)/$(RELEASE_REPO)/tree/$$commit/vm/kernel" > $@
+
+# vm's files as one release asset for VM_ARCH, which goreleaser adds to a
+# release (and to its checksums.txt), and a release build fetches:
+# vm-release/caboose-vm_VERSION_ARCH.tar.gz. Needs docker, for the kernel and the builder.
+VM_VERSION ?= dev
+
+VM_ASSET := vm-release/caboose-vm_$(VM_VERSION)_$(VM_ARCH).tar.gz
+VM_ASSET_FILES := kernel-$(VM_ARCH) kernel-$(VM_ARCH).config kernel-$(VM_ARCH).SOURCE builder-$(VM_ARCH).img
+
+# VM_ASSETS_PREBUILT=1: the asset was built elsewhere and is already in
+# vm-release/ (release.yml builds it on an arm64 runner, where the kernel
+# is the one a Mac's rebuild gives, and hands it to goreleaser's job).
+# Nothing is built: the asset is unpacked aside and checked as a build's
+# files would be, and that it holds those files and was made for
+# VM_VERSION, or goreleaser stops before it publishes.
+VM_ASSETS_PREBUILT ?=
+
+## vm-assets: pack vm's kernel and builder as vm-release/caboose-vm_VERSION_ARCH.tar.gz (docker)
+ifeq ($(VM_ASSETS_PREBUILT),1)
+vm-assets:
+	@[ -s $(VM_ASSET) ] || { echo "  !!  VM_ASSETS_PREBUILT=1, but there is no $(VM_ASSET): build it with make vm-assets VM_VERSION=$(VM_VERSION) (release.yml's vm-assets job), or leave VM_ASSETS_PREBUILT unset to build it here" >&2; exit 1; }
+	@set -e; t=vm-dist/.prebuilt-$(VM_ARCH); rm -rf "$$t"; mkdir -p "$$t"; \
+	  have=$$(tar -tzf $(VM_ASSET) | LC_ALL=C sort | tr '\n' ' '); \
+	  want=$$(printf '%s\n' $(VM_ASSET_FILES) | LC_ALL=C sort | tr '\n' ' '); \
+	  [ "$$have" = "$$want" ] || { echo "  !!  $(VM_ASSET) holds $$have, not $$want" >&2; exit 1; }; \
+	  tar -xzf $(VM_ASSET) -C "$$t"; \
+	  grep -qF "at caboose $(VM_VERSION), commit" "$$t/kernel-$(VM_ARCH).SOURCE" \
+	  || { echo "  !!  $(VM_ASSET)'s kernel-$(VM_ARCH).SOURCE was not made for caboose $(VM_VERSION)" >&2; exit 1; }; \
+	  [ -s "$$t/builder-$(VM_ARCH).img" ] || { echo "  !!  $(VM_ASSET)'s builder-$(VM_ARCH).img is empty" >&2; exit 1; }
+	@$(call check-kernel,vm-dist/.prebuilt-$(VM_ARCH))
+	@rm -rf vm-dist/.prebuilt-$(VM_ARCH)
+	@ls -l $(VM_ASSET)
+else
+vm-assets: vm-kernel vm-builder
+	@$(call check-kernel,vm-dist)
+	@mkdir -p vm-release
+	@tar -czf $(VM_ASSET) -C vm-dist $(VM_ASSET_FILES) \
+	  && ls -l $(VM_ASSET)
+endif
+
 ## launcher: build ./caboose from the Go sources (only when something changed)
-launcher: $(LAUNCHER)
+launcher: $(LAUNCHER) $(VMM_ON_MAC)
 
 ## build: rebuild the image (does not touch your installed Claude Code)
 build: $(CC)
@@ -148,11 +339,11 @@ lint:
 	@set -e; for f in entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh; do \
 	    bash -n "$$f" && echo "  ok  $$f"; \
 	  done; \
-	  for f in imagecheck.sh layer-user.sh install.sh; do \
+	  for f in imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run; do \
 	    sh -n "$$f" && echo "  ok  $$f"; \
 	  done; \
 	  if command -v shellcheck >/dev/null 2>&1; then \
-	    shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh \
+	    shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
 	      && echo "  ok  shellcheck"; \
 	  else \
 	    echo "  --  shellcheck not installed, skipped"; \
@@ -177,8 +368,17 @@ go-test: $(AGENT_BINS)
 	@go test ./...
 
 ## test: build, then run the integration suite (recreates the container)
-test: build
+# caboose-vmm too, on a Mac: the vm group runs it beside ./caboose, and
+# the two must be the same version.
+test: build $(VMM_ON_MAC)
 	@CABOOSE_BIN=$(CC) ./tests/run.sh
+
+## test-vm: run only the integration suite's isolation vm group (on a Mac)
+# Not `build`: the group uses an environment of its own, a throwaway, whose
+# image it builds in the builder guest. `launcher` also builds and signs
+# caboose-vmm beside ./caboose, on a Mac.
+test-vm: launcher
+	@CABOOSE_BIN=$(CC) ONLY=vm ./tests/run.sh
 
 ## test-byo: run the bring-your-own-image suite (slow, installs Claude Code twice)
 # Not part of `test`: it builds two test bases and installs Claude Code twice
@@ -188,5 +388,5 @@ test: build
 test-byo: $(CC)
 	@CABOOSE_BIN=$(CC) ./tests/byo/run.sh
 
-.PHONY: FORCE help agent launcher build restart stop status prune logs shell lint go-test test test-byo
+.PHONY: FORCE help agent vmm vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
 FORCE:

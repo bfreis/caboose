@@ -32,7 +32,8 @@ func TestDefaults(t *testing.T) {
 		Image: "caboose", Container: "caboose", DataDir: "/h/.caboose/envs/default/data",
 		Roots:        []Root{{Host: "/h/dev", Container: "/work"}},
 		ReadyTimeout: "600", KeepVersions: "2", Home: "/h",
-		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: "docker"}
+		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: "docker",
+		EgressProxy: "on", EgressPorts: DefaultEgressPorts}
 	c.Getenv = nil
 	if !reflect.DeepEqual(*c, want) {
 		t.Errorf("got %+v\nwant %+v", *c, want)
@@ -424,5 +425,71 @@ func TestImageDir(t *testing.T) {
 	// Not a directory: not an image dir.
 	if c, _ := Load(envOf(map[string]string{"HOME": "/h"}), fs, "default"); c.ImageDir != "" {
 		t.Errorf("default: ImageDir %q", c.ImageDir)
+	}
+}
+
+// The isolation and the vm's size come from config.toml, and a CABOOSE_
+// variable wins over it, as every setting's does.
+func TestIsolationSettings(t *testing.T) {
+	file := "isolation = \"gvisor\"\nvm_cpus = 4\nvm_memory = \"8G\"\n"
+	fsys := fakeFS{"/h/.caboose/envs/default/config.toml": file}
+	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fsys, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Isolation != "gvisor" || c.VMCPUs != "4" || c.VMMemory != "8G" {
+		t.Errorf("from the file: %q %q %q", c.Isolation, c.VMCPUs, c.VMMemory)
+	}
+	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_ISOLATION": "vm", "CABOOSE_VM_CPUS": "2", "CABOOSE_VM_MEMORY": "4096M"}), fsys, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Isolation != "vm" || c.VMCPUs != "2" || c.VMMemory != "4096M" {
+		t.Errorf("from the variables: %q %q %q", c.Isolation, c.VMCPUs, c.VMMemory)
+	}
+}
+
+// The outbound proxy's settings: on by default, from the file, a variable
+// winning over it; egress_proxy = false is off, never unset.
+func TestEgressSettings(t *testing.T) {
+	home := map[string]string{"HOME": "/h"}
+	c, err := Load(envOf(home), fakeFS{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EgressProxy != "on" || c.EgressPorts != "22 80 443" || c.EgressAllow != "" {
+		t.Errorf("defaults: %q %q %q", c.EgressProxy, c.EgressPorts, c.EgressAllow)
+	}
+	file := "egress_proxy = \"off\"\negress_ports = \"443 8443\"\negress_allow = \"*.corp.example 10.0.0.0/8\"\n"
+	fsys := fakeFS{cfgPath: file}
+	if c, err = Load(envOf(home), fsys, ""); err != nil {
+		t.Fatal(err)
+	}
+	if c.EgressProxy != "off" || c.EgressPorts != "443 8443" || c.EgressAllow != "*.corp.example 10.0.0.0/8" {
+		t.Errorf("from the file: %q %q %q", c.EgressProxy, c.EgressPorts, c.EgressAllow)
+	}
+	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_EGRESS_PROXY": "on", "CABOOSE_EGRESS_PORTS": "22",
+		"CABOOSE_EGRESS_ALLOW": "git.corp.example"}), fsys, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EgressProxy != "on" || c.EgressPorts != "22" || c.EgressAllow != "git.corp.example" {
+		t.Errorf("from the variables: %q %q %q", c.EgressProxy, c.EgressPorts, c.EgressAllow)
+	}
+	for v, want := range map[string]string{"false": "off", "true": "on"} {
+		c, err := Load(envOf(home), fakeFS{cfgPath: "egress_proxy = " + v + "\n"}, "")
+		if err != nil || c.EgressProxy != want {
+			t.Errorf("egress_proxy = %s: %q %v", v, c.EgressProxy, err)
+		}
+	}
+	for v, want := range map[string]bool{"on": true, "off": false} {
+		if on, err := CheckEgressProxy(v); err != nil || on != want {
+			t.Errorf("CheckEgressProxy(%q) = %v %v", v, on, err)
+		}
+	}
+	for _, bad := range []string{"", "yes", "1", "ON"} {
+		if _, err := CheckEgressProxy(bad); err == nil {
+			t.Errorf("CheckEgressProxy(%q) accepted", bad)
+		}
 	}
 }

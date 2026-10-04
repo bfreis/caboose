@@ -21,7 +21,8 @@ var Settings = []string{
 	"IMAGE", "CONTAINER", "DATA_DIR", "REPO_ROOT", "READY_TIMEOUT",
 	"KEEP_VERSIONS", "DOCKER_SOCK", "TZ", "SESSION", "PROJECT", "NO_TMUX",
 	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC", "DOCKER_RUN_ARGS",
-	"FORWARD_PORTS", "OPEN_URLS",
+	"FORWARD_PORTS", "OPEN_URLS", "ISOLATION", "VM_CPUS", "VM_MEMORY",
+	"EGRESS_PROXY", "EGRESS_PORTS", "EGRESS_ALLOW",
 }
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -120,10 +121,27 @@ type Config struct {
 	// this machine's browser, "ask", "allow" or "off".
 	OpenURLs string
 	// Isolation is CABOOSE_ISOLATION: what keeps the sandbox from the
-	// host, "docker" (runc, the default) or "gvisor" (runsc). The launcher
-	// checks it (launcher/isolation.go); never the sandbox config's, since
-	// a session writes that.
+	// host, "docker" (runc, the default), "gvisor" (runsc) or "vm" (a VM of
+	// caboose's own, on a Mac). The launcher checks it
+	// (launcher/isolation.go); never the sandbox config's, since a session
+	// writes that.
 	Isolation string
+	// VMCPUs and VMMemory are CABOOSE_VM_CPUS and CABOOSE_VM_MEMORY: the
+	// vm isolation's size, a number of CPUs and an amount of memory ("8G",
+	// "4096M", or MiB), "" for the launcher's defaults (launcher/vm.go).
+	// The host's keys, as the isolation is.
+	VMCPUs, VMMemory string
+	// EgressProxy is CABOOSE_EGRESS_PROXY: "on" (the default) or "off",
+	// whether under vm the sandbox's outbound connections are dialled
+	// from this machine, through the link, so that its VPN routes and
+	// resolver apply; ignored under docker and gvisor, whose engines dial
+	// from the host already. EgressPorts (CABOOSE_EGRESS_PORTS) are the
+	// ports it reaches, as forward_ports is written; EgressAllow
+	// (CABOOSE_EGRESS_ALLOW) the names, *.suffix patterns and CIDRs it may
+	// reach although they are private. The launcher checks them
+	// (launcher/link.go, CheckEgressProxy); the host's keys, never the
+	// sandbox config's.
+	EgressProxy, EgressPorts, EgressAllow string
 
 	// Home is $HOME, as the rest of the launcher sees it.
 	Home string
@@ -320,6 +338,11 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		ForwardPorts: or(vals["FORWARD_PORTS"], DefaultForwardPorts),
 		OpenURLs:     or(vals["OPEN_URLS"], "ask"),
 		Isolation:    or(vals["ISOLATION"], "docker"),
+		VMCPUs:       vals["VM_CPUS"],
+		VMMemory:     vals["VM_MEMORY"],
+		EgressProxy:  or(vals["EGRESS_PROXY"], "on"),
+		EgressPorts:  or(vals["EGRESS_PORTS"], DefaultEgressPorts),
+		EgressAllow:  vals["EGRESS_ALLOW"],
 		Home:         home,
 		Getenv:       getenv,
 	}
@@ -346,6 +369,22 @@ func ValidEnv(name string) bool { return envName.MatchString(name) }
 // DefaultForwardPorts are the ports forwarded when forward_ports is not
 // set: the ranges dev servers tend to use.
 const DefaultForwardPorts = "3000-3999 5173 8000-8999"
+
+// DefaultEgressPorts are the ports the outbound proxy reaches when
+// egress_ports is not set: ssh (git), http and https.
+const DefaultEgressPorts = "22 80 443"
+
+// CheckEgressProxy reads egress_proxy: whether it is on, or why the value
+// is neither "on" nor "off".
+func CheckEgressProxy(v string) (bool, error) {
+	switch v {
+	case "on":
+		return true, nil
+	case "off":
+		return false, nil
+	}
+	return false, fmt.Errorf(`egress_proxy: %q is not "on" or "off"`, v)
+}
 
 // ImageDirName is an environment's own image's build context, in its EnvDir.
 const ImageDirName = "image"

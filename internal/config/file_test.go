@@ -75,12 +75,14 @@ func TestTemplate(t *testing.T) {
 	uncommented := strings.NewReplacer("\n#repo_root", "\nrepo_root", "\n#base_image", "\nbase_image",
 		"\n#keep_versions", "\nkeep_versions", "\n#docker_sock", "\ndocker_sock",
 		"\n#no_tmux", "\nno_tmux", "\n#no_auto_build", "\nno_auto_build", "\n#auto_sync", "\nauto_sync",
-		"\n#docker_run_args", "\ndocker_run_args").Replace(Template)
+		"\n#docker_run_args", "\ndocker_run_args", "\n#egress_proxy", "\negress_proxy",
+		"\n#egress_ports", "\negress_ports", "\n#egress_allow", "\negress_allow").Replace(Template)
 	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: uncommented}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Roots[0].Host != "/h/dev" || c.KeepVersions != "2" || c.NoTmux != "1" || c.AutoSync != "1" || len(c.DockerRunArgs) != 2 {
+	if c.Roots[0].Host != "/h/dev" || c.KeepVersions != "2" || c.NoTmux != "1" || c.AutoSync != "1" || len(c.DockerRunArgs) != 2 ||
+		c.EgressProxy != "off" || c.EgressPorts != DefaultEgressPorts || c.EgressAllow == "" {
 		t.Errorf("config %+v", *c)
 	}
 	if _, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: Template}, ""); err != nil {

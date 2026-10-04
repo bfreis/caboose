@@ -175,7 +175,7 @@ func (a *App) baseNow() string {
 func (a *App) imageStatus(labels map[string]string, exists bool) imageStatus {
 	st := a.classifyImage(labels, exists, "")
 	if base, byo := a.Cfg.Base(); byo && st.state == imageCurrent {
-		st = a.classifyImage(labels, exists, a.Docker.ImageID(base))
+		st = a.classifyImage(labels, exists, a.images().ImageID(base))
 	}
 	return st
 }
@@ -255,7 +255,7 @@ func (a *App) Version() error {
 	// image's identity, where the default base's is its context hash.
 	baseID := ""
 	if byo {
-		if baseID = a.Docker.ImageID(base); baseID != "" {
+		if baseID = a.images().ImageID(base); baseID != "" {
 			fmt.Fprintf(out, "base      : %s (CABOOSE_BASE_IMAGE, %s)\n", base, shortID(baseID))
 		} else {
 			fmt.Fprintf(out, "base      : %s (CABOOSE_BASE_IMAGE, not in the local store)\n", base)
@@ -275,7 +275,7 @@ func (a *App) Version() error {
 		a.Note("%v", err)
 	}
 
-	labels, exists, err := a.Docker.ImageLabels(c.Image)
+	labels, exists, err := a.images().ImageLabels(c.Image)
 	if err != nil && !exists {
 		if docker.IsUnreachable(err) {
 			fmt.Fprintf(out, "local     : unknown (docker did not answer)\n")
@@ -284,26 +284,27 @@ func (a *App) Version() error {
 		}
 		return imageInspectFailed(c.Image, err)
 	}
-	switch st := a.classifyImage(labels, exists, baseID); st.state {
+	st := a.classifyImage(labels, exists, baseID)
+	switch st.state {
 	case imageMissing:
 		fmt.Fprintf(out, "local     : not built yet\n")
 		a.Note("run 'caboose build' to build it (a first launch does too, unless CABOOSE_NO_AUTO_BUILD is set).")
 	case imageCurrent:
 		fmt.Fprintf(out, "local     : matches (built by %s)\n", or(labels[assets.LabelVersion], "unknown"))
 	case imageStale:
-		fmt.Fprintf(out, "local     : differs (built by %s, %s)\n", or(labels[assets.LabelVersion], "unknown"), st.reason)
+		fmt.Fprintf(out, "local     : out of date (built by %s, %s)\n", or(labels[assets.LabelVersion], "unknown"), st.reason)
 		if a.rebuildsAtCreation(st) {
 			if st.switched() {
-				a.Note("the next launch that creates the container rebuilds it on the configured base, so")
+				a.Note("the next launch that creates the %s rebuilds it on the configured base, so", a.noun())
 			} else {
-				a.Note("the next launch that creates the container rebuilds it, so")
+				a.Note("the next launch that creates the %s rebuilds it, so", a.noun())
 			}
-			a.Note("'caboose restart' moves a running container onto it (this kills running sessions);")
-			a.Note("'caboose build' rebuilds it now, without touching the container.")
+			a.Note("'caboose restart' moves a running %s onto it (this kills running sessions);", a.noun())
+			a.Note("'caboose build' rebuilds it now, without touching the %s.", a.noun())
 			break
 		}
 		a.Note("run 'caboose build' to rebuild it from this launcher,")
-		a.Note("then 'caboose restart' to move a running container onto it (this kills running sessions).")
+		a.Note("then 'caboose restart' to move a running %s onto it (this kills running sessions).", a.noun())
 	case imageUnlabelled:
 		fmt.Fprintf(out, "local     : unlabelled (not built by caboose build)\n")
 		a.Note("run 'caboose build' to build it, replacing what the name holds now.")
@@ -311,20 +312,25 @@ func (a *App) Version() error {
 
 	// The same comparison warnIfImageDrifted makes, stated rather than only
 	// warned about: a rebuilt image does nothing for a container created
-	// from the one before it.
+	// from the one before it. Said of the local image, the one the line
+	// above judges, so that the two read together: a container on a
+	// local image that is out of date is on it, and out of date with it.
+	label := a.nounLabel()
 	switch state := a.state(); state {
 	case "absent":
-		fmt.Fprintf(out, "container : %s (absent)\n", c.Container)
+		fmt.Fprintf(out, "%s %s (absent)\n", label, c.Container)
 	default:
-		running, current := a.Docker.ContainerImage(c.Container), a.Docker.ImageID(c.Image)
+		running, current := a.box().Image(), a.images().ImageID(c.Image)
 		switch {
 		case running == "" || current == "":
-			fmt.Fprintf(out, "container : %s (%s)\n", c.Container, state)
+			fmt.Fprintf(out, "%s %s (%s)\n", label, c.Container, state)
+		case running == current && st.state == imageStale:
+			fmt.Fprintf(out, "%s %s (%s, on the local image, so out of date too)\n", label, c.Container, state)
 		case running == current:
-			fmt.Fprintf(out, "container : %s (%s, on the current image)\n", c.Container, state)
+			fmt.Fprintf(out, "%s %s (%s, on the local image)\n", label, c.Container, state)
 		default:
-			fmt.Fprintf(out, "container : %s (%s, on an older image)\n", c.Container, state)
-			a.Note("run 'caboose restart' to move it onto the current image (this kills running sessions).")
+			fmt.Fprintf(out, "%s %s (%s, on an older image than the local one)\n", label, c.Container, state)
+			a.Note("run 'caboose restart' to move it onto the local image (this kills running sessions).")
 		}
 	}
 	return nil

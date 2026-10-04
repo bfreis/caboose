@@ -371,7 +371,7 @@ check "status: platform $GLIBC" "$GLIBC" "$(field platform)"
 check "status: local dir is local/$GLIBC" "$DATA/local/$GLIBC" "$(field 'local dir')"
 cc "$DEB" version
 check 'version: the image matches' matches "$(field local | first)"
-check 'version: the container is on it' "$CONTAINER (running, on the current image)" "$(field container)"
+check 'version: the container is on it' "$CONTAINER (running, on the local image)" "$(field container)"
 check 'version: the base is CABOOSE_BASE_IMAGE' "$DEB_BASE (CABOOSE_BASE_IMAGE," "$(field base | cut -d' ' -f1-2)"
 check 'the container runs as the host UID' "$(id -u)" "$(cexec id -u)"
 check 'with the host GID' "$(id -g)" "$(cexec id -g)"
@@ -394,7 +394,7 @@ check "the image's platform label is $MUSL" "$MUSL" "$(label "$IMAGE" io.github.
 cc "$ALP" version
 check 'version: the image matches the new base' matches "$(field local | first)"
 check 'version: the container is still on the old image' \
-    "$CONTAINER (running, on an older image)" "$(field container)"
+    "$CONTAINER (running, on an older image than the local one)" "$(field container)"
 note "restart: recreates the container, installs Claude Code ($MUSL)"
 cc "$ALP" FORCE=1 restart
 check_rc 'restart moves the container onto it' 0
@@ -418,8 +418,8 @@ cc "$ALP" status
 check "status: platform $MUSL" "$MUSL" "$(field platform)"
 check "status: local dir is local/$MUSL" "$DATA/local/$MUSL" "$(field 'local dir')"
 cc "$ALP" version
-check 'version: the container is on the current image' \
-    "$CONTAINER (running, on the current image)" "$(field container)"
+check 'version: the container is on the local image' \
+    "$CONTAINER (running, on the local image)" "$(field container)"
 check 'the container runs as the host UID' "$(id -u)" "$(cexec id -u)"
 check 'with the host GID' "$(id -g)" "$(cexec id -g)"
 musl_before="$(snapshot "$MUSL")"
@@ -535,7 +535,7 @@ check 'version finds it current' 1 "$(grep -c '^local     : matches' "$OUT")"
 # container is next created -- never under a running one.
 printf '# an edit\n' >> "$IMG_DIR/Dockerfile"
 cc version
-check 'after an edit, version finds it out of date' 1 "$(grep -c "^local     : differs .*before an edit" "$OUT")"
+check 'after an edit, version finds it out of date' 1 "$(grep -c "^local     : out of date .*before an edit" "$OUT")"
 image_before="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)"
 cc claude --version
 check_rc 'a launch still works' 0

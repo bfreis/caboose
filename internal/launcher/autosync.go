@@ -84,7 +84,7 @@ func (a *App) autoSync() {
 		return // not the moment: something is writing the data dir
 	}
 	if err := a.checkSyncMount(); err != nil {
-		a.notSynced("the container has no sync mount for this data dir; 'caboose restart' gives it one")
+		a.notSynced("the " + a.noun() + " has no sync mount for this data dir; 'caboose restart' gives it one")
 		return
 	}
 

@@ -83,6 +83,9 @@ func (a *App) build(extra []string, stdout io.Writer) error {
 		}
 	}
 
+	if a.isVM() {
+		return interrupted(a.buildVM(extra))
+	}
 	base, byo := a.Cfg.Base()
 	dirHash := ""
 	if a.Cfg.ImageDir != "" {
@@ -219,11 +222,11 @@ func (a *App) buildBase(tag string, extra []string) error {
 		ctx, hash = dir, assets.BaseHash()
 		a.Note("building the base image '%s' from the Dockerfile embedded in this launcher", tag)
 	}
-	argv := []string{"build", "-t", tag,
+	argv := []string{"-t", tag,
 		"--label", assets.LabelVersion + "=" + version.Get().Version,
 		"--label", assets.LabelBaseHash + "=" + hash}
 	argv = append(append(argv, extra...), ctx)
-	if err := a.Docker.Stream(a.Stderr, a.Stderr, argv...); err != nil {
+	if err := a.Docker.Build(a.Stderr, a.Stderr, argv...); err != nil {
 		return dockerFailed(err)
 	}
 	return nil
@@ -273,26 +276,8 @@ func (a *App) buildLayer(base, baseID string, byo bool, dirHash, platform string
 	}
 	a.Note("building the caboose layer on '%s' as '%s'", base, a.Cfg.Image)
 	uid, gid := strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid())
-	kind, baseHash := assets.BaseKindBYO, ""
-	switch {
-	case dirHash != "":
-		kind, baseHash = assets.BaseKindEnv, dirHash
-	case !byo:
-		kind, baseHash = assets.BaseKindDefault, assets.BaseHash()
-	}
-	values := map[string]string{
-		assets.LabelVersion:   version.Get().Version,
-		assets.LabelLayerHash: assets.LayerHash(),
-		assets.LabelBaseKind:  kind,
-		assets.LabelBaseHash:  baseHash,
-		assets.LabelBaseName:  base,
-		assets.LabelBaseID:    baseID,
-		assets.LabelPlatform:  platform,
-		assets.LabelUID:       uid,
-		assets.LabelGID:       gid,
-		assets.LabelCompat:    strconv.Itoa(assets.Compat),
-	}
-	argv := []string{"build", "-t", a.Cfg.Image, "-f", dir + "/" + assets.LayerDockerfile,
+	values := layerLabels(base, baseID, byo, dirHash, platform)
+	argv := []string{"-t", a.Cfg.Image, "-f", dir + "/" + assets.LayerDockerfile,
 		"--build-arg", "BASE=" + base,
 		"--build-arg", "CABOOSE_UID=" + uid,
 		"--build-arg", "CABOOSE_GID=" + gid}
@@ -301,10 +286,35 @@ func (a *App) buildLayer(base, baseID string, byo bool, dirHash, platform string
 		argv = append(argv, "--label", l+"="+values[l])
 	}
 	argv = append(append(argv, extra...), dir)
-	if err := a.Docker.Stream(stdout, a.Stderr, argv...); err != nil {
+	if err := a.Docker.Build(stdout, a.Stderr, argv...); err != nil {
 		return dockerFailed(err)
 	}
 	return nil
+}
+
+// layerLabels are the values of every label in assets.LayerLabels for a
+// layer built on base (ID baseID) whose check found platform: what it was
+// built from, by which caboose, for which host user.
+func layerLabels(base, baseID string, byo bool, dirHash, platform string) map[string]string {
+	kind, baseHash := assets.BaseKindBYO, ""
+	switch {
+	case dirHash != "":
+		kind, baseHash = assets.BaseKindEnv, dirHash
+	case !byo:
+		kind, baseHash = assets.BaseKindDefault, assets.BaseHash()
+	}
+	return map[string]string{
+		assets.LabelVersion:   version.Get().Version,
+		assets.LabelLayerHash: assets.LayerHash(),
+		assets.LabelBaseKind:  kind,
+		assets.LabelBaseHash:  baseHash,
+		assets.LabelBaseName:  base,
+		assets.LabelBaseID:    baseID,
+		assets.LabelPlatform:  platform,
+		assets.LabelUID:       strconv.Itoa(os.Getuid()),
+		assets.LabelGID:       strconv.Itoa(os.Getgid()),
+		assets.LabelCompat:    strconv.Itoa(assets.Compat),
+	}
 }
 
 // shortID is an image ID as docker's CLI shows one: 12 hex digits, no

@@ -16,10 +16,10 @@ func TestSections(t *testing.T) {
 			t.Errorf("section %s has no title", s.Name)
 		}
 	}
-	if want := []string{"node", "bun", "go", "gh", "jj", "docker", "rust"}; !slices.Equal(names, want) {
+	if want := []string{"node", "bun", "go", "gh", "jj", "docker", "dockerd", "sudo", "rust"}; !slices.Equal(names, want) {
 		t.Errorf("sections %v, want %v", names, want)
 	}
-	if got := DefaultSections(); !slices.Equal(got, []string{"node", "bun", "go", "gh", "jj", "docker"}) {
+	if got := DefaultSections(); !slices.Equal(got, []string{"node", "bun", "go", "gh", "jj", "docker", "dockerd", "sudo"}) {
 		t.Errorf("DefaultSections = %v", got)
 	}
 }
@@ -78,7 +78,8 @@ func TestPresetUncommentsAnOffSection(t *testing.T) {
 	s := string(data)
 	for _, want := range []string{
 		"\n# caboose:section rust Rust (rustup, with the stable toolchain)\n# Rust through rustup",
-		"\nENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH\nRUN set -eux; \\\n    curl -fsSL https://sh.rustup.rs",
+		"\nENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH\nRUN set -eux; \\\n    case ",
+		"\n    fetch 1800 \"https://static.rust-lang.org/rustup/dist/${target}/rustup-init\" -o /tmp/rustup-init; \\\n",
 		"\n    cargo --version\n# caboose:end\n",
 	} {
 		if !strings.Contains(s, want) {

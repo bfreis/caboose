@@ -207,7 +207,7 @@ func runArgsLabel(args []string) string {
 // created with; ok is false when that cannot be told. A container from
 // before there were any has no label, which is none.
 func (a *App) createdRunArgs() (args []string, ok bool) {
-	labels, err := a.Docker.ContainerLabels(a.Cfg.Container)
+	labels, err := a.box().Labels()
 	if err != nil {
 		return nil, false
 	}

@@ -55,7 +55,7 @@ showing what is there now as its default: the repo roots, what the sandbox
 is built on, what isolates it (and, on OrbStack, getting gVisor's runsc),
 its git identity and commit signing, and whether and where to sync. Naming
 SECTIONs -- roots, image, isolation, git, sync -- asks only those. A
-whole run also brings the container up and ends at the Claude login. Only
+whole run also brings the sandbox up and ends at the Claude login. Only
 what an answer changed is written, so a re-run is safe; with no terminal
 it refuses.`},
 	{Name: "apply", Args: noArgs,
@@ -68,17 +68,17 @@ applies it, leaves it pending or deletes it as you say. Nothing else in
 config.toml can be proposed, and a root that would hand the sandbox your
 home, a hidden directory of it or caboose's own state is refused. Then it
 builds the image if the Dockerfile changed, and offers the restart that
-moves the container onto the changes (which ends running sessions). With
+moves the sandbox onto the changes (which ends running sessions). With
 no terminal it refuses.`},
 	{Name: "doctor", Usage: "[--offline]", Args: ownArgs,
 		Summary: "what is wrong, and the command that fixes each problem",
 		Help: `Checks the whole environment -- configuration, data dir, Docker engine,
-image, container, Claude Code, sessions, SSH agent, git identity and
+image, sandbox, Claude Code, sessions, SSH agent, git identity and
 signing, sync -- and lists each problem with the command that fixes it.
 It changes nothing. --offline skips fetching from the sync remote.
 Exits 0 with no problems, 1 with any, 2 when it could not run.`},
 	{Name: "status", Args: noArgs,
-		Summary: "the container, SSH agent, live sessions and disk use"},
+		Summary: "the sandbox, SSH agent, live sessions and disk use"},
 	{Name: "version", Args: noArgs,
 		Summary: "the launcher's version, and if the image matches it",
 		Help: `The launcher's version, commit and build date, how it was installed, and
@@ -95,32 +95,39 @@ that off. A build from a checkout never updates itself.`},
 		Help: `Builds the base (the embedded Dockerfile, the environment's image/, or
 pulls CABOOSE_BASE_IMAGE), checks it, and builds the layer on it. ARGS go
 to both docker builds (--no-cache, --progress=plain, -q), except --pull,
-which only the default base's build gets. The container is not touched:
+which only the default base's build gets. The sandbox is not touched:
 'caboose restart' moves it onto the new image.`},
 	{Name: "check-image", Usage: "[IMAGE]", Args: ownArgs,
 		Summary: "whether IMAGE can be the sandbox's base",
 		Help: `Runs a throwaway container of IMAGE (default: the base in use) and lists
 each requirement as met or not. Exits 0 when all are, 1 when one is not,
-2 when it could not check.`},
+2 when it could not check. Under isolation vm the container runs in the
+builder VM caboose build uses, which pulls a named image from its registry:
+it cannot see a docker engine's images.`},
 	{Name: "restart", Args: noArgs,
-		Summary: "recreate the container (asks before ending sessions)",
-		Help: `Recreates the container, building the image first when it is stale, so
+		Summary: "recreate the sandbox (asks before ending sessions)",
+		Help: `Recreates the sandbox, building the image first when it is stale, so
 it picks up a rebuilt image, changed roots, or a change to what the sandbox
 config keeps. Every running
 session ends: it lists them and asks first. FORCE=1 skips the question;
 with no terminal it refuses.`},
 	{Name: "stop", Args: noArgs,
-		Summary: "stop the container (asks before ending sessions)"},
+		Summary: "stop the sandbox (asks before ending sessions)"},
 	{Name: "detach", Args: noArgs,
 		Summary: "detach every terminal from this project's sessions"},
 	{Name: "logs", Usage: "[ARGS]", Args: passArgs,
-		Summary: "the container's log (ARGS go to docker logs)"},
+		Summary: "the sandbox's log (ARGS go to docker logs, or --tail N)"},
 	{Name: "shell", Usage: "[ARGS]", Args: passArgs,
-		Summary: "a bash prompt in the container (ARGS go to bash)"},
+		Summary: "a bash prompt in the sandbox (ARGS go to bash)",
+		Help: `bash in the sandbox, at this directory's path there; ARGS go to it, so
+'caboose shell -c CMD' runs CMD. It has a terminal when caboose runs on
+one; from a script or a pipe it has none, CMD's output comes out as it
+is, and a bash given no -c reads its commands from stdin
+('caboose shell < script').`},
 	{Name: "link", Usage: "[--restart]", Args: ownArgs,
 		Summary: "forward the sandbox's ports, open its URLs",
-		Help: `The host's end of the link to caboose-agent in the container: while the
-container runs, a port something listens on in the sandbox is forwarded to
+		Help: `The host's end of the link to caboose-agent in the sandbox: while it
+runs, a port something listens on in it is forwarded to
 the same port on this machine's localhost when forward_ports allows it,
 and 'caboose-agent open URL' or 'notify TEXT' in the sandbox opens an
 http(s) URL here (after asking, as open_urls says) or shows a notification.
@@ -129,8 +136,18 @@ link.log, and replaces one running with other settings; run in a
 terminal, it logs there instead. One runs at a time. It rereads
 config.toml by itself when that changes. --restart stops the running one
 and starts another in the background.`},
-	{Name: "prune", Args: noArgs,
-		Summary: "delete old Claude Code versions now"},
+	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
+		Summary: "delete old Claude Code versions now",
+		Help: `Deletes the installed Claude Code versions beyond the newest
+CABOOSE_KEEP_VERSIONS, and says what the rest take up.
+
+--docker, under isolation vm, deletes the disk the sandbox's own dockerd
+keeps everything on -- images, containers, volumes, build cache -- for an
+empty one, which caboose restart keeps otherwise. It says the size it
+frees and asks first (no by default); a running VM is stopped first,
+ending its sessions, which it lists. FORCE=1 skips the question; with no
+terminal it refuses. Under docker and gvisor the sandbox has no dockerd of
+its own, so there is nothing of caboose's to delete.`},
 	{Name: "sync", Usage: "[ARGS]", Args: ownArgs,
 		Summary: "sync what the sandbox config names with other machines",
 		Help: `caboose sync [--remote URL] | status | add PATH | rm PATH
@@ -147,7 +164,7 @@ nothing keeps it yet; 'rm PATH' stops a rule, leaving the files.`},
 	{Name: "sandbox-config", Usage: "update", Args: ownArgs,
 		Summary: "bring the sandbox config up to this caboose",
 		Help: `Brings ~/.config/caboose/sandbox.toml -- what the sandbox keeps across
-containers, and what of it syncs -- up to this caboose: its format, then
+restarts, and what of it syncs -- up to this caboose: its format, then
 each default added since it was written, offered one by one. Writes it
 from the defaults when there is none. A change to what is kept takes
 effect at the next 'caboose restart'.`},

@@ -239,6 +239,44 @@ func List(dataDir string) ([]Entry, error) {
 	return out, nil
 }
 
+// Stamp is a file in Dir that may be a proposal, and when it last changed.
+type Stamp struct {
+	File     string
+	Modified time.Time
+}
+
+// Stamps lists the files List would read, without reading them: for
+// noticing a new proposal cheaply, as often as that takes.
+func Stamps(dataDir string) ([]Stamp, error) {
+	d := nofollow.Dir(dataDir)
+	es, err := d.ReadDir(Dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []Stamp
+	for _, e := range es {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || e.IsDir() || !strings.HasSuffix(name, Ext) {
+			continue
+		}
+		fi, err := d.Lstat(path.Join(Dir, name))
+		if err != nil {
+			continue
+		}
+		out = append(out, Stamp{File: name, Modified: fi.ModTime()})
+	}
+	return out, nil
+}
+
+// Read reads and checks the proposal in dataDir's Dir/file, as List does.
+func Read(dataDir, file string) (*Proposal, error) {
+	p, _, err := read(nofollow.Dir(dataDir), file)
+	return p, err
+}
+
 // read reads and parses Dir/name, refusing one too large before reading
 // it.
 func read(d nofollow.Dir, name string) (*Proposal, time.Time, error) {

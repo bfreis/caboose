@@ -25,6 +25,21 @@ KEEP_VERSIONS="${CABOOSE_KEEP_VERSIONS:-2}"
 
 log() { printf 'caboose: %s\n' "$*" >&2; }
 
+# Under isolation vm with egress_proxy on, HTTPS_PROXY names caboose-agent's
+# outbound proxy on the VM's loopback, which serves only while the host's
+# link is up -- and a launch links the VM as it boots, so it may come up
+# just after this. A download before the sandbox is ready (the first
+# install below) waits for it, a minute at most, rather than fail on a
+# refused connection. The agent is caboose's own, in the layer.
+AGENT=/usr/local/bin/caboose-agent
+wait_for_proxy() {
+    [ "${CABOOSE_ISOLATION:-}" = vm ] || return 0
+    case "${HTTPS_PROXY:-}" in http://127.0.0.1:*) ;; *) return 0 ;; esac
+    [ -x "$AGENT" ] || return 0
+    "$AGENT" wait-proxy 60 >/dev/null 2>&1 && return 0
+    log "the outbound proxy ($HTTPS_PROXY) is not serving: no host linked yet? trying anyway"
+}
+
 # Anthropic's native installer drops the binary in ~/.local/share/claude/
 # versions/<v> and points ~/.local/bin/claude at it. Both are bind-mounted from
 # the data dir's local/<platform>, so this runs once per platform for the
@@ -39,6 +54,7 @@ ensure_claude_installed() {
     # would apply to bash, replacing the piped script with an empty stdin and
     # killing curl with SIGPIPE. The installer still needs stdin closed so it
     # never waits on a prompt, hence the redirect on the file invocation.
+    wait_for_proxy
     local installer
     installer="$(mktemp)"
     if ! curl -fsSL https://claude.ai/install.sh -o "$installer"; then
@@ -219,6 +235,34 @@ run_start_scripts() {
     return 0
 }
 
+# Under isolation vm (level 3) the sandbox is root in a VM of its own, and
+# runs its own dockerd, when the image has one (the default Dockerfile's
+# dockerd section): no host socket, no Docker-in-Docker. Its storage is a
+# disk the launcher mounts at /var/lib/docker, kept across restarts, since
+# overlayfs cannot sit on the virtio-fs shares. It runs in this process
+# group, so a stop reaches it. A dockerd that does not come up is said, and
+# the sandbox goes on without it.
+DOCKERD_LOG=/var/log/caboose-dockerd.log
+start_dockerd() {
+    [ "${CABOOSE_ISOLATION:-}" = vm ] && [ "$EUID" -eq 0 ] || return 0
+    command -v dockerd >/dev/null 2>&1 || return 0
+    if ! grep -qs ' /var/lib/docker ' /proc/mounts; then
+        log "no disk at /var/lib/docker: not starting dockerd"
+        return 0
+    fi
+    dockerd --data-root /var/lib/docker >>"$DOCKERD_LOG" 2>&1 &
+    local i
+    for ((i = 0; i < 300; i++)); do
+        if [ -S /var/run/docker.sock ]; then
+            log "dockerd is up (its log: $DOCKERD_LOG)"
+            return 0
+        fi
+        kill -0 $! 2>/dev/null || break
+        sleep 0.1
+    done
+    log "dockerd did not come up; its log, $DOCKERD_LOG, says why"
+}
+
 case "${1:-}" in
     --cc-prune)
         prune_old_versions
@@ -232,6 +276,7 @@ case "${1:-}" in
         clear_stale_runtime_state
         prune_old_versions
         clear_installer_downloads
+        start_dockerd
         : > "$READY_FILE"
         log "ready — $("$CLAUDE_BIN" --version 2>/dev/null || echo 'claude version unknown')"
         run_start_scripts &

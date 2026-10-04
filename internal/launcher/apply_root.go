@@ -67,12 +67,12 @@ func (a *App) checkProposedRoot(r proposal.Root) (host string, refusals, warning
 			refuse("There is a root named %s already, at %s.", r.Name, o.Path)
 		}
 		if oh := a.hostPath(o.Path); config.Within(host, oh) || config.Within(oh, host) {
-			refuse("The root %s (%s) overlaps the root %s: a project under both would have two paths in the container.", shown, host, o.Path)
+			refuse("The root %s (%s) overlaps the root %s: a project under both would have two paths in the sandbox.", shown, host, o.Path)
 		}
 	}
 	for _, m := range a.mountedRoots() {
 		if mh := physicalOr(m.Host); mh != "" && (config.Within(host, mh) || config.Within(mh, host)) && !a.configuredRoot(mh) {
-			refuse("The root %s (%s) overlaps %s, which the container mounts at %s.", shown, host, m.Host, m.Container)
+			refuse("The root %s (%s) overlaps %s, which the %s mounts at %s.", shown, host, m.Host, a.noun(), m.Container)
 		}
 	}
 	if len(refusals) > 0 {

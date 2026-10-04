@@ -79,17 +79,17 @@ func TestSetupImageChooses(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	// node and gh out, rust in (a number that is none asks again); then
 	// no build.
-	if err := e.run("3\n1 4 9\n1 4,7\n\nn\n", "image"); err != nil {
+	if err := e.run("3\n1 4 12\n1 4,9\n\nn\n", "image"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	if got := e.dockerfile(); got != preset(t, "bun", "go", "jj", "docker", "rust") {
+	if got := e.dockerfile(); got != preset(t, "bun", "go", "jj", "docker", "dockerd", "sudo", "rust") {
 		t.Errorf("Dockerfile:\n%s", got)
 	}
 	e.wantOut("? What else goes into the image?",
 		"1 [x] Node.js, npm and corepack (for npx-launched MCP servers)",
-		"7 [ ] Rust (rustup, with the stable toolchain)",
+		"9 [ ] Rust (rustup, with the stable toolchain)",
 		"1 [ ] Node.js, npm and corepack (for npx-launched MCP servers)",
-		"7 [x] Rust (rustup, with the stable toolchain)")
+		"9 [x] Rust (rustup, with the stable toolchain)")
 }
 
 // An image dir is kept by default; replacing it shows the difference from

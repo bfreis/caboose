@@ -49,4 +49,53 @@ jobs:
         run: go test ./...
 
       - name: shellcheck
-        run: shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh
+        run: shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run
+
+  # The vm guest kernel: built from vm/kernel natively on an arm64 runner,
+  # as release.yml's vm-assets job builds the one it ships, and booted
+  # under QEMU (emulated, TCG: runners have no KVM to rely on) with the
+  # smoke test's init. It takes minutes, so it runs only when what it
+  # tests changed: vm/kernel, the initramfs writer, this file, or the
+  # Makefile's kernel lines. Without an arm64 runner (a private repository
+  # may need them enabled) it waits in the queue, and timeout-minutes
+  # counts only once a runner has it.
+  kernel:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: changed
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          run=false
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2> /dev/null; then
+            run=true
+          elif git diff --name-only "$BASE" HEAD | grep -qE '^(vm/kernel/|internal/vm/initramfs\.go$|\.github/workflows/ci\.yml$)'; then
+            run=true
+          elif git diff "$BASE" HEAD -- Makefile | grep -qE '^[-+].*(LINUX_|KERNEL_|vm-kernel)'; then
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v7
+        if: steps.changed.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.changed.outputs.run == 'true'
+
+      - name: make vm-kernel
+        if: steps.changed.outputs.run == 'true'
+        run: make vm-kernel VM_ARCH=arm64
+
+      - name: make vm-kernel-smoke
+        if: steps.changed.outputs.run == 'true'
+        run: make vm-kernel-smoke VM_ARCH=arm64

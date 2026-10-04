@@ -108,6 +108,10 @@ const (
 	// the agent.
 	LabelIsolation = "io.github.bfreis.caboose.isolation"
 	LabelUser      = "io.github.bfreis.caboose.user"
+	// LabelEgress is on the container too: "on" for a VM created with the
+	// outbound proxy in its environment (egress_proxy), "" otherwise. Set
+	// on every container, as LabelRunArgs is.
+	LabelEgress = "io.github.bfreis.caboose.egress"
 )
 
 // Compat is the version of what the launcher expects of a container it did

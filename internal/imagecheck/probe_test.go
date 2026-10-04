@@ -545,3 +545,29 @@ func TestProbeHere(t *testing.T) {
 	}
 	t.Logf("\n%s", out)
 }
+
+// Docker's engine is reported as facts: where each part is, dockerd's
+// version when it gives one, and never a problem when absent.
+func TestProbeEngine(t *testing.T) {
+	f := newFake(t)
+	r := f.probe(1000, 1000)
+	if !r.OK() || len(r.Engine) != len(EngineParts) || !slices.Equal(r.EngineMissing(), EngineParts) || r.EngineVersion != "" {
+		t.Errorf("no engine: ok %v engine %q version %q", r.OK(), r.Engine, r.EngineVersion)
+	}
+
+	for _, p := range EngineParts {
+		f.stub(p, "exit 0")
+	}
+	f.stub("dockerd", `echo "Docker version 28.3.0, build 265f709"`)
+	r = f.probe(1000, 1000)
+	if !r.OK() || r.EngineMissing() != nil || r.EngineVersion != "28.3.0" || r.Engine["runc"] != filepath.Join(f.bin, "runc") {
+		t.Errorf("full engine: ok %v engine %q version %q", r.OK(), r.Engine, r.EngineVersion)
+	}
+
+	f.unstub("iptables")
+	f.stub("dockerd", `printf 'Docker version 1 2; rm -rf /\n'; echo oops >&2; exit 1`)
+	r = f.probe(1000, 1000)
+	if !r.OK() || !slices.Equal(r.EngineMissing(), []string{"iptables"}) || r.EngineVersion != "" {
+		t.Errorf("odd dockerd: ok %v missing %q version %q", r.OK(), r.EngineMissing(), r.EngineVersion)
+	}
+}

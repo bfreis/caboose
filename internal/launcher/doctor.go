@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
@@ -215,22 +216,28 @@ func (a *App) Doctor(args []string) error {
 	c.checking("the data dir")
 	a.doctorDataDir(c)
 	a.doctorSandbox(c)
-	c.checking("the Docker engine")
-	state, reachable := "", a.doctorDocker(c)
+	state, reachable := "", true
+	if a.isVM() {
+		// No engine to ask: the VM's own files are the isolation's row.
+		c.ok("docker", "not needed: isolation is vm")
+	} else {
+		c.checking("the Docker engine")
+		reachable = a.doctorDocker(c)
+	}
 	if reachable {
 		a.doctorIsolation(c)
 		c.checking("the image")
 		a.doctorImage(c)
-		c.checking("the container")
+		c.checking("the " + a.noun())
 		state = a.doctorContainer(c, rootsOK)
 	}
 	running := state == "running"
-	agentKeys, agentWhy := []string(nil), "the container is not running"
+	agentKeys, agentWhy := []string(nil), "the "+a.noun()+" is not running"
 	if running {
-		c.checking("inside the container")
+		c.checking("inside the " + a.noun())
 		agentKeys, agentWhy = a.doctorInside(c)
 	} else {
-		why := "the container is not running"
+		why := agentWhy
 		if !reachable {
 			why = "docker did not answer"
 		}
@@ -246,7 +253,7 @@ func (a *App) Doctor(args []string) error {
 	case !reachable:
 		a.doctorSync(c, "docker did not answer")
 	case !running:
-		a.doctorSync(c, "the container is not running, and the sync's git runs there")
+		a.doctorSync(c, agentWhy+", and the sync's git runs there")
 	case offline:
 		a.doctorSync(c, "--offline")
 	default:
@@ -405,11 +412,11 @@ func (a *App) doctorDataDir(c *checkup) {
 		c.unchecked("start.d", "%v", err)
 	default:
 		if len(run) > 0 {
-			c.ok("start.d", "%s, run at container start%s", strings.Join(run, ", "), plural(len(run), "", ", in that order"))
+			c.ok("start.d", "%s, run at %s start%s", strings.Join(run, ", "), a.noun(), plural(len(run), "", ", in that order"))
 		}
 		if len(skipped) > 0 {
-			c.note("start.d", "%s in %s %s not executable, so not run at container start; to run %s: chmod +x %s",
-				strings.Join(skipped, ", "), filepath.Join(cfg.DataDir, datadir.StartDir), plural(len(skipped), "is", "are"),
+			c.note("start.d", "%s in %s %s not executable, so not run at %s start; to run %s: chmod +x %s",
+				strings.Join(skipped, ", "), filepath.Join(cfg.DataDir, datadir.StartDir), plural(len(skipped), "is", "are"), a.noun(),
 				plural(len(skipped), "it", "them"), "~/.config/caboose/start.d/"+strings.Join(skipped, " ~/.config/caboose/start.d/"))
 		}
 	}
@@ -445,7 +452,7 @@ func (a *App) doctorImage(c *checkup) {
 	if errors.Is(cfg.CheckImages(), config.ErrTwoBases) {
 		return // no base to judge it against; the configuration's row says why
 	}
-	labels, exists, err := a.Docker.ImageLabels(cfg.Image)
+	labels, exists, err := a.images().ImageLabels(cfg.Image)
 	if err != nil && !exists {
 		c.problem("image", "check CABOOSE_IMAGE (or image in config.toml)", "cannot inspect '%s': %v", cfg.Image, err)
 		return
@@ -477,34 +484,38 @@ func (a *App) doctorImage(c *checkup) {
 // doctorContainer checks the container against the image and the roots,
 // and returns its state.
 func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
-	cfg := a.Cfg
+	cfg, noun := a.Cfg, a.noun()
 	state := a.state()
 	switch state {
 	case "absent":
-		c.note("container", "%s does not exist; a launch creates it", cfg.Container)
+		c.note(noun, "%s does not exist; a launch creates it", cfg.Container)
 		return state
 	case "running":
 	default:
-		c.note("container", "%s is %s; a launch starts it", cfg.Container, state)
+		c.note(noun, "%s is %s; a launch starts it", cfg.Container, state)
 	}
-	running, current := a.Docker.ContainerImage(cfg.Container), a.Docker.ImageID(cfg.Image)
+	running, current := a.box().Image(), a.images().ImageID(cfg.Image)
 	switch p := a.compatProblem(a.containerCompat()); {
 	case p != "":
-		c.problem("container", "caboose restart"+endsSessions, "%s", p)
+		c.problem(noun, "caboose restart"+endsSessions, "%s", p)
 	case running != "" && current != "" && running != current:
-		c.problem("container", "caboose restart"+endsSessions, "%s was created from an older image than %s", cfg.Container, cfg.Image)
+		c.problem(noun, "caboose restart, which moves it onto the local image"+endsSessions,
+			"the %s runs an older image than the local '%s'", noun, cfg.Image)
 	case state == "running":
-		c.ok("container", "%s, running", cfg.Container)
+		c.ok(noun, "%s, running", cfg.Container)
 	}
 	if mounted := a.mountedRoots(); rootsOK && len(mounted) > 0 && !config.SameRoots(mounted, cfg.Roots) {
-		c.problem("roots", "caboose restart"+endsSessions, "the container mounts %s; the configuration says %s",
-			mountList(mounted), mountList(cfg.Roots))
+		c.problem("roots", "caboose restart"+endsSessions, "the %s mounts %s; the configuration says %s",
+			noun, mountList(mounted), mountList(cfg.Roots))
 	}
 	if d := a.keepDrift(); d != "" {
-		c.problem("keep", "caboose restart"+endsSessions, "the container %s", d)
+		c.problem("keep", "caboose restart"+endsSessions, "the %s %s", noun, d)
 	}
 	if d := a.runArgsDrift(); d != "" {
 		c.problem("run args", "caboose restart"+endsSessions, "%s", d)
+	}
+	if d := a.egressDrift(); d != "" {
+		c.problem("egress", "caboose restart"+endsSessions, "%s", d)
 	}
 	a.doctorContainerIsolation(c)
 	return state
@@ -519,8 +530,8 @@ const doctorInsideScript = `printf '%s\0%s\0' "${TZ-}" "${CABOOSE_KEEP_VERSIONS-
 // keys the forwarded agent holds, or why they are not known.
 func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 	cfg := a.Cfg
-	if v, err := a.Docker.Output("exec", cfg.Container, "claude", "--version"); err != nil {
-		c.problem("claude", "caboose logs, to see why", "Claude Code does not run in the container: %s", firstLine(err.Error()))
+	if v, err := backend.Output(a.box(), "claude", "--version"); err != nil {
+		c.problem("claude", "caboose logs, to see why", "Claude Code does not run in the %s: %s", a.noun(), firstLine(err.Error()))
 	} else {
 		c.ok("claude", "%s", firstLine(v))
 	}
@@ -533,19 +544,24 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 		c.ok("sessions", "%d in tmux, %d outside it", len(l.sessions), l.others)
 	}
 
-	if out, err := a.Docker.RawOutput("exec", cfg.Container, "bash", "-c", doctorInsideScript); err == nil {
+	if out, err := backend.RawOutput(a.box(), "bash", "-c", doctorInsideScript); err == nil {
 		f := strings.SplitN(out, "\x00", 3)
 		if len(f) == 3 {
 			tz, keep, sock := f[0], f[1], f[2]
 			if host := a.hostTimezone(); host != "" && tz != host {
-				c.note("timezone", "the container has %s, the host %s now; new sessions get %s anyway, and 'caboose restart' realigns it",
-					or(tz, "UTC"), host, host)
+				c.note("timezone", "the %s has %s, the host %s now; new sessions get %s anyway, and 'caboose restart' realigns it",
+					a.noun(), or(tz, "UTC"), host, host)
 			}
 			if keep != "" && keep != cfg.KeepVersions {
-				c.note("versions", "the container keeps %s Claude Code versions, the configuration %s; 'caboose restart' picks that up",
-					keep, cfg.KeepVersions)
+				c.note("versions", "the %s keeps %s Claude Code versions, the configuration %s; 'caboose restart' picks that up",
+					a.noun(), keep, cfg.KeepVersions)
 			}
-			if sock == "sock" {
+			// Under vm the "docker" row is this machine's engine, which
+			// isolation vm does not need; a dockerd in the VM is the
+			// sandbox's own, a row of its own name.
+			if sock == "sock" && a.isVM() {
+				c.ok("dockerd", "in the VM, its own, not this machine's; its images on a disk that caboose restart keeps")
+			} else if sock == "sock" {
 				c.note("docker", "the host's docker socket is mounted: root-equivalent access to this host (unset CABOOSE_DOCKER_SOCK and 'caboose restart' to undo)")
 			}
 		}
@@ -554,7 +570,7 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 	status, usable := a.agentStatus()
 	switch {
 	case strings.HasPrefix(status, "not forwarded"):
-		if a.sshAgentArgs() != nil {
+		if a.sshAgentSource() != "" {
 			c.problem("ssh agent", "caboose restart, to forward it"+endsSessions,
 				"not forwarded, though the host has an agent now")
 			return nil, "no agent is forwarded"
@@ -566,7 +582,7 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 		return nil, "the agent is not usable"
 	}
 	c.ok("ssh agent", "%s", status)
-	out, err := a.Docker.Output("exec", cfg.Container, "ssh-add", "-L")
+	out, err := backend.Output(a.box(), "ssh-add", "-L")
 	if err != nil {
 		return nil, "the agent's keys cannot be listed"
 	}
@@ -575,6 +591,14 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 
 // agentFix is what makes an unusable forwarded agent usable.
 func (a *App) agentFix(status string) string {
+	if a.isVM() {
+		// The link carries the agent into a VM, from the SSH_AUTH_SOCK of
+		// the terminal that started the link.
+		if held, _ := linkRunning(a.Cfg.DataDir); !held {
+			return "caboose link --restart, from a terminal with SSH_AUTH_SOCK set: under vm the link carries the agent, and none is running"
+		}
+		return "caboose link --restart, from a terminal whose SSH_AUTH_SOCK reaches your agent (see the link's log, link.log)"
+	}
 	engine := or(a.macEngine(), "the Docker engine")
 	switch {
 	case strings.Contains(status, "permission denied"):
@@ -745,7 +769,7 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 		return
 	}
 	if err := a.checkSyncMount(); err != nil {
-		c.problem("sync", "caboose restart"+endsSessions, "the container has no sync mount for this data dir")
+		c.problem("sync", "caboose restart"+endsSessions, "the %s has no sync mount for this data dir", a.noun())
 		return
 	}
 	g := a.newSyncGit(true)

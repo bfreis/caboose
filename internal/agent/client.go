@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,16 +91,93 @@ func Ports(socket string, w io.Writer) error {
 	return nil
 }
 
+// ErrNoProxy is a connect while nothing serves the outbound proxy.
+var ErrNoProxy = errors.New("caboose's outbound proxy is off: no host is linked to this sandbox right now, " +
+	"or egress_proxy is off (config.toml on the host), or the sandbox is not under isolation vm")
+
+// connectTimeout bounds the proxy's answer to a CONNECT: above its own
+// wait for the host.
+const connectTimeout = 30 * time.Second
+
+// Connect makes a TCP connection to host:port through the outbound proxy
+// at proxy, and copies stdin to it and it to stdout until the far end
+// closes: ssh's ProxyCommand (`caboose-agent connect %h %p`).
+func Connect(proxy, host string, port int, stdin io.Reader, stdout io.Writer) error {
+	c, err := net.DialTimeout("tcp", proxy, 5*time.Second)
+	if err != nil {
+		return ErrNoProxy
+	}
+	defer c.Close()
+	tc := c.(*net.TCPConn)
+	target := net.JoinHostPort(host, strconv.Itoa(port))
+	_ = tc.SetDeadline(time.Now().Add(connectTimeout))
+	if _, err := fmt.Fprintf(tc, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		return fmt.Errorf("caboose's outbound proxy at %s: %v", proxy, err)
+	}
+	lr := &io.LimitedReader{R: tc, N: 64 << 10}
+	br := bufio.NewReader(lr)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		return fmt.Errorf("caboose's outbound proxy at %s gave no answer to CONNECT %s: %v", proxy, target, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(strings.TrimPrefix(string(b), "caboose: "))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("cannot connect to %s through the host (%d): %s", target, resp.StatusCode, printable(msg))
+	}
+	_ = tc.SetDeadline(time.Time{})
+	lr.N = math.MaxInt64
+	go func() {
+		_, _ = io.Copy(tc, stdin)
+		_ = tc.CloseWrite()
+	}()
+	if _, err := io.Copy(stdout, br); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("the connection to %s through the host broke: %v", target, err)
+	}
+	return nil
+}
+
+// WaitProxy waits, for at most wait, until the outbound proxy at proxy
+// accepts a connection: what the entrypoint and the builder do before
+// their first download, since the proxy serves only once the host's link
+// is up, which may come just after them.
+func WaitProxy(proxy string, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		c, err := net.DialTimeout("tcp", proxy, time.Second)
+		if err == nil {
+			c.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w (waited %v)", ErrNoProxy, wait)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// maxProxyWait bounds wait-proxy's SECONDS.
+const maxProxyWait = 600
+
 // Main is caboose-agent's command line.
 func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprint(stderr, `usage: caboose-agent COMMAND
+		_, _ = io.WriteString(stderr, `usage: caboose-agent COMMAND
 
   open URL            open an http(s) URL in the host's browser
   notify [-t TITLE] TEXT
                       show a notification on the host
   ports               what listens in the sandbox, and what the host forwards
+  connect HOST PORT   a TCP connection made by the host, on stdin and stdout:
+                      ssh's ProxyCommand (caboose-agent connect %h %p), under vm
+  wait-proxy [SECONDS]
+                      wait until the outbound proxy serves (30 seconds at most
+                      by default), under vm
   link                the sandbox's end of the link (the host's caboose runs it)
+  guest               a vm guest's agent: its control, exec and link ports (the init runs it)
 `)
 		return 2
 	}
@@ -125,11 +205,40 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 			return usage()
 		}
 		err = Ports(SocketPath, stdout)
+	case "connect":
+		if len(rest) != 2 {
+			return usage()
+		}
+		port, perr := strconv.Atoi(rest[1])
+		if perr != nil || !agentproto.ValidPort(port) {
+			fmt.Fprintf(stderr, "caboose-agent: connect: %q is not a port\n", printable(rest[1]))
+			return 2
+		}
+		err = Connect(agentproto.EgressListen, rest[0], port, stdin, stdout)
+	case "wait-proxy":
+		secs := 30
+		if len(rest) > 1 {
+			return usage()
+		}
+		if len(rest) == 1 {
+			n, perr := strconv.Atoi(rest[0])
+			if perr != nil || n < 0 || n > maxProxyWait {
+				fmt.Fprintf(stderr, "caboose-agent: wait-proxy: %q is not a number of seconds up to %d\n", printable(rest[0]), maxProxyWait)
+				return 2
+			}
+			secs = n
+		}
+		err = WaitProxy(agentproto.EgressListen, time.Duration(secs)*time.Second)
 	case "link":
 		if len(rest) != 0 {
 			return usage()
 		}
 		err = RunLink(stdin, stdout, Config{Socket: SocketPath, ProcRoot: "/proc", Interval: time.Second})
+	case "guest":
+		if len(rest) != 0 {
+			return usage()
+		}
+		err = RunGuest(stderr)
 	case "-h", "--help", "help":
 		usage()
 		return 0

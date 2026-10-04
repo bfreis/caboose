@@ -54,7 +54,7 @@ func (a *App) fileRoots() []setupRoot {
 func (a *App) setupRoots(p *prompter) error {
 	c := a.Cfg
 	cur := a.fileRoots()
-	p.heading("Roots", "The directories that hold your projects. The container mounts one at /work, or each of several at /work/NAME.")
+	p.heading("Roots", "The directories that hold your projects. The sandbox mounts one at /work, or each of several at /work/NAME.")
 	if v := c.Getenv("CABOOSE_REPO_ROOT"); v != "" {
 		p.warn("CABOOSE_REPO_ROOT is set (%s), and wins over what is chosen here while it is.", v)
 	}
@@ -126,7 +126,7 @@ func (a *App) setupRoots(p *prompter) error {
 		for _, m := range moves {
 			p.warn("%s", capFirst(m))
 		}
-		p.note("Claude Code keeps each project's state (memories, history, settings) under its path in the container, " +
+		p.note("Claude Code keeps each project's state (memories, history, settings) under its path in the sandbox, " +
 			"so it will not find what it has under the old one. Nothing is moved or deleted.")
 		ok, err := p.yesNo("Change the roots anyway?", false)
 		if err != nil {
@@ -153,7 +153,7 @@ func (a *App) setupRoots(p *prompter) error {
 	}
 	p.ok("Wrote them to %s", a.short(filepath.Join(c.EnvDir, config.FileName)))
 	if a.state() != "absent" {
-		p.warn("The container keeps the roots it was created with: %s remounts them, and ends running sessions.", p.code("caboose restart"))
+		p.warn("The %s keeps the roots it was created with: %s remounts them, and ends running sessions.", a.noun(), p.code("caboose restart"))
 	}
 	return nil
 }
@@ -188,7 +188,7 @@ func (a *App) rootProblems(roots []setupRoot) []string {
 	for i, r := range roots {
 		for _, o := range roots[i+1:] {
 			if hr, ho := a.hostPath(r.Path), a.hostPath(o.Path); config.Within(hr, ho) || config.Within(ho, hr) {
-				out = append(out, fmt.Sprintf("%s and %s overlap: a project under both would have two paths in the container", r.Path, o.Path))
+				out = append(out, fmt.Sprintf("%s and %s overlap: a project under both would have two paths in the sandbox", r.Path, o.Path))
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
@@ -118,13 +119,16 @@ func sandboxProblemLines(sb *datadir.Sandbox) []string {
 	return lines
 }
 
-// keepMounts are the docker run arguments that mount sb's keep entries.
-func keepMounts(dataDir string, sb *datadir.Sandbox) []string {
-	var args []string
+// keepMounts are the mounts of sb's keep entries.
+func keepMounts(dataDir string, sb *datadir.Sandbox) []backend.Mount {
+	var ms []backend.Mount
 	for _, k := range sb.Keep {
-		args = append(args, "-v", filepath.Join(dataDir, datadir.HomeDir, filepath.FromSlash(k.Rel))+":"+config.ContainerHome+"/"+k.Rel)
+		ms = append(ms, backend.Mount{
+			Source: filepath.Join(dataDir, datadir.HomeDir, filepath.FromSlash(k.Rel)),
+			Target: config.ContainerHome + "/" + k.Rel,
+		})
 	}
-	return args
+	return ms
 }
 
 // mountedKeeps are the home-relative paths the container has mounted from
@@ -132,7 +136,7 @@ func keepMounts(dataDir string, sb *datadir.Sandbox) []string {
 // when the container cannot be asked (it does not exist, or docker does not
 // answer): then the sandbox config is about to be the truth.
 func (a *App) mountedKeeps() (rels []string, ok bool) {
-	mounts, err := a.Docker.Mounts(a.Cfg.Container)
+	mounts, err := a.box().Mounts()
 	if err != nil || len(mounts) == 0 {
 		return nil, false
 	}
@@ -197,7 +201,7 @@ func (a *App) keepDrift() string {
 // restart, kills sessions.
 func (a *App) warnIfKeepDrifted() {
 	if d := a.keepDrift(); d != "" {
-		a.Note("the container %s.", d)
+		a.Note("the %s %s.", a.noun(), d)
 		a.Note("run 'caboose restart' to remount (this kills running sessions).")
 	}
 }

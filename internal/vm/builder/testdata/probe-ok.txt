@@ -1,0 +1,39 @@
+probe 1
+ok sh /bin/sh
+ok bash /usr/bin/bash
+ok curl /usr/bin/curl
+ok tmux /usr/bin/tmux
+ok git /usr/bin/git 2.53.0
+ok tic /usr/bin/tic
+ok tool:env /usr/bin/env
+ok tool:readlink /usr/bin/readlink
+ok tool:mktemp /usr/bin/mktemp
+ok tool:find /usr/bin/find
+ok tool:rm /usr/bin/rm
+ok tool:rmdir /usr/bin/rmdir
+ok tool:sleep /usr/bin/sleep
+ok tool:test /usr/bin/test
+ok tool:uname /usr/bin/uname
+ok tool:mkdir /usr/bin/mkdir
+ok tool:chmod /usr/bin/chmod
+ok tool:cut /usr/bin/cut
+ok tool:sed /usr/bin/sed
+ok tool:tr /usr/bin/tr
+ok tool:grep /usr/bin/grep
+ok tool:head /usr/bin/head
+ok tool:sha256sum /usr/bin/sha256sum
+ok tool:chown /usr/bin/chown
+ok etc:passwd /etc/passwd
+ok etc:group /etc/group
+ok home /home/agent (created by the layer)
+info libc glibc
+ok libc glibc /lib/aarch64-linux-gnu/libc.so.6
+info arch aarch64
+ok arch aarch64
+info platform linux-arm64
+info uid 501
+info gid 20
+ok net https://claude.ai
+ok net https://downloads.claude.ai
+ok cacerts /etc/ssl/certs/ca-certificates.crt
+end

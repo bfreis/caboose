@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 )
@@ -46,8 +48,8 @@ func isolationOf(c *config.Config) string { return or(c.Isolation, isolationDock
 
 // checkIsolation refuses an isolation caboose does not know.
 func checkIsolation(c *config.Config) error {
-	if _, ok := isolationRuntimes[isolationOf(c)]; !ok {
-		return fmt.Errorf("isolation %q is not %q or %q (%s)", c.Isolation, isolationDocker, isolationGVisor, isolationOrigin(c))
+	if _, ok := isolationRuntimes[isolationOf(c)]; !ok && isolationOf(c) != isolationVM {
+		return fmt.Errorf("isolation %q is not %q, %q or %q (%s)", c.Isolation, isolationDocker, isolationGVisor, isolationVM, isolationOrigin(c))
 	}
 	return nil
 }
@@ -102,6 +104,9 @@ func (a *App) checkRuntime() error {
 	if err := checkIsolation(a.Cfg); err != nil {
 		return Die("%v", err)
 	}
+	if a.isVM() {
+		return a.checkVM()
+	}
 	rt := isolationRuntimes[isolationOf(a.Cfg)]
 	if rt == "" {
 		return nil
@@ -132,48 +137,56 @@ func (a *App) agentCanWrite(runtime string) (bool, error) {
 	return strings.TrimSpace(out) == "yes", nil
 }
 
-// runAs are the docker run arguments for the user the container runs as,
-// and that user as LabelUser has it: none and "" -- the image's agent --
-// where the agent can write its mounts; else root, with IS_SANDBOX=1 so
+// runAs is the user the container runs as, as the Spec and LabelUser have
+// it, and the environment that goes with it: "" and none -- the image's
+// agent -- where the agent can write its mounts; else root, with
+// IS_SANDBOX=1 so
 // Claude Code allows --dangerously-skip-permissions as root. Only ever
 // under gVisor, whose root is inside its own kernel.
-func runAs(agentWrites bool) (args []string, user string) {
+func runAs(agentWrites bool) (user string, env []string) {
 	if agentWrites {
-		return nil, ""
+		return "", nil
 	}
-	return []string{"--user", rootUser, "-e", "IS_SANDBOX=1"}, rootUser
+	return rootUser, []string{"IS_SANDBOX=1"}
 }
 
-// isolationArgs are createContainer's docker run arguments for the
-// isolation: the runtime, the user, and the labels that record both.
-func (a *App) isolationArgs() ([]string, error) {
+// isolate sets the isolation in spec: the runtime, the user, and the
+// labels that record both.
+func (a *App) isolate(spec *backend.Spec) error {
 	iso := isolationOf(a.Cfg)
-	var args []string
 	user := ""
-	if rt := isolationRuntimes[iso]; rt != "" {
+	if iso == isolationVM {
+		// Root in the guest, which the VM bounds: the shares show every
+		// file as root's, so the agent user could not tell its own
+		// (spike 2).
+		var env []string
+		user, env = runAs(false)
+		spec.User = user
+		spec.Env = append(spec.Env, env...)
+	} else if rt := isolationRuntimes[iso]; rt != "" {
 		writes, err := a.agentCanWrite(rt)
 		if err != nil {
-			return nil, Die("isolation is %s, but a container under %s did not run: %v", iso, rt, err)
+			return Die("isolation is %s, but a container under %s did not run: %v", iso, rt, err)
 		}
-		args = append(args, "--runtime", rt)
-		var as []string
-		as, user = runAs(writes)
-		args = append(args, as...)
+		spec.Runtime = rt
+		var env []string
+		user, env = runAs(writes)
+		spec.User = user
+		spec.Env = append(spec.Env, env...)
 		if user == rootUser {
 			a.Note("under %s the agent user cannot write its mounts on this engine, so the", rt)
 			a.Note("sandbox runs as root inside gVisor (files it writes are still yours here)")
 		}
 	}
-	return append(args,
-		"--label", assets.LabelIsolation+"="+iso,
-		"--label", assets.LabelUser+"="+user), nil
+	spec.Labels = append(spec.Labels, assets.LabelIsolation+"="+iso, assets.LabelUser+"="+user)
+	return nil
 }
 
 // createdIsolation is the isolation the container was created with, and
 // the user it runs as; ok is false when that cannot be told. A container
 // from before the labels ran as docker, as the agent.
 func (a *App) createdIsolation() (iso, user string, ok bool) {
-	labels, err := a.Docker.ContainerLabels(a.Cfg.Container)
+	labels, err := a.box().Labels()
 	if err != nil {
 		return "", "", false
 	}
@@ -205,6 +218,11 @@ func (a *App) doctorIsolation(c *checkup) {
 	if checkIsolation(cfg) != nil {
 		return // the configuration's row says why
 	}
+	if a.isVM() {
+		a.doctorVM(c)
+		a.doctorEgress(c)
+		return
+	}
 	have, err := a.engineRuntimes()
 	if err != nil {
 		c.unchecked("isolation", "%s; docker info did not list its runtimes: %v", isolationOf(cfg), err)
@@ -217,12 +235,55 @@ func (a *App) doctorIsolation(c *checkup) {
 			"%s needs docker's %s runtime, which it does not have (it has %s)", isolationOf(cfg), rt, strings.Join(have, ", "))
 	case rt != "":
 		c.ok("isolation", "%s (%s)", isolationOf(cfg), rt)
+		a.doctorRunsc(c)
 	case slices.Contains(have, isolationRuntimes[isolationGVisor]):
 		c.note("isolation", "%s, which shares this machine's kernel; docker has runsc, so isolation = %q would give the sandbox a kernel of its own",
 			isolationOf(cfg), isolationGVisor)
 	default:
 		c.note("isolation", "%s, the weakest: the sandbox shares this machine's kernel (%s offers gVisor where it can)",
 			isolationOf(cfg), SetupCommand(cfg.Env, "isolation"))
+	}
+}
+
+// doctorRunsc checks the runsc docker has loaded. Any runsc needs
+// --host-uds=open for the forwarded SSH agent, which one registered by
+// gVisor's own install lacks; caboose registers its own with it, so the fix
+// said for that one is setup's. One caboose downloaded
+// never updates by itself, so doctor says when it is old, or of a release
+// caboose did not record; setup isolation checks it against gVisor's
+// latest and offers the update. Doctor fetches nothing.
+func (a *App) doctorRunsc(c *checkup) {
+	loaded, ok, err := a.engineRuntime(runscName)
+	if err != nil || !ok {
+		return
+	}
+	dir := a.cabooseRunscDir(loaded.Path)
+	setup := SetupCommand(a.Cfg.Env, "isolation")
+	if !runscHostUDS(loaded.RuntimeArgs) {
+		fix := hostUDSFix()
+		if dir != "" {
+			fix = setup
+		}
+		const why = "runsc runs without --host-uds=open, so the sandbox cannot reach the SSH agent caboose forwards"
+		if a.sshAgentSource() != "" {
+			c.problem("runsc", fix, "%s", why)
+		} else {
+			c.note("runsc", "%s, once there is one: %s", why, fix)
+		}
+	}
+	if dir == "" {
+		return
+	}
+	rec, known := readRunscRelease(dir)
+	switch age := a.now().Sub(rec.Downloaded); {
+	case !known:
+		c.note("runsc", "caboose's gVisor in %s was downloaded before caboose recorded its release: %s checks it for a newer one",
+			a.short(dir), setup)
+	case age > runscStale:
+		c.note("runsc", "caboose's gVisor in %s was downloaded %d days ago, and gVisor releases about weekly: %s checks it for a newer one",
+			a.short(dir), int(age.Hours()/24), setup)
+	default:
+		c.ok("runsc", "caboose's gVisor, downloaded %s", rec.Downloaded.Local().Format(time.DateOnly))
 	}
 }
 
@@ -238,7 +299,7 @@ func (a *App) doctorContainerIsolation(c *checkup) {
 		c.problem("isolation", "caboose restart"+endsSessions, "%s", d)
 		return
 	}
-	if iso, user, ok := a.createdIsolation(); ok && user == rootUser {
+	if iso, user, ok := a.createdIsolation(); ok && user == rootUser && iso != isolationVM {
 		c.note("isolation", "the container runs as root inside %s: on this engine the agent user cannot write its mounts under it", iso)
 	}
 }
@@ -283,9 +344,9 @@ func (a *App) recreateForRuntime(rt string, mayBuild bool) error {
 	return a.createContainer(mayBuild)
 }
 
-// startFailed is a docker start that failed, said with what to do: the
-// container is stopped, so recreating it loses no session.
-func startFailed(name string, err error) error {
-	return Die("container %s did not start: %s\n"+
-		"       'caboose restart' recreates it; it is stopped, so no sessions are lost.", name, firstLine(err.Error()))
+// startFailed is a start of the sandbox (noun name) that failed, said with
+// what to do: it is stopped, so recreating it loses no session.
+func startFailed(noun, name string, err error) error {
+	return Die("%s %s did not start: %s\n"+
+		"       'caboose restart' recreates it; it is stopped, so no sessions are lost.", noun, name, firstLine(err.Error()))
 }

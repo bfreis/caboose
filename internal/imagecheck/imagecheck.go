@@ -17,6 +17,7 @@ package imagecheck
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -74,6 +75,79 @@ type Report struct {
 	// Warnings are the probe's "warn" lines, "NAME DETAIL": reachability of
 	// claude.ai from the image, never a reason to refuse it.
 	Warnings []string
+	// Engine is where the image has each part of Docker's engine (the
+	// names in EngineParts), "" for one it lacks; nil when the probe did
+	// not say. A fact, never a requirement: see DockerInside.
+	Engine map[string]string
+	// EngineVersion is dockerd's, as its --version gives it; "" if unknown.
+	EngineVersion string
+}
+
+// EngineParts are what the entrypoint's dockerd needs to run containers
+// under isolation vm, in the order the probe reports them: dockerd; the
+// containerd, shim and runc it runs containers with; the iptables it will
+// not start without; and the CLI that reaches it.
+var EngineParts = []string{"dockerd", "containerd", "containerd-shim-runc-v2", "runc", "iptables", "docker"}
+
+// EngineMissing lists the parts of Docker's engine the image lacks, in
+// EngineParts' order; nil when it has them all, or when the probe did not
+// report them.
+func (r *Report) EngineMissing() []string {
+	if r.Engine == nil {
+		return nil
+	}
+	var missing []string
+	for _, p := range EngineParts {
+		if r.Engine[p] == "" {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+// DockerInside is the checklist's row for docker inside the sandbox,
+// which only isolation vm has: the sandbox is a VM of its own, and its
+// entrypoint starts the image's dockerd when there is one. Under docker
+// and gvisor nothing starts one, so the row means nothing there. Never
+// Unmet -- an image without an engine is a sandbox without docker, nothing
+// more -- and false when the probe did not report the engine.
+func (r *Report) DockerInside() (Row, bool) {
+	if r.NoShell || r.Engine == nil {
+		return Row{}, false
+	}
+	const label = "docker inside"
+	dockerd := "dockerd"
+	if r.EngineVersion != "" {
+		dockerd += " " + r.EngineVersion
+	}
+	missing := r.EngineMissing()
+	switch {
+	case len(missing) == 0:
+		return Row{label, "available (" + dockerd + ")", Met}, true
+	case r.Engine["dockerd"] == "":
+		return Row{label, "not in this image: `docker` won't work inside the sandbox", Noted}, true
+	case slices.Equal(missing, []string{"docker"}):
+		return Row{label, dockerd + ", but no docker CLI to reach it", Noted}, true
+	}
+	return Row{label, dockerd + ", but no " + strings.Join(missing, ", ") +
+		": it won't start, so `docker` won't work inside the sandbox", Noted}, true
+}
+
+// DockerInsideNote says what to add for docker inside the sandbox under
+// isolation vm; "" when the image has it all, or the probe did not say.
+func (r *Report) DockerInsideNote() string {
+	missing := r.EngineMissing()
+	if r.NoShell || len(missing) == 0 {
+		return ""
+	}
+	what := "Docker's engine"
+	if r.Engine["dockerd"] != "" {
+		what = strings.Join(missing, ", ")
+	}
+	return "under isolation vm the sandbox starts the image's own dockerd: for `docker` inside it, add " + what +
+		" to the image. Docker's static release (https://download.docker.com/linux/static/stable/) has dockerd, " +
+		"containerd, its shim, runc and the docker CLI, and iptables comes from the distribution; the default " +
+		"Dockerfile's dockerd section installs both. Not a requirement: without it the sandbox runs, without docker"
 }
 
 // Check returns the named check and whether the probe reported it.
@@ -105,11 +179,11 @@ type requirement struct {
 // requirements is the order the checklist and Problems follow.
 var requirements = []requirement{
 	{name: "sh", label: "/bin/sh", why: "the probe and the derived layer run with plain sh"},
-	{name: "bash", label: "bash", why: "entrypoint.sh and Claude Code's installer are bash scripts, and the launcher runs `docker exec ... bash`"},
+	{name: "bash", label: "bash", why: "entrypoint.sh and Claude Code's installer are bash scripts, and the launcher runs its commands in the sandbox with bash"},
 	{name: "curl", label: "curl", why: "the entrypoint downloads Claude Code's installer with it, and the installer the binary"},
 	{name: "cacerts", label: "CA certificates", why: "curl verifies https://claude.ai against them"},
 	{name: "tmux", label: "tmux", why: "every session runs in tmux"},
-	{name: "git", label: "git", why: "`caboose sync` runs every git command in the container; 2.28 or later, for `git init -b`"},
+	{name: "git", label: "git", why: "`caboose sync` runs every git command in the sandbox; 2.28 or later, for `git init -b`"},
 	{name: "libc", label: "glibc or musl", why: "Claude Code ships builds for those two only"},
 	{name: "arch", label: "x86_64 or aarch64", why: "Claude Code ships builds for those two only"},
 	{name: "libgcc", label: "libgcc", musl: true, why: "the musl build of Claude Code links libgcc_s.so.1"},
@@ -483,6 +557,14 @@ func (r *Report) info(key, val string) error {
 		if name, id, _ := strings.Cut(val, " "); name == "agent" {
 			r.AgentGID = id
 		}
+	case "engine":
+		part, path, _ := strings.Cut(val, " ")
+		if r.Engine == nil {
+			r.Engine = map[string]string{}
+		}
+		r.Engine[part] = path
+	case "engine-version":
+		r.EngineVersion = val
 	}
 	// Unknown keys are facts this launcher has no use for.
 	return nil
@@ -535,26 +617,37 @@ func Run(d *docker.CLI, image, platform string, uid, gid int) (*Report, error) {
 		return r, nil
 	}
 	if noShell(runErr, out) {
-		return &Report{Image: image, NoShell: true, UID: uid, GID: gid, uidKnown: true, gidKnown: true}, nil
+		return NoShellReport(image, uid, gid), nil
 	}
 	return nil, classify(d, image, runErr)
 }
 
-// noShell tells an image without /bin/sh from any other failure to run. The
+// NoShellReport is the answer for an image with no /bin/sh, which the
+// probe cannot run in: that one requirement unmet.
+func NoShellReport(image string, uid, gid int) *Report {
+	return &Report{Image: image, NoShell: true, UID: uid, GID: gid, uidKnown: true, gidKnown: true}
+}
+
+// noShell is NoShell of a docker.CLI failure.
+func noShell(err error, out string) bool {
+	var f *docker.Failure
+	stderr := ""
+	if errors.As(err, &f) {
+		stderr = f.Stderr
+	}
+	return NoShell(docker.ExitCode(err), stderr, out)
+}
+
+// NoShell tells, from a failed run of Args -- its exit status, stderr and
+// stdout -- an image without /bin/sh from any other failure to run. The
 // probe itself always exits 0 and prints its header first, so a failure
 // with no header is docker's. docker exits 127 when the entrypoint does not
 // exist (126 when it exists but cannot be executed) and names the missing
 // path on stderr: "exec: \"/bin/sh\": stat /bin/sh: no such file or
 // directory" from runc, "executable file `/bin/sh` not found" from podman.
-func noShell(err error, out string) bool {
+func NoShell(code int, stderr, out string) bool {
 	if strings.HasPrefix(out, "probe ") {
 		return false
-	}
-	code := docker.ExitCode(err)
-	var f *docker.Failure
-	stderr := ""
-	if errors.As(err, &f) {
-		stderr = f.Stderr
 	}
 	if !strings.Contains(stderr, "/bin/sh") {
 		return false

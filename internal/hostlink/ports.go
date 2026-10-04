@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// PortSet is which of the sandbox's ports may be forwarded: config.toml's
-// forward_ports, parsed.
+// PortSet is a set of ports: which of the sandbox's may be forwarded
+// (config.toml's forward_ports, parsed), or which it may reach through the
+// outbound proxy (egress_ports).
 type PortSet []portRange
 
 type portRange struct{ lo, hi int }
@@ -24,7 +25,10 @@ func (s PortSet) Has(p int) bool {
 
 // ParsePorts reads forward_ports: ports and ranges (3000, 8000-8999)
 // separated by spaces or commas, or "none" for no forwarding at all.
-func ParsePorts(s string) (PortSet, error) {
+func ParsePorts(s string) (PortSet, error) { return ParsePortsOf("forward_ports", s) }
+
+// ParsePortsOf reads a setting of ParsePorts' form, key naming it in errors.
+func ParsePortsOf(key, s string) (PortSet, error) {
 	s = strings.TrimSpace(s)
 	if s == "none" {
 		return PortSet{}, nil
@@ -34,21 +38,21 @@ func ParsePorts(s string) (PortSet, error) {
 		lo, hi, isRange := strings.Cut(f, "-")
 		a, err := parsePort(lo)
 		if err != nil {
-			return nil, fmt.Errorf("forward_ports: %q: %v", f, err)
+			return nil, fmt.Errorf("%s: %q: %v", key, f, err)
 		}
 		b := a
 		if isRange {
 			if b, err = parsePort(hi); err != nil {
-				return nil, fmt.Errorf("forward_ports: %q: %v", f, err)
+				return nil, fmt.Errorf("%s: %q: %v", key, f, err)
 			}
 			if b < a {
-				return nil, fmt.Errorf("forward_ports: %q ends before it starts", f)
+				return nil, fmt.Errorf("%s: %q ends before it starts", key, f)
 			}
 		}
 		set = append(set, portRange{a, b})
 	}
 	if len(set) == 0 {
-		return nil, fmt.Errorf(`forward_ports: no ports (use "none" to forward none)`)
+		return nil, fmt.Errorf(`%s: no ports (use "none" for none)`, key)
 	}
 	return set, nil
 }

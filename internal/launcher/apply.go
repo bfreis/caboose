@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/proposal"
 )
@@ -277,7 +278,7 @@ func (a *App) confirmRoot(p *prompter, pl plan, edit *config.Edit) (ok bool, err
 		for _, m := range moves {
 			p.warn("%s", capFirst(m))
 		}
-		p.note("Claude Code keeps each project's state (memories, history, settings) under its path in the container, " +
+		p.note("Claude Code keeps each project's state (memories, history, settings) under its path in the sandbox, " +
 			"so it will not find what it has under the old one. Nothing is moved or deleted.")
 		if ok, err := p.yesNo("Change the roots anyway?", false); err != nil || !ok {
 			if err == nil {
@@ -348,7 +349,7 @@ func (a *App) applyFinish(p *prompter, done applied) error {
 		}
 		switch {
 		case !build:
-			p.same("Not built: %s builds it, and so does the restart that moves the container onto it", p.code(envCommand(a.Cfg.Env, "build")))
+			p.same("Not built: %s builds it, and so does the restart that moves the %s onto it", p.code(envCommand(a.Cfg.Env, "build")), a.noun())
 		case a.build(nil, a.Stderr) != nil:
 			p.fail("The build failed (above). Fix what it says, then run %s and %s.", p.code(envCommand(a.Cfg.Env, "build")), p.code(restart))
 			return nil
@@ -357,13 +358,13 @@ func (a *App) applyFinish(p *prompter, done applied) error {
 		}
 	}
 	if a.state() == "absent" {
-		p.note("There is no container yet: the next launch creates it with all of this.")
+		p.note("There is no %s yet: the next launch creates it with all of this.", a.noun())
 		return nil
 	}
 	sessions := a.liveSessions()
-	q := "Restart the container now, to use what was applied?"
+	q := fmt.Sprintf("Restart the %s now, to use what was applied?", a.noun())
 	if n := len(sessions); n > 0 {
-		q = fmt.Sprintf("Restart the container now, to use what was applied? This ends %d running %s:", n, plural(n, "session", "sessions"))
+		q = fmt.Sprintf("Restart the %s now, to use what was applied? This ends %d running %s:", a.noun(), n, plural(n, "session", "sessions"))
 	}
 	p.blank()
 	if len(sessions) > 0 {
@@ -396,7 +397,7 @@ func (a *App) liveSessions() []string {
 	if a.state() != "running" {
 		return nil
 	}
-	out, _ := a.Docker.Output("exec", a.Cfg.Container, "tmux", "list-sessions", "-F", "#{session_name}")
+	out, _ := backend.Output(a.box(), "tmux", "list-sessions", "-F", "#{session_name}")
 	var sessions []string
 	for _, s := range strings.Split(out, "\n") {
 		if s = strings.TrimSpace(s); s != "" {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/tty"
 )
@@ -76,7 +77,7 @@ const ghHelper = "!gh auth git-credential"
 // newSyncGit is the git for one sync: auto for one run at launch.
 func (a *App) newSyncGit(auto bool) *syncGit {
 	g := &syncGit{a: a, auto: auto, deadline: time.Now().Add(syncBudget)}
-	out, _ := a.Docker.RawOutput("exec", a.Cfg.Container, "bash", "-c", syncGitProbe)
+	out, _ := backend.RawOutput(a.box(), "bash", "-c", syncGitProbe)
 	own, rest, _ := strings.Cut(out, "\n")
 	g.gh = strings.TrimSpace(rest) == "gh"
 	// An ssh command the container's environment sets is the user's to
@@ -94,18 +95,15 @@ func (a *App) newSyncGit(auto bool) *syncGit {
 // command is a statesync.Command. -t only for a command that may prompt,
 // when there is a terminal to give it and someone at it.
 func (g *syncGit) command(remote, interactive bool, args ...string) *exec.Cmd {
-	argv := []string{"exec", "-i"}
-	if !g.auto && interactive && tty.IsTerminal(os.Stdin.Fd()) {
-		argv = append(argv, "-t")
-	}
-	argv = append(argv, "-e", "GIT_CONFIG_GLOBAL=/dev/null")
+	s := backend.ExecSpec{Stdin: true, TTY: !g.auto && interactive && tty.IsTerminal(os.Stdin.Fd())}
+	s.Env = []string{"GIT_CONFIG_GLOBAL=/dev/null"}
 	if g.auto {
-		argv = append(argv, "-e", "GIT_TERMINAL_PROMPT=0")
+		s.Env = append(s.Env, "GIT_TERMINAL_PROMPT=0")
 	}
 	if g.ssh != "" {
-		argv = append(argv, "-e", "GIT_SSH_COMMAND="+g.ssh)
+		s.Env = append(s.Env, "GIT_SSH_COMMAND="+g.ssh)
 	}
-	argv = append(argv, g.a.Cfg.Container)
+	var argv []string
 	if g.auto && remote {
 		argv = append(argv, "bash", "-c", watchdog, "watchdog", strconv.Itoa(g.remaining()))
 	}
@@ -122,8 +120,8 @@ func (g *syncGit) command(remote, interactive bool, args ...string) *exec.Cmd {
 		// config names, so gh's is the only one asked.
 		argv = append(argv, "-c", "credential.helper=", "-c", "credential.helper="+ghHelper)
 	}
-	argv = append(argv, args...)
-	return exec.Command(g.a.Docker.Path, argv...)
+	s.Argv = append(argv, args...)
+	return g.a.box().Command(s)
 }
 
 // remaining is the budget left, in whole seconds, at least one: a call

@@ -3,13 +3,15 @@ package launcher
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
-	"github.com/bfreis/caboose/internal/docker"
 )
 
 func TestOrphaned(t *testing.T) {
@@ -32,25 +34,20 @@ func TestOrphaned(t *testing.T) {
 	}
 }
 
-// attachFake is a docker whose tmux has clients clients on every session,
-// and logs every detach-client.
-func attachFake(t *testing.T, clients int) (a *App, log string) {
+// attachFake is a sandbox, under gVisor where closed terminals' clients
+// linger, whose tmux has clients clients on every session.
+func attachFake(t *testing.T, clients int) (a *App, box *backendtest.Fake) {
 	t.Helper()
-	tmp := t.TempDir()
-	log = filepath.Join(tmp, "log")
-	script := `#!/bin/sh
-case "$3 $4" in
-  "tmux list-clients") i=0; while [ $i -lt ` + strconv.Itoa(clients) + ` ]; do echo "/dev/pts/$i"; i=$((i+1)); done ;;
-  "tmux detach-client") echo "$@" >> "` + log + `" ;;
-esac
-`
-	fake := filepath.Join(tmp, "docker")
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	box = runningBox(isolationGVisor)
+	box.Exec = func(s backend.ExecSpec) *exec.Cmd {
+		if len(s.Argv) > 1 && s.Argv[0] == "tmux" && s.Argv[1] == "list-clients" {
+			return backendtest.Reply(strings.Repeat("/dev/pts/0\n", clients), "", 0)
+		}
+		return nil
 	}
-	a = &App{Cfg: &config.Config{Container: "box", DataDir: filepath.Join(tmp, "data")},
-		Docker: &docker.CLI{Path: fake}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	return a, log
+	a = &App{Cfg: &config.Config{Container: "box", Isolation: isolationGVisor, DataDir: filepath.Join(t.TempDir(), "data")},
+		Backend: box, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	return a, box
 }
 
 // plant writes a record of pid attaching session.
@@ -88,15 +85,14 @@ func TestClientsInUse(t *testing.T) {
 		{"another session's record", 1, map[int]string{2000: "other"}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a, log := attachFake(t, tc.clients)
+			a, box := attachFake(t, tc.clients)
 			for pid, s := range tc.records {
 				plant(t, a, pid, s)
 			}
 			if got := a.clientsInUse("s"); got != tc.want {
 				t.Errorf("clientsInUse = %d, want %d", got, tc.want)
 			}
-			b, _ := os.ReadFile(log)
-			detached := strings.Contains(string(b), "detach-client -s =s")
+			detached := box.Ran("tmux", "detach-client", "-s", "=s")
 			if taken := tc.clients > 0 && tc.want == 0; detached != taken {
 				t.Errorf("detached: %v, want %v", detached, taken)
 			}

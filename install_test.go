@@ -123,3 +123,55 @@ func TestInstallScriptNoRelease(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
+
+// A latest release that is not caboose's, as the vm kernel's source
+// release once was on a repository with no other: refused, and nothing
+// installed.
+func TestInstallScriptLatestNotCaboose(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("no curl")
+	}
+	s := releasetest.New(t)
+	home := t.TempDir()
+	for _, tag := range []string{"kernel-6.18.54", "vmtest", "v1.2", "v1.2.3+x"} {
+		s.Publish(t, tag, true)
+		out, err := runInstall(t, home, s.Base, "CABOOSE_NO_SETUP=1")
+		if err == nil || !strings.Contains(out, "/tag/"+tag+"', which is no caboose version") {
+			t.Errorf("latest %s: %v\n%s", tag, err, out)
+		}
+	}
+	if _, err := os.Lstat(selfupdate.DefaultLayout(home).Link); err == nil {
+		t.Error("installed")
+	}
+}
+
+// caboose-vmm, when the archive has one, goes next to caboose: on a Mac,
+// which a stub uname makes this machine look like.
+func TestInstallScriptVMM(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("no curl")
+	}
+	bin := t.TempDir()
+	uname := "#!/bin/sh\ncase \"$1\" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo Darwin ;; esac\n"
+	if err := os.WriteFile(filepath.Join(bin, "uname"), []byte(uname), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := releasetest.New(t)
+	s.VMM = true
+	s.Publish(t, "v1.0.0", true, "darwin/arm64")
+	home := t.TempDir()
+	l := selfupdate.DefaultLayout(home)
+	cmd := exec.Command("sh", "install.sh")
+	cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "CABOOSE_RELEASES_URL=" + s.Base, "CABOOSE_NO_SETUP=1"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	p := filepath.Join(l.Versions, "v1.0.0", selfupdate.VMM)
+	if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("caboose-vmm: %v, %v", fi, err)
+	}
+	if got, err := os.ReadFile(p); err != nil || string(got) != string(releasetest.VMMBinary("v1.0.0")) {
+		t.Fatalf("caboose-vmm holds %q, %v", got, err)
+	}
+}

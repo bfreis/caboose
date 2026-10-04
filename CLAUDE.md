@@ -21,6 +21,7 @@ read live, so an edit alone changes nothing:
     make test       # both, then the integration suite
     make lint       # bash -n + shellcheck, gofmt + go vet (+ staticcheck)
     make go-test    # Go unit tests; no docker, safe to run in here
+    make test-vm    # the integration suite's vm group alone (a Mac; slow)
     make test-byo   # the bring-your-own-image suite (host only; slow)
 
 `make help` lists the rest. Prefer these over calling the launcher directly:
@@ -65,6 +66,11 @@ user's base may be built from a caboose image, so the layer sets every
 label in `assets.LayerLabels`, `""` where one does not apply, and the
 launcher reads empty as unset: a new label goes in that list.
 
+`caboose-vmm` (`cmd/caboose-vmm`, `internal/vm/...`) is in no image
+either: it is a Mac binary beside the launcher, which only `make vmm` on
+a Mac builds and signs (the Makefile refuses anywhere else), so a change
+to it needs that, and a VM restarted with it.
+
 `sandbox/CLAUDE.md` is the exception: a launcher run from a checkout copies
 it into the data dir's `home/.claude/CLAUDE.md` on every start, so the next session
 picks it up with no rebuild and no restart. An installed binary uses the copy
@@ -83,20 +89,28 @@ embedded in it instead.
 | `imagecheck.sh` | the image probe, POSIX sh, run by `caboose check-image` and before every layer build; reports facts only, embedded but in no image |
 | `internal/imagecheck` | the requirements table the probe's output is judged against (the requirements table in `docs/images.md` mirrors it), and the checklist |
 | `cmd/caboose`, `internal/` | the host launcher, in Go: subcommands and their help, from one table (`cmd/caboose/args.go`; nothing reaches claude but through `caboose claude`), environments and `config.toml` (`internal/config`), container lifecycle, bind mounts, SSH agent forwarding, repo roots at fixed `/work` paths, tmux attach, `caboose build` |
+| `internal/backend` | the sandbox as the launcher sees it: `Backend` (state, create from one `Spec`, start, stop, remove, exec, labels, mounts, logs) and its docker implementation, which serves the docker and gvisor isolations; images, builds and what the engine says of itself stay `internal/docker`'s. `backendtest` is an in-memory one, which the launcher's tests of the sandbox's lifecycle run under every isolation (`launcher/box_test.go`), failing any that asks docker for the sandbox |
 | `internal/shelltest` | the POSIX shells the tests run the shell scripts with: `/bin/sh` and whichever others the machine has, but never a BusyBox that runs its own applets before `PATH` (Debian's and Ubuntu's), which would bypass the tests' stub tools |
 | `internal/proposal` | what a session proposes for `caboose apply` (`internal/launcher/apply.go`): the TOML format, its checks (an allowlist of parts, no control or bidi characters), reading through `nofollow` from the data dir's `proposals/` (mounted at `~/.caboose-proposals`), and `current/`, what the host tells sessions a proposal is made against |
 | `internal/sandboxcfg` | the sandbox config, `~/.config/caboose/sandbox.toml`: `[[keep]]` entries (what of the home is kept, and mounted) and their sync rules (globs, first match wins, excludes, merge drivers), checked entry by entry; its defaults, format and line-based edits (`caboose sync add/rm`) |
 | `internal/nofollow` | file access under a directory the container can also write (the data dir's `home/`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
 | `internal/statesync` | `caboose sync`: the sandbox config's rules applied to the data dir's `home/` and to what a remote sends, JSON merge by key, and the export/merge/apply cycle in the data dir's `sync/`; files are handled on the host, git runs in the container (`docker exec`, repo mounted at `~/.caboose-sync`); tested against real git |
-| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify` and `ports` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, connects the host's streams to them, and touches the paths the host says changed (`touch.go`) |
+| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify` and `ports` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, connects the host's streams to them, touches the paths the host says changed (`touch.go`), and under vm serves the outbound proxy the host's hello offers, an HTTP proxy whose every connection the host dials (`egress.go`; `caboose-agent connect` for ssh, which a vm guest's agent points ssh at as it boots: `sshegress_linux.go`) |
 | `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
-| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`); `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
+| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`); `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
 | `internal/fswatch` | the host's watcher for that relay: FSEvents through purego on a Mac (the launcher has no cgo), inotify on Linux; only paths, never what happened |
+| `internal/launcher/vm*.go` | the vm isolation in the launcher: finding `caboose-vmm`, the kernel and the builder disk (`~/.caboose/vm/<arch>/`, else the checkout's `vm-dist/`), the VM's size, the initramfs from the embedded agent, the `VMHost`, `caboose build` through the builder, and the image store of root disks (`vm/images/`), behind the same `imageStore` as docker's |
+| `internal/backend`'s `VM`, `internal/vm` | the vm isolation as the launcher sees it: a VM's dir (`vm/<name>/`: `vm.sock`, `state.json`, the launcher's record, never shared; `machine.json`, what vmm boots), the control port's client, the clock keeper (a guest's clock stops while the Mac sleeps), the exec helper `Command` runs (the launcher as a hidden `__vm-exec`), the initramfs and the scratch disk's clone; tested against a fake vmm |
+| `internal/hvsock` | Cloud Hypervisor's hybrid vsock, which `vm.sock` speaks: `CONNECT <port>`, `OK`, then the guest's bytes; both halves |
+| `cmd/caboose-vmm`, `internal/vm/vmm`, `internal/vm/vz` | `caboose-vmm`, a binary of its own beside the launcher, since it alone carries the virtualization entitlement: the detached process that owns one VM (`vmm`: the lock, `vmm.pid`, serving `vm.sock`, the clock, shutdown on SIGTERM) on a `Runner`, which on a Mac is Virtualization.framework through purego (`vz`). `make vmm` builds and signs it on a Mac; `internal/vm/e2e` boots a real VM with it, run on a Mac by hand |
+| `vm/builder/`, `internal/vm/builder` | the vm isolation's builder guest: `vm/builder` is its disk's recipe (Alpine with dockerd, e2fsprogs and GNU tar, written by `mkfs.ext4 -d`; `make vm-builder`, docker on the host, writes `vm-dist/builder-<arch>.img`) and `caboose-builder`, its side of a build; `internal/vm/builder` boots it (overlay on tmpfs, a kept cache disk, the output disk, the scratch template) and runs caboose build's steps in it over the exec port: the contexts as tars, the image check through `imagecheck.Args`, the layer as a root disk, the image's config |
+| `vm/kernel/` | the vm isolation's guest kernel: kernel.org's 6.18 LTS, unpatched, pinned in the Makefile (`LINUX_VERSION`, `LINUX_SHA256`); `config-common` and `config-<arch>` merged onto allnoconfig, `check-config` (awk) failing the build on any line Kconfig did not take, and the `Dockerfile` that builds it reproducibly for each build machine's architecture (Debian by digest and snapshot date; `make vm-kernel`, docker on the host, writes `vm-dist/kernel-<arch>` and its `.config`); `smoke/`, `make vm-kernel-smoke`: a test init booted under QEMU in a container. `internal/vm/kernelconfig_test.go` holds the fragments to the decisions |
 | `agent-bin/` | `caboose-agent` for amd64 and arm64, from `make agent`, gitignored but for its README; embedded in the launcher, and the layer COPYs the one for its `TARGETARCH` |
 | `embed.go` | the `//go:embed` list: the files the launcher carries with it and builds the image from |
 | `Makefile` | the maintenance entry points; also builds `./caboose` (gitignored) |
 | `internal/version` | the launcher's version, commit and date: ldflags when stamped (make, goreleaser), else what the Go toolchain recorded, else `dev` |
-| `.goreleaser.yaml` | release build: static darwin/linux × amd64/arm64 archives, `checksums.txt` and `install.sh` on the GitHub release |
+| `.goreleaser.yaml` | release build: static darwin/linux × amd64/arm64 archives (the darwin ones with `caboose-vmm`; both darwin binaries signed by `macsign.sh` with `rcodesign`, which `release.yml` installs: with a Developer ID and notarized when the repository has the signing secrets, else `caboose-vmm` ad-hoc, CONTRIBUTING.md), `checksums.txt` and `install.sh` on the GitHub release |
+| `macsign.sh` | POSIX sh: signs a darwin binary with `rcodesign`, with a Developer ID (hardened runtime) and notarized when `MACSIGN_*` name the files, else ad-hoc with `--adhoc`; goreleaser's post-build hooks and `make vmm` run it |
 | `install.sh` | the one-line install, POSIX sh: the latest release (or `CABOOSE_VERSION`), checked against `checksums.txt`, into the layout `internal/selfupdate` keeps, then `caboose setup`; tested by `install_test.go` against a fake release host |
 | `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `versions/<tag>` and the `~/.local/bin/caboose` link, `update.json` and its lock; `releasetest` serves fake releases |
 | `.github/workflows` | `ci.yml` (gofmt, vet, test, shellcheck); `release.yml` (goreleaser on a `v*` tag) |
@@ -136,6 +150,14 @@ outside the repo.
   files) and `~/.claude/daemon.lock` / `~/.claude/sessions/*` (PID-keyed, and
   meaningless once the processes are gone) must stay out of the data dir; the
   entrypoint clears them at start.
+- **The launcher touches the sandbox only through `Backend`.** Running a
+  command in it, creating, starting, stopping or removing it, and reading
+  its labels or mounts go through `App.box()` (`internal/backend`), never
+  `a.Docker` with the container's name: vm will be a second `Backend`, with
+  no docker between the launcher and the guest. What `createContainer`
+  decides goes in the one `backend.Spec`, which each backend realises its
+  own way; `a.Docker` is for the engine (images, builds, `docker info`, the
+  isolation probe) and for `caboose logs`, which passes docker's own flags.
 - **Container paths are fixed, not mirrored.** A single repo root is
   mounted at `/work`, each of several (`[roots]`) at `/work/<name>`, so a
   project's container path -- and the project key Claude Code derives from
@@ -214,7 +236,7 @@ outside the repo.
   the engine's VM as an empty directory unless it is macOS's own launchd
   agent, so 1Password's never worked that way. OrbStack and Docker Desktop
   provide `/run/host-services/ssh-auth.sock`, which exists only in their
-  VM and so cannot be checked for from the host: `sshAgentArgs` mounts it
+  VM and so cannot be checked for from the host: `sshAgentSource` mounts it
   when `docker info` names either engine. Setup writes signing without
   `gpg.ssh.program` (`datadir.SigningChanges`) for the same reason: the
   host's is a Mac binary.
@@ -311,10 +333,38 @@ outside the repo.
   the image stale, and the launch that creates the container rebuilds it.
 - **Releases, `install.sh` and `internal/selfupdate` are one contract.**
   The archive names (`caboose_<version>_<os>_<arch>.tar.gz`, caboose at the
-  root), `checksums.txt`, the `releases/latest` redirect and the layout
+  root, and `caboose-vmm` beside it in darwin's), vm's asset
+  (`caboose-vm_<version>_<arch>.tar.gz`, `make vm-assets`, which a release
+  build fetches: `internal/launcher/vmassets.go`), `checksums.txt`, the `releases/latest` redirect and the layout
   under `~/.local` are read by both installers; change them together, or
   every existing install stops updating. Prereleases are never
   `releases/latest`, so neither installer takes one unasked.
+- **The guest kernel is a pin, and its source is a release of its own.**
+  `vm/kernel` builds kernel.org's tarball unmodified: bumping it is
+  `LINUX_VERSION` and `LINUX_SHA256` together, the sha256 from
+  `sha256sums.asc` with its signature checked (kernel.org's autosigner
+  key, `632D3A06589DA6B1`, from its pgpkeys repository), on every 6.18.y
+  security release and at least monthly; the `Dockerfile`'s Debian digest
+  and snapshot date move only on purpose, since the compiler is part of
+  the Image. Every option a fragment names is checked by `check-config`,
+  so an option Kconfig refuses stops the build; add a new one to a
+  fragment, never by editing a `.config`, and mind that allnoconfig with
+  `EXPERT` on turns off whatever the fragments do not name. Modules,
+  io_uring and anything that writes the running kernel stay off
+  (`kernelconfig_test.go`). The GPL is met by the release `kernel-<version>`
+  that `release.yml` makes in the releasing repository (the tarball once,
+  each release's config beside it) and that `kernel-<arch>.SOURCE` points
+  to: never delete one while a release built from it is installable, and
+  keep it out of `releases/latest`: a prerelease (`--prerelease
+  --latest=false`, set again on every run), since `--latest=false` alone
+  still leaves it the latest on a repository with no other full release.
+  Both installers refuse a latest tag that is no caboose version anyway.
+  The Image is reproducible per build machine's architecture only, so a
+  release builds vm's asset on an arm64 runner (`release.yml`'s
+  `vm-assets` job, `ubuntu-24.04-arm`, as ci.yml's kernel job), the same
+  Image a Mac's `make vm-assets` gives, and goreleaser's amd64 job only
+  checks it (`VM_ASSETS_PREBUILT=1`). A private repository may need arm64
+  runners enabled: without one that job sits queued, and nothing releases.
 - **`start.d` and `shell.d` are the user's, and the sandbox's.** Both sit
   in the data dir's `home/.config/caboose`, mounted at `~/.config/caboose`,
   and a session may write them: they run as the agent, in the container,
@@ -335,7 +385,11 @@ outside the repo.
   first unless `open_urls` says otherwise; text shown goes through
   `proposal.Printable` and is cut short; AppleScript gets it as `argv`,
   never spliced into the script. A new request type needs the same:
-  decided by the host's config, bounded, rate-limited. The link is a
+  decided by the host's config, bounded, rate-limited -- what it logs
+  too, since the agent decides how often (`egressLogf`). The outbound
+  proxy dials only addresses it resolved and checked, and no name
+  egress_allow allows reaches loopback, link-local or this machine's own
+  addresses (`Egress.denied`). The link is a
   `docker exec`, never a socket of the host's mounted in, and a launch
   starts it detached (`startLink`) because the attach `exec`s docker and
   leaves no process to hold it. The agent's protocol has a `Version`: an

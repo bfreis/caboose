@@ -1,0 +1,94 @@
+#!/bin/sh
+# caboose-builder: the builder guest's side of a build under the vm
+# isolation (internal/vm/builder drives it through the exec port). The
+# guest boots this image read-only, its overlay on tmpfs
+# (caboose.scratch=tmpfs), with three disks of its own:
+#
+#   /dev/vdb  the cache: dockerd's storage, kept between builds
+#   /dev/vdc  the output: the root disk being built, written whole
+#   /dev/vdd  the scratch template, formatted when the host asks
+#
+#   caboose-builder serve READY   the entrypoint: the cache, dockerd, then
+#                                 READY once docker answers
+#   caboose-builder root ARGS...  the image docker build ARGS makes of the
+#                                 context on stdin (a tar), as a filesystem
+#                                 on /dev/vdc
+#   caboose-builder template      an empty ext4 on /dev/vdd
+set -eu
+# BusyBox's ash, the builder's /bin/sh, has pipefail; a failed docker build
+# must not pass for an empty root.
+# shellcheck disable=SC3040
+set -o pipefail
+
+state=/var/lib/caboose-builder
+
+say() { echo "caboose-builder: $*" >&2; }
+
+case "${1:-}" in
+serve)
+	ready=${2:?serve needs the ready file}
+	mkdir -p "$state"
+	# A new cache disk is blank: format it the first time it will not
+	# mount.
+	if ! mount -t ext4 /dev/vdb "$state" 2> /dev/null; then
+		say "formatting the cache disk"
+		mkfs.ext4 -q -L caboose-cache /dev/vdb
+		mount -t ext4 /dev/vdb "$state"
+	fi
+	mkdir -p "$state/docker"
+	# dockerd's log reaches the console through a filter dropping one
+	# message: at the end of every docker build, BuildKit's session
+	# healthcheck redials the client's hijacked connection, which its
+	# dialer refuses ("only one connection allowed"), and dockerd logs a
+	# warning and an error for a session that has simply ended. Everything
+	# else passes, line by line as it comes (a shell loop: BusyBox's grep
+	# would hold its output back in a buffer). A fifo, not a pipe, keeps $!
+	# dockerd's own.
+	log=/run/caboose-builder-dockerd.fifo
+	rm -f "$log"
+	mkfifo "$log"
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+		*"healthcheck failed"*"only one connection allowed"*) ;;
+		*) printf '%s\n' "$line" ;;
+		esac
+	done < "$log" >&2 &
+	dockerd --data-root "$state/docker" --log-level warn 2> "$log" &
+	dockerd=$!
+	i=0
+	until docker info > /dev/null 2>&1; do
+		i=$((i + 1))
+		if [ "$i" -gt 600 ] || ! kill -0 "$dockerd" 2> /dev/null; then
+			say "dockerd did not come up"
+			exit 1
+		fi
+		sleep 0.1
+	done
+	say "dockerd is up"
+	touch "$ready"
+	wait "$dockerd"
+	;;
+root)
+	shift
+	out="$state/export"
+	rm -rf "$out"
+	mkdir -p "$out"
+	# type=tar keeps every file's owner, where type=local makes them all
+	# root's (spike 4); GNU tar keeps them on the way out.
+	docker build --progress=plain -o type=tar,dest=- "$@" - |
+		tar --numeric-owner --xattrs -xpf - -C "$out"
+	mkfs.ext4 -q -F -L caboose-root -d "$out" /dev/vdc
+	e2fsck -fn /dev/vdc > /dev/null
+	rm -rf "$out"
+	sync
+	say "root disk written"
+	;;
+template)
+	mkfs.ext4 -q -F -L caboose-scratch /dev/vdd
+	sync
+	;;
+*)
+	say "usage: caboose-builder serve READY | root ARGS... | template"
+	exit 2
+	;;
+esac

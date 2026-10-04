@@ -16,6 +16,10 @@ import (
 // Binary is the executable's name, in an archive and in a version's dir.
 const Binary = "caboose"
 
+// VMM is the one other executable an archive may hold: caboose-vmm, on
+// macOS, which runs a vm isolation's VM and sits next to Binary.
+const VMM = "caboose-vmm"
+
 // Layout is where install.sh puts caboose, as Claude Code's installer puts
 // claude: every version in a dir of its own under Versions, and Link, the
 // command on PATH, a symlink to the current one. Switching versions is
@@ -98,15 +102,16 @@ func (l Layout) Install(ctx context.Context, src Source, tag, goos, goarch, runn
 	if err := verify(archive.Bytes(), sums.Bytes(), name); err != nil {
 		return err
 	}
-	bin, err := extract(archive.Bytes())
+	bins, err := extract(archive.Bytes())
 	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
-	return l.place(tag, bin, running)
+	return l.place(tag, bins, running)
 }
 
-// place installs bin as tag's binary and switches Link to it.
-func (l Layout) place(tag string, bin []byte, running string) error {
+// place installs bins, by name, as tag's executables and switches Link to
+// its Binary.
+func (l Layout) place(tag string, bins map[string][]byte, running string) error {
 	if err := os.MkdirAll(l.Versions, 0o755); err != nil {
 		return err
 	}
@@ -117,8 +122,10 @@ func (l Layout) place(tag string, bin []byte, running string) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	if err := os.WriteFile(filepath.Join(tmp, Binary), bin, 0o755); err != nil {
-		return err
+	for name, bin := range bins {
+		if err := os.WriteFile(filepath.Join(tmp, name), bin, 0o755); err != nil {
+			return err
+		}
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
 		return err
@@ -201,28 +208,37 @@ func (l Layout) prune(keep map[string]bool) {
 	}
 }
 
-// extract is the caboose binary in a release archive (a .tar.gz with it at
-// its root, next to README.md).
-func extract(archive []byte) ([]byte, error) {
+// extract is the executables in a release archive (a .tar.gz with them at
+// its root, next to README.md): Binary, which it must hold, and VMM, when
+// it does.
+func extract(archive []byte) (map[string][]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, err
 	}
 	tr := tar.NewReader(zr)
+	bins := map[string][]byte{}
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("no %s in the archive", Binary)
+			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		if strings.TrimPrefix(h.Name, "./") != Binary || h.Typeflag != tar.TypeReg {
+		name := strings.TrimPrefix(h.Name, "./")
+		if (name != Binary && name != VMM) || h.Typeflag != tar.TypeReg {
 			continue
 		}
 		if h.Size > maxArchive {
-			return nil, fmt.Errorf("%s is larger than %d bytes", Binary, maxArchive)
+			return nil, fmt.Errorf("%s is larger than %d bytes", name, maxArchive)
 		}
-		return io.ReadAll(io.LimitReader(tr, maxArchive))
+		if bins[name], err = io.ReadAll(io.LimitReader(tr, maxArchive)); err != nil {
+			return nil, err
+		}
 	}
+	if bins[Binary] == nil {
+		return nil, fmt.Errorf("no %s in the archive", Binary)
+	}
+	return bins, nil
 }

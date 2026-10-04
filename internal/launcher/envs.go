@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 )
 
@@ -39,12 +40,14 @@ func (a *App) listEnvs() error {
 	}
 	sort.Strings(sorted)
 	for _, n := range sorted {
-		mark := " "
-		container := config.ContainerFor(n)
+		// Another environment's isolation is its own config's, not read
+		// here: its sandbox is asked of docker, as a container.
 		if n == a.Cfg.Env {
-			mark, container = "*", a.Cfg.Container
+			fmt.Fprintf(a.Stdout, "* %-16s %s %s (%s)\n", n, a.noun(), a.Cfg.Container, a.state())
+			continue
 		}
-		fmt.Fprintf(a.Stdout, "%s %-16s container %s (%s)\n", mark, n, container, a.Docker.ContainerState(container))
+		container := config.ContainerFor(n)
+		fmt.Fprintf(a.Stdout, "  %-16s container %s (%s)\n", n, container, backend.NewDocker(a.Docker, container).State())
 	}
 	return nil
 }

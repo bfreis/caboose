@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/session"
@@ -69,12 +72,12 @@ const containerBin = "/home/agent/.local/bin"
 // restart makes a container pick up another image's dir. ok is false when
 // the container cannot be asked, or mounts no platform dir there.
 func (a *App) mountedLocal() (dir, platform string, ok bool) {
-	mounts, err := a.Docker.Mounts(a.Cfg.Container)
+	mounts, err := a.box().Mounts()
 	if err != nil {
 		return "", "", false
 	}
 	for _, m := range mounts {
-		if m.Destination == containerBin {
+		if m.Target == containerBin {
 			return datadir.MountedLocalDir(m.Source)
 		}
 	}
@@ -108,7 +111,7 @@ func (a *App) Status() error {
 	c, out := a.Cfg, a.Stdout
 	state := a.state()
 	fmt.Fprintf(out, "env       : %s\n", c.Env)
-	fmt.Fprintf(out, "container : %s (%s)\n", c.Container, state)
+	fmt.Fprintf(out, "%s %s (%s)\n", a.nounLabel(), c.Container, state)
 	fmt.Fprintf(out, "image     : %s\n", c.Image)
 	for _, r := range c.Roots {
 		fmt.Fprintf(out, "repo root : %s -> %s\n", r.Host, r.Container)
@@ -131,6 +134,9 @@ func (a *App) Status() error {
 		fmt.Fprintf(out, "run args  : %s (%s)\n", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
 	}
 	fmt.Fprintf(out, "isolation : %s\n", isolationOf(c))
+	if a.isVM() {
+		fmt.Fprintf(out, "outbound  : %s\n", a.egressSummary())
+	}
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	if state != "running" {
 		fmt.Fprintf(out, "\nnot running — start it by running caboose in a repo.\n")
@@ -143,8 +149,9 @@ func (a *App) Status() error {
 	a.warnIfKeepDrifted()
 	a.warnIfRunArgsDrifted()
 	a.warnIfIsolationDrifted()
+	a.warnIfEgressDrifted()
 
-	claude, err := a.Docker.RawOutput("exec", c.Container, "claude", "--version")
+	claude, err := backend.RawOutput(a.box(), "claude", "--version")
 	if err != nil {
 		claude += "unknown\n"
 	}
@@ -153,9 +160,19 @@ func (a *App) Status() error {
 	hostTZ := a.hostTimezone()
 	containerTZ, _ := a.containerEnv("TZ")
 	fmt.Fprintf(out, "timezone  : %s (host: %s)\n", or(containerTZ, "UTC"), or(hostTZ, "unknown"))
-	if a.Docker.Quiet("exec", c.Container, "test", "-S", "/var/run/docker.sock") == nil {
+	// Under docker and gvisor the line is about this machine's engine: the
+	// sandbox has its CLI, and its socket only when mounted. Under vm no
+	// engine of this machine's is involved, and a dockerd in the VM is a
+	// feature of the sandbox's, so it is a line of its own name.
+	sock := backend.Quiet(a.box(), "test", "-S", "/var/run/docker.sock") == nil
+	switch {
+	case a.isVM() && sock:
+		fmt.Fprintf(out, "dockerd   : in the VM, its own, not this machine's (images kept in %s)\n", a.dockerDisk())
+	case a.isVM():
+		fmt.Fprintf(out, "dockerd   : none in the VM (the image has none, as caboose check-image says, or it did not start: caboose logs)\n")
+	case sock:
 		fmt.Fprintf(out, "docker    : socket MOUNTED - root-equivalent access to this host\n")
-	} else {
+	default:
 		fmt.Fprintf(out, "docker    : cli only, no socket (isolated)\n")
 	}
 	localDir, platform, _ := a.mountedLocal()
@@ -164,12 +181,12 @@ func (a *App) Status() error {
 	agent, _ := a.agentStatus()
 	fmt.Fprintf(out, "ssh agent : %s\n", agent)
 	if hostTZ != "" && containerTZ != hostTZ {
-		a.Note("container was created with a different timezone than the host has now.")
-		a.Note("new sessions get '%s' anyway; caboose restart realigns the container.", hostTZ)
+		a.Note("%s was created with a different timezone than the host has now.", a.noun())
+		a.Note("new sessions get '%s' anyway; caboose restart realigns the %s.", hostTZ, a.noun())
 	}
 
 	fmt.Fprintf(out, "\ntmux sessions:\n")
-	sessions, err := a.Docker.RawOutput("exec", c.Container, "tmux", "list-sessions")
+	sessions, err := backend.RawOutput(a.box(), "tmux", "list-sessions")
 	fmt.Fprint(out, indent(sessions, "  "))
 	if err != nil {
 		fmt.Fprintf(out, "  (none)\n")
@@ -182,7 +199,7 @@ func (a *App) Status() error {
 	}
 
 	fmt.Fprintf(out, "\nregistered Claude Code sessions:\n")
-	registered, err := a.Docker.RawOutput("exec", c.Container, "bash", "-c", registeredSessionsScript)
+	registered, err := backend.RawOutput(a.box(), "bash", "-c", registeredSessionsScript)
 	fmt.Fprint(out, registered)
 	if err != nil {
 		fmt.Fprintf(out, "  (unavailable)\n")
@@ -190,14 +207,14 @@ func (a *App) Status() error {
 
 	liveKeep, _ := a.containerEnv("CABOOSE_KEEP_VERSIONS")
 	if liveKeep != "" && liveKeep != c.KeepVersions {
-		a.Note("container was created with CABOOSE_KEEP_VERSIONS=%s, shell has %s.", liveKeep, c.KeepVersions)
+		a.Note("%s was created with CABOOSE_KEEP_VERSIONS=%s, shell has %s.", a.noun(), liveKeep, c.KeepVersions)
 		a.Note("start-up pruning uses %s until caboose restart; caboose prune uses %s.", liveKeep, c.KeepVersions)
 	}
 	fmt.Fprintf(out, "\ndisk used by installed claude versions (retaining %s):\n", or(liveKeep, c.KeepVersions))
 	usage, _ := du(localDir + "/" + datadir.PlatformShare) // best effort
 	fmt.Fprint(out, indent(usage, "  "))
 	// A glob, not ls: bash is an image requirement, ls is not.
-	versions, _ := a.Docker.RawOutput("exec", c.Container, "bash", "-c",
+	versions, _ := backend.RawOutput(a.box(), "bash", "-c",
 		`for v in ~/.local/share/claude/versions/*; do [ -e "$v" ] && printf '  %s\n' "${v##*/}"; done; true`)
 	fmt.Fprint(out, versions)
 
@@ -220,22 +237,22 @@ func (a *App) Status() error {
 // read with bash's printf rather than printenv: bash is an image
 // requirement, printenv (coreutils, or a BusyBox applet) is not.
 func (a *App) containerEnv(name string) (string, error) {
-	return a.Docker.Output("exec", a.Cfg.Container, "bash", "-c", `printf '%s' "${`+name+`-}"`)
+	return backend.Output(a.box(), "bash", "-c", `printf '%s' "${`+name+`-}"`)
 }
 
 // Stop stops the container, after confirmSessionLoss.
 func (a *App) Stop() error {
 	if a.state() != "running" {
-		a.Note("container is not running")
+		a.Note("%s is not running", a.noun())
 		return nil
 	}
 	if err := a.confirmSessionLoss("stop"); err != nil {
 		return err
 	}
-	if err := a.Docker.Run("stop", a.Cfg.Container); err != nil {
-		return dockerFailed(err)
+	if err := a.box().Stop(); err != nil {
+		return a.boxFailed(err)
 	}
-	a.Note("container stopped")
+	a.Note("%s stopped", a.noun())
 	return nil
 }
 
@@ -268,24 +285,34 @@ func (a *App) Restart() error {
 	if err := a.ensureRunning(true); err != nil {
 		return err
 	}
-	a.Note("container recreated")
+	a.Note("%s recreated", a.noun())
 	return nil
 }
 
 // Prune deletes old installed versions now, with the current
 // CABOOSE_KEEP_VERSIONS rather than the one baked in at creation. Like
 // Logs, it creates a missing container but does not build a missing image.
-func (a *App) Prune() error {
+// --docker deletes the vm sandbox's docker disk instead (pruneDocker).
+func (a *App) Prune(args []string) error {
+	switch {
+	case len(args) == 1 && args[0] == "--docker":
+		return a.pruneDocker()
+	case len(args) > 0:
+		return &ExitError{Code: 2, Msg: fmt.Sprintf("usage: caboose prune [--docker] (got %q)", args[0])}
+	}
 	if err := a.ensureRunning(false); err != nil {
 		return err
 	}
-	if err := a.Docker.Stream(a.Stdout, a.Stderr, "exec", "-e", "CABOOSE_KEEP_VERSIONS="+a.Cfg.KeepVersions,
-		a.Cfg.Container, Entrypoint, "--cc-prune"); err != nil {
-		return dockerFailed(err)
+	cmd := a.box().Command(backend.ExecSpec{
+		Argv: []string{Entrypoint, "--cc-prune"}, Env: []string{"CABOOSE_KEEP_VERSIONS=" + a.Cfg.KeepVersions},
+	})
+	cmd.Stdout, cmd.Stderr = a.Stdout, a.Stderr
+	if err := cmd.Run(); err != nil {
+		return a.boxFailed(err)
 	}
 	localDir, platform, ok := a.mountedLocal()
 	if !ok {
-		return Die("cannot tell which platform dir the container mounts as ~/.local")
+		return Die("cannot tell which platform dir the %s mounts as ~/.local", a.noun())
 	}
 	if err := a.reportUsage("caboose: now using ", localDir); err != nil {
 		return err
@@ -295,22 +322,91 @@ func (a *App) Prune() error {
 	// the user's call: an image may come back to it.
 	for _, r := range a.platformUsage() {
 		if r[1] != platform {
-			a.Note("%s/%s also holds %s, for a platform this container does not use;", a.Cfg.DataDir, datadir.PlatformDir(r[1]), r[0])
+			a.Note("%s/%s also holds %s, for a platform this %s does not use;", a.Cfg.DataDir, datadir.PlatformDir(r[1]), r[0], a.noun())
 			a.Note("  delete it by hand if no image of yours needs it any more.")
 		}
 	}
 	return nil
 }
 
+// dockerDisk is the disk the vm sandbox's dockerd keeps its images on.
+func (a *App) dockerDisk() string {
+	return filepath.Join(a.vmRoot(), "volumes", dockerVolume+".img")
+}
+
+// pruneDocker deletes the disk the vm sandbox's dockerd keeps everything
+// on -- images, containers, volumes, build cache -- for an empty one, after
+// saying what it frees and asking (FORCE=1 does not ask). The disk is in
+// use while the VM runs, so a running one is stopped first, ending its
+// sessions: they are listed, and the one question covers them too. The
+// empty disk is made at once, cloned from the template a build made, and
+// a start makes one too when it is missing. Under docker and gvisor the
+// sandbox has no dockerd of its own: what it builds is the engine's.
+func (a *App) pruneDocker() error {
+	if !a.isVM() {
+		return Die("prune --docker is for isolation vm, whose sandbox runs a dockerd of its own; under %s it has none: "+
+			"what docker does in it is this machine's engine's, and 'docker system prune' here cleans that up", isolationOf(a.Cfg))
+	}
+	disk := a.dockerDisk()
+	if !isFile(disk) {
+		a.Note("no docker disk at %s: nothing to delete (the sandbox's next start makes an empty one)", disk)
+		return nil
+	}
+	size := "?"
+	if out, err := du(disk); err == nil {
+		if f := strings.Fields(out); len(f) > 0 {
+			size = f[0]
+		}
+	}
+	a.Note("this deletes %s (%s on disk): every image, container, volume and", disk, size)
+	a.Note("  build cache of the sandbox's dockerd, for an empty disk")
+	running := a.state() == "running"
+	if running {
+		a.Note("the VM runs on it, so it is stopped first, which ends any session in it")
+		if sessions, _ := backend.Output(a.box(), "tmux", "list-sessions", "-F", "#{session_name}"); sessions != "" {
+			a.Note("these live session(s) end:")
+			fmt.Fprint(a.Stderr, indent(sessions+"\n", "  "))
+		}
+	}
+	if a.getenv("FORCE") != "" {
+		a.Note("FORCE=1 set, continuing.")
+	} else {
+		yes, asked := a.askYes("delete it?")
+		switch {
+		case !asked:
+			return Die("refusing to delete it non-interactively (set FORCE=1 to delete it)")
+		case !yes:
+			return Die("aborted; nothing was changed")
+		}
+	}
+	if running {
+		if err := a.box().Stop(); err != nil {
+			return a.boxFailed(err)
+		}
+		a.Note("%s stopped", a.noun())
+	}
+	if err := os.Remove(disk); err != nil {
+		return Die("cannot delete %s: %v", disk, err)
+	}
+	a.Note("deleted %s, freeing %s", disk, size)
+	if _, err := (&vmHost{a}).Volume(dockerVolume); err != nil {
+		a.Note("no empty disk made yet (%v); the sandbox's next start makes it", err)
+	}
+	if running {
+		a.Note("'caboose' starts the %s again, its dockerd empty", a.noun())
+	}
+	return nil
+}
+
 func (a *App) clientsOn(name string) int {
-	out, _ := a.Docker.RawOutput("exec", a.Cfg.Container, "tmux", "list-clients", "-t", "="+name)
+	out, _ := backend.RawOutput(a.box(), "tmux", "list-clients", "-t", "="+name)
 	return session.CountLines(out)
 }
 
 // Detach detaches any client attached to this project's sessions.
 func (a *App) Detach() error {
 	if a.state() != "running" {
-		a.Note("container is not running")
+		a.Note("%s is not running", a.noun())
 		return nil
 	}
 	cwd, err := config.Cwd()
@@ -325,7 +421,7 @@ func (a *App) Detach() error {
 	if a.Suffix != "" {
 		targets = []string{target}
 	} else {
-		list, _ := a.Docker.RawOutput("exec", a.Cfg.Container, "tmux", "list-sessions", "-F", "#{session_name}")
+		list, _ := backend.RawOutput(a.box(), "tmux", "list-sessions", "-F", "#{session_name}")
 		targets = session.ProjectSessions(list, target)
 	}
 	detached := 0
@@ -333,7 +429,7 @@ func (a *App) Detach() error {
 		if a.clientsOn(t) == 0 {
 			continue
 		}
-		if a.Docker.Quiet("exec", a.Cfg.Container, "tmux", "detach-client", "-s", "="+t) == nil {
+		if backend.Quiet(a.box(), "tmux", "detach-client", "-s", "="+t) == nil {
 			a.Note("detached clients from '%s' (session still running)", t)
 			detached++
 		}
@@ -352,13 +448,42 @@ func (a *App) Logs(args []string) error {
 	if err := a.ensureRunning(false); err != nil {
 		return err
 	}
-	return a.exec(append(append([]string{"logs"}, args...), a.Cfg.Container)...)
+	if a.isVM() {
+		return a.vmLogs(args)
+	}
+	// docker's own logs, flags and all: the one command that is the
+	// engine's rather than the sandbox's.
+	return a.exec(a.Docker.Command(append(append([]string{"logs"}, args...), a.Cfg.Container)...))
+}
+
+// vmLogs is caboose logs under vm: the VM's console, which holds what the
+// entrypoint said, its last 100 lines or --tail N's.
+func (a *App) vmLogs(args []string) error {
+	lines := 100
+	switch {
+	case len(args) == 0:
+	case len(args) == 2 && (args[0] == "--tail" || args[0] == "-n"):
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 {
+			return Die("--tail takes a number of lines, not %q", args[1])
+		}
+		lines = n
+	default:
+		return Die("under isolation vm, caboose logs takes only --tail N: there is no docker logs to pass %q to", strings.Join(args, " "))
+	}
+	return a.box().Logs(a.Stdout, a.Stderr, lines)
 }
 
 // Shell execs a bash prompt inside the container, at the cwd's container
 // path. The cwd is checked first, as Attach does: one outside the repo root
 // can only fail, and must not do so after building an image and creating a
 // container.
+//
+// It has a terminal only when caboose has one, as Attach does: docker exec
+// -t refuses a stdin that is no terminal, and a script or a pipe running
+// `caboose shell -c CMD` wants CMD's output as it is. Without one, a bash
+// given no -c reads its commands from stdin, which is what
+// `caboose shell < script` means.
 func (a *App) Shell(args []string) error {
 	dir, err := config.Cwd()
 	if err != nil {
@@ -370,15 +495,16 @@ func (a *App) Shell(args []string) error {
 	if err := a.ensureRunning(true); err != nil {
 		return err
 	}
+	a.awaitProxy()
 	// Asked again: the container may only now exist, mounting the roots
 	// that were configured.
 	workdir, err := a.containerDir(dir)
 	if err != nil {
 		return err
 	}
-	argv := append([]string{"exec", "-it"}, a.execEnvArgs()...)
-	argv = append(argv, "-w", workdir, a.Cfg.Container, "bash")
-	return a.exec(append(argv, args...)...)
+	return a.exec(a.box().Command(backend.ExecSpec{
+		Argv: append([]string{"bash"}, args...), Env: a.execEnv(), Dir: workdir, Stdin: true, TTY: a.isTerminal(),
+	}))
 }
 
 // Attach is the default: attach a Claude Code session for the current
@@ -399,6 +525,7 @@ func (a *App) Attach(args []string) error {
 	if err := a.ensureRunning(true); err != nil {
 		return err
 	}
+	a.awaitProxy()
 	// Asked again: the container may only now exist, mounting the roots
 	// that were configured.
 	workdir, err := a.containerDir(projectDir)
@@ -410,9 +537,9 @@ func (a *App) Attach(args []string) error {
 
 	// Built once, before the branches: a piped invocation wants the timezone
 	// just as much as an interactive one does.
-	env := a.execEnvArgs()
+	env := a.execEnv()
 
-	terminal := tty.IsTerminal(os.Stdin.Fd()) && tty.IsTerminal(os.Stdout.Fd())
+	terminal := a.isTerminal()
 	a.beforeAttach(terminal)
 	// The host's end of caboose-agent's link, detached: it outlives this
 	// launch, and serves the container while it runs.
@@ -421,16 +548,18 @@ func (a *App) Attach(args []string) error {
 	if !terminal {
 		// No tty to attach a tmux client to — run claude directly so piped
 		// and scripted invocations still work.
-		argv := append(append([]string{"exec", "-i"}, env...), "-w", workdir, c.Container, Entrypoint)
-		return a.exec(append(argv, args...)...)
+		return a.exec(a.box().Command(backend.ExecSpec{
+			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: workdir, Stdin: true,
+		}))
 	}
 
 	// Escape hatch: run Claude Code directly, with no tmux in the way.
 	// Rendering is then identical to the host terminal, at the cost of
 	// losing detach/reattach -- closing the terminal kills the session.
 	if c.NoTmux != "" {
-		argv := append(append([]string{"exec", "-it"}, env...), "-w", workdir, c.Container, Entrypoint)
-		return a.exec(append(argv, args...)...)
+		return a.exec(a.box().Command(backend.ExecSpec{
+			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: workdir, Stdin: true, TTY: true,
+		}))
 	}
 
 	// Without an explicit name, step past whatever another terminal is
@@ -450,7 +579,7 @@ func (a *App) Attach(args []string) error {
 	// -A attaches to the session if it already exists, which is the
 	// detach/reattach path; note that `claude` args only apply when the
 	// session is first created.
-	if len(args) > 0 && a.Docker.Quiet("exec", c.Container, "tmux", "has-session", "-t", "="+name) == nil {
+	if len(args) > 0 && backend.Quiet(a.box(), "tmux", "has-session", "-t", "="+name) == nil {
 		a.Note("reattaching to existing session '%s' — arguments ignored", name)
 	}
 
@@ -463,27 +592,46 @@ func (a *App) Attach(args []string) error {
 	// ignored on the attach path, harmlessly.
 	var tmuxEnv []string
 	for _, e := range env {
-		if len(e) >= 3 && e[:3] == "TZ=" {
+		if strings.HasPrefix(e, "TZ=") {
 			tmuxEnv = append(tmuxEnv, "-e", e)
 		}
 	}
 
 	// -u forces UTF-8 regardless of the container's locale, which is
 	// otherwise POSIX/C and turns box-drawing characters into mojibake.
-	argv := append(append([]string{"exec", "-it"}, env...), c.Container,
-		"tmux", "-u", "new-session", "-A", "-s", name, "-c", workdir)
-	argv = append(append(argv, tmuxEnv...), Entrypoint)
+	argv := append([]string{"tmux", "-u", "new-session", "-A", "-s", name, "-c", workdir}, tmuxEnv...)
+	argv = append(append(argv, Entrypoint), args...)
 	// This process becomes the docker exec, and ends with the terminal
 	// (attach.go).
 	a.recordAttach(name)
-	return a.exec(append(argv, args...)...)
+	return a.exec(a.box().Command(backend.ExecSpec{Argv: argv, Env: env, Stdin: true, TTY: true}))
 }
 
-func (a *App) exec(argv ...string) error {
-	if err := a.Docker.Exec(argv...); err != nil {
-		return &ExitError{Code: 127, Msg: fmt.Sprintf("cannot run docker: %v", err)}
+// isTerminal says whether caboose runs on a terminal, stdin and stdout
+// both: what a command run in the sandbox gets a terminal of its own for.
+func (a *App) isTerminal() bool {
+	if a.terminal != nil {
+		return a.terminal()
 	}
-	return nil
+	return tty.IsTerminal(os.Stdin.Fd()) && tty.IsTerminal(os.Stdout.Fd())
+}
+
+// exec replaces this process with cmd, so signals, the TTY and the exit
+// code belong to it and not to a Go parent process. It returns only on
+// failure.
+func (a *App) exec(cmd *exec.Cmd) error {
+	if a.replace != nil {
+		return a.replace(cmd)
+	}
+	err := cmd.Err
+	if err == nil {
+		err = syscall.Exec(cmd.Path, cmd.Args, cmd.Environ())
+	}
+	what := "docker"
+	if a.isVM() {
+		what = "the command in the VM"
+	}
+	return &ExitError{Code: 127, Msg: fmt.Sprintf("cannot run %s: %v", what, err)}
 }
 
 func trimNL(s string) string {

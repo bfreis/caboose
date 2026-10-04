@@ -401,3 +401,63 @@ func TestNoShellReport(t *testing.T) {
 		t.Errorf("checklist %v", rows)
 	}
 }
+
+// Docker's engine is a fact, never a requirement: an image without it, or
+// with only part of it, is as usable as one with all of it. The row says
+// which, and a report that never mentioned the engine has no row.
+func TestDockerInside(t *testing.T) {
+	engine := []string{
+		"info engine dockerd /usr/local/bin/dockerd", "info engine containerd /usr/local/bin/containerd",
+		"info engine containerd-shim-runc-v2 /usr/local/bin/containerd-shim-runc-v2",
+		"info engine runc /usr/local/bin/runc", "info engine iptables /usr/sbin/iptables",
+		"info engine docker /usr/local/bin/docker", "info engine-version 28.3.0",
+	}
+	with := func(lines ...string) *Report {
+		return mustParse(t, strings.Replace(debianFull, "end\n", strings.Join(lines, "\n")+"\nend\n", 1))
+	}
+	none := []string{"info engine dockerd", "info engine containerd", "info engine containerd-shim-runc-v2",
+		"info engine runc", "info engine iptables", "info engine docker"}
+	noIptables := slices.Clone(engine)
+	noIptables[4] = "info engine iptables"
+	noCLI := slices.Clone(engine[:5])
+	for _, tc := range []struct {
+		name  string
+		r     *Report
+		value string
+		level Level
+		note  bool
+	}{
+		{"all", with(engine...), "available (dockerd 28.3.0)", Met, false},
+		{"none", with(none...), "not in this image: `docker` won't work inside the sandbox", Noted, true},
+		{"no iptables", with(noIptables...), "dockerd 28.3.0, but no iptables: it won't start, so `docker` won't work inside the sandbox", Noted, true},
+		{"no cli", with(append(noCLI, "info engine docker", "info engine-version 28.3.0")...), "dockerd 28.3.0, but no docker CLI to reach it", Noted, true},
+		{"no version", with(engine[:6]...), "available (dockerd)", Met, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.r.OK() {
+				t.Errorf("problems %q", tc.r.Problems())
+			}
+			row, ok := tc.r.DockerInside()
+			if !ok || row.Label != "docker inside" || row.Value != tc.value || row.Level != tc.level {
+				t.Errorf("row %+v (%v), want %q at %v", row, ok, tc.value, tc.level)
+			}
+			if note := tc.r.DockerInsideNote(); (note != "") != tc.note {
+				t.Errorf("note %q", note)
+			}
+			for _, r := range tc.r.Checklist() {
+				if r.Label == "docker inside" {
+					t.Error("the checklist itself has the row; it is vm's alone")
+				}
+			}
+		})
+	}
+	if note := with(noIptables...).DockerInsideNote(); !strings.Contains(note, "add iptables to the image") {
+		t.Errorf("note does not name what is missing: %q", note)
+	}
+	if _, ok := mustParse(t, debianFull).DockerInside(); ok {
+		t.Error("a row for a report that never mentioned the engine")
+	}
+	if _, ok := NoShellReport("x", 1000, 1000).DockerInside(); ok {
+		t.Error("a row for an image the probe could not run in")
+	}
+}

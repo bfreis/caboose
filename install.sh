@@ -62,9 +62,16 @@ if [ -z "$tag" ]; then
     location="$(curl -fsS -o /dev/null -w '%{redirect_url}' "$releases/latest")" ||
         die "cannot reach $releases/latest"
     tag="${location##*/}"
+    # Only a caboose version, vMAJOR.MINOR.PATCH[-PRERELEASE] (roughly
+    # internal/selfupdate's Valid, which the updater checks): another
+    # release of the repository's, as the vm kernel's source
+    # (kernel-VERSION), is never caboose.
     case "$location" in
-        */tag/v*) ;;
-        *) die "cannot tell the latest release: $releases/latest redirects to '$location'" ;;
+        */tag/v[0-9]*.[0-9]*.[0-9]*) ;;
+        *) tag= ;;
+    esac
+    case "$tag" in
+        '' | *[!0-9A-Za-z.-]*) die "cannot tell the latest release: $releases/latest redirects to '$location', which is no caboose version; set CABOOSE_VERSION=vX.Y.Z to install one" ;;
     esac
 fi
 case "$tag" in
@@ -88,6 +95,8 @@ got="$(sha256 "$tmp/$asset")"
 
 mkdir "$tmp/x"
 tar -xzf "$tmp/$asset" -C "$tmp/x" caboose || die "$asset has no caboose in it"
+# caboose-vmm, which runs a vm isolation's VM, is in a macOS archive only.
+tar -xzf "$tmp/$asset" -C "$tmp/x" caboose-vmm 2>/dev/null || true
 
 bin="$HOME/.local/bin"
 versions="$HOME/.local/share/caboose/versions"
@@ -101,6 +110,10 @@ rm -rf "$part"
 mkdir "$part"
 cp "$tmp/x/caboose" "$part/caboose"
 chmod 755 "$part" "$part/caboose"
+if [ -f "$tmp/x/caboose-vmm" ]; then
+    cp "$tmp/x/caboose-vmm" "$part/caboose-vmm"
+    chmod 755 "$part/caboose-vmm"
+fi
 rm -rf "$dest"
 mv "$part" "$dest"
 

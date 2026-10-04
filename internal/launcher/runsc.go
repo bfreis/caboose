@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // runscName is the runtime's name in the daemon config, and so in docker info
@@ -46,6 +47,44 @@ const runscName = "runsc"
 // it opens it anew each time something lists it. A directory some process
 // holds open (a shell's cwd) is still cached, and can still list stale.
 var runscArgs = []string{"--host-uds=open", "--net-raw", "--allow-packet-socket-write", "--dcache=0"}
+
+// runscInstallArgs are the flags of runscArgs a runsc registered by
+// anyone else needs too, for the sandbox to work as it does under
+// caboose's: --dcache=0 is for OrbStack's file sharing alone.
+var runscInstallArgs = []string{"--host-uds=open", "--net-raw", "--allow-packet-socket-write"}
+
+// runscHostUDS reports whether runsc's flags let the sandbox connect to a
+// host Unix socket (--host-uds=open or all), as the forwarded SSH agent's
+// is: without, gVisor refuses the connection. A flag given twice counts
+// as runsc reads it, the last.
+func runscHostUDS(args []string) bool {
+	val := ""
+	for i := 0; i < len(args); i++ {
+		name, v, hasV := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(args[i], "-"), "-"), "=")
+		if name != "host-uds" || !strings.HasPrefix(args[i], "-") {
+			continue
+		}
+		if !hasV && i+1 < len(args) {
+			i++
+			v = args[i]
+		}
+		val = v
+	}
+	return val == "open" || val == "all"
+}
+
+// hostUDSFix says how to give a runsc caboose did not register
+// --host-uds=open: on Linux, the daemon config's runsc entry, which
+// gVisor's own runsc install writes; elsewhere the engine's.
+func hostUDSFix() string {
+	if goos == "linux" {
+		return fmt.Sprintf("add %q to runsc's runtimeArgs in /etc/docker/daemon.json "+
+			"('sudo runsc install -- %s' writes them all), then 'sudo systemctl reload docker' and 'caboose restart'",
+			"--host-uds=open", strings.Join(runscInstallArgs, " "))
+	}
+	return fmt.Sprintf("add %q to runsc's runtimeArgs in the Docker engine's daemon config, restart the engine, then 'caboose restart'",
+		"--host-uds=open")
+}
 
 // Bounds on a release: the tarball is some 150MB, unpacked some 300MB.
 const (
@@ -74,18 +113,17 @@ func runscArch(engine string) string {
 // the new release goes into a directory beside it, which then replaces
 // dir by rename, so a failure leaves dir as it was. Only plain files and
 // directories are unpacked, each under dir. It returns dir/runsc.
+//
+// Which release it was is recorded in dir's runscRecord: its checksum,
+// which tells it from a newer one, and when it was downloaded.
 func downloadRunsc(ctx context.Context, client *http.Client, base, arch, dir string) (string, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	url := strings.TrimSuffix(base, "/") + "/" + arch + "/" + runscTarball
-	var sums bytes.Buffer
-	if err := fetchTo(ctx, client, url+".sha512", &sums, 4096); err != nil {
-		return "", err
-	}
-	want, err := sha512Of(sums.String())
+	url := runscURL(base, arch)
+	want, err := latestRunscSum(ctx, client, base, arch)
 	if err != nil {
-		return "", fmt.Errorf("%s.sha512: %v", url, err)
+		return "", err
 	}
 	parent := filepath.Dir(dir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -118,6 +156,13 @@ func downloadRunsc(ctx context.Context, client *http.Client, base, arch, dir str
 	if fi, err := os.Lstat(filepath.Join(fresh, runscName)); err != nil || !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%s: no %s in it", url, runscName)
 	}
+	rec, err := json.Marshal(runscRelease{SHA512: want, URL: url, Downloaded: time.Now().UTC().Truncate(time.Second)})
+	if err == nil {
+		err = os.WriteFile(filepath.Join(fresh, runscRecord), append(rec, '\n'), 0o644)
+	}
+	if err != nil {
+		return "", err
+	}
 	if err := os.Chmod(fresh, 0o755); err != nil {
 		return "", err
 	}
@@ -139,6 +184,66 @@ func downloadRunsc(ctx context.Context, client *http.Client, base, arch, dir str
 		os.RemoveAll(old)
 	}
 	return filepath.Join(dir, runscName), nil
+}
+
+func runscURL(base, arch string) string {
+	return strings.TrimSuffix(base, "/") + "/" + arch + "/" + runscTarball
+}
+
+// latestRunscSum is the sha512 gVisor publishes beside base's release for
+// arch: what tells the release caboose downloaded from a newer one, for a
+// fetch of a few bytes.
+func latestRunscSum(ctx context.Context, client *http.Client, base, arch string) (string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	url := runscURL(base, arch) + ".sha512"
+	var sums bytes.Buffer
+	if err := fetchTo(ctx, client, url, &sums, 4096); err != nil {
+		return "", err
+	}
+	sum, err := sha512Of(sums.String())
+	if err != nil {
+		return "", fmt.Errorf("%s: %v", url, err)
+	}
+	return sum, nil
+}
+
+// runscRecord is the file in a release's directory that says which
+// release caboose downloaded there, and when.
+const runscRecord = "caboose-release.json"
+
+// runscRelease is runscRecord's content.
+type runscRelease struct {
+	SHA512     string    `json:"sha512"`
+	URL        string    `json:"url"`
+	Downloaded time.Time `json:"downloaded"`
+}
+
+// readRunscRelease is the record of the release in dir; ok is false when
+// none reads, as for one downloaded before caboose kept a record. dir is
+// under CABOOSE_HOME, which no container can write.
+func readRunscRelease(dir string) (rec runscRelease, ok bool) {
+	b, err := os.ReadFile(filepath.Join(dir, runscRecord))
+	if err != nil || json.Unmarshal(b, &rec) != nil || rec.SHA512 == "" || rec.Downloaded.IsZero() {
+		return runscRelease{}, false
+	}
+	return rec, true
+}
+
+// runscStale is how long after its download doctor says caboose's runsc
+// is worth checking for a newer release: gVisor releases about weekly,
+// security fixes among them.
+const runscStale = 60 * 24 * time.Hour
+
+// cabooseRunscDir is the release directory of the runsc at path when it is
+// one caboose downloaded (CABOOSE_HOME/runsc/<arch>/runsc), else "".
+func (a *App) cabooseRunscDir(path string) string {
+	dir := filepath.Dir(path)
+	if filepath.Base(path) != runscName || filepath.Dir(dir) != filepath.Join(a.Cfg.CabooseHome, "runsc") || runscArch(filepath.Base(dir)) == "" {
+		return ""
+	}
+	return dir
 }
 
 // untar unpacks a tar stream into dir, which it may only add to: plain

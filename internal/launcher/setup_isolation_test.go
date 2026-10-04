@@ -1,6 +1,9 @@
 package launcher
 
 import (
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -81,6 +84,8 @@ exit 1
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The release downloaded is the fake server's latest.
+		writeRunscRecord(t, filepath.Join(e.a.Cfg.CabooseHome, "runsc", "aarch64"), releaseSum(t, releaseGood), time.Now())
 	}
 	srv := runscServer(t, "aarch64", releaseGood, "")
 	saved := []any{goos, orbCommand, runscReleases, engineWait, enginePoll}
@@ -90,6 +95,33 @@ exit 1
 		engineWait, enginePoll = saved[3].(time.Duration), saved[4].(time.Duration)
 	})
 	return &isolationEngine{setupEnv: e, dir: dir, daemon: daemon}
+}
+
+// releaseSum is the sha512 of a test release (base64).
+func releaseSum(t *testing.T, release string) string {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha512.Sum512(b)
+	return hex.EncodeToString(h[:])
+}
+
+// writeRunscRecord puts a runsc and its record, of the release with sum
+// downloaded at when, in dir.
+func writeRunscRecord(t *testing.T, dir, sum string, when time.Time) {
+	t.Helper()
+	b, _ := json.Marshal(runscRelease{SHA512: sum, URL: "https://example.com/gvisor.tar.bz2", Downloaded: when.UTC()})
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runscName), []byte("old runsc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runscRecord), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // runtimesJSON is docker info's Runtimes with runc and, as runsc, rt.
@@ -322,6 +354,62 @@ func TestSetupIsolationForeignRunscKept(t *testing.T) {
 	}
 }
 
+// caboose's runsc of an older release than gVisor's latest: said, and
+// downloaded over it when agreed to, with no engine restart (the path and
+// the entry are the same); declined, it stays as it was. One with no
+// record cannot be told, and is offered too. The latest is only said.
+func TestSetupIsolationUpdatesRunsc(t *testing.T) {
+	for _, tc := range []struct {
+		name, sum, answer string
+		updated           bool
+		want              string
+	}{
+		{"older", "ab", "\n\n", true, "gVisor has a newer release than the one caboose downloaded into"},
+		{"declined", "ab", "n\n\n", false, "Not updated; caboose setup isolation offers it again"},
+		{"no record", "", "\n\n", true, "caboose cannot tell which gVisor release is in"},
+		{"latest", "latest", "\n", false, "is its latest release (downloaded "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newIsolationEngine(t, "darwin", "OrbStack", true, false, "")
+			dir := filepath.Dir(e.runsc())
+			switch tc.sum {
+			case "":
+				os.Remove(filepath.Join(dir, runscRecord))
+			case "latest":
+			default:
+				writeRunscRecord(t, dir, strings.Repeat(tc.sum, 64), time.Now().Add(-100*24*time.Hour))
+			}
+			if err := e.run(tc.answer, "isolation"); err != nil {
+				t.Fatalf("%v\n%s", err, e.errb)
+			}
+			e.wantOut(tc.want, `Wrote isolation = "gvisor"`)
+			b, _ := os.ReadFile(e.runsc())
+			if updated := string(b) == "\x7fELF runsc"; updated != tc.updated {
+				t.Errorf("updated = %v, runsc = %q\n%s", updated, b, e.errb)
+			}
+			if tc.updated {
+				e.wantOut("Updated gVisor in", "its checksum verified")
+				if rec, ok := readRunscRelease(dir); !ok || rec.SHA512 != releaseSum(t, releaseGood) {
+					t.Errorf("record = %+v", rec)
+				}
+			}
+			if e.restarted() {
+				t.Error("engine restarted")
+			}
+		})
+	}
+}
+
+// With no answer from gVisor's server, nothing is offered, and setup goes on.
+func TestSetupIsolationRunscUpdateUnknown(t *testing.T) {
+	e := newIsolationEngine(t, "darwin", "OrbStack", true, false, "")
+	runscReleases = "http://127.0.0.1:1"
+	if err := e.run("\n", "isolation"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("Could not tell whether gVisor has a newer release", `Wrote isolation = "gvisor"`)
+}
+
 // Declined, nothing is downloaded or edited, and docker is written: the
 // strongest that works.
 func TestSetupIsolationDeclined(t *testing.T) {
@@ -399,13 +487,36 @@ func TestSetupIsolationLinux(t *testing.T) {
 	if err := e.run("", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("install it as "+gvisorInstall+" says", `Wrote isolation = "docker"`)
+	e.wantOut("install it as "+gvisorInstall+" says", "sudo runsc install -- --host-uds=open --net-raw --allow-packet-socket-write",
+		`Wrote isolation = "docker"`)
 
 	e.writeConfig("isolation = \"gvisor\"\n")
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("isolation is gvisor, which cannot work here", `Wrote isolation = "docker"`)
+}
+
+// On Linux, a runsc gVisor's install registered without --host-uds=open
+// works, but cannot reach the forwarded SSH agent: said, with the fix,
+// and nothing changed. One with it says nothing.
+func TestSetupIsolationLinuxRunscFlags(t *testing.T) {
+	e := newIsolationEngine(t, "linux", "Ubuntu 24.04", true, false, "")
+	e.setLoaded(daemonRuntime{Path: "/usr/local/bin/runsc"})
+	if err := e.run("\n", "isolation"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("Docker's runsc runs without --host-uds=open", "/etc/docker/daemon.json",
+		"sudo systemctl reload docker", `Wrote isolation = "gvisor"`)
+
+	e.setLoaded(daemonRuntime{Path: "/usr/local/bin/runsc", RuntimeArgs: runscInstallArgs})
+	e.errb.Reset()
+	if err := e.run("\n", "isolation"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	if e.said("without --host-uds") {
+		t.Errorf("said:\n%s", e.errb)
+	}
 }
 
 // Docker Desktop: not yet.

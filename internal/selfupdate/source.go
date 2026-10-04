@@ -10,6 +10,7 @@ package selfupdate
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -69,9 +70,11 @@ func (s Source) Latest(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("the latest release: a redirect to %q: %w", loc, err)
 	}
+	// Only a caboose version: another release of the repository's, as
+	// the vm kernel's source (kernel-VERSION), is never an update.
 	tag := path.Base(u.Path)
 	if !strings.Contains(u.Path, "/tag/") || !Valid(tag) {
-		return "", fmt.Errorf("the latest release: %s redirects to %s, which names no release", req.URL, loc)
+		return "", fmt.Errorf("the latest release: %s redirects to %s, which is no caboose version", req.URL, loc)
 	}
 	return tag, nil
 }
@@ -137,6 +140,29 @@ func verify(data, sums []byte, name string) error {
 	got := sha256.Sum256(data)
 	if hex.EncodeToString(got[:]) != want {
 		return fmt.Errorf("%s: %w (%s lists %s, the download is %s)", name, errChecksum, ChecksumsFile, want[:12], hex.EncodeToString(got[:])[:12])
+	}
+	return nil
+}
+
+// Download writes the release file name of tag to w, at most limit bytes,
+// and returns nil only when its sha256 is the one the release's
+// checksums.txt lists: w then holds all of it. A file too large to hold in
+// memory (vm's builder disk) goes to a file this way.
+func (s Source) Download(ctx context.Context, tag, name string, w io.Writer, limit int64) error {
+	var sums bytes.Buffer
+	if err := s.fetch(ctx, tag, ChecksumsFile, &sums, 1<<20); err != nil {
+		return err
+	}
+	want, err := checksumFor(sums.Bytes(), name)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	if err := s.fetch(ctx, tag, name, io.MultiWriter(w, h), limit); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		return fmt.Errorf("%s: %w (%s lists %s, the download is %s)", name, errChecksum, ChecksumsFile, want[:12], got[:12])
 	}
 	return nil
 }

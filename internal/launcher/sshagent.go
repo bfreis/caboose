@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/docker"
 )
 
@@ -24,8 +25,8 @@ const (
 	containerAgent = "/ssh-agent.sock"
 )
 
-// sshAgentArgs are the `docker run` arguments that forward the host's SSH
-// agent, so git and ssh in the sandbox authenticate -- and sign commits --
+// sshAgentSource is the host's end of the SSH agent to mount at
+// containerAgent, or "" for none: forwarding it lets git and ssh in the sandbox authenticate -- and sign commits --
 // with keys that never enter it.
 //
 // On a Mac the engine runs in a VM, and a Mac socket bind-mounted into it
@@ -34,14 +35,14 @@ const (
 // (or Secretive) is not. Both engines provide hostServicesAgent for this
 // instead, so with either of them that is what is mounted, unchecked. On
 // Linux the agent's socket is mounted directly.
-func (a *App) sshAgentArgs() []string {
+func (a *App) sshAgentSource() string {
 	if goos == "darwin" && a.macEngine() != "" {
-		return []string{"-v", hostServicesAgent + ":" + containerAgent, "-e", "SSH_AUTH_SOCK=" + containerAgent}
+		return hostServicesAgent
 	}
 	if s := a.hostAgent(); s != "" && isSocket(s) {
-		return []string{"-v", s + ":" + containerAgent, "-e", "SSH_AUTH_SOCK=" + containerAgent}
+		return s
 	}
-	return nil
+	return ""
 }
 
 // macEngine names the Docker engine when it is one that provides
@@ -107,9 +108,9 @@ func (a *App) expandAgent(v, env string) string {
 // caboose status shows it; usable is false when git there cannot use it.
 func (a *App) agentStatus() (status string, usable bool) {
 	if sock, _ := a.containerEnv("SSH_AUTH_SOCK"); sock == "" {
-		return "not forwarded (the host had no agent when the container was created)", false
+		return "not forwarded (the host had no agent when the " + a.noun() + " was created)", false
 	}
-	out, err := a.Docker.Output("exec", a.Cfg.Container, "ssh-add", "-l")
+	out, err := backend.Output(a.box(), "ssh-add", "-l")
 	switch code := docker.ExitCode(err); {
 	case err == nil:
 		n := len(strings.Split(strings.TrimSpace(out), "\n"))
@@ -119,7 +120,7 @@ func (a *App) agentStatus() (status string, usable bool) {
 	case code == 2 && strings.Contains(err.Error(), "Permission denied"):
 		return "forwarded, but the sandbox's user may not use it (permission denied)", false
 	case code == 2:
-		return "forwarded, but not reachable from the container", false
+		return "forwarded, but not reachable from the " + a.noun(), false
 	default:
 		// No ssh-add in the image: nothing to tell from.
 		return "forwarded (not checked: no ssh-add in the image)", true
@@ -136,14 +137,15 @@ func (a *App) agentStatus() (status string, usable bool) {
 // gVisor, where the container runs as root, it never has to. The chmod reaches the socket in the engine's VM, for
 // every container there, but so does root in any of them already.
 func (a *App) openAgentSocket() {
-	mounts, err := a.Docker.Mounts(a.Cfg.Container)
-	if err != nil || !slices.Contains(mounts, docker.Mount{Destination: containerAgent, Source: hostServicesAgent}) {
+	mounts, err := a.box().Mounts()
+	if err != nil || !slices.Contains(mounts, backend.Mount{Source: hostServicesAgent, Target: containerAgent}) {
 		return
 	}
-	if _, err := a.Docker.Output("exec", a.Cfg.Container, "test", "-w", containerAgent); err == nil {
+	if _, err := backend.Output(a.box(), "test", "-w", containerAgent); err == nil {
 		return
 	}
-	if _, err := a.Docker.Output("exec", "-u", "0", a.Cfg.Container, "chmod", "0666", containerAgent); err != nil {
+	chmod := backend.ExecSpec{Argv: []string{"chmod", "0666", containerAgent}, User: "0"}
+	if _, err := backend.Capture(a.box(), chmod, nil); err != nil {
 		a.Note("SSH agent: could not open %s to the sandbox's user: %v", containerAgent, err)
 	}
 }
@@ -152,6 +154,9 @@ func (a *App) openAgentSocket() {
 // agent is empty or unreachable -- the state in which every signed commit
 // and every push over SSH in the sandbox fails.
 func (a *App) warnIfAgentUnusable() {
+	if a.isVM() {
+		return // the link carries it, and is not up yet
+	}
 	status, usable := a.agentStatus()
 	if usable || strings.HasPrefix(status, "not forwarded") {
 		return

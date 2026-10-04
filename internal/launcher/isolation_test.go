@@ -1,40 +1,41 @@
 package launcher
 
 import (
-	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
-	"github.com/bfreis/caboose/internal/docker"
 )
 
 func TestCheckIsolation(t *testing.T) {
-	for _, iso := range []string{"", "docker", "gvisor"} {
+	for _, iso := range []string{"", "docker", "gvisor", "vm"} {
 		if err := checkIsolation(&config.Config{Isolation: iso}); err != nil {
 			t.Errorf("%q: %v", iso, err)
 		}
 	}
-	env := func(k string) string { return map[string]string{"CABOOSE_ISOLATION": "vm"}[k] }
-	err := checkIsolation(&config.Config{Isolation: "vm", Getenv: env})
-	if err == nil || !strings.Contains(err.Error(), `isolation "vm" is not "docker" or "gvisor" (CABOOSE_ISOLATION)`) {
+	env := func(k string) string { return map[string]string{"CABOOSE_ISOLATION": "kvm"}[k] }
+	err := checkIsolation(&config.Config{Isolation: "kvm", Getenv: env})
+	if err == nil || !strings.Contains(err.Error(), `isolation "kvm" is not "docker", "gvisor" or "vm" (CABOOSE_ISOLATION)`) {
 		t.Errorf("err = %v", err)
 	}
 }
 
 // The agent where it can write its mounts; else root, told it is a sandbox.
 func TestRunAs(t *testing.T) {
-	if args, user := runAs(true); args != nil || user != "" {
-		t.Errorf("writable: %q %q", args, user)
+	if user, env := runAs(true); env != nil || user != "" {
+		t.Errorf("writable: %q %q", user, env)
 	}
-	args, user := runAs(false)
-	if !slices.Equal(args, []string{"--user", "0:0", "-e", "IS_SANDBOX=1"}) || user != "0:0" {
-		t.Errorf("not writable: %q %q", args, user)
+	user, env := runAs(false)
+	if !slices.Equal(env, []string{"IS_SANDBOX=1"}) || user != "0:0" {
+		t.Errorf("not writable: %q %q", user, env)
 	}
 }
 
@@ -51,47 +52,6 @@ func TestRunArgsRefuseIsolation(t *testing.T) {
 	}
 }
 
-// isolationFake is a docker whose engine has runtimes, where a probe (a
-// run --rm) answers probe, and every other docker run logs its arguments,
-// one a line.
-func isolationFake(t *testing.T, iso, runtimes, probe string) (a *App, log string, errb *bytes.Buffer) {
-	t.Helper()
-	tmp := t.TempDir()
-	log = filepath.Join(tmp, "log")
-	script := `#!/bin/sh
-case "$1" in
-  info) echo '` + runtimes + `'; exit 0 ;;
-  inspect) exit 1 ;;
-  image) echo '{"` + assets.LabelPlatform + `":"linux-arm64"}'; exit 0 ;;
-  run) shift
-    if [ "$1" = --rm ]; then printf '%s\n' "$@" > "` + log + `.probe"; echo ` + probe + `; exit 0; fi
-    printf '%s\n' "$@" >> "` + log + `" ;;
-esac
-`
-	fake := filepath.Join(tmp, "docker")
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	errb = &bytes.Buffer{}
-	a = &App{
-		Cfg: &config.Config{Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
-			DataDir: filepath.Join(tmp, "data"), KeepVersions: "2", Getenv: func(string) string { return "" },
-			Isolation: iso},
-		Docker: &docker.CLI{Path: fake},
-		Stdout: &bytes.Buffer{}, Stderr: errb,
-	}
-	return a, log, errb
-}
-
-func readArgs(t *testing.T, path string) []string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-}
-
 // hasSeq reports whether seq appears in args, in a row.
 func hasSeq(args []string, seq ...string) bool {
 	for i := 0; i+len(seq) <= len(args); i++ {
@@ -102,85 +62,7 @@ func hasSeq(args []string, seq ...string) bool {
 	return false
 }
 
-const withRunsc = `{"io.containerd.runc.v2":{},"runc":{},"runsc":{"path":"/usr/local/bin/runsc"}}`
-
-func TestCreateContainerIsolation(t *testing.T) {
-	for _, tc := range []struct {
-		name, iso, probe string
-		runtime, user    bool
-		userLabel        string
-	}{
-		{"docker", "docker", "", false, false, ""},
-		{"gvisor, agent writes", "gvisor", "yes", true, false, ""},
-		{"gvisor, agent cannot write", "gvisor", "no", true, true, "0:0"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a, log, errb := isolationFake(t, tc.iso, withRunsc, tc.probe)
-			if err := a.createContainer(false); err != nil {
-				t.Fatalf("%v\n%s", err, errb)
-			}
-			args := readArgs(t, log)
-			if got := hasSeq(args, "--runtime", "runsc"); got != tc.runtime {
-				t.Errorf("--runtime runsc: %v, want %v\n%q", got, tc.runtime, args)
-			}
-			if got := hasSeq(args, "--user", "0:0", "-e", "IS_SANDBOX=1"); got != tc.user {
-				t.Errorf("root: %v, want %v\n%q", got, tc.user, args)
-			}
-			if !hasSeq(args, "--label", assets.LabelIsolation+"="+tc.iso, "--label", assets.LabelUser+"="+tc.userLabel) {
-				t.Errorf("labels missing: %q", args)
-			}
-			probe, err := os.ReadFile(log + ".probe")
-			if (err == nil) != tc.runtime {
-				t.Fatalf("probe ran: %v, want %v", err == nil, tc.runtime)
-			}
-			if tc.runtime {
-				p := strings.Split(string(probe), "\n")
-				if !hasSeq(p, "--runtime", "runsc") || !hasSeq(p, "--user", "agent") ||
-					!hasSeq(p, "-v", filepath.Join(a.Cfg.DataDir, "home/.claude")+":/p") {
-					t.Errorf("probe: %q", p)
-				}
-			}
-			if said := strings.Contains(errb.String(), "runs as root inside gVisor"); said != tc.user {
-				t.Errorf("said root: %v\n%s", said, errb)
-			}
-		})
-	}
-}
-
-// With no runsc, nothing is created, and the error says what to do.
-func TestCreateContainerNoRuntime(t *testing.T) {
-	a, log, _ := isolationFake(t, "gvisor", `{"runc":{}}`, "yes")
-	a.Cfg.Env = "work"
-	err := a.createContainer(false)
-	if err == nil || !strings.Contains(err.Error(), "no runsc runtime (it has runc): 'caboose -e work setup isolation' registers it") {
-		t.Errorf("err = %v", err)
-	}
-	if _, err := os.Stat(log); err == nil {
-		t.Error("docker run happened")
-	}
-}
-
-func TestIsolationDrift(t *testing.T) {
-	for _, tc := range []struct {
-		name, labels, config, drift string
-	}{
-		{"no label, docker", `{}`, "docker", ""},
-		{"no label, gvisor", `{}`, "gvisor", "created with isolation docker; the configuration says gvisor"},
-		{"same", `{"` + assets.LabelIsolation + `":"gvisor"}`, "gvisor", ""},
-		{"back to docker", `{"` + assets.LabelIsolation + `":"gvisor"}`, "", "created with isolation gvisor; the configuration says docker"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fake := filepath.Join(t.TempDir(), "docker")
-			if err := os.WriteFile(fake, []byte("#!/bin/sh\necho '"+tc.labels+"'\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			a := &App{Cfg: &config.Config{Container: "box", Isolation: tc.config}, Docker: &docker.CLI{Path: fake}}
-			if got := a.isolationDrift(); !strings.Contains(got, tc.drift) || (tc.drift == "") != (got == "") {
-				t.Errorf("drift = %q, want %q", got, tc.drift)
-			}
-		})
-	}
-}
+const withRunsc = `{"io.containerd.runc.v2":{},"runc":{},"runsc":{"path":"/usr/local/bin/runsc","runtimeArgs":["--host-uds=open"]}}`
 
 // Doctor calls docker the weakest, says when gvisor would work, and makes
 // a gvisor without runsc a problem.
@@ -194,7 +76,8 @@ func TestDoctorIsolation(t *testing.T) {
 		{"gvisor, no runsc", "gvisor", `{"runc":{}}`, "gvisor needs docker's runsc runtime, which it does not have (it has runc)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a, _, _ := isolationFake(t, tc.iso, tc.runtimes, "")
+			a := newBoxApp(t, tc.iso, &backendtest.Fake{})
+			a.write(t, "runtimes", tc.runtimes)
 			c := &checkup{}
 			a.doctorIsolation(c)
 			if got := c.String(); !strings.Contains(got, tc.want) {
@@ -207,80 +90,194 @@ func TestDoctorIsolation(t *testing.T) {
 	}
 }
 
-// stoppedUnder makes a's fake container exist, stopped, created with
-// isolation iso, until a docker rm removes it.
-func stoppedUnder(t *testing.T, a *App, log, iso string) {
-	t.Helper()
-	b, err := os.ReadFile(a.Docker.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gone := log + ".rm"
-	s := strings.Replace(string(b), "  inspect) exit 1 ;;\n", `  inspect) [ -e "`+gone+`" ] && exit 1
-    case "$*" in
-      *State.Status*) echo exited ;;
-      *Labels*) echo '{"`+assets.LabelIsolation+`":"`+iso+`"}' ;;
-    esac
-    exit 0 ;;
-  rm) touch "`+gone+`"; exit 0 ;;
-`, 1)
-	if err := os.WriteFile(a.Docker.Path, []byte(s), 0o755); err != nil {
-		t.Fatal(err)
+// Doctor says when caboose's runsc is old, or of a release it did not
+// record, and leaves anyone else's alone; it fetches nothing.
+func TestDoctorRunscRelease(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		age   time.Duration // -1: no record
+		other bool
+		want  string
+		level level
+	}{
+		{"recent", 10 * 24 * time.Hour, false, "caboose's gVisor, downloaded 2026-09-", levelOK},
+		{"old", 100 * 24 * time.Hour, false, "downloaded 100 days ago, and gVisor releases about weekly: caboose setup isolation checks it", levelNote},
+		{"no record", -1, false, "downloaded before caboose recorded its release: caboose setup isolation checks it", levelNote},
+		{"not caboose's", 100 * 24 * time.Hour, true, "", levelOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			dir := filepath.Join(home, "runsc", "aarch64")
+			path := filepath.Join(dir, "runsc")
+			if tc.other {
+				path = "/usr/local/bin/runsc"
+			}
+			b, _ := json.Marshal(map[string]daemonRuntime{"runc": {}, "runsc": {Path: path, RuntimeArgs: runscArgs}})
+			a := newBoxApp(t, isolationGVisor, &backendtest.Fake{})
+			a.write(t, "runtimes", string(b))
+			a.Cfg.CabooseHome, a.Cfg.Env = home, "default"
+			a.Now = func() time.Time { return now }
+			if tc.age >= 0 {
+				writeRunscRecord(t, dir, strings.Repeat("ab", 64), now.Add(-tc.age))
+			}
+			c := &checkup{}
+			a.doctorIsolation(c)
+			got := c.String()
+			if !strings.Contains(got, tc.want) || strings.Contains(got, "runsc ") != (tc.want != "") {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			if tc.want != "" && c.rows[len(c.rows)-1].level != tc.level {
+				t.Errorf("level = %v\n%s", c.rows[len(c.rows)-1].level, got)
+			}
+		})
 	}
 }
 
-// A stopped container created under runsc, which docker no longer has,
-// can never start: it is recreated with the configured isolation, or,
-// when that cannot work either, left alone with an error that says what
-// to do. Doctor says so too.
-func TestRuntimeGone(t *testing.T) {
-	a, log, errb := isolationFake(t, "docker", `{"runc":{}}`, "")
-	stoppedUnder(t, a, log, "gvisor")
-	if rt := a.runtimeGone(); rt != "runsc" {
-		t.Fatalf("runtimeGone = %q", rt)
+// A runsc without --host-uds=open cannot reach the forwarded SSH agent:
+// doctor says so, with the fix for who registered it -- the daemon config
+// or gVisor's install on Linux, setup for caboose's own.
+func TestDoctorRunscHostUDS(t *testing.T) {
+	saved := goos
+	t.Cleanup(func() { goos = saved })
+	goos = "linux"
+	for _, tc := range []struct {
+		name, path string
+		args       []string
+		want       string
+	}{
+		{"guide's install", "/usr/local/bin/runsc", nil,
+			`add "--host-uds=open" to runsc's runtimeArgs in /etc/docker/daemon.json ('sudo runsc install -- --host-uds=open --net-raw --allow-packet-socket-write' writes them all)`},
+		{"none", "/usr/local/bin/runsc", []string{"--host-uds=none"}, "/etc/docker/daemon.json"},
+		{"caboose's", "", []string{"--dcache=0"}, "caboose setup isolation"},
+		{"open", "/usr/local/bin/runsc", []string{"--host-uds", "open"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := or(tc.path, filepath.Join(home, "runsc", "x86_64", "runsc"))
+			b, _ := json.Marshal(map[string]daemonRuntime{"runc": {}, "runsc": {Path: path, RuntimeArgs: tc.args}})
+			a := newBoxApp(t, isolationGVisor, &backendtest.Fake{})
+			a.write(t, "runtimes", string(b))
+			a.Cfg.CabooseHome, a.Cfg.Env = home, "default"
+			c := &checkup{}
+			a.doctorIsolation(c)
+			got := c.String()
+			if strings.Contains(got, "runs without --host-uds=open, so the sandbox cannot reach the SSH agent") != (tc.want != "") {
+				t.Errorf("got %q", got)
+			}
+			if tc.want != "" {
+				// The row's fix, or its text for a note (no forwarded
+				// agent on this machine).
+				fixes := ""
+				for _, r := range c.rows {
+					if strings.Contains(r.text, "--host-uds=open") {
+						fixes += r.text + " " + r.fix + "\n"
+					}
+				}
+				if !strings.Contains(fixes, tc.want) {
+					t.Errorf("got %q, want %q", fixes, tc.want)
+				}
+			}
+		})
 	}
-	c := &checkup{}
-	a.doctorContainerIsolation(c)
-	if got := c.String(); !strings.Contains(got, "created under runsc, which docker no longer has") || c.count(levelProblem) != 1 {
-		t.Errorf("doctor: %s", got)
-	}
-	if err := a.recreateForRuntime("runsc", false); err != nil {
-		t.Fatalf("%v\n%s", err, errb)
-	}
-	if _, err := os.Stat(log + ".rm"); err != nil {
-		t.Error("not removed")
-	}
-	args := readArgs(t, log)
-	if hasSeq(args, "--runtime", "runsc") || !hasSeq(args, "--label", assets.LabelIsolation+"=docker") {
-		t.Errorf("created with: %q", args)
-	}
-	if !strings.Contains(errb.String(), "no sessions are lost: recreating it with isolation docker") {
-		t.Errorf("said:\n%s", errb)
-	}
+}
 
-	a, log, _ = isolationFake(t, "gvisor", `{"runc":{}}`, "")
-	stoppedUnder(t, a, log, "gvisor")
-	err := a.recreateForRuntime("runsc", false)
-	if err == nil || !strings.Contains(err.Error(), "cannot start.\n") || !strings.Contains(err.Error(), "setup isolation' registers it") {
-		t.Errorf("err = %v", err)
+func TestRunscHostUDS(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{runscArgs, true},
+		{runscInstallArgs, true},
+		{[]string{"-host-uds=all"}, true},
+		{[]string{"--host-uds", "open"}, true},
+		{[]string{"--host-uds=create"}, false},
+		{[]string{"--host-uds=open", "--host-uds=none"}, false},
+		{[]string{"--host-uds"}, false},
+		{[]string{"host-uds=open"}, false},
+	} {
+		if got := runscHostUDS(tc.args); got != tc.want {
+			t.Errorf("%q: %v", tc.args, got)
+		}
 	}
-	if _, err := os.Stat(log + ".rm"); err == nil {
-		t.Error("removed, with nothing to replace it")
-	}
-
-	// A container of today's runtime is not gone.
-	a, log, _ = isolationFake(t, "docker", `{"runc":{}}`, "")
-	stoppedUnder(t, a, log, "docker")
-	if rt := a.runtimeGone(); rt != "" {
-		t.Errorf("runtimeGone = %q", rt)
+	// What caboose registers is what it tells others to.
+	if !slices.Equal(runscArgs[:len(runscInstallArgs)], runscInstallArgs) {
+		t.Errorf("runscArgs %q do not start with runscInstallArgs %q", runscArgs, runscInstallArgs)
 	}
 }
 
 func TestStartFailed(t *testing.T) {
-	err := startFailed("box", errors.New("Error response from daemon: unknown or invalid runtime name: runsc\nfailed to start containers: box"))
+	err := startFailed("container", "box", errors.New("Error response from daemon: unknown or invalid runtime name: runsc\nfailed to start containers: box"))
 	want := "container box did not start: Error response from daemon: unknown or invalid runtime name: runsc\n" +
 		"       'caboose restart' recreates it; it is stopped, so no sessions are lost."
 	if err.Error() != want {
 		t.Errorf("got:\n%s", err)
+	}
+}
+
+// The isolation picks the runtime and the user, and the sandbox is
+// labelled with both: the agent under docker, and under gvisor where the
+// probe finds it can write its mounts; else root, told it is a sandbox,
+// which under vm it always is, with no runtime to name and nothing to
+// probe.
+func TestCreateContainerIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name, iso, probe string
+		runtime, user    bool
+		userLabel        string
+	}{
+		{"docker", "docker", "", false, false, ""},
+		{"gvisor, agent writes", "gvisor", "yes", true, false, ""},
+		{"gvisor, agent cannot write", "gvisor", "no", true, true, "0:0"},
+		{"vm", "vm", "", false, true, "0:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBoxApp(t, tc.iso, &backendtest.Fake{})
+			if tc.iso != isolationVM {
+				b.write(t, "probe-answer", tc.probe)
+			}
+			if err := b.createContainer(false); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			spec, _ := b.box.Spec()
+			if got := spec.Runtime == "runsc"; got != tc.runtime || (!got && spec.Runtime != "") {
+				t.Errorf("runtime %q, want runsc: %v", spec.Runtime, tc.runtime)
+			}
+			if got := spec.User == "0:0" && slices.Contains(spec.Env, "IS_SANDBOX=1"); got != tc.user {
+				t.Errorf("root: %v, want %v\n%+v", got, tc.user, spec)
+			}
+			if !hasSeq(spec.Labels, assets.LabelIsolation+"="+tc.iso, assets.LabelUser+"="+tc.userLabel) {
+				t.Errorf("labels missing: %q", spec.Labels)
+			}
+			probe, err := os.ReadFile(filepath.Join(b.engine, "probe"))
+			if (err == nil) != tc.runtime {
+				t.Fatalf("probe ran: %v, want %v", err == nil, tc.runtime)
+			}
+			if tc.runtime {
+				p := strings.Split(string(probe), "\n")
+				if !hasSeq(p, "--runtime", "runsc") || !hasSeq(p, "--user", "agent") ||
+					!hasSeq(p, "-v", filepath.Join(b.Cfg.DataDir, "home/.claude")+":/p") {
+					t.Errorf("probe: %q", p)
+				}
+			}
+			if said := strings.Contains(b.errb.String(), "runs as root inside gVisor"); said != (tc.user && tc.iso == isolationGVisor) {
+				t.Errorf("said root: %v\n%s", said, b.errb)
+			}
+		})
+	}
+}
+
+// With no runsc, nothing is created, and the error says what to do.
+func TestCreateContainerNoRuntime(t *testing.T) {
+	b := newBoxApp(t, isolationGVisor, &backendtest.Fake{})
+	b.write(t, "runtimes", `{"runc":{}}`)
+	b.Cfg.Env = "work"
+	err := b.createContainer(false)
+	if err == nil || !strings.Contains(err.Error(), "no runsc runtime (it has runc): 'caboose -e work setup isolation' registers it") {
+		t.Errorf("err = %v", err)
+	}
+	if len(b.box.Specs) != 0 {
+		t.Error("created")
 	}
 }

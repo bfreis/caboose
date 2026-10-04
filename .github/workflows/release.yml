@@ -1,8 +1,13 @@
-# Pushing a v* tag builds the launcher for darwin/linux x amd64/arm64 and
+# Pushing a v* tag builds the launcher for darwin/linux x amd64/arm64 (and
+# caboose-vmm for darwin; the darwin binaries signed by rcodesign, with a
+# Developer ID and notarized when the MACOS_/APPSTORE_ secrets are set,
+# else ad-hoc as a fork's are: CONTRIBUTING.md) and
 # publishes a GitHub release with the archives, checksums.txt and
 # install.sh -- what every install made by install.sh updates itself from,
 # once the release is the latest. All of it is configured in
-# .goreleaser.yaml.
+# .goreleaser.yaml, but for vm's asset (its guest kernel and builder disk),
+# built by the vm-assets job below, and the kernel's source, which is kept
+# in a release of its own (kernel-VERSION) made below.
 name: release
 
 on:
@@ -18,7 +23,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # vm's asset, caboose-vm_VERSION_arm64.tar.gz, built on an arm64 runner:
+  # the guest kernel is reproducible per build machine's architecture only
+  # (vm/kernel/Dockerfile), so this is the Image a rebuild on a Mac gives,
+  # and the builder disk builds natively rather than under QEMU. It reaches
+  # goreleaser's job as a workflow artifact. Without an arm64 runner (a
+  # private repository may need them enabled) this job waits in the queue
+  # until GitHub gives up on it, a day later, and nothing is released:
+  # timeout-minutes counts only once a runner has it.
+  vm-assets:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v4
+
+      # VM_VERSION as goreleaser's .Version is (the tag without its v), and
+      # the repository the release goes to, both of which the kernel's
+      # .SOURCE names.
+      - name: make vm-assets
+        env:
+          TAG: ${{ github.ref_name }}
+          RELEASE_OWNER: ${{ github.repository_owner }}
+          RELEASE_REPO: ${{ github.event.repository.name }}
+        run: make vm-assets VM_VERSION="${TAG#v}" VM_ARCH=arm64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vm-assets
+          path: vm-release/caboose-vm_*_arm64.tar.gz
+          if-no-files-found: error
+          # Already gzipped.
+          compression-level: 0
+          retention-days: 7
+
   goreleaser:
+    needs: vm-assets
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -32,9 +75,120 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # A tag publishes whatever it points at, green or not.
+      # A tag publishes whatever it points at, green or not. The tests read
+      # the agent the launcher embeds, as ci.yml's do.
+      - name: build caboose-agent
+        run: make agent
+
       - name: go test
         run: go test ./...
+
+      # rcodesign signs the darwin binaries (macsign.sh, run by
+      # .goreleaser.yaml), on Linux: pinned,
+      # and checked against the sha256 its release publishes.
+      - name: install rcodesign
+        env:
+          RCODESIGN: apple-codesign-0.29.0-x86_64-unknown-linux-musl
+          RCODESIGN_SHA256: dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/rcodesign.tar.gz" \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.29.0/$RCODESIGN.tar.gz"
+          echo "$RCODESIGN_SHA256  $RUNNER_TEMP/rcodesign.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/rcodesign.tar.gz" -C "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/$RCODESIGN/rcodesign" /usr/local/bin/rcodesign
+
+      # The Developer ID and the notary's API key, from the secrets, as the
+      # files macsign.sh reads: in RUNNER_TEMP, 0600, never printed (Actions
+      # masks the secrets themselves in the log, and nothing derived from
+      # them is written there), deleted by the always() step at the end.
+      # With MACOS_P12_BASE64 unset (a fork, or a repository not yet set
+      # up) nothing is written, MACSIGN_* stays unset, and goreleaser signs
+      # ad-hoc as it always has. With it set, every other secret must be
+      # too: a release that has a Developer ID is notarized or not made.
+      - name: macOS signing secrets
+        env:
+          P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+          ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          KEY_P8: ${{ secrets.APPSTORE_KEY_P8 }}
+        run: |
+          set -eu
+          if [ -z "$P12_BASE64" ]; then
+            echo "MACOS_P12_BASE64 is not set: the darwin binaries are signed ad-hoc"
+            exit 0
+          fi
+          missing=
+          [ -n "$P12_PASSWORD" ] || missing="$missing MACOS_P12_PASSWORD"
+          [ -n "$ISSUER_ID" ] || missing="$missing APPSTORE_ISSUER_ID"
+          [ -n "$KEY_ID" ] || missing="$missing APPSTORE_KEY_ID"
+          [ -n "$KEY_P8" ] || missing="$missing APPSTORE_KEY_P8"
+          if [ -n "$missing" ]; then
+            echo "::error::MACOS_P12_BASE64 is set but not:$missing"
+            exit 1
+          fi
+          umask 077
+          dir="$RUNNER_TEMP/macsign"
+          mkdir -p "$dir"
+          printf '%s' "$P12_BASE64" | base64 -d > "$dir/devid.p12"
+          printf '%s' "$P12_PASSWORD" > "$dir/devid.pass"
+          printf '%s\n' "$KEY_P8" > "$dir/AuthKey.p8"
+          rcodesign encode-app-store-connect-api-key -o "$dir/api-key.json" "$ISSUER_ID" "$KEY_ID" "$dir/AuthKey.p8" > /dev/null
+          rm -f "$dir/AuthKey.p8"
+          chmod 600 "$dir"/*
+          for f in devid.p12 devid.pass api-key.json; do
+            [ -s "$dir/$f" ] || { echo "::error::$f came out empty"; exit 1; }
+          done
+          {
+            echo "MACSIGN_P12=$dir/devid.p12"
+            echo "MACSIGN_P12_PASSWORD_FILE=$dir/devid.pass"
+            echo "MACSIGN_API_KEY=$dir/api-key.json"
+          } >> "$GITHUB_ENV"
+          echo "the darwin binaries are signed with the Developer ID and notarized"
+
+      # The vm-assets job's asset, where goreleaser's hook (make vm-assets,
+      # with VM_ASSETS_PREBUILT=1) checks it instead of building one.
+      - uses: actions/download-artifact@v8
+        with:
+          name: vm-assets
+          path: vm-release
+
+      # The kernel's source, as the GPL asks and kernel-arm64.SOURCE
+      # promises: a release kernel-VERSION in this repository (a mirror's
+      # in the mirror) holding the exact kernel.org tarball, made once per
+      # kernel version, and each caboose release's resolved config beside
+      # it. Idempotent: a rerun finds what is there and adds what is not.
+      # Never releases/latest, which install.sh and updates read: a
+      # prerelease, which GitHub never makes the latest (--latest=false
+      # alone is not enough on a repository with no other full release,
+      # as a mirror's may be). The edit makes one found here a prerelease
+      # too, whatever made it.
+      - name: kernel source release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          set -- $(make -s vm-kernel-pin)
+          ver=$1 sha=$2 rel="kernel-$1"
+          if ! gh release view "$rel" > /dev/null 2>&1; then
+            gh release create "$rel" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Linux $ver: the source of caboose's vm guest kernel" \
+              --notes "The unmodified kernel.org tarball caboose's vm guest kernel is built from (sha256 $sha), and, for each caboose release built from it, its resolved config as kernel-ARCH-VERSION.config. The recipe is vm/kernel/ at that release's commit."
+          else
+            gh release edit "$rel" --prerelease --latest=false
+          fi
+          tarball="linux-$ver.tar.xz"
+          if ! gh release view "$rel" --json assets -q '.assets[].name' | grep -qxF "$tarball"; then
+            curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://cdn.kernel.org/pub/linux/kernel/v${ver%%.*}.x/$tarball"
+            echo "$sha  $RUNNER_TEMP/$tarball" | sha256sum -c -
+            gh release upload "$rel" "$RUNNER_TEMP/$tarball"
+          fi
+          config="$RUNNER_TEMP/kernel-arm64-${TAG#v}.config"
+          tar -xzOf "vm-release/caboose-vm_${TAG#v}_arm64.tar.gz" kernel-arm64.config > "$config"
+          [ -s "$config" ]
+          gh release upload "$rel" --clobber "$config"
 
       - uses: goreleaser/goreleaser-action@v7
         with:
@@ -43,3 +197,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VM_ASSETS_PREBUILT: "1"
+          # The release goes to this repository: a mirror's to the mirror.
+          RELEASE_OWNER: ${{ github.repository_owner }}
+          RELEASE_REPO: ${{ github.event.repository.name }}
+
+      # The signing files, whatever happened above. The runner is thrown
+      # away too, but nothing should rely on that.
+      - name: remove macOS signing secrets
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/macsign"

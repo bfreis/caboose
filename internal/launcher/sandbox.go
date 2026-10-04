@@ -127,7 +127,7 @@ func (a *App) SyncStatus(args []string) error {
 	}
 
 	if a.state() != "running" {
-		fmt.Fprintf(out, "to take : not checked: the container is not running, and the sync's git runs there\n")
+		fmt.Fprintf(out, "to take : not checked: the %s is not running, and the sync's git runs there\n", a.noun())
 		return nil
 	}
 	if err := a.checkSyncMount(); err != nil {

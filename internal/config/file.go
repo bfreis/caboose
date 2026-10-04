@@ -33,6 +33,11 @@ var fileKeys = map[string]string{
 	"forward_ports":   "FORWARD_PORTS",
 	"open_urls":       "OPEN_URLS",
 	"isolation":       "ISOLATION",
+	"vm_cpus":         "VM_CPUS",
+	"vm_memory":       "VM_MEMORY",
+	"egress_proxy":    "EGRESS_PROXY",
+	"egress_ports":    "EGRESS_PORTS",
+	"egress_allow":    "EGRESS_ALLOW",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -127,6 +132,12 @@ func ParseFile(path string, data []byte) (*File, error) {
 		case int64:
 			f.Vals[name] = fmt.Sprint(v)
 		case bool:
+			// egress_proxy is "on" or "off", and false must not read as
+			// unset, which is on.
+			if name == "EGRESS_PROXY" {
+				f.Vals[name] = map[bool]string{true: "on", false: "off"}[v]
+				continue
+			}
 			// The variables' own meaning: set (non-empty) or not.
 			if v {
 				f.Vals[name] = "1"
@@ -207,9 +218,16 @@ format = 1    # this file's structure
 #keep_versions = 2
 
 # What keeps the sandbox from this machine: "docker" (runc, the default,
-# which shares this machine's kernel) or "gvisor" (runsc, a kernel of its
-# own; docker must have runsc registered). [CABOOSE_ISOLATION]
+# which shares this machine's kernel), "gvisor" (runsc, a kernel of its
+# own; docker must have runsc registered) or "vm" (a VM of caboose's own,
+# on a Mac, with no Docker needed). [CABOOSE_ISOLATION]
 #isolation = "gvisor"
+
+# The vm isolation's size: CPUs, and memory ("8G", "4096M"). By default
+# half this machine's CPUs and half its memory, at most 8G.
+# [CABOOSE_VM_CPUS, CABOOSE_VM_MEMORY]
+#vm_cpus = 4
+#vm_memory = "8G"
 
 # Mount the host's docker socket: root-equivalent access to the host.
 # [CABOOSE_DOCKER_SOCK]
@@ -238,4 +256,19 @@ format = 1    # this file's structure
 # Whether the sandbox may open URLs in this machine's browser: "ask" (a
 # dialog each time), "allow" or "off". [CABOOSE_OPEN_URLS]
 #open_urls = "ask"
+
+# Under isolation "vm": whether the sandbox's outbound connections are
+# made from this machine, through the link, so that a VPN's routes and
+# DNS apply as they do here: "on" (the default) or "off" (the VM's own
+# NAT). Ignored under docker and gvisor. [CABOOSE_EGRESS_PROXY]
+#egress_proxy = "off"
+
+# The ports the sandbox may reach through it: ports and ranges, or
+# "none". [CABOOSE_EGRESS_PORTS]
+#egress_ports = "22 80 443"
+
+# Private addresses it may reach anyway (loopback, private, link-local,
+# tailnet and multicast ones are refused otherwise): names, "*.suffix"
+# patterns, CIDRs or addresses. [CABOOSE_EGRESS_ALLOW]
+#egress_allow = "git.corp.example *.internal.example 10.20.0.0/16"
 `

@@ -2,6 +2,7 @@ package selfupdate_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,19 @@ func TestLatest(t *testing.T) {
 	s.Publish(t, "v1.3.0-rc.1", false, plat)
 	if tag, err := src.Latest(context.Background()); tag != "v1.2.0" || err != nil {
 		t.Errorf("Latest = %q, %v", tag, err)
+	}
+}
+
+// A latest release that is not caboose's, as the vm kernel's source
+// release once was on a repository with no other, is never an update.
+func TestLatestNotCaboose(t *testing.T) {
+	s := releasetest.New(t)
+	src := selfupdate.Source{Base: s.Base}
+	for _, tag := range []string{"kernel-6.18.54", "vmtest", "v1.2"} {
+		s.Publish(t, tag, true)
+		if got, err := src.Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "no caboose version") {
+			t.Errorf("latest %s: Latest = %q, %v", tag, got, err)
+		}
 	}
 }
 
@@ -188,5 +202,49 @@ func TestLock(t *testing.T) {
 		t.Errorf("after unlock: %v", err)
 	} else {
 		u()
+	}
+}
+
+// A darwin archive's caboose-vmm is installed next to caboose; a linux one
+// has none, and none is made up.
+func TestInstallVMM(t *testing.T) {
+	s := releasetest.New(t)
+	s.VMM = true
+	s.Publish(t, "v1.0.0", true, "darwin/arm64", plat)
+	for _, c := range []struct {
+		goos, goarch string
+		vmm          bool
+	}{{"darwin", "arm64", true}, {"linux", "arm64", false}} {
+		l := selfupdate.DefaultLayout(t.TempDir())
+		if err := l.Install(context.Background(), selfupdate.Source{Base: s.Base}, "v1.0.0", c.goos, c.goarch, "/usr/bin/true"); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(l.Versions, "v1.0.0", selfupdate.VMM)
+		fi, err := os.Stat(p)
+		switch {
+		case c.vmm && (err != nil || fi.Mode().Perm() != 0o755 || read(t, p) != string(releasetest.VMMBinary("v1.0.0"))):
+			t.Errorf("%s: caboose-vmm %v, %v", c.goos, fi, err)
+		case !c.vmm && err == nil:
+			t.Errorf("%s: a caboose-vmm from nowhere", c.goos)
+		}
+	}
+}
+
+// A download is whole and checked against checksums.txt, or an error.
+func TestDownload(t *testing.T) {
+	s := releasetest.New(t)
+	s.Publish(t, "v1.0.0", true, plat)
+	s.Add("v1.0.0", "big.tar.gz", []byte("the vm's files"))
+	src := selfupdate.Source{Base: s.Base}
+	var b strings.Builder
+	if err := src.Download(context.Background(), "v1.0.0", "big.tar.gz", &b, 1<<20); err != nil || b.String() != "the vm's files" {
+		t.Fatalf("%q, %v", b.String(), err)
+	}
+	s.Replace("v1.0.0", "big.tar.gz", []byte("tampered"))
+	if err := src.Download(context.Background(), "v1.0.0", "big.tar.gz", io.Discard, 1<<20); err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("a tampered download: %v", err)
+	}
+	if err := src.Download(context.Background(), "v1.0.0", "missing.tar.gz", io.Discard, 1<<20); err == nil {
+		t.Fatal("a file checksums.txt does not list")
 	}
 }

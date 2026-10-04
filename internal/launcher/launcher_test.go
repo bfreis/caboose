@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
@@ -82,7 +84,7 @@ func TestCheckInsideRoot(t *testing.T) {
 		{"/h/dev/x", []config.Root{{Host: "/h/dev", Container: "/work/h/dev"}}, dev, "/work/h/dev/x"},
 		{"/h/w/x", nil, []config.Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}, {Name: "w", Host: "/h/w", Container: "/work/w"}}, "/work/w/x"},
 	} {
-		got, err := CheckInsideRoot(tc.dir, tc.mounted, tc.current, deflt)
+		got, err := CheckInsideRoot(tc.dir, tc.mounted, tc.current, deflt, "container")
 		if err != nil || got != tc.want {
 			t.Errorf("CheckInsideRoot(%q, %+v, %+v) = %q, %v; want %q", tc.dir, tc.mounted, tc.current, got, err, tc.want)
 		}
@@ -90,13 +92,13 @@ func TestCheckInsideRoot(t *testing.T) {
 
 	// Outside the one root there is: say what the root is, where its value
 	// came from, and how to change it. tests/run.sh matches the first part.
-	_, err := CheckInsideRoot("/h/devx", nil, dev, deflt)
+	_, err := CheckInsideRoot("/h/devx", nil, dev, deflt, "container")
 	want := "/h/devx is outside the mounted repo root, /h/dev (" + deflt + ").\n" + config.RepoRootHelp
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
 	}
 	several := []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "b", Host: "/b", Container: "/work/b"}}
-	_, err = CheckInsideRoot("/c", nil, several, "set by [roots] in /c.toml")
+	_, err = CheckInsideRoot("/c", nil, several, "set by [roots] in /c.toml", "container")
 	want = "/c is outside every mounted root, /a at /work/a, /b at /work/b (set by [roots] in /c.toml).\n" + config.RepoRootHelp
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
@@ -104,7 +106,7 @@ func TestCheckInsideRoot(t *testing.T) {
 
 	// What the container has mounted wins over the configured value, and
 	// a restart is the fix when the configured value holds the path...
-	_, err = CheckInsideRoot("/", dev, one("/"), byEnv)
+	_, err = CheckInsideRoot("/", dev, one("/"), byEnv, "container")
 	want = `/ is outside the root this container has mounted.
        mounted: /h/dev (fixed when the container was created)
        current: / (set by CABOOSE_REPO_ROOT)
@@ -117,8 +119,14 @@ func TestCheckInsideRoot(t *testing.T) {
 	if !errors.As(err, &ee) || ee.Code != 1 {
 		t.Errorf("not a die(): %#v", err)
 	}
+	// A VM is called one, and its mounts are not bind mounts.
+	_, err = CheckInsideRoot("/", dev, one("/"), byEnv, "VM")
+	if err == nil || !strings.Contains(err.Error(), "outside the root this VM has mounted") ||
+		!strings.Contains(err.Error(), "Mounts cannot change under a live VM") || strings.Contains(err.Error(), "container") {
+		t.Errorf("under vm: %v", err)
+	}
 	// ...but not when it does not.
-	_, err = CheckInsideRoot("/tmp/x", dev, one("/h/src"), deflt)
+	_, err = CheckInsideRoot("/tmp/x", dev, one("/h/src"), deflt, "container")
 	if err == nil || !strings.Contains(err.Error(), "outside the root this container has mounted") ||
 		!strings.Contains(err.Error(), "current: /h/src ("+deflt+")") ||
 		!strings.Contains(err.Error(), "/tmp/x is outside the current value too") ||
@@ -136,37 +144,45 @@ func TestIndent(t *testing.T) {
 	}
 }
 
+// With no sandbox, status says what it would be, and asks nothing of any
+// engine: there is no Docker here to ask.
 func TestStatusHeaderWhenNotRunning(t *testing.T) {
-	var out, errb bytes.Buffer
-	a := &App{
-		Cfg: &config.Config{Env: "default", Container: "caboose-x", Image: "img", Roots: []config.Root{{Host: "/h/dev", Container: "/work"}},
-			DataDir: "/h/.caboose", KeepVersions: "2", Getenv: func(string) string { return "" }},
-		Docker: &docker.CLI{Path: "false"},
-		Stdout: &out, Stderr: &errb,
-	}
-	if err := a.Status(); err != nil {
-		t.Fatal(err)
-	}
-	want := "env       : default\n" +
-		"container : caboose-x (absent)\n" +
-		"image     : img\n" +
-		"repo root : /h/dev -> /work\n" +
-		"data dir  : /h/.caboose\n" +
-		"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +
-		"isolation : docker\n" +
-		"version   : " + version.Get().Version + "\n" +
-		"\nnot running — start it by running caboose in a repo.\n"
-	if out.String() != want {
-		t.Errorf("status =\n%s\nwant\n%s", out.String(), want)
-	}
+	for _, tc := range []struct{ iso, noun, shown, outbound string }{
+		{"", "container", "docker", ""},
+		{isolationVM, "VM       ", "vm",
+			"outbound  : through this machine, so its VPN routes and DNS apply (egress_proxy on; egress_ports \"22 80 443\")\n"},
+	} {
+		var out, errb bytes.Buffer
+		a := &App{
+			Cfg: &config.Config{Env: "default", Container: "caboose-x", Image: "img", Roots: []config.Root{{Host: "/h/dev", Container: "/work"}},
+				DataDir: "/h/.caboose", KeepVersions: "2", Isolation: tc.iso, Getenv: func(string) string { return "" }},
+			Backend: &backendtest.Fake{},
+			Stdout:  &out, Stderr: &errb,
+		}
+		if err := a.Status(); err != nil {
+			t.Fatal(err)
+		}
+		want := "env       : default\n" +
+			tc.noun + " : caboose-x (absent)\n" +
+			"image     : img\n" +
+			"repo root : /h/dev -> /work\n" +
+			"data dir  : /h/.caboose\n" +
+			"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +
+			"isolation : " + tc.shown + "\n" + tc.outbound +
+			"version   : " + version.Get().Version + "\n" +
+			"\nnot running — start it by running caboose in a repo.\n"
+		if out.String() != want {
+			t.Errorf("status =\n%s\nwant\n%s", out.String(), want)
+		}
 
-	out.Reset()
-	a.Cfg.Roots = []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "dev", Host: "/h/dev", Container: "/work/dev"}}
-	if err := a.Status(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "\nrepo root : /a -> /work/a\nrepo root : /h/dev -> /work/dev\n") {
-		t.Errorf("status with two roots:\n%s", out.String())
+		out.Reset()
+		a.Cfg.Roots = []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "dev", Host: "/h/dev", Container: "/work/dev"}}
+		if err := a.Status(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "\nrepo root : /a -> /work/a\nrepo root : /h/dev -> /work/dev\n") {
+			t.Errorf("status with two roots:\n%s", out.String())
+		}
 	}
 }
 
@@ -329,123 +345,110 @@ func TestReportUsageFailsWithDu(t *testing.T) {
 	}
 }
 
-// createContainer's bind mounts: every source exists by the time `docker run`
-// sees it, and the configs tools rewrite are mounted as directories.
+// createContainer's mounts: every source exists by the time the backend
+// creates the sandbox, and the configs tools rewrite are mounted as
+// directories.
 func TestCreateContainerMounts(t *testing.T) {
-	tmp := t.TempDir()
-	data := filepath.Join(tmp, "data")
-	log := filepath.Join(tmp, "run.log")
-	fake := filepath.Join(tmp, "docker")
-	// inspect: nothing exists; image inspect: present, for linux-arm64;
-	// run: record each -v, and whether its source existed at that moment.
-	script := `#!/bin/sh
-case "$1" in
-  inspect) exit 1 ;;
-  image) echo '{"` + assets.LabelPlatform + `":"linux-arm64"}'; exit 0 ;;
-  run)
-    while [ $# -gt 0 ]; do
-      if [ "$1" = -v ]; then
-        src="${2%%:*}"
-        if [ -e "$src" ]; then k=dir; [ -d "$src" ] || k=file; else k=MISSING; fi
-        printf '%s %s\n' "$k" "$2" >> "` + log + `"
-        shift
-      fi
-      shift
-    done ;;
-esac
-`
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	var roots []config.Root
-	for _, name := range []string{"dev", "w"} {
-		roots = append(roots, config.Root{Name: name, Host: filepath.Join(tmp, name), Container: "/work/" + name})
-		if err := os.Mkdir(filepath.Join(tmp, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The user's own entries, beside the defaults.
-	sbx := filepath.Join(data, datadir.SandboxConfig)
-	if err := os.MkdirAll(filepath.Dir(sbx), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	extra := "\n[[keep]]\npath = \"~/.aws\"\n\n[[keep]]\npath = \"~/.config/foo\"\n"
-	if err := os.WriteFile(sbx, append(sandboxcfg.Default(nil), extra...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var out, errb bytes.Buffer
-	a := &App{
-		Cfg: &config.Config{Container: "caboose-x", Image: "img", Roots: roots,
-			DataDir: data, KeepVersions: "2", Getenv: func(string) string { return "" }},
-		Docker: &docker.CLI{Path: fake},
-		Stdout: &out, Stderr: &errb,
-	}
-	if err := a.createContainer(false); err != nil {
-		t.Fatalf("createContainer: %v\n%s", err, errb.String())
-	}
-	b, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]string{}
-	var rootMounts []string
-	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		kind, spec, _ := strings.Cut(l, " ")
-		if kind == "MISSING" {
-			t.Errorf("mount source missing at docker run: %s", spec)
-		}
-		if _, dst, _ := strings.Cut(spec, ":"); strings.HasPrefix(dst, "/work") {
-			rootMounts = append(rootMounts, spec)
-		}
-		if strings.HasPrefix(spec, data+"/") {
-			rel, dst, _ := strings.Cut(strings.TrimPrefix(spec, data+"/"), ":")
-			got[dst] = kind + " " + rel
-		}
-	}
-	want := map[string]string{
-		"/home/agent/.claude":             "dir home/.claude",
-		"/home/agent/.claude.json":        "file home/.claude.json",
-		"/home/agent/.local/bin":          "dir local/linux-arm64/bin",
-		"/home/agent/.local/share/claude": "dir local/linux-arm64/share/claude",
-		"/home/agent/.cache/claude":       "dir local/linux-arm64/cache/claude",
-		"/home/agent/.config/git":         "dir home/.config/git",
-		"/home/agent/.config/jj":          "dir home/.config/jj",
-		"/home/agent/.config/gh":          "dir home/.config/gh",
-		"/home/agent/.ssh":                "dir home/.ssh",
-		"/home/agent/.caboose-sync":       "dir sync",
-		"/home/agent/.caboose-proposals":  "dir proposals",
-		"/home/agent/.config/caboose":     "dir home/.config/caboose",
-		"/home/agent/.aws":                "dir home/.aws",
-		"/home/agent/.config/foo":         "dir home/.config/foo",
-	}
-	for dst, w := range want {
-		if got[dst] != w {
-			t.Errorf("%s: mounted %q, want %q", dst, got[dst], w)
-		}
-	}
-	if len(got) != len(want) {
-		t.Errorf("data dir mounts = %v", got)
-	}
-	// Every home mount of caboose's own, beside the keep entries, is one a
-	// keep entry may not name: sandboxcfg.Reserved has to keep up with
-	// this function.
-	for dst, w := range got {
-		rel := strings.TrimPrefix(dst, config.ContainerHome+"/")
-		if strings.Contains(w, " home/") {
-			continue
-		}
-		if !slices.Contains(sandboxcfg.Reserved, rel) {
-			t.Errorf("~/%s is mounted by caboose but a keep entry may name it: add it to sandboxcfg.Reserved", rel)
-		}
-	}
-	for _, p := range []string{"home/.aws", "home/.config/foo", "home/.ssh", "home/.config/gh"} {
-		if fi, err := os.Stat(filepath.Join(data, p)); err != nil || fi.Mode().Perm() != 0o700 {
-			t.Errorf("%s: %v, want a 0700 dir", p, fi)
-		}
-	}
-	// Each root at /work/<name>, whatever its host path.
-	if w := []string{tmp + "/dev:/work/dev", tmp + "/w:/work/w"}; !reflect.DeepEqual(rootMounts, w) {
-		t.Errorf("root mounts = %v, want %v", rootMounts, w)
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := newBoxApp(t, iso, &backendtest.Fake{})
+			tmp, data := b.tmp, b.data
+			var roots []config.Root
+			for _, name := range []string{"dev", "w"} {
+				roots = append(roots, config.Root{Name: name, Host: filepath.Join(tmp, name), Container: "/work/" + name})
+				if err := os.Mkdir(filepath.Join(tmp, name), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			b.Cfg.Roots = roots
+			// The user's own entries, beside the defaults.
+			sbx := filepath.Join(data, datadir.SandboxConfig)
+			if err := os.MkdirAll(filepath.Dir(sbx), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			extra := "\n[[keep]]\npath = \"~/.aws\"\n\n[[keep]]\npath = \"~/.config/foo\"\n"
+			if err := os.WriteFile(sbx, append(sandboxcfg.Default(nil), extra...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// What each mount's source was when the backend was asked.
+			kinds := map[string]string{}
+			b.box.OnCreate = func(s backend.Spec) error {
+				for _, m := range s.Mounts {
+					fi, err := os.Stat(m.Source)
+					switch {
+					case err != nil:
+						kinds[m.Source] = "MISSING"
+					case fi.IsDir():
+						kinds[m.Source] = "dir"
+					default:
+						kinds[m.Source] = "file"
+					}
+				}
+				return nil
+			}
+			if err := b.createContainer(false); err != nil {
+				t.Fatalf("createContainer: %v\n%s", err, b.errb)
+			}
+			spec, _ := b.box.Spec()
+			got := map[string]string{}
+			var rootMounts []backend.Mount
+			for _, m := range spec.Mounts {
+				if kinds[m.Source] == "MISSING" {
+					t.Errorf("mount source missing at creation: %+v", m)
+				}
+				if strings.HasPrefix(m.Target, "/work") {
+					rootMounts = append(rootMounts, m)
+				}
+				if rel, ok := strings.CutPrefix(m.Source, data+"/"); ok {
+					got[m.Target] = kinds[m.Source] + " " + rel
+				}
+			}
+			want := map[string]string{
+				"/home/agent/.claude":             "dir home/.claude",
+				"/home/agent/.claude.json":        "file home/.claude.json",
+				"/home/agent/.local/bin":          "dir local/linux-arm64/bin",
+				"/home/agent/.local/share/claude": "dir local/linux-arm64/share/claude",
+				"/home/agent/.cache/claude":       "dir local/linux-arm64/cache/claude",
+				"/home/agent/.config/git":         "dir home/.config/git",
+				"/home/agent/.config/jj":          "dir home/.config/jj",
+				"/home/agent/.config/gh":          "dir home/.config/gh",
+				"/home/agent/.ssh":                "dir home/.ssh",
+				"/home/agent/.caboose-sync":       "dir sync",
+				"/home/agent/.caboose-proposals":  "dir proposals",
+				"/home/agent/.config/caboose":     "dir home/.config/caboose",
+				"/home/agent/.aws":                "dir home/.aws",
+				"/home/agent/.config/foo":         "dir home/.config/foo",
+			}
+			for dst, w := range want {
+				if got[dst] != w {
+					t.Errorf("%s: mounted %q, want %q", dst, got[dst], w)
+				}
+			}
+			if len(got) != len(want) {
+				t.Errorf("data dir mounts = %v", got)
+			}
+			// Every home mount of caboose's own, beside the keep entries, is one a
+			// keep entry may not name: sandboxcfg.Reserved has to keep up with
+			// this function.
+			for dst, w := range got {
+				rel := strings.TrimPrefix(dst, config.ContainerHome+"/")
+				if strings.Contains(w, " home/") {
+					continue
+				}
+				if !slices.Contains(sandboxcfg.Reserved, rel) {
+					t.Errorf("~/%s is mounted by caboose but a keep entry may name it: add it to sandboxcfg.Reserved", rel)
+				}
+			}
+			for _, p := range []string{"home/.aws", "home/.config/foo", "home/.ssh", "home/.config/gh"} {
+				if fi, err := os.Stat(filepath.Join(data, p)); err != nil || fi.Mode().Perm() != 0o700 {
+					t.Errorf("%s: %v, want a 0700 dir", p, fi)
+				}
+			}
+			// Each root at /work/<name>, whatever its host path.
+			if w := []backend.Mount{mount(tmp+"/dev", "/work/dev"), mount(tmp+"/w", "/work/w")}; !reflect.DeepEqual(rootMounts, w) {
+				t.Errorf("root mounts = %v, want %v", rootMounts, w)
+			}
+		})
 	}
 }
 

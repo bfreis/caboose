@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"syscall"
 )
 
 // goos is runtime.GOOS, a variable so that tests can play the Mac.
@@ -102,27 +101,24 @@ func (c *CLI) Stream(stdout, stderr io.Writer, args ...string) error {
 	return cmd.Run()
 }
 
-// Pipe runs docker with input on its stdin and all output discarded.
-func (c *CLI) Pipe(input []byte, args ...string) error {
-	cmd := exec.Command(c.Path, args...)
-	cmd.Stdin = bytes.NewReader(input)
+// Build runs docker build with args, as Stream does, with BuildKit's
+// default provenance attestation off. On an engine with the containerd
+// image store an image with one has an index for an ID, and the
+// attestation, new on every build, gives a fully cached rebuild a new ID:
+// the image reads as stale for nothing. A variable rather than
+// --provenance=false, which the legacy builder refuses; a user's own
+// --provenance still wins.
+func (c *CLI) Build(stdout, stderr io.Writer, args ...string) error {
+	cmd := exec.Command(c.Path, append([]string{"build"}, args...)...)
+	cmd.Env = append(os.Environ(), "BUILDX_NO_DEFAULT_ATTESTATIONS=1")
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	return cmd.Run()
 }
 
 // Command is docker with args, not yet started, for a caller that needs
-// its pipes: the link helper's long-running exec.
+// its pipes or its process: every exec in the sandbox (backend.Docker),
+// and caboose logs, which becomes it.
 func (c *CLI) Command(args ...string) *exec.Cmd { return exec.Command(c.Path, args...) }
-
-// Exec replaces the current process with docker, so signals, the TTY and
-// the exit code belong to docker and not to a Go parent process. It returns
-// only on failure.
-func (c *CLI) Exec(args ...string) error {
-	path, err := exec.LookPath(c.Path)
-	if err != nil {
-		return err
-	}
-	return syscall.Exec(path, append([]string{"docker"}, args...), os.Environ())
-}
 
 // ExitCode is the exit status of a failed docker run, or 1 when it did not
 // get as far as exiting (docker missing, say).

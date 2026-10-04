@@ -157,3 +157,16 @@ func TestOutputErrorCarriesStderr(t *testing.T) {
 		t.Errorf("no stderr: %v", err)
 	}
 }
+
+// A build runs with the default provenance attestation off, which would
+// give every rebuild a new image ID on the containerd image store.
+func TestBuildTurnsOffDefaultAttestations(t *testing.T) {
+	c := fakeDocker(t, `echo "$* $BUILDX_NO_DEFAULT_ATTESTATIONS"`)
+	var out strings.Builder
+	if err := c.Build(&out, &out, "-t", "x", "."); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "build -t x . 1\n" {
+		t.Errorf("got %q", got)
+	}
+}

@@ -23,6 +23,9 @@ import (
 // selfupdate.Source.Base) should be.
 type Server struct {
 	Base string
+	// VMM puts caboose-vmm (VMMBinary) in the archives Publish makes for
+	// darwin, as the real releases do.
+	VMM bool
 
 	mu     sync.Mutex
 	latest string
@@ -72,6 +75,11 @@ func Binary(tag string) []byte {
 	return []byte("#!/bin/sh\necho \"caboose " + tag + "\" \"$@\"\n")
 }
 
+// VMMBinary is the content Publish gives tag's caboose-vmm.
+func VMMBinary(tag string) []byte {
+	return []byte("#!/bin/sh\necho \"caboose-vmm " + tag + "\" \"$@\"\n")
+}
+
 // Publish adds release tag for the given platforms ("linux/arm64", ...),
 // each archive holding Binary(tag) as caboose, next to a README.md, and
 // checksums.txt listing them. With latest, it becomes the latest release.
@@ -83,7 +91,11 @@ func (s *Server) Publish(t *testing.T, tag string, latest bool, platforms ...str
 	for _, p := range platforms {
 		goos, goarch, _ := strings.Cut(p, "/")
 		name := selfupdate.AssetName(tag, goos, goarch)
-		a := Archive(t, map[string][]byte{"caboose": Binary(tag), "README.md": []byte("readme\n")})
+		files := map[string][]byte{"caboose": Binary(tag), "README.md": []byte("readme\n")}
+		if s.VMM && goos == "darwin" {
+			files[selfupdate.VMM] = VMMBinary(tag)
+		}
+		a := Archive(t, files)
 		s.files[tag+"/"+name] = a
 		sum := sha256.Sum256(a)
 		fmt.Fprintf(&sums, "%s  %s\n", hex.EncodeToString(sum[:]), name)
@@ -92,6 +104,17 @@ func (s *Server) Publish(t *testing.T, tag string, latest bool, platforms ...str
 	if latest {
 		s.latest = tag
 	}
+}
+
+// Add adds a file to release tag, listed in its checksums.txt, as the
+// release workflow adds vm's files.
+func (s *Server) Add(tag, name string, data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.files[tag+"/"+name] = data
+	sum := sha256.Sum256(data)
+	s.files[tag+"/"+selfupdate.ChecksumsFile] = append(s.files[tag+"/"+selfupdate.ChecksumsFile],
+		[]byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), name))...)
 }
 
 // Replace swaps a release file for data, leaving checksums.txt as it is.
@@ -109,7 +132,7 @@ func (s *Server) Hits() []string {
 }
 
 // Archive is a .tar.gz of files, each at the root, the executables (any
-// named caboose) mode 0755.
+// named caboose or caboose-vmm) mode 0755.
 func Archive(t *testing.T, files map[string][]byte) []byte {
 	t.Helper()
 	var b bytes.Buffer
@@ -117,7 +140,7 @@ func Archive(t *testing.T, files map[string][]byte) []byte {
 	tw := tar.NewWriter(zw)
 	for name, data := range files {
 		mode := int64(0o644)
-		if name == "caboose" {
+		if name == "caboose" || name == selfupdate.VMM {
 			mode = 0o755
 		}
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: mode, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {

@@ -229,7 +229,7 @@ func (a *App) offerBuild(p *prompter) error {
 	}
 	switch {
 	case !build:
-		p.same("Not built: the next launch that creates the container builds it, or %s now", p.code("caboose build"))
+		p.same("Not built: the next launch that creates the %s builds it, or %s now", a.noun(), p.code("caboose build"))
 	case a.build(nil, a.Stderr) != nil:
 		p.fail("The build failed (above). Fix what it says, then run %s.", p.code("caboose build"))
 		return nil
@@ -237,7 +237,7 @@ func (a *App) offerBuild(p *prompter) error {
 		p.ok("Built image '%s'", a.Cfg.Image)
 	}
 	if exists {
-		p.warn("The container keeps the image it was created from: %s moves it onto the new one, and ends running sessions.", p.code("caboose restart"))
+		p.warn("The %s keeps the image it was created from: %s moves it onto the new one, and ends running sessions.", a.noun(), p.code("caboose restart"))
 	}
 	return nil
 }

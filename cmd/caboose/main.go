@@ -18,6 +18,7 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/launcher"
+	"github.com/bfreis/caboose/internal/vm"
 )
 
 // sourceDir may be stamped at build time with
@@ -33,6 +34,12 @@ func main() {
 	// included, inherits this; a value of the user's own is kept.
 	if _, set := os.LookupEnv("DOCKER_CLI_HINTS"); !set {
 		os.Setenv("DOCKER_CLI_HINTS", "false")
+	}
+	// A command in a vm guest (backend.VM.Command): this binary again, as
+	// a client of the guest's exec port. Nothing of the command line or
+	// the configuration applies to it.
+	if len(os.Args) == 2 && os.Args[1] == vm.ExecHelper {
+		os.Exit(vm.ExecMain(os.Stdin, os.Stdout, os.Stderr))
 	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -135,7 +142,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	case "restart":
 		err = app.Restart()
 	case "prune":
-		err = app.Prune()
+		err = app.Prune(inv.Args)
 	case "detach":
 		err = app.Detach()
 	case "logs":

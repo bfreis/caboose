@@ -1,0 +1,27 @@
+## caboose's guest kernel: arm64's own options, merged after config-common
+## (whose notes say how). A 4K page, whatever the host's: userland like
+## jemalloc breaks on 16K, and Apple's 16K host runs a 4K guest.
+CONFIG_ARM64_4K_PAGES=y
+CONFIG_ARM64_VA_BITS_48=y
+CONFIG_ARM64_PTR_AUTH=y
+CONFIG_ARM64_PTR_AUTH_KERNEL=y
+CONFIG_ARM64_BTI=y
+## BTI for the kernel itself needs clang (6.18 refuses it under gcc,
+## gcc bug 106671); BTI for userland stays.
+# CONFIG_ARM64_BTI_KERNEL is not set
+CONFIG_ARM64_E0PD=y
+CONFIG_TRANSPARENT_HUGEPAGE=y
+CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y
+CONFIG_ARM64_CONTPTE=y
+CONFIG_UNMAP_KERNEL_AT_EL0=y
+CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY=y
+CONFIG_ARM64_SW_TTBR0_PAN=y
+# CONFIG_COMPAT is not set
+## Virtualization.framework boots the Image through its EFI stub's header,
+## with a device tree; ACPI and EFI stay until a DT-only boot is proven.
+CONFIG_OF=y
+CONFIG_ACPI=y
+CONFIG_EFI=y
+## The RTC that Virtualization.framework, Cloud Hypervisor and QEMU's virt
+## machine all give an arm64 guest, in its device tree: rtc0.
+CONFIG_RTC_DRV_PL031=y

@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,18 +59,14 @@ func info(os string) string {
 	return `[ "$*" = "info --format {{.OperatingSystem}}" ] && { echo "` + os + `"; exit 0; }`
 }
 
-func mount(src string) []string {
-	return []string{"-v", src + ":" + containerAgent, "-e", "SSH_AUTH_SOCK=" + containerAgent}
-}
-
 // On a Mac, OrbStack and Docker Desktop get their own forwarded socket,
 // whatever the host's agent is -- 1Password's above all, which a direct
 // mount turns into an empty directory.
-func TestSSHAgentArgsMac(t *testing.T) {
+func TestSSHAgentSourceMac(t *testing.T) {
 	for _, engine := range []string{"OrbStack", "Docker Desktop"} {
 		t.Run(engine, func(t *testing.T) {
 			a, _ := agentApp(t, "darwin", info(engine), "", map[string]string{"SSH_AUTH_SOCK": onePasswordSock})
-			if got := a.sshAgentArgs(); !reflect.DeepEqual(got, mount(hostServicesAgent)) {
+			if got := a.sshAgentSource(); got != hostServicesAgent {
 				t.Errorf("args %q", got)
 			}
 		})
@@ -79,11 +74,11 @@ func TestSSHAgentArgsMac(t *testing.T) {
 	t.Run("another engine: the host's socket, if it is one", func(t *testing.T) {
 		sock := listen(t, filepath.Join(t.TempDir(), "a.sock"))
 		a, _ := agentApp(t, "darwin", info("Ubuntu 24.04 LTS"), "", map[string]string{"SSH_AUTH_SOCK": sock})
-		if got := a.sshAgentArgs(); !reflect.DeepEqual(got, mount(sock)) {
+		if got := a.sshAgentSource(); got != sock {
 			t.Errorf("args %q", got)
 		}
 		a, _ = agentApp(t, "darwin", info("Ubuntu 24.04 LTS"), "", map[string]string{"SSH_AUTH_SOCK": onePasswordSock})
-		if got := a.sshAgentArgs(); got != nil {
+		if got := a.sshAgentSource(); got != "" {
 			t.Errorf("mounted a path that is no socket: %q", got)
 		}
 	})
@@ -92,26 +87,26 @@ func TestSSHAgentArgsMac(t *testing.T) {
 // On Linux the agent is mounted directly: the one ssh would use, which an
 // IdentityAgent in ~/.ssh/config (1Password's documented setup) picks over
 // $SSH_AUTH_SOCK.
-func TestSSHAgentArgsLinux(t *testing.T) {
+func TestSSHAgentSourceLinux(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	op := listen(t, filepath.Join(home, ".1password", "agent.sock"))
 	env := listen(t, filepath.Join(t.TempDir(), "env.sock"))
 	for _, tc := range []struct {
 		name, sshG string
-		want       []string
+		want       string
 	}{
-		{"IdentityAgent under ~", "identityagent ~/.1password/agent.sock", mount(op)},
-		{"IdentityAgent quoted", `identityagent "` + op + `"`, mount(op)},
-		{"IdentityAgent SSH_AUTH_SOCK", "identityagent SSH_AUTH_SOCK", mount(env)},
-		{"IdentityAgent $SSH_AUTH_SOCK", "identityagent $SSH_AUTH_SOCK", mount(env)},
-		{"IdentityAgent none", "identityagent none", nil},
-		{"no IdentityAgent", "user me", mount(env)},
-		{"no ssh at all", "", mount(env)},
+		{"IdentityAgent under ~", "identityagent ~/.1password/agent.sock", op},
+		{"IdentityAgent quoted", `identityagent "` + op + `"`, op},
+		{"IdentityAgent SSH_AUTH_SOCK", "identityagent SSH_AUTH_SOCK", env},
+		{"IdentityAgent $SSH_AUTH_SOCK", "identityagent $SSH_AUTH_SOCK", env},
+		{"IdentityAgent none", "identityagent none", ""},
+		{"no IdentityAgent", "user me", env},
+		{"no ssh at all", "", env},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _ := agentApp(t, "linux", "", tc.sshG, map[string]string{"SSH_AUTH_SOCK": env})
-			if got := a.sshAgentArgs(); !reflect.DeepEqual(got, tc.want) {
+			if got := a.sshAgentSource(); got != tc.want {
 				t.Errorf("args %q, want %q", got, tc.want)
 			}
 		})

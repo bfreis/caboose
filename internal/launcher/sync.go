@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/tty"
@@ -58,16 +59,18 @@ func (a *App) Sync(args []string) error {
 	if err := a.ensureRunning(false); err != nil {
 		return err
 	}
+	// Its git reaches the remote through the outbound proxy, under vm.
+	a.awaitProxy()
 	if err := a.refuseLiveSessions(); err != nil {
 		return err
 	}
 	if err := a.checkSyncMount(); err != nil {
 		return err
 	}
-	if v, err := a.Docker.Output("exec", a.Cfg.Container, "git", "--version"); err != nil {
-		return Die("git does not run in the container (%v); the image needs git 2.28 or later, see 'caboose check-image'", err)
+	if v, err := backend.Output(a.box(), "git", "--version"); err != nil {
+		return Die("git does not run in the %s (%v); the image needs git 2.28 or later, see 'caboose check-image'", a.noun(), err)
 	} else if v == "" {
-		return Die("git in the container reports no version; the image needs git 2.28 or later")
+		return Die("git in the %s reports no version; the image needs git 2.28 or later", a.noun())
 	}
 
 	s := a.newSyncer(a.newSyncGit(false))
@@ -143,23 +146,23 @@ func (a *App) newSyncer(g *syncGit) *statesync.Syncer {
 // where the container's git will look for it: one created on another data
 // dir mounts that one's, and the mounts are fixed at creation.
 func (a *App) checkSyncMount() error {
-	mounts, err := a.Docker.Mounts(a.Cfg.Container)
+	mounts, err := a.box().Mounts()
 	if err != nil {
-		return dockerFailed(err)
+		return a.boxFailed(err)
 	}
 	want := filepath.Join(a.Cfg.DataDir, statesync.Dir)
 	for _, m := range mounts {
-		if m.Destination != statesync.ContainerDir {
+		if m.Target != statesync.ContainerDir {
 			continue
 		}
 		if m.Source != want {
-			return Die("the container mounts %s at %s, but this data dir's sync repo is %s; run 'caboose restart' to recreate it on this data dir",
-				m.Source, statesync.ContainerDir, want)
+			return Die("the %s mounts %s at %s, but this data dir's sync repo is %s; run 'caboose restart' to recreate it on this data dir",
+				a.noun(), m.Source, statesync.ContainerDir, want)
 		}
 		return nil
 	}
-	return Die("the container does not mount %s at %s, where the sync's git runs;\n"+
-		"run 'caboose restart' to recreate it (nothing is lost; it asks before ending sessions)", want, statesync.ContainerDir)
+	return Die("the %s does not mount %s at %s, where the sync's git runs;\n"+
+		"run 'caboose restart' to recreate it (nothing is lost; it asks before ending sessions)", a.noun(), want, statesync.ContainerDir)
 }
 
 // live is what in the container could be writing the data dir.
@@ -219,12 +222,12 @@ func (a *App) liveWork() (live, error) {
 	if a.state() != "running" {
 		return l, nil
 	}
-	if out, _ := a.Docker.Output("exec", a.Cfg.Container, "tmux", "list-sessions", "-F", "#{session_name}"); out != "" {
+	if out, _ := backend.Output(a.box(), "tmux", "list-sessions", "-F", "#{session_name}"); out != "" {
 		l.sessions = strings.Split(out, "\n")
 	}
-	out, err := a.Docker.Output("exec", a.Cfg.Container, "bash", "-c", processesScript)
+	out, err := backend.Output(a.box(), "bash", "-c", processesScript)
 	if err != nil || out == "" {
-		return l, fmt.Errorf("cannot list what runs in the container: %v", or(firstLine(out), fmt.Sprint(err)))
+		return l, fmt.Errorf("cannot list what runs in the %s: %v", a.noun(), or(firstLine(out), fmt.Sprint(err)))
 	}
 	arg0, ppid := map[string]string{}, map[string]string{}
 	for _, line := range strings.Split(out, "\n") {

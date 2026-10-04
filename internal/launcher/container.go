@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
@@ -26,17 +28,17 @@ import (
 // ReadyMarker is the file the entrypoint creates once Claude Code is usable.
 const ReadyMarker = "/tmp/.caboose-ready"
 
-func (a *App) state() string { return a.Docker.ContainerState(a.Cfg.Container) }
+func (a *App) state() string { return a.box().State() }
 
 // warnIfImageDrifted compares the image the container was created from
 // against the image that tag points at now. Deliberately only a warning:
 // auto-recreating would silently kill background agents, which is the thing
 // this design exists to protect.
 func (a *App) warnIfImageDrifted() {
-	running := a.Docker.ContainerImage(a.Cfg.Container)
-	current := a.Docker.ImageID(a.Cfg.Image)
+	running := a.box().Image()
+	current := a.images().ImageID(a.Cfg.Image)
 	if running != "" && current != "" && running != current {
-		a.Note("container is running an older image than '%s'.", a.Cfg.Image)
+		a.Note("%s is running an older image than '%s'.", a.noun(), a.Cfg.Image)
 		a.Note("run 'caboose restart' to pick it up (this kills running sessions).")
 	}
 }
@@ -53,7 +55,7 @@ func compatOf(labels map[string]string) (compat int, ok bool) {
 // as it was created from it; ok is false when that cannot be told (no
 // container, docker not answering).
 func (a *App) containerCompat() (compat int, ok bool) {
-	labels, err := a.Docker.ContainerLabels(a.Cfg.Container)
+	labels, err := a.box().Labels()
 	if err != nil {
 		return 0, false
 	}
@@ -107,14 +109,14 @@ func (a *App) checkExisting() error {
 // actually has rather than trusting this process's values: read as it is,
 // that puts its sessions where it has their projects.
 func (a *App) mountedRoots() []config.Root {
-	mounts, err := a.Docker.Mounts(a.Cfg.Container)
+	mounts, err := a.box().Mounts()
 	if err != nil {
 		return nil
 	}
 	var roots []config.Root
 	for _, m := range mounts {
-		if m.Destination == config.WorkDir || strings.HasPrefix(m.Destination, config.WorkDir+"/") {
-			roots = append(roots, config.Root{Host: m.Source, Container: m.Destination})
+		if m.Target == config.WorkDir || strings.HasPrefix(m.Target, config.WorkDir+"/") {
+			roots = append(roots, config.Root{Host: m.Source, Container: m.Target})
 		}
 	}
 	return roots
@@ -138,7 +140,8 @@ func (a *App) visibleRoots() []config.Root {
 // origin is config.RootsOrigin for configured. The messages say what the
 // repo root is and where its value came from, because the default is one
 // person's layout and a new user meets this having never heard of it.
-func CheckInsideRoot(dir string, mounted, configured []config.Root, origin string) (string, error) {
+// noun is what the sandbox is called (App.noun).
+func CheckInsideRoot(dir string, mounted, configured []config.Root, origin, noun string) (string, error) {
 	roots := mounted
 	if len(roots) == 0 {
 		roots = configured
@@ -147,13 +150,17 @@ func CheckInsideRoot(dir string, mounted, configured []config.Root, origin strin
 		return p, nil
 	}
 	if !config.SameRoots(roots, configured) {
-		msg := fmt.Sprintf(`%s is outside the %s this container has mounted.
-       mounted: %s (fixed when the container was created)
+		mounts := "Bind mounts"
+		if noun != "container" {
+			mounts = "Mounts"
+		}
+		msg := fmt.Sprintf(`%s is outside the %s this %s has mounted.
+       mounted: %s (fixed when the %s was created)
        current: %s (%s)
-       Bind mounts cannot change under a live container: 'caboose restart'
+       %s cannot change under a live %s: 'caboose restart'
        remounts %s at the current value (this kills running sessions).`,
-			dir, plural(len(roots), "root", "roots"), config.DescribeRoots(roots),
-			config.DescribeRoots(configured), origin, plural(len(roots), "it", "them"))
+			dir, plural(len(roots), "root", "roots"), noun, config.DescribeRoots(roots), noun,
+			config.DescribeRoots(configured), origin, mounts, noun, plural(len(roots), "it", "them"))
 		if _, ok := config.ContainerPath(configured, dir); !ok {
 			msg += "\n       That alone would not do: " + dir + " is outside the current value too.\n" + config.RepoRootHelp
 		}
@@ -169,7 +176,7 @@ func CheckInsideRoot(dir string, mounted, configured []config.Root, origin strin
 // containerDir is where the container sees host dir, or the error saying
 // why it cannot.
 func (a *App) containerDir(dir string) (string, error) {
-	return CheckInsideRoot(dir, a.mountedRoots(), a.Cfg.Roots, a.Cfg.RootsOrigin())
+	return CheckInsideRoot(dir, a.mountedRoots(), a.Cfg.Roots, a.Cfg.RootsOrigin(), a.noun())
 }
 
 // mountList is roots as "host at container, ...", always saying where:
@@ -194,7 +201,7 @@ func (a *App) warnIfRootsDrifted() {
 	if len(mounted) == 0 || config.SameRoots(mounted, a.Cfg.Roots) {
 		return
 	}
-	a.Note("the container mounts %s; the configuration says %s.", mountList(mounted), mountList(a.Cfg.Roots))
+	a.Note("the %s mounts %s; the configuration says %s.", a.noun(), mountList(mounted), mountList(a.Cfg.Roots))
 	a.Note("run 'caboose restart' to remount (this kills running sessions).")
 }
 
@@ -295,11 +302,16 @@ func (a *App) createContainer(mayBuild bool) error {
 		return err
 	}
 	// Before a build that may take minutes; again below, with the mounts.
-	if err := checkRunArgs(c.DockerRunArgs, nil, c.Roots); err != nil {
+	// Under vm there are no docker run arguments at all (checkVM).
+	if err := checkRunArgs(c.DockerRunArgs, nil, c.Roots); err != nil && !a.isVM() {
 		return a.runArgsError(err)
 	}
 	if err := a.checkRuntime(); err != nil {
 		return err
+	}
+	egress, err := a.egressOn()
+	if err != nil {
+		return Die("%v", err)
 	}
 	labels, err := a.ensureImage(mayBuild)
 	if err != nil {
@@ -311,20 +323,20 @@ func (a *App) createContainer(mayBuild bool) error {
 	}
 	a.noteInstall(filepath.Join(c.DataDir, datadir.PlatformDir(platform)), platform)
 
-	args := []string{
-		"run",
-		"-d",
-		"--name", c.Container,
-		"--hostname", "caboose",
-		"--restart", "unless-stopped",
-		"-e", "CABOOSE_KEEP_VERSIONS=" + c.KeepVersions,
-		// Reap zombies: a long-lived container accumulates them from agents,
-		// MCP servers and tool subprocesses in a way a --rm one never did.
-		"--init",
-		// And on docker stop, signal the entrypoint's whole process group,
-		// not the entrypoint alone: what a start.d script left running is
-		// in it, and would otherwise die by SIGKILL, never hearing a TERM.
-		"-e", "TINI_KILL_PROCESS_GROUP=1",
+	spec := backend.Spec{
+		Image:    c.Image,
+		Cmd:      []string{"--cc-supervise"},
+		Hostname: "caboose",
+		Env: []string{
+			"CABOOSE_KEEP_VERSIONS=" + c.KeepVersions,
+			// On a stop, tini (the docker backend's --init, which reaps
+			// the zombies a long-lived container accumulates from agents,
+			// MCP servers and tool subprocesses) signals the entrypoint's
+			// whole process group, not the entrypoint alone: what a
+			// start.d script left running is in it, and would otherwise
+			// die by SIGKILL, never hearing a TERM.
+			"TINI_KILL_PROCESS_GROUP=1",
+		},
 	}
 
 	// Claude Code's musl build cannot run the ripgrep it bundles, and is
@@ -334,26 +346,29 @@ func (a *App) createContainer(mayBuild bool) error {
 	// it at all. Configuration at creation, not an install (the design's
 	// "Principle"); like the platform itself it changes with caboose restart.
 	if strings.HasSuffix(platform, "-musl") {
-		args = append(args, "-e", "USE_BUILTIN_RIPGREP=0")
+		spec.Env = append(spec.Env, "USE_BUILTIN_RIPGREP=0")
 	}
 
 	// Container-wide, so the supervisor and any tmux server born inside
 	// agree with the host. Per-session TZ is handled again at attach time,
 	// because this one is frozen at creation.
 	if tz := a.hostTimezone(); tz != "" {
-		args = append(args, "-e", "TZ="+tz)
+		spec.Env = append(spec.Env, "TZ="+tz)
 	}
 
-	if sock := DockerSockPath(c.DockerSock, a.getenv("DOCKER_HOST")); sock != "" {
+	if sock := DockerSockPath(c.DockerSock, a.getenv("DOCKER_HOST")); sock != "" && a.isVM() {
+		// A Unix socket does not cross virtio-fs.
+		a.Note("CABOOSE_DOCKER_SOCK is set, but a VM cannot reach this machine's docker socket: not mounting it")
+	} else if sock != "" {
 		if isSocket(sock) {
-			args = append(args, "-v", sock+":/var/run/docker.sock")
+			spec.Mounts = append(spec.Mounts, backend.Mount{Source: sock, Target: "/var/run/docker.sock"})
 			// On a Linux host the socket is root:docker 0660, so the
 			// container user needs its group to reach it at all. macOS hosts
 			// expose it through the VM already reachable, where this is a
 			// no-op. Lstat: the socket itself, not what a link names.
 			var st syscall.Stat_t
 			if syscall.Lstat(sock, &st) == nil {
-				args = append(args, "--group-add", strconv.FormatUint(uint64(st.Gid), 10))
+				spec.Groups = append(spec.Groups, strconv.FormatUint(uint64(st.Gid), 10))
 			}
 			a.Note("WARNING: mounting %s into the container.", sock)
 			a.Note("         that is root-equivalent access to this host, and the")
@@ -366,7 +381,15 @@ func (a *App) createContainer(mayBuild bool) error {
 
 	// SSH agent forwarding lets git/jj push over SSH, and git sign commits,
 	// without copying private keys into the image or the data dir.
-	args = append(args, a.sshAgentArgs()...)
+	// Under vm the link carries it instead: the agent in the guest
+	// listens at the same path, and the host connects each client to its
+	// own agent (vmssh.go).
+	if a.isVM() {
+		spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+containerAgent)
+	} else if src := a.sshAgentSource(); src != "" {
+		spec.Mounts = append(spec.Mounts, backend.Mount{Source: src, Target: containerAgent})
+		spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+containerAgent)
+	}
 
 	d := c.DataDir
 	// What the sandbox keeps of its home: the sandbox config's [[keep]]
@@ -378,44 +401,54 @@ func (a *App) createContainer(mayBuild bool) error {
 	if err != nil {
 		return Die("%v", err)
 	}
-	args = append(args, keepMounts(d, sb)...)
+	spec.Mounts = append(spec.Mounts, keepMounts(d, sb)...)
 	// The Claude Code build for this image's platform (datadir's platform.go
 	// has why each piece is split, the update staging included).
 	pm := datadir.PlatformMounts(platform)
-	args = append(args,
-		"-v", d+"/"+pm[0]+":/home/agent/.local/bin",
-		"-v", d+"/"+pm[1]+":/home/agent/.local/share/claude",
-		"-v", d+"/"+pm[2]+":/home/agent/.cache/claude",
+	spec.Mounts = append(spec.Mounts,
+		backend.Mount{Source: d + "/" + pm[0], Target: "/home/agent/.local/bin"},
+		backend.Mount{Source: d + "/" + pm[1], Target: "/home/agent/.local/share/claude"},
+		backend.Mount{Source: d + "/" + pm[2], Target: "/home/agent/.cache/claude"},
 		// caboose sync's repo: the container's git runs it (launcher/sync.go).
-		"-v", d+"/"+datadir.SyncDir+":"+statesync.ContainerDir,
+		backend.Mount{Source: d + "/" + datadir.SyncDir, Target: statesync.ContainerDir},
 		// Where sessions propose what only the host can change (apply.go).
-		"-v", d+"/"+datadir.ProposalsDir+":"+proposal.ContainerDir,
+		backend.Mount{Source: d + "/" + datadir.ProposalsDir, Target: proposal.ContainerDir},
 	)
 	// Each root at a path of its own that is the same on every machine:
 	// /work, or /work/<name> for several (config.WorkDir).
 	for _, r := range c.Roots {
-		args = append(args, "-v", r.Host+":"+r.Container)
+		spec.Mounts = append(spec.Mounts, backend.Mount{Source: r.Host, Target: r.Container})
 	}
 	// The runtime and the user it needs, probed against the image just
 	// ensured (isolation.go).
-	iso, err := a.isolationArgs()
-	if err != nil {
+	if err := a.isolate(&spec); err != nil {
 		return err
 	}
-	args = append(args, iso...)
+	// Under vm, its outbound connections made from this machine (egress.go).
+	withEgress(&spec, egress)
 	// The user's own arguments, last, so they are checked against all of
 	// caboose's, and labelled, so a change to them shows (runargs.go).
-	if err := checkRunArgs(c.DockerRunArgs, args, c.Roots); err != nil {
-		return a.runArgsError(err)
+	if !a.isVM() {
+		if err := checkRunArgs(c.DockerRunArgs, backend.RunArgv(c.Container, spec), c.Roots); err != nil {
+			return a.runArgsError(err)
+		}
+		if len(c.DockerRunArgs) > 0 {
+			a.Note("creating the container with docker run arguments %s (%s)", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
+			spec.RunArgs = c.DockerRunArgs
+		}
 	}
-	args = append(args, "--label", assets.LabelRunArgs+"="+runArgsLabel(c.DockerRunArgs))
-	if len(c.DockerRunArgs) > 0 {
-		a.Note("creating the container with docker run arguments %s (%s)", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
-		args = append(args, c.DockerRunArgs...)
+	spec.Labels = append(spec.Labels, assets.LabelRunArgs+"="+runArgsLabel(c.DockerRunArgs))
+	if a.isVM() {
+		// Level 3: dockerd in the guest, which the entrypoint starts when
+		// the image has one, its storage on a disk kept across restarts
+		// (overlayfs cannot sit on virtio-fs, and the images are worth
+		// keeping, as a laptop's Docker keeps them).
+		spec.Volumes = append(spec.Volumes, backend.Volume{Name: dockerVolume, Target: "/var/lib/docker"})
+		spec.Env = append(spec.Env, "CABOOSE_ISOLATION="+isolationVM)
+		a.Note("starting the sandbox's VM")
 	}
-	args = append(args, c.Image, "--cc-supervise")
-	if err := a.Docker.Run(args...); err != nil {
-		return dockerFailed(err)
+	if err := a.box().Create(spec); err != nil {
+		return a.boxFailed(err)
 	}
 	return nil
 }
@@ -472,7 +505,7 @@ func (a *App) ensureImage(mayBuild bool) (map[string]string, error) {
 
 func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 	c := a.Cfg
-	labels, exists, err := a.Docker.ImageLabels(c.Image)
+	labels, exists, err := a.images().ImageLabels(c.Image)
 	if err != nil && !exists {
 		return nil, imageInspectFailed(c.Image, err)
 	}
@@ -500,8 +533,8 @@ func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 				"       (CABOOSE_NO_AUTO_BUILD is set, so a launch does not rebuild it)", why)
 		case !mayBuild:
 			return nil, Die("%s,\n"+
-				"       and there is no container yet — run caboose in a project (it rebuilds the image first)\n"+
-				"       or 'caboose build'", why)
+				"       and there is no %s yet — run caboose in a project (it rebuilds the image first)\n"+
+				"       or 'caboose build'", why, a.noun())
 		}
 		a.Note("%s — rebuilding", why)
 		a.Note("%s; a few minutes, and CABOOSE_NO_AUTO_BUILD=1 turns this off.", a.buildNote())
@@ -511,8 +544,8 @@ func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 			return nil, Die("image '%s' not found — run 'caboose build' first\n"+
 				"       (CABOOSE_NO_AUTO_BUILD is set, so a launch does not build it)", c.Image)
 		case !mayBuild:
-			return nil, Die("no container yet, and no image '%s' to create it from — run caboose in a project\n"+
-				"       (it builds the image first) or 'caboose build'", c.Image)
+			return nil, Die("no %s yet, and no image '%s' to create it from — run caboose in a project\n"+
+				"       (it builds the image first) or 'caboose build'", a.noun(), c.Image)
 		}
 		a.Note("no image '%s' yet — %s", c.Image, a.buildNote())
 		a.Note("(a few minutes, once; CABOOSE_NO_AUTO_BUILD=1 turns this off).")
@@ -530,7 +563,7 @@ func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 	a.Note("built image '%s'", c.Image)
 	// Best-effort: a failure to read them only costs the platform label,
 	// and the architecture fallback still answers.
-	labels, _, _ = a.Docker.ImageLabels(c.Image)
+	labels, _, _ = a.images().ImageLabels(c.Image)
 	return labels, nil
 }
 
@@ -585,14 +618,14 @@ func imageInspectFailed(image string, err error) error {
 // docker error keeps it quiet: this is advice, and a launch that is about
 // to fail over docker will say so itself.
 func (a *App) warnIfLocalImageStale() {
-	labels, exists, err := a.Docker.ImageLabels(a.Cfg.Image)
+	labels, exists, err := a.images().ImageLabels(a.Cfg.Image)
 	if err == nil {
 		a.warnIfImageStale(labels, exists)
 	}
 }
 
 func (a *App) lastLogLines() {
-	_ = a.Docker.Stream(a.Stderr, a.Stderr, "logs", "--tail", "30", a.Cfg.Container)
+	_ = a.box().Logs(a.Stderr, a.Stderr, 30)
 }
 
 // pendingInstall is where the container being brought up will install
@@ -618,10 +651,13 @@ func (a *App) waitUntilReady() error {
 	if err != nil {
 		return Die("%v", err)
 	}
+	if v, ok := a.box().(*backend.VM); ok {
+		return a.waitVMReady(v, timeout)
+	}
 	waited, announced := 0, false
-	for a.Docker.Quiet("exec", a.Cfg.Container, "test", "-f", ReadyMarker) != nil {
+	for backend.Quiet(a.box(), "test", "-f", ReadyMarker) != nil {
 		if a.state() != "running" {
-			a.Note("container exited before becoming ready; last log lines:")
+			a.Note("%s exited before becoming ready; last log lines:", a.noun())
 			a.lastLogLines()
 			return Die("startup failed")
 		}
@@ -637,11 +673,27 @@ func (a *App) waitUntilReady() error {
 			a.Note("first run on %s — installing Claude Code into %s, this takes a minute", in.platform, in.dir)
 			announced = true
 		case waited >= 3:
-			a.Note("waiting for the container to be ready")
+			a.Note("waiting for the %s to be ready", a.noun())
 			announced = true
 		}
 		time.Sleep(time.Second)
 		waited++
+	}
+	return nil
+}
+
+// waitVMReady is waitUntilReady for a VM, whose agent says when the
+// entrypoint is ready, or why it could not be: no polling, and a failed
+// boot is said at once rather than after the timeout.
+func (a *App) waitVMReady(v *backend.VM, timeout int) error {
+	if in := a.install; in.platform != "" {
+		a.Note("first run on %s — installing Claude Code into %s, this takes a minute", in.platform, in.dir)
+	}
+	if err := v.WaitReady(time.Duration(timeout) * time.Second); err != nil {
+		a.Note("the sandbox's VM is not ready: %v", err)
+		a.Note("last lines of its console:")
+		a.lastLogLines()
+		return Die("startup failed (raise CABOOSE_READY_TIMEOUT if the install is just slow)")
 	}
 	return nil
 }
@@ -674,6 +726,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		a.warnIfKeepDrifted()
 		a.warnIfRunArgsDrifted()
 		a.warnIfIsolationDrifted()
+		a.warnIfEgressDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {
 			return err
@@ -696,9 +749,17 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		if err := a.checkExisting(); err != nil {
 			return err
 		}
-		if _, err := a.Docker.Output("start", a.Cfg.Container); err != nil {
-			return startFailed(a.Cfg.Container, err)
+		if err := a.box().Start(); err != nil {
+			return startFailed(a.noun(), a.Cfg.Container, err)
 		}
+	}
+	if a.isVM() {
+		// Under vm the link carries the SSH agent and the outbound proxy,
+		// so whatever brings the sandbox up starts it, not only a session;
+		// and before it is ready, since the entrypoint's first install of
+		// Claude Code goes through the proxy (the agent serves the link
+		// from the entrypoint's start).
+		a.startLink()
 	}
 	if err := a.waitUntilReady(); err != nil {
 		return err
@@ -723,7 +784,7 @@ func (a *App) confirmSessionLoss(action string) error {
 	if a.state() != "running" || a.lossConfirmed {
 		return nil
 	}
-	sessions, _ := a.Docker.Output("exec", a.Cfg.Container, "tmux", "list-sessions", "-F", "#{session_name}")
+	sessions, _ := backend.Output(a.box(), "tmux", "list-sessions", "-F", "#{session_name}")
 	if sessions == "" {
 		return nil
 	}
@@ -733,20 +794,29 @@ func (a *App) confirmSessionLoss(action string) error {
 		a.Note("FORCE=1 set, continuing.")
 		return nil
 	}
-	refuse := Die("refusing to %s non-interactively with live sessions (set FORCE=1 to override)", action)
+	yes, asked := a.askYes("continue?")
+	switch {
+	case !asked:
+		return Die("refusing to %s non-interactively with live sessions (set FORCE=1 to override)", action)
+	case !yes:
+		return Die("aborted; nothing was changed")
+	}
+	return nil
+}
+
+// askYes asks question on the terminal, no by default. asked is false
+// when there is no terminal to ask on.
+func (a *App) askYes(question string) (yes, asked bool) {
 	if !tty.IsTerminal(os.Stdin.Fd()) {
-		return refuse
+		return false, false
 	}
 	t, err := os.Open("/dev/tty")
 	if err != nil {
-		return refuse
+		return false, false
 	}
 	defer t.Close()
-	fmt.Fprint(a.Stderr, "caboose: continue? [y/N] ")
-	if confirmed(t) {
-		return nil
-	}
-	return Die("aborted; nothing was changed")
+	fmt.Fprintf(a.Stderr, "caboose: %s [y/N] ", question)
+	return confirmed(t), true
 }
 
 // confirmed reads one reply line from r and reports whether it is a yes. A
@@ -766,10 +836,10 @@ func confirmed(r io.Reader) bool {
 
 func (a *App) removeContainer() error {
 	if a.state() != "absent" {
-		if err := a.Docker.Run("rm", "-f", a.Cfg.Container); err != nil {
-			return dockerFailed(err)
+		if err := a.box().Remove(); err != nil {
+			return a.boxFailed(err)
 		}
-		a.Note("container removed")
+		a.Note("%s removed", a.noun())
 	}
 	return nil
 }
@@ -803,13 +873,15 @@ func (a *App) importHostTerminfo(term string) bool {
 			return false
 		}
 	}
-	if a.Docker.Pipe(desc, "exec", "-i", a.Cfg.Container, "sh", "-c", `tic -x -o "$HOME/.terminfo" -`) != nil {
+	tic := backend.ExecSpec{Argv: []string{"sh", "-c", `tic -x -o "$HOME/.terminfo" -`}, Stdin: true}
+	if _, err := backend.Capture(a.box(), tic, bytes.NewReader(desc)); err != nil {
 		return false
 	}
-	return a.Docker.Quiet("exec", a.Cfg.Container, "infocmp", term) == nil
+	return backend.Quiet(a.box(), "infocmp", term) == nil
 }
 
-// execEnvArgs builds the `-e VAR=value` pairs for a docker exec.
+// execEnv is the VAR=value environment for an exec that attaches a
+// terminal.
 //
 // `docker exec` forwards none of the host's session identity: -t hardcodes
 // TERM=xterm (8 colors), drops COLORTERM, and never passes a timezone.
@@ -817,33 +889,33 @@ func (a *App) importHostTerminfo(term string) bool {
 // Only pass a TERM the container actually has a terminfo entry for, since an
 // unknown TERM degrades worse than a generic one. ncurses-term in the image
 // covers most; the rest are imported from the host (importHostTerminfo).
-func (a *App) execEnvArgs() []string {
+func (a *App) execEnv() []string {
 	term := a.getenv("TERM")
 	if term == "" {
 		term = "xterm-256color"
 	}
-	if a.Docker.Quiet("exec", a.Cfg.Container, "infocmp", term) != nil {
+	if backend.Quiet(a.box(), "infocmp", term) != nil {
 		if a.importHostTerminfo(term) {
-			a.Note("imported the host's '%s' terminfo into the container", term)
+			a.Note("imported the host's '%s' terminfo into the %s", term, a.noun())
 		} else {
 			term = "xterm-256color"
 		}
 	}
-	args := []string{"-e", "TERM=" + term}
+	env := []string{"TERM=" + term}
 	// Claude Code uses COLORTERM to decide truecolor; the terminfo entry
 	// alone is not enough.
 	if ct := a.getenv("COLORTERM"); ct != "" {
-		args = append(args, "-e", "COLORTERM="+ct)
+		env = append(env, "COLORTERM="+ct)
 	}
 	// A zone name the container's tzdata does not have degrades silently
 	// back to UTC -- precisely the bug this exists to fix -- so check, and
 	// say so rather than pretending it worked.
 	if tz := a.hostTimezone(); tz != "" {
-		if a.Docker.Quiet("exec", a.Cfg.Container, "test", "-f", "/usr/share/zoneinfo/"+tz) == nil {
-			args = append(args, "-e", "TZ="+tz)
+		if backend.Quiet(a.box(), "test", "-f", "/usr/share/zoneinfo/"+tz) == nil {
+			env = append(env, "TZ="+tz)
 		} else {
-			a.Note("host timezone '%s' is not in the container's tzdata; staying on UTC", tz)
+			a.Note("host timezone '%s' is not in the %s's tzdata; staying on UTC", tz, a.noun())
 		}
 	}
-	return args
+	return env
 }

@@ -2,9 +2,11 @@ package launcher
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/imagecheck"
 )
@@ -48,39 +50,24 @@ func (a *App) CheckImage(args []string) error {
 	out := newUI(a.Stdout, termWidth(a.Stdout, 100))
 	out.banner("caboose check-image", image)
 	out.blank()
-	_, exists, err := a.Docker.ImageLabels(image)
-	if err != nil && !exists {
-		return cannotCheck(imageInspectFailed(image, err))
+	check := a.checkImageDocker
+	if a.isVM() {
+		check = a.checkImageVM
 	}
-	if !exists {
-		if !named {
-			a.Note("run 'caboose build' to build it, or name an image to check: caboose check-image IMAGE")
-			return &ExitError{Code: checkFailed, Msg: fmt.Sprintf("base image '%s' is not built yet", image)}
-		}
-		a.Note("image '%s' is not in the local store; pulling it (docker's output follows)", image)
-		if err := a.Docker.Stream(a.Stderr, a.Stderr, "pull", image); err != nil {
-			return &ExitError{Code: checkFailed, Msg: fmt.Sprintf("cannot pull image '%s' (%v)", image, err)}
-		}
-	}
-
-	// The probe runs a container of the image, and tries the network from
-	// it: seconds, which a terminal is told about.
-	var sp *spinner
-	if out.width > 0 {
-		sp = startSpinner(out, "checking "+image+" in a container of it")
-	}
-	rep, err := imagecheck.Run(a.Docker, image, "", os.Getuid(), os.Getgid())
-	if sp != nil {
-		sp.end()
-	}
+	rep, err := check(out, image, named)
 	if err != nil {
-		if docker.IsUnreachable(err) {
-			return cannotCheck(Die("cannot check image '%s': is the docker engine running? (%v)", image, err))
-		}
-		return cannotCheck(Die("cannot check image '%s': %v", image, err))
+		return err
 	}
 
 	rows := rep.Checklist()
+	// Docker inside the sandbox is a fact of the image's, never a
+	// requirement, and only vm's: there the sandbox starts the image's
+	// own dockerd. Under docker and gvisor nothing starts one, and the
+	// sandbox's docker CLI talks to this machine's engine or to nothing,
+	// so a row about the image's dockerd would only mislead.
+	if row, ok := rep.DockerInside(); ok && a.isVM() {
+		rows = append(rows, row)
+	}
 	lw := 0
 	for _, row := range rows {
 		lw = max(lw, len(row.Label))
@@ -102,6 +89,110 @@ func (a *App) CheckImage(args []string) error {
 	return nil
 }
 
+// checkImageDocker is the check in the docker engine: image, pulled first
+// when named and not local, probed in a container of it.
+func (a *App) checkImageDocker(out *ui, image string, named bool) (*imagecheck.Report, error) {
+	_, exists, err := a.Docker.ImageLabels(image)
+	if err != nil && !exists {
+		return nil, cannotCheck(imageInspectFailed(image, err))
+	}
+	if !exists {
+		if !named {
+			return nil, notBuiltYet(a, image)
+		}
+		a.Note("image '%s' is not in the local store; pulling it (docker's output follows)", image)
+		if err := a.Docker.Stream(a.Stderr, a.Stderr, "pull", image); err != nil {
+			return nil, &ExitError{Code: checkFailed, Msg: fmt.Sprintf("cannot pull image '%s' (%v)", image, err)}
+		}
+	}
+
+	// The probe runs a container of the image, and tries the network from
+	// it: seconds, which a terminal is told about.
+	sp := checkSpinner(out, "checking "+image+" in a container of it")
+	rep, err := imagecheck.Run(a.Docker, image, "", os.Getuid(), os.Getgid())
+	sp.end()
+	if err != nil {
+		if docker.IsUnreachable(err) {
+			return nil, cannotCheck(Die("cannot check image '%s': is the docker engine running? (%v)", image, err))
+		}
+		return nil, cannotCheck(Die("cannot check image '%s': %v", image, err))
+	}
+	return rep, nil
+}
+
+// imageGuest is what caboose check-image asks of the builder guest
+// (builder.Guest).
+type imageGuest interface {
+	Has(image string) (bool, error)
+	Pull(image string, progress io.Writer) error
+	Check(image string, probe []byte, uid, gid int) (string, *imagecheck.Report, error)
+	Stop() error
+}
+
+// checkImageVM is the check under isolation vm, where there may be no
+// docker engine: in the builder guest caboose build uses, whose store
+// keeps the bases builds made or pulled. The image is looked for there,
+// pulled there when named, and probed in a container of it there, with
+// the same imagecheck.Args as under docker. An image only a docker engine
+// on this Mac holds cannot reach the guest: its pull fails, and says so.
+func (a *App) checkImageVM(out *ui, image string, named bool) (*imagecheck.Report, error) {
+	probe, err := assets.ProbeScript()
+	if err != nil {
+		return nil, cannotCheck(Die("%v", err))
+	}
+	boot := a.checkGuest
+	if boot == nil {
+		boot = func() (imageGuest, error) { return a.startBuilder("", "") }
+	}
+	g, err := boot()
+	if err != nil {
+		return nil, cannotCheck(err)
+	}
+	defer g.Stop()
+	has, err := g.Has(image)
+	if err != nil {
+		return nil, cannotCheck(Die("cannot check image '%s': the builder guest could not look it up (%v)", image, err))
+	}
+	if !has {
+		if !named {
+			return nil, notBuiltYet(a, image)
+		}
+		a.Note("image '%s' is not in the builder guest's store; pulling it there (docker's output follows)", image)
+		if err := g.Pull(image, a.Stderr); err != nil {
+			a.Note("under isolation vm an image is checked in caboose's builder guest, which pulls it from its registry:")
+			a.Note("an image only a docker engine on this Mac holds cannot reach it. Push it to a registry first, or")
+			a.Note("check it in that engine: CABOOSE_ISOLATION=docker caboose check-image %s", image)
+			return nil, &ExitError{Code: checkFailed, Msg: fmt.Sprintf("cannot pull image '%s' in the builder guest (%v)", image, err)}
+		}
+	}
+	sp := checkSpinner(out, "checking "+image+" in a container of it, in the builder guest")
+	_, rep, err := g.Check(image, probe, os.Getuid(), os.Getgid())
+	sp.end()
+	if err != nil {
+		return nil, cannotCheck(Die("%v", err))
+	}
+	return rep, nil
+}
+
+// notBuiltYet is the answer for the default base before a build made it.
+func notBuiltYet(a *App, image string) error {
+	a.Note("run 'caboose build' to build it, or name an image to check: caboose check-image IMAGE")
+	return &ExitError{Code: checkFailed, Msg: fmt.Sprintf("base image '%s' is not built yet", image)}
+}
+
+// checkSpinner is a spinner on a terminal while the probe runs, which
+// tries the network: seconds. Anywhere else it is nothing.
+func checkSpinner(out *ui, what string) interface{ end() } {
+	if out.width == 0 {
+		return noSpinner{}
+	}
+	return startSpinner(out, what)
+}
+
+type noSpinner struct{}
+
+func (noSpinner) end() {}
+
 // checkMarks are how each level of the checklist shows.
 var checkMarks = map[imagecheck.Level]mark{imagecheck.Met: markOK, imagecheck.Noted: markNote, imagecheck.Unmet: markProblem}
 
@@ -113,8 +204,12 @@ func (a *App) checkImageSays(rep *imagecheck.Report, problems []string) {
 	u := newUI(a.Stderr, termWidth(a.Stderr, 100))
 	unreachable := "claude.ai did not answer from a container of this image. Not a failure: the network " +
 		"may differ where it runs, or a proxy be set later. But Claude Code installs from there."
+	notes := rep.Notes()
+	if n := rep.DockerInsideNote(); n != "" && a.isVM() {
+		notes = append(notes, n)
+	}
 	if u.width == 0 {
-		for _, n := range rep.Notes() {
+		for _, n := range notes {
 			a.Note("%s", n)
 		}
 		for _, p := range problems {
@@ -141,10 +236,10 @@ func (a *App) checkImageSays(rep *imagecheck.Report, problems []string) {
 		}
 		fmt.Fprint(u.out, u.wrap(text, "    "+label+strings.Repeat(" ", lw-len(label))+"  ", strings.Repeat(" ", lw+6)))
 	}
-	if len(problems) > 0 && (len(rep.Notes()) > 0 || rep.Unreachable()) {
+	if len(problems) > 0 && (len(notes) > 0 || rep.Unreachable()) {
 		u.blank()
 	}
-	for _, n := range rep.Notes() {
+	for _, n := range notes {
 		u.warn("%s", capFirst(n))
 	}
 	if rep.Unreachable() {

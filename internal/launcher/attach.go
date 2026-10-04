@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/bfreis/caboose/internal/backend"
 )
 
 // A session with a tmux client on it is one someone is looking at, and a
@@ -94,7 +96,7 @@ func (a *App) clientsInUse(name string) int {
 	if !orphaned(n, len(live), len(ended)) {
 		return n
 	}
-	if a.Docker.Quiet("exec", a.Cfg.Container, "tmux", "detach-client", "-s", "="+name) != nil {
+	if backend.Quiet(a.box(), "tmux", "detach-client", "-s", "="+name) != nil {
 		return n
 	}
 	a.Note("'%s' was still attached to a terminal that has closed; taking it back", name)

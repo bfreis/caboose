@@ -1,13 +1,15 @@
 // Package hostlink is the host's end of the link to caboose-agent: it
-// forwards the sandbox's listening ports to this machine's localhost, and
-// opens URLs and shows notifications when the sandbox asks.
+// forwards the sandbox's listening ports to this machine's localhost,
+// opens URLs and shows notifications when the sandbox asks, and, under vm,
+// dials the sandbox's outbound connections from this machine (egress.go).
 //
 // Everything the agent sends is untrusted, as everything from the sandbox
 // is. The host decides: which ports forward is config.toml's forward_ports,
 // never the agent's; forwarding listens on 127.0.0.1 only; a URL opens only
 // when it is http(s) and, by default, only after a dialog says yes; and
 // every text the sandbox wrote is made printable and cut short before
-// anything shows it.
+// anything shows it; the outbound proxy reaches only egress_ports, and
+// only public addresses unless egress_allow says otherwise.
 package hostlink
 
 import (
@@ -26,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/linkdebug"
 	"github.com/bfreis/caboose/internal/proposal"
 )
 
@@ -72,6 +75,17 @@ type Config struct {
 	// Watch starts watching the roots' host directories; nil is
 	// WatchRoots.
 	Watch func(dirs []string) (Watcher, error)
+	// SSHAgent is where, in the sandbox, the agent is to serve this
+	// machine's SSH agent, SSHAuthSock (OpSSHAgent): under vm, where no
+	// socket can be mounted. "" forwards none.
+	SSHAgent, SSHAuthSock string
+	// Egress is the outbound proxy the host offers the agent (OpConnect):
+	// under vm, whose NAT reaches none of this machine's VPN routes. nil
+	// offers none.
+	Egress *Egress
+	// Diagnose logs the windows the hellos settled on, and any stream or
+	// write that stalls (agentproto's WatchStalls).
+	Diagnose bool
 }
 
 // Host serves one session.
@@ -85,7 +99,17 @@ type Host struct {
 	tokens   float64
 	lastTick time.Time
 	dialog   sync.Mutex // one dialog at a time
+	ssh      int        // SSH agent connections open
+	egress   egressState
 }
+
+// stallAfter is how long a stream waits for credit, or a write to the
+// agent blocks, before Diagnose logs it.
+const stallAfter = 5 * time.Second
+
+// maxSSH is the most SSH agent connections open at once: git opens one or
+// two per command.
+const maxSSH = 16
 
 type forward struct {
 	port int
@@ -94,6 +118,10 @@ type forward struct {
 
 // ErrVersion is an agent that speaks another protocol.
 var ErrVersion = errors.New("the sandbox's caboose-agent speaks another protocol version")
+
+// ErrNoHello is a session that ended before the agent's hello: an agent
+// that had nothing to serve yet, or none at all.
+var ErrNoHello = errors.New("the link ended before the agent's hello")
 
 // Run serves sess until it ends, and returns why. Forwards end with it.
 func Run(sess *agentproto.Session, cfg Config) error {
@@ -105,8 +133,16 @@ func Run(sess *agentproto.Session, cfg Config) error {
 	h := &Host{sess: sess, cfg: cfg, forwards: map[int]*forward{}, refused: map[int]string{},
 		tokens: requestBurst, lastTick: time.Now()}
 	defer h.closeAll()
-	if err := sess.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}); err != nil {
-		return err
+	hello := agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}
+	if cfg.SSHAgent != "" && cfg.SSHAuthSock != "" {
+		hello.SSHAgent = cfg.SSHAgent
+	}
+	if cfg.Egress != nil {
+		hello.Egress = cfg.Egress.listen()
+		go h.countEgressEvery()
+	}
+	if err := sess.Send(hello); err != nil {
+		return fmt.Errorf("%w (%v)", ErrNoHello, err)
 	}
 	helloed := false
 	for b := range sess.Control() {
@@ -123,6 +159,14 @@ func Run(sess *agentproto.Session, cfg Config) error {
 				return fmt.Errorf("%w: %d, this caboose %d ('caboose restart' rebuilds the image)", ErrVersion, m.Version, agentproto.Version)
 			}
 			helloed = true
+			if cfg.Diagnose && cfg.Log != nil {
+				note := ""
+				if k := linkdebug.Get(); k.Raw != "" {
+					note = fmt.Sprintf(" (%s=%q)", linkdebug.Var, k.Raw)
+				}
+				cfg.Log.Printf("windows: this side's streams take %d in flight, the agent's %d%s", sess.Window(), sess.PeerWindow(), note)
+				sess.WatchStalls(cfg.Log.Printf, stallAfter)
+			}
 			if w := h.watch(); w != nil {
 				defer w.Close()
 				go h.relayChanges(w)
@@ -135,6 +179,9 @@ func Run(sess *agentproto.Session, cfg Config) error {
 		case agentproto.TypeRequest:
 			go h.answer(m)
 		}
+	}
+	if !helloed {
+		return fmt.Errorf("%w (%v)", ErrNoHello, sess.Err())
 	}
 	return sess.Err()
 }
@@ -263,7 +310,15 @@ func (h *Host) allow() bool {
 
 func (h *Host) answer(m agentproto.Message) {
 	var err error
-	if !h.allow() {
+	if m.Op == agentproto.OpSSHAgent {
+		// Not the bucket's: a git command opens one or two, and it only
+		// ever reaches this machine's agent, which asks its own questions.
+		err = h.sshAgent(m.ID)
+	} else if m.Op == agentproto.OpConnect {
+		// Its own bucket and limits (egress.go): a page load opens
+		// several at once.
+		err = h.connect(m.ID, m.Host, m.Port)
+	} else if !h.allow() {
 		err = errors.New("too many requests; try again shortly")
 	} else {
 		switch m.Op {
@@ -277,9 +332,47 @@ func (h *Host) answer(m agentproto.Message) {
 	}
 	r := agentproto.Message{Type: agentproto.TypeResponse, ID: m.ID, OK: err == nil}
 	if err != nil {
-		r.Error = err.Error()
+		r.Error, r.Reason = err.Error(), egressReason(err)
 	}
 	_ = h.sess.Send(r)
+}
+
+// sshAgent opens a stream for request id, connected to this machine's
+// SSH agent.
+func (h *Host) sshAgent(id uint64) error {
+	if h.cfg.SSHAgent == "" || h.cfg.SSHAuthSock == "" {
+		return errors.New("the host forwards no SSH agent")
+	}
+	h.mu.Lock()
+	if h.ssh >= maxSSH {
+		h.mu.Unlock()
+		return fmt.Errorf("already %d SSH agent connections open", maxSSH)
+	}
+	h.ssh++
+	h.mu.Unlock()
+	done := func() {
+		h.mu.Lock()
+		h.ssh--
+		h.mu.Unlock()
+	}
+	c, err := net.DialTimeout("unix", h.cfg.SSHAuthSock, 5*time.Second)
+	if err != nil {
+		done()
+		h.cfg.Log.Printf("ssh agent: cannot reach %s: %v", h.cfg.SSHAuthSock, err)
+		return errors.New("the host's SSH agent does not answer")
+	}
+	hdr, _ := json.Marshal(agentproto.StreamHeader{Request: id})
+	st, err := h.sess.Open(hdr)
+	if err != nil {
+		c.Close()
+		done()
+		return err
+	}
+	go func() {
+		defer done()
+		agentproto.Splice(st, c.(*net.UnixConn))
+	}()
+	return nil
 }
 
 func (h *Host) open(raw string) error {
@@ -330,6 +423,13 @@ func CheckURL(raw string) (string, error) {
 }
 
 func (h *Host) notify(title, text string) error {
+	return Notify(h.cfg.Actions, title, text)
+}
+
+// Notify shows text under title with actions, as the sandbox's notify
+// request is shown: made printable and cut short first, since either may
+// hold what the sandbox wrote.
+func Notify(actions Actions, title, text string) error {
 	title, text = clip(proposal.Printable(title), maxTitle), clip(proposal.Printable(text), maxText)
 	if text == "" {
 		return errors.New("nothing to say")
@@ -337,7 +437,7 @@ func (h *Host) notify(title, text string) error {
 	if title == "" {
 		title = "caboose"
 	}
-	return h.cfg.Actions.Notify(title, text)
+	return actions.Notify(title, text)
 }
 
 // clip cuts s to at most n bytes, on a character boundary.

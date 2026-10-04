@@ -281,8 +281,8 @@ func TestDoctorContainerDrift(t *testing.T) {
 	t.Run("older image", func(t *testing.T) {
 		doctorEnv(t, imageIDIs("sha:2"))
 		code, out, _ := runIt("doctor", "--offline")
-		if code != 1 || row(out, "container", "problem: box was created from an older image than img") == "" ||
-			!fixFor(out, "container", "caboose restart (this ends running sessions)") {
+		if code != 1 || row(out, "container", "problem: the container runs an older image than the local 'img'") == "" ||
+			!fixFor(out, "container", "caboose restart, which moves it onto the local image (this ends running sessions)") {
 			t.Fatalf("exit %d:\n%s", code, out)
 		}
 	})

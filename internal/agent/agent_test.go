@@ -58,6 +58,13 @@ type fakeHost struct {
 
 func startLink(t *testing.T) *fakeHost {
 	t.Helper()
+	return startLinkWith(t, agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}, procFixture(t))
+}
+
+// startLinkWith runs the link with procRoot's tables, and answers its
+// hello with hello.
+func startLinkWith(t *testing.T, hello agentproto.Message, procRoot string) *fakeHost {
+	t.Helper()
 	hr, aw := io.Pipe()
 	ar, hw := io.Pipe()
 	// A short path: a Unix socket's must fit in about 100 bytes.
@@ -72,13 +79,13 @@ func startLink(t *testing.T) *fakeHost {
 		done:   make(chan error, 1),
 	}
 	go func() {
-		h.done <- RunLink(ar, aw, Config{Socket: h.socket, ProcRoot: procFixture(t), Interval: 20 * time.Millisecond})
+		h.done <- RunLink(ar, aw, Config{Socket: h.socket, ProcRoot: procRoot, Interval: 20 * time.Millisecond})
 	}()
 	t.Cleanup(func() { h.sess.Close() })
 	if m := h.next(t); m.Type != agentproto.TypeHello || m.Version != agentproto.Version {
 		t.Fatalf("first message %+v, want a hello", m)
 	}
-	h.sess.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version})
+	h.sess.Send(hello)
 	return h
 }
 
@@ -106,15 +113,18 @@ func (h *fakeHost) nextOf(t *testing.T, typ string) agentproto.Message {
 	}
 }
 
+// waitSocket waits until the link's socket accepts a connection: the file
+// appears at bind, before the listen that makes a dial succeed.
 func waitSocket(t *testing.T, path string) {
 	t.Helper()
 	for i := 0; i < 200; i++ {
-		if _, err := os.Stat(path); err == nil {
+		if c, err := net.Dial("unix", path); err == nil {
+			c.Close()
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("the link never made its socket")
+	t.Fatal("the link's socket never accepted a connection")
 }
 
 func TestLinkReportsPorts(t *testing.T) {

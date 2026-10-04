@@ -57,10 +57,10 @@ Any image, glibc or musl based, that has all of this — exactly what
 | requirement | why |
 |---|---|
 | `/bin/sh` | the check and the user setup run with plain `sh` |
-| `bash` | the entrypoint and Claude Code's installer are bash scripts; the launcher runs `docker exec … bash` |
+| `bash` | the entrypoint and Claude Code's installer are bash scripts; the launcher runs its commands in the sandbox with bash |
 | `curl` and CA certificates | the installer downloads Claude Code over https |
 | `tmux` | every session runs in tmux |
-| `git`, 2.28 or later | [`caboose sync`](sync.md) runs every git command in the container |
+| `git`, 2.28 or later | [`caboose sync`](sync.md) runs every git command in the sandbox |
 | glibc or musl, on x86_64 or aarch64 | Claude Code ships builds for exactly those |
 | on musl: `libgcc`, `libstdc++`, `ripgrep` | what Claude Code's musl build needs at run time |
 | `/usr/bin/env` (at that path), `readlink -f`, `mktemp -d`, `find -mindepth -delete`, `rm`, `rmdir`, `sleep`, `test` (a file, not only the builtin) | the entrypoint, and the launcher's readiness check |
@@ -97,6 +97,18 @@ RUN apk add --no-cache bash curl ca-certificates-bundle tmux git libgcc libstdc+
 
 These are the test bases `make test-byo` runs sessions on
 (`tests/byo/*.Dockerfile`), where the comments say what each package is for.
+
+**Docker inside the sandbox** is a fact the check reports, never a
+requirement. Under [`isolation = "vm"`](configuration.md#the-vm-isolation)
+the sandbox starts the image's own `dockerd` when it has one, so `docker`
+works inside it; that takes `dockerd`, `containerd`,
+`containerd-shim-runc-v2`, `runc`, `iptables` (dockerd will not start
+without it) and the `docker` CLI on `PATH`. Docker's static release
+(`https://download.docker.com/linux/static/stable/`) has all of them but
+`iptables`, which comes from the distribution; the default Dockerfile's
+`dockerd` section installs both. An image without them is as usable: its
+sandbox just has no docker. Under docker and gvisor nothing starts an
+image's dockerd, so the check says nothing about it there.
 
 The layer edits `/etc/passwd`, `/etc/group` and, where they exist,
 `/etc/shadow` and `/etc/gshadow` directly, with plain `sh`: no `useradd` or
@@ -138,6 +150,18 @@ with why it is needed. It exits
   failing, or, with no `IMAGE` and no `CABOOSE_BASE_IMAGE`, a default base
   that hasn't been built yet.
 
+Under [`isolation = "vm"`](configuration.md#the-vm-isolation) there may be no
+docker engine, so the check runs where `caboose build` builds: in the
+builder VM, whose own docker keeps the bases builds made or pulled. The
+default base is the one the last `caboose build` made there; a named image
+the builder lacks is pulled into it from its registry. An image that only a
+docker engine on this Mac has cannot reach the builder, so its pull fails
+(exit 2): push it to a registry first, or check it in that engine with
+`CABOOSE_ISOLATION=docker caboose check-image IMAGE`. There the checklist
+ends with a `docker inside` row: `available (dockerd VERSION)`, or what the
+image lacks for it, marked `!` and never counted as unmet, with what to add
+on stderr; `caboose build` notes it too.
+
 ## What a build does
 
 `caboose build` (or the launch that creates the container, when there
@@ -164,7 +188,7 @@ A `^C` at any step stops the build there (exit 130).
 On your own base, the image caboose runs is current while it was built by
 the same layer on the base's current image ID. A pull or rebuild of
 `my/image:tag` since makes it stale: a launch warns, and `caboose
-version` says `local : differs`, with the reason. So does an image
+version` says `local : out of date`, with the reason. So does an image
 built for another host user (its UID or GID labels differ from yours). Base
 names are compared as docker resolves them, so `node:22` and
 `docker.io/library/node:22` are one base. The embedded `Dockerfile` plays

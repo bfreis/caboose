@@ -23,7 +23,8 @@
 #     missing NAME [DETAIL]   it failed; DETAIL, if any, says how
 #     warn NAME DETAIL        worth knowing, never a failure (reachability)
 #     info KEY VALUE...       a fact: libc, arch, platform, uid/gid holders
-#                             (and the uid holder's home and shell)
+#                             (and the uid holder's home and shell), Docker's
+#                             engine; facts are never a failure
 #     end                     last line, so truncated output is detectable
 #
 # CABOOSE_PROBE_ROOT, for tests only, prefixes every file the probe looks at
@@ -72,7 +73,7 @@ presence bash
 presence curl
 presence tmux
 
-# git: `caboose sync` runs every git command in the container. 2.28 is
+# git: `caboose sync` runs every git command in the sandbox. 2.28 is
 # the first with `git init -b`. Run, not just found, so a git that cannot
 # start on this image counts as missing.
 if _p=$(lookpath git); then
@@ -387,6 +388,34 @@ elif [ -n "$_untrusted" ]; then
     echo "missing cacerts no bundle, and $_untrusted failed TLS"
 else
     echo "missing cacerts no bundle at the usual paths"
+fi
+
+# --- Docker's engine: a fact, never a requirement --------------------------
+#
+# Under isolation vm the entrypoint starts the image's own dockerd, when it
+# has one, so that `docker` works inside the sandbox; under docker and gvisor
+# nothing starts it. Whether that can work is reported, not judged: dockerd,
+# what it starts containers with (containerd, its runc shim, runc), the
+# iptables it sets its bridge up with, which it will not start without, and
+# the docker CLI. One "info engine NAME [PATH]" line each, no PATH when
+# absent, and dockerd's version, from --version, when it gives one.
+for _t in dockerd containerd containerd-shim-runc-v2 runc iptables docker; do
+    if _p=$(lookpath "$_t"); then
+        echo "info engine $_t $_p"
+    else
+        echo "info engine $_t"
+    fi
+done
+if _p=$(lookpath dockerd); then
+    # "Docker version 28.3.0, build 265f709": the number, and only if it
+    # is one, so nothing the binary prints can break the line format.
+    _v=$("$_p" --version 2>/dev/null)
+    _v=${_v#Docker version }
+    _v=${_v%%,*}
+    case "$_v" in
+        "" | *[!0-9A-Za-z.+~-]*) ;;
+        *) echo "info engine-version $_v" ;;
+    esac
 fi
 
 echo "end"

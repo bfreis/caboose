@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -60,8 +61,8 @@ func TestControlBothWays(t *testing.T) {
 // side's close reads as EOF on the other.
 func TestStreamBothWaysPastTheWindow(t *testing.T) {
 	host, agent := pair(t)
-	up := make([]byte, 3*window+123)
-	down := make([]byte, 2*window+7)
+	up := make([]byte, 3*DefaultWindow+123)
+	down := make([]byte, 2*DefaultWindow+7)
 	rand.Read(up)
 	rand.Read(down)
 
@@ -218,7 +219,7 @@ func TestWindowOverrunEndsTheSession(t *testing.T) {
 		var h [headerLen]byte
 		io.ReadFull(ar, h[:])
 		chunk := make([]byte, MaxPayload)
-		for i := 0; i <= window/MaxPayload; i++ {
+		for i := 0; i <= HostWindow/MaxPayload; i++ {
 			if _, err := pw.Write(frame(frameData, 1, chunk)); err != nil {
 				return
 			}
@@ -270,5 +271,179 @@ func TestSessionCloseEndsStreams(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("read still blocked after the session ended")
+	}
+}
+
+// sendable is how much st writes before it waits for the peer: the peer
+// here never reads.
+func sendable(t *testing.T, st *Stream) int {
+	t.Helper()
+	var sent atomic.Int64
+	go func() {
+		chunk := make([]byte, MaxPayload/4)
+		for {
+			n, err := st.Write(chunk)
+			sent.Add(int64(n))
+			if err != nil {
+				return
+			}
+		}
+	}()
+	var last int64 = -1
+	for {
+		time.Sleep(50 * time.Millisecond)
+		n := sent.Load()
+		if n == last {
+			return int(n)
+		}
+		last = n
+	}
+}
+
+// Each side's hello announces its window, which the other's streams then
+// send ahead: past DefaultWindow, and no further.
+func TestHelloAnnouncesTheWindow(t *testing.T) {
+	host, agent := pair(t)
+	if err := host.Send(Message{Type: TypeHello, Version: Version}); err != nil {
+		t.Fatal(err)
+	}
+	if m := recvControl(t, agent); m.Window != HostWindow {
+		t.Fatalf("the host announced %d", m.Window)
+	}
+	// A stream opened before the agent's hello arrives grows with it.
+	st, err := host.Open(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Send(Message{Type: TypeHello, Version: Version}); err != nil {
+		t.Fatal(err)
+	}
+	if m := recvControl(t, host); m.Window != AgentWindow {
+		t.Fatalf("the agent announced %d", m.Window)
+	}
+	ast, err := agent.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := sendable(t, st); n != AgentWindow {
+		t.Fatalf("the host sent %d ahead, want %d", n, AgentWindow)
+	}
+	if n := sendable(t, ast); n != HostWindow {
+		t.Fatalf("the agent sent %d ahead, want %d", n, HostWindow)
+	}
+}
+
+// A peer whose hello announces no window, an older one, is sent no more
+// than DefaultWindow ahead, and gets its grants as before: in time for it
+// to go on.
+func TestOlderPeerGetsTheDefaultWindow(t *testing.T) {
+	hr, pw := io.Pipe()
+	pr, hw := io.Pipe()
+	host := NewSession(hr, hw, true)
+	t.Cleanup(func() { host.Close() })
+	go io.Copy(io.Discard, pr)
+	if _, err := pw.Write(frame(frameControl, 0, []byte(`{"type":"hello","version":1}`))); err != nil {
+		t.Fatal(err)
+	}
+	recvControl(t, host)
+	st, err := host.Open(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := sendable(t, st); n != DefaultWindow {
+		t.Fatalf("sent %d ahead, want %d", n, DefaultWindow)
+	}
+	// The older peer sends a whole DefaultWindow, and the host grants
+	// before it has read all of it.
+	chunk := make([]byte, MaxPayload)
+	go func() {
+		for i := 0; i < DefaultWindow/MaxPayload; i++ {
+			if _, err := pw.Write(frame(frameData, st.id, chunk)); err != nil {
+				return
+			}
+		}
+	}()
+	if _, err := io.ReadFull(st, make([]byte, grantAt)); err != nil {
+		t.Fatal(err)
+	}
+	if grantAt > DefaultWindow/2 {
+		t.Fatalf("grants at %d: an older peer stalls", grantAt)
+	}
+}
+
+// A grant past the window this side is sending with ends the session.
+func TestGrantPastTheWindowEndsTheSession(t *testing.T) {
+	hr, peer := io.Pipe()
+	pr, hw := io.Pipe()
+	go io.Copy(io.Discard, pr)
+	host := NewSession(hr, hw, true)
+	t.Cleanup(func() { host.Close() })
+	if _, err := host.Open(nil); err != nil {
+		t.Fatal(err)
+	}
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], 1)
+	if _, err := peer.Write(frame(frameWindow, 1, b[:])); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, host)
+}
+
+// Streams opened faster than they are accepted all wait for Accept: none
+// is reset for want of room, up to MaxStreams of them.
+func TestStreamsWaitForAccept(t *testing.T) {
+	host, agent := pair(t)
+	for i := 0; i < MaxStreams; i++ {
+		st, err := host.Open([]byte{byte(i)})
+		if err != nil {
+			t.Fatalf("stream %d: %v", i, err)
+		}
+		if _, err := st.Write([]byte{byte(i)}); err != nil {
+			t.Fatalf("stream %d: %v", i, err)
+		}
+	}
+	for i := 0; i < MaxStreams; i++ {
+		got := make(chan *Stream, 1)
+		go func() {
+			if st, err := agent.Accept(); err == nil {
+				got <- st
+			}
+		}()
+		var st *Stream
+		select {
+		case st = <-got:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("stream %d was never accepted", i)
+		}
+		b := make([]byte, 1)
+		if _, err := io.ReadFull(st, b); err != nil || b[0] != st.Header()[0] {
+			t.Fatalf("stream %d: read %v, %v", st.Header()[0], b, err)
+		}
+	}
+}
+
+// A stream the agent resets unaccepted is reported to OnRefused, with its
+// header.
+func TestOnRefused(t *testing.T) {
+	ar, pw := io.Pipe()
+	pr, aw := io.Pipe()
+	go io.Copy(io.Discard, pr)
+	agent := NewSession(ar, aw, false)
+	t.Cleanup(func() { agent.Close() })
+	refused := make(chan string, 1)
+	agent.OnRefused(func(h []byte) { refused <- string(h) })
+	go func() {
+		for i := 0; i < MaxStreams; i++ {
+			pw.Write(frame(frameOpen, uint32(2*i+1), []byte("held")))
+		}
+		pw.Write(frame(frameOpen, 2*MaxStreams+1, []byte("over")))
+	}()
+	select {
+	case h := <-refused:
+		if h != "over" {
+			t.Fatalf("refused %q", h)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream over MaxStreams was not reported")
 	}
 }

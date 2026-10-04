@@ -91,6 +91,16 @@ http(s) URL in the user's browser (usually after a dialog there), and
 host's `caboose link`, which every launch starts; "no host is linked"
 means it is not running.
 
+In a VM sandbox (`CABOOSE_ISOLATION=vm`), outbound connections go through
+the host by default: `HTTPS_PROXY` (and the rest) is then
+`http://127.0.0.1:9128`, and what the host reaches, VPN included, this
+reaches, on the ports its `egress_ports` allows (22, 80 and 443 by
+default). Private, LAN, loopback and tailnet addresses are refused, with
+an HTTP 403 saying why, unless the host's `egress_allow` names them. ssh
+goes the same way, through `caboose-agent connect %h %p` as its
+`ProxyCommand`. Containers run by the sandbox's own dockerd do not: they
+stay on the VM's NAT.
+
 ## Start-up scripts and shell config: ~/.config/caboose
 
 Two directories there are also yours to write when asked: they run as this
@@ -152,7 +162,9 @@ other = "~/src/other"
   `docker_run_args` in the environment's `config.toml`, then
   `caboose restart`.
 - Then tell the user to run `caboose apply` in a host terminal (with the
-  same `-e ENV` as this session's, if it has one). It rebuilds the image
+  same `-e ENV` as this session's, if it has one); the host also shows
+  them a notification saying so, once the file is written, but it may be
+  missed. It rebuilds the image
   and offers `caboose restart`, which ends this session: nothing proposed
   is in effect before that. A tool installed this way whose settings
   should last needs a `[[keep]]` entry too (above), in the same restart.

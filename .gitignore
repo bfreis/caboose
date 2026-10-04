@@ -25,6 +25,17 @@
 # recorded next to caboose.platform so a binary with a stale stamp gets rebuilt.
 /caboose.version
 
+# caboose-vmm, the vm isolation's runner, from `make vmm` on a Mac, signed
+# ad-hoc: build output, next to the launcher as a release installs it.
+/caboose-vmm
+
+# The vm isolation's builder disk, from `make vm-builder` (docker): build
+# output, a few hundred MB.
+/vm-dist/
+
+# vm's files packed for a release, from `make vm-assets`.
+/vm-release/
+
 # goreleaser's output: the release archives and checksums
 # from `goreleaser release` (or a `--snapshot` dry run). Build output only.
 /dist/

@@ -16,3 +16,9 @@ const ProbeScriptPath = "imagecheck.sh"
 func ProbeScript() ([]byte, error) {
 	return fs.ReadFile(caboose.Files, ProbeScriptPath)
 }
+
+// Agent is caboose-agent for arch (amd64, arm64), as embedded: a vm
+// guest's init, which the launcher writes into its initramfs.
+func Agent(arch string) ([]byte, error) {
+	return fs.ReadFile(caboose.Files, AgentBinary(arch))
+}

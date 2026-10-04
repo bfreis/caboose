@@ -23,6 +23,13 @@ socket is mounted directly: the one `ssh` itself would use, so an
 `$SSH_AUTH_SOCK`. The mount is fixed when the container is created, so a
 change to any of this needs `caboose restart`.
 
+Under `isolation = "vm"` nothing of the Mac's can be mounted into the
+VM, so the [host link](host-link.md) carries the agent instead: the agent
+in the sandbox listens at the same path, and each client there reaches the
+`$SSH_AUTH_SOCK` of the terminal the launch ran in, 1Password's included,
+with no setting to change. The link starts with a session; `caboose link
+--restart` starts one without.
+
 **Commit signing** with an SSH key is set up by `caboose setup git`, which
 offers the host's key when the host signs with SSH (`gpg.format = ssh`),
 and writes `gpg.format`, the key and `commit.gpgsign` into the sandbox's

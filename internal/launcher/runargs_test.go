@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
 )
@@ -152,26 +153,24 @@ func TestCreateContainerRefusesRunArgs(t *testing.T) {
 // The container's label against the configuration: a container from before
 // the label, or with none, was created with no arguments.
 func TestRunArgsDrift(t *testing.T) {
+	label := func(v string) map[string]string { return map[string]string{assets.LabelRunArgs: v} }
 	for _, tc := range []struct {
-		name, labels string
-		config       []string
-		drift        string
+		name   string
+		labels map[string]string
+		config []string
+		drift  string
 	}{
-		{"no label, none", `{}`, nil, ""},
-		{"no labels at all", `null`, nil, ""},
-		{"empty label, none", `{"` + assets.LabelRunArgs + `":""}`, nil, ""},
-		{"same", `{"` + assets.LabelRunArgs + `":"[\"--a=1\",\"--b\"]"}`, []string{"--a=1", "--b"}, ""},
-		{"added", `{}`, []string{"--a=1"}, "created with docker run arguments none; the configuration says --a=1"},
-		{"removed", `{"` + assets.LabelRunArgs + `":"[\"--a=1\"]"}`, nil, "created with docker run arguments --a=1; the configuration says none"},
-		{"unreadable", `{"` + assets.LabelRunArgs + `":"nope"}`, []string{"--a=1"}, ""},
+		{"no label, none", map[string]string{}, nil, ""},
+		{"no labels at all", nil, nil, ""},
+		{"empty label, none", label(""), nil, ""},
+		{"same", label(`["--a=1","--b"]`), []string{"--a=1", "--b"}, ""},
+		{"added", map[string]string{}, []string{"--a=1"}, "created with docker run arguments none; the configuration says --a=1"},
+		{"removed", label(`["--a=1"]`), nil, "created with docker run arguments --a=1; the configuration says none"},
+		{"unreadable", label("nope"), []string{"--a=1"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			fake := filepath.Join(tmp, "docker")
-			if err := os.WriteFile(fake, []byte("#!/bin/sh\necho '"+tc.labels+"'\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			a := &App{Cfg: &config.Config{Container: "box", DockerRunArgs: tc.config}, Docker: &docker.CLI{Path: fake}}
+			box := &backendtest.Fake{Status: "running", SandboxLabels: tc.labels}
+			a := &App{Cfg: &config.Config{Container: "box", DockerRunArgs: tc.config}, Backend: box}
 			if got := a.runArgsDrift(); !strings.Contains(got, tc.drift) || (tc.drift == "") != (got == "") {
 				t.Errorf("drift %q, want %q", got, tc.drift)
 			}

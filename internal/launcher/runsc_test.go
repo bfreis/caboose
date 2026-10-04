@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Releases for the tests, tar.bz2 as gVisor ships them (Go writes no
@@ -60,6 +61,10 @@ func TestDownloadRunsc(t *testing.T) {
 	}
 	if path != filepath.Join(dir, "runsc") {
 		t.Errorf("path = %s", path)
+	}
+	rec, ok := readRunscRelease(dir)
+	if !ok || rec.SHA512 != releaseSum(t, releaseGood) || rec.URL != srv.URL+"/aarch64/gvisor.tar.bz2" || time.Since(rec.Downloaded) > time.Minute {
+		t.Errorf("record = %+v, %v", rec, ok)
 	}
 	for name, want := range map[string]string{"runsc": "\x7fELF runsc", "gvisor-bin/gvisor_sentry": "sentry", "containerd-shim-runsc-v1": "shim"} {
 		got, err := os.ReadFile(filepath.Join(dir, name))

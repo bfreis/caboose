@@ -7,22 +7,23 @@
 | `caboose setup [roots \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks); see [Setup](configuration.md#setup) |
 | `caboose apply` | review the changes sessions proposed (a tool in the image, a directory to keep, a root), and apply them; see [Proposals](proposals.md) |
 | `caboose doctor [--offline]` | what, if anything, is wrong, and the command that fixes each problem; see [below](#when-something-is-wrong) |
-| `caboose status` | container, version, platform, live sessions, disk use |
+| `caboose status` | the sandbox, version, platform, live sessions, disk use |
 | `caboose version` | launcher version, and whether the image matches it |
 | `caboose update` | update caboose to the latest release now; see [Updates](getting-started.md#updates) |
 | `caboose build` | build (or rebuild) the image: the base, checked, then the layer |
 | `caboose check-image [IMAGE]` | whether an image can be the sandbox's base; see [Checking an image](images.md#checking-an-image) |
-| `caboose restart` | recreate the container, to pick up a rebuilt image or new mounts |
-| `caboose stop` | stop the container |
+| `caboose restart` | recreate the sandbox, to pick up a rebuilt image or new mounts |
+| `caboose stop` | stop the sandbox |
 | `caboose detach` | detach this project's session, leaving it running |
 | `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; every launch starts one in the background, and `--restart` replaces it; see [The host link](host-link.md) |
 | `caboose prune` | delete old Claude Code versions now |
+| `caboose prune --docker` | under `vm`, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |
 | `caboose sync add PATH`, `caboose sync rm PATH` | make a path of the sandbox's home sync, or stop it, in the sandbox config |
 | `caboose sandbox-config update` | bring the sandbox config up to this caboose: its format, and the defaults added since it was written |
-| `caboose logs` | the container's supervisor log |
-| `caboose shell` | a bash prompt inside the container |
+| `caboose logs` | the sandbox's supervisor log (under `vm`, the VM's console; `--tail N`) |
+| `caboose shell` | a bash prompt inside the sandbox; `-c CMD` runs CMD, with a terminal only when caboose has one, so it works from a script |
 | `caboose env [list]` | list the [environments](configuration.md#environments) |
 | `caboose help [COMMAND]` | the commands and flags, or what one command does (also `--help`, `-h`) |
 
@@ -52,7 +53,9 @@ image's ID.
 
 `caboose restart` and `caboose stop` destroy every running session, so they list
 the sessions they are about to kill and ask first. `FORCE=1` skips the
-prompt; without a tty they refuse rather than assume.
+prompt; without a tty they refuse rather than assume. `caboose prune
+--docker` asks the same way, with or without sessions, since what it
+deletes cannot come back, and lists those stopping a running VM ends.
 
 Sessions are per project and per terminal: a second `caboose` in the same
 repo while the first is attached gets `<project>-2`. `caboose --session

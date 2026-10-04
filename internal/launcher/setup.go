@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
@@ -104,7 +105,7 @@ func (a *App) setupRun(p *prompter, sections []string) error {
 	}
 	p.table(rows)
 	if created && !whole {
-		p.note("Its first launch builds its image, creates container %s, and asks for a Claude login.", c.Container)
+		p.note("Its first launch builds its image, creates %s %s, and asks for a Claude login.", a.noun(), c.Container)
 	}
 	if whole {
 		return a.setupLogin(p)
@@ -483,15 +484,15 @@ func (a *App) askKey(p *prompter) (string, error) {
 // holds, or says why they are not listed.
 func (a *App) setupAgentKeys() (keys []string, why string) {
 	if a.state() != "running" {
-		return nil, "the container is not running. Start it (run caboose in a project), then run '" +
+		return nil, "the " + a.noun() + " is not running. Start it (run caboose in a project), then run '" +
 			SetupCommand(a.Cfg.Env, "git") + "' again to choose one of them"
 	}
-	out, err := a.Docker.Output("exec", a.Cfg.Container, "ssh-add", "-L")
+	out, err := backend.Output(a.box(), "ssh-add", "-L")
 	if err != nil {
 		if strings.Contains(out, "no identities") {
 			return nil, "the forwarded agent holds no keys"
 		}
-		return nil, "'ssh-add -L' in the container failed ('caboose doctor' says more)"
+		return nil, "'ssh-add -L' in the " + a.noun() + " failed ('caboose doctor' says more)"
 	}
 	for _, l := range strings.Split(out, "\n") {
 		if l = strings.TrimSpace(l); datadir.IsPublicKey(l) {

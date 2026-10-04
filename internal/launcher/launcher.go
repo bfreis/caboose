@@ -70,6 +70,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
@@ -108,10 +109,53 @@ func dockerFailed(err error) error {
 	return &ExitError{Code: docker.ExitCode(err)}
 }
 
+// boxFailed is dockerFailed for whatever the sandbox is: under vm there is
+// no docker to have said why, so the error says it, or the command's own
+// status stands.
+func (a *App) boxFailed(err error) error {
+	if !a.isVM() {
+		return dockerFailed(err)
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return &ExitError{Code: ee.ExitCode()}
+	}
+	return Die("%v", err)
+}
+
+// noun is what the sandbox is called in what the user reads: a VM under
+// vm, a container under docker and gvisor, where it is one.
+func (a *App) noun() string {
+	if a.isVM() {
+		return "VM"
+	}
+	return "container"
+}
+
+// nounLabel is noun as the label of a status or version line, padded as
+// the others are ("container : NAME (running)").
+func (a *App) nounLabel() string { return fmt.Sprintf("%-9s :", a.noun()) }
+
+// box is the sandbox: Backend, or the configured container.
+func (a *App) box() backend.Backend {
+	if a.Backend != nil {
+		return a.Backend
+	}
+	if a.isVM() {
+		return a.vmBox()
+	}
+	return backend.NewDocker(a.Docker, a.Cfg.Container)
+}
+
 // App is one launcher invocation.
 type App struct {
-	Cfg    *config.Config
+	Cfg *config.Config
+	// Docker is the engine: images, builds, and what it says of itself.
+	// The sandbox is Backend's.
 	Docker *docker.CLI
+	// Backend, when set, is the sandbox; otherwise it is the container
+	// Cfg names on Docker (App.box).
+	Backend backend.Backend
 	// Checkout is the host path of the caboose checkout this launcher runs
 	// from, or "" when it is an installed binary with no checkout around.
 	Checkout string
@@ -148,6 +192,18 @@ type App struct {
 	Executable func() (string, error)
 	Spawn      func(exe string, args ...string) error
 	Now        func() time.Time
+	// checkGuest, when set, stands in for booting the builder guest for
+	// caboose check-image under vm: the tests' fake.
+	checkGuest func() (imageGuest, error)
+	// vmFiles, when set, stands in for finding vm's files beside the
+	// launcher (findVMFiles), which only a Mac has: the tests' way to
+	// take the vm isolation's paths anywhere.
+	vmFiles func() (vmFiles, error)
+	// terminal and replace, when set, stand in for asking whether caboose
+	// runs on a terminal (isTerminal) and for replacing this process with
+	// a command (exec): the tests' way to run what ends in one.
+	terminal func() bool
+	replace  func(*exec.Cmd) error
 }
 
 // Note prints "caboose: ..." to stderr.
