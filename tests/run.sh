@@ -731,7 +731,7 @@ check 'the image carries a full layer hash' 64 "${#layer_label}"
 # the embedded Dockerfile: the same kind of base to the suite, a full hash
 # either way, and version says which.
 base_kind=default
-case "$(ver_field base)" in *"(built from "*) base_kind=env ;; esac
+case "$(ver_field base)" in *"(built from "*) base_kind="env" ;; esac
 check 'and, built on caboose'"'"'s base, a full base hash' 64 "${#base_label}"
 check "and says outright it is on that base ($base_kind)" "$base_kind" "$(label io.github.bfreis.caboose.base-kind)"
 check 'the image records the host user it was built for' "$(id -u):$(id -g)" \
