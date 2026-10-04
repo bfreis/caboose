@@ -198,6 +198,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VM_ASSETS_PREBUILT: "1"
+          # The tag that was pushed, never one goreleaser picks: a commit
+          # tagged v1.2.3-rc.1 and then v1.2.3 has both, version sort puts
+          # the rc first, and the vm-assets job built for this one.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
           # The release goes to this repository: a mirror's to the mirror.
           RELEASE_OWNER: ${{ github.repository_owner }}
           RELEASE_REPO: ${{ github.event.repository.name }}
