@@ -70,12 +70,20 @@ type linkSettings struct {
 	// serves, so a launch under another isolation replaces it, and one that
 	// sees config.toml change it steps aside (reload).
 	Isolation string `json:"isolation"`
+	// SSHAgent is ssh_agent, the agent socket a VM gets through the link,
+	// and SSHAgentFrom what set it, for the log; both "" for the agent ssh
+	// on this machine would use (agentFrom).
+	SSHAgent     string `json:"ssh_agent,omitempty"`
+	SSHAgentFrom string `json:"ssh_agent_from,omitempty"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
 		EgressProxy: c.EgressProxy, EgressPorts: c.EgressPorts, EgressAllow: c.EgressAllow,
 		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c)}
+	if c.SSHAgent != "" {
+		s.SSHAgent, s.SSHAgentFrom = c.SSHAgent, sshAgentOrigin(c)
+	}
 	// A Config not from config.Load leaves them unset: the defaults.
 	if s.EgressProxy == "" {
 		s.EgressProxy = "on"
@@ -586,10 +594,15 @@ func (r *linkRunner) serveDialed(l backend.Linker) error {
 	r.mu.Unlock()
 	cfg.Relay = r.relayRoots()
 	// No socket of this machine's can reach a VM: the link carries its SSH
-	// agent, from the SSH_AUTH_SOCK the launch that started this link had.
-	cfg.SSHAgent, cfg.SSHAuthSock = containerAgent, r.a.getenv("SSH_AUTH_SOCK")
-	if cfg.SSHAuthSock == "" {
-		r.log.Printf("no SSH_AUTH_SOCK here: the sandbox gets no SSH agent")
+	// agent, ssh_agent's or else the one ssh here would use, as the launch
+	// that started this link saw it (its SSH_AUTH_SOCK, its ~/.ssh/config).
+	st := r.settingsNow()
+	sock, from := r.a.agentFrom(st.SSHAgent, st.SSHAgentFrom)
+	cfg.SSHAgent, cfg.SSHAuthSock = containerAgent, sock
+	if sock == "" {
+		r.log.Printf("no SSH agent (%s): the sandbox gets none", from)
+	} else {
+		r.log.Printf("SSH agent %s (%s)", sock, from)
 	}
 	// vmnet's NAT reaches none of this machine's VPN routes: the guest's
 	// outbound connections are dialled here, unless egress_proxy is off

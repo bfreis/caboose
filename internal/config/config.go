@@ -22,7 +22,7 @@ var Settings = []string{
 	"KEEP_VERSIONS", "DOCKER_SOCK", "TZ", "SESSION", "PROJECT", "NO_TMUX",
 	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC", "DOCKER_RUN_ARGS",
 	"FORWARD_PORTS", "OPEN_URLS", "ISOLATION", "VM_CPUS", "VM_MEMORY",
-	"EGRESS_PROXY", "EGRESS_PORTS", "EGRESS_ALLOW",
+	"EGRESS_PROXY", "EGRESS_PORTS", "EGRESS_ALLOW", "SSH_AGENT",
 }
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -112,6 +112,11 @@ type Config struct {
 	// DockerRunArgsFrom names what set DockerRunArgs, for messages:
 	// CABOOSE_DOCKER_RUN_ARGS, or the config file by its path.
 	DockerRunArgsFrom string
+	// SSHAgent is CABOOSE_SSH_AGENT: the host's SSH agent socket to give
+	// the sandbox, whatever $SSH_AUTH_SOCK says ("none" for none); "" is
+	// the one ssh on the host would use. A ~ in the file's is expanded.
+	// SSHAgentFrom names what set it: CABOOSE_SSH_AGENT, or the file.
+	SSHAgent, SSHAgentFrom string
 	// ForwardPorts is CABOOSE_FORWARD_PORTS: the ports listening in the
 	// sandbox that the link helper forwards to this machine's localhost,
 	// as ports and ranges ("3000-3999 5173"), or "none". The launcher
@@ -292,7 +297,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		}
 	}
 	// A path in the file may start with ~, as it would in a shell.
-	for _, k := range []string{"REPO_ROOT", "DOCKER_SOCK"} {
+	for _, k := range []string{"REPO_ROOT", "DOCKER_SOCK", "SSH_AGENT"} {
 		if file != nil && from[k] == file.Path {
 			vals[k] = expandTilde(vals[k], home)
 		}
@@ -348,6 +353,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 	}
 	c.DataDir = c.resolveDataDir(vals["DATA_DIR"])
 	c.DockerRunArgs, c.DockerRunArgsFrom = strings.Fields(vals["DOCKER_RUN_ARGS"]), from["DOCKER_RUN_ARGS"]
+	c.SSHAgent, c.SSHAgentFrom = vals["SSH_AGENT"], from["SSH_AGENT"]
 	if file != nil && file.RunArgs != nil && c.DockerRunArgsFrom == "" {
 		c.DockerRunArgs, c.DockerRunArgsFrom = file.RunArgs, file.Path
 	}

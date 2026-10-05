@@ -38,6 +38,7 @@ var fileKeys = map[string]string{
 	"egress_proxy":    "EGRESS_PROXY",
 	"egress_ports":    "EGRESS_PORTS",
 	"egress_allow":    "EGRESS_ALLOW",
+	"ssh_agent":       "SSH_AGENT",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -271,4 +272,12 @@ format = 1    # this file's structure
 # tailnet and multicast ones are refused otherwise): names, "*.suffix"
 # patterns, CIDRs or addresses. [CABOOSE_EGRESS_ALLOW]
 #egress_allow = "git.corp.example *.internal.example 10.20.0.0/16"
+
+# The SSH agent the sandbox gets: a socket on this machine, or "none". By
+# default the one ssh here would use, an IdentityAgent in ~/.ssh/config
+# or else $SSH_AUTH_SOCK -- which a work tool may have taken over. Under
+# isolation "vm", and docker or gvisor on Linux; on a Mac OrbStack and
+# Docker Desktop forward the agent they were started with instead.
+# [CABOOSE_SSH_AGENT]
+#ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 `

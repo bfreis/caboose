@@ -76,13 +76,14 @@ func TestTemplate(t *testing.T) {
 		"\n#keep_versions", "\nkeep_versions", "\n#docker_sock", "\ndocker_sock",
 		"\n#no_tmux", "\nno_tmux", "\n#no_auto_build", "\nno_auto_build", "\n#auto_sync", "\nauto_sync",
 		"\n#docker_run_args", "\ndocker_run_args", "\n#egress_proxy", "\negress_proxy",
-		"\n#egress_ports", "\negress_ports", "\n#egress_allow", "\negress_allow").Replace(Template)
+		"\n#egress_ports", "\negress_ports", "\n#egress_allow", "\negress_allow", "\n#ssh_agent", "\nssh_agent").Replace(Template)
 	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: uncommented}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.Roots[0].Host != "/h/dev" || c.KeepVersions != "2" || c.NoTmux != "1" || c.AutoSync != "1" || len(c.DockerRunArgs) != 2 ||
-		c.EgressProxy != "off" || c.EgressPorts != DefaultEgressPorts || c.EgressAllow == "" {
+		c.EgressProxy != "off" || c.EgressPorts != DefaultEgressPorts || c.EgressAllow == "" ||
+		c.SSHAgent != "/h/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" {
 		t.Errorf("config %+v", *c)
 	}
 	if _, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: Template}, ""); err != nil {

@@ -234,3 +234,60 @@ func TestAgentStatusPermissionDenied(t *testing.T) {
 		t.Errorf("fix %q", fix)
 	}
 }
+
+// ssh_agent wins over what ssh would use -- an IdentityAgent, and an
+// $SSH_AUTH_SOCK a work login may have taken over -- and "none" gives the
+// sandbox none; each choice says what made it. On a Mac engine it does
+// nothing: the engine forwards the agent it was started with.
+func TestSSHAgentSetting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	op := listen(t, filepath.Join(home, ".1password", "agent.sock"))
+	env := listen(t, filepath.Join(t.TempDir(), "env.sock"))
+	set := listen(t, filepath.Join(t.TempDir(), "set.sock"))
+	for _, tc := range []struct {
+		name, sshG, setting string
+		want, from          string
+	}{
+		{"unset: ssh's IdentityAgent", "identityagent " + op, "", op, "IdentityAgent in ~/.ssh/config"},
+		{"unset: $SSH_AUTH_SOCK", "user me", "", env, "$SSH_AUTH_SOCK"},
+		{"set: over IdentityAgent", "identityagent " + op, set, set, "CABOOSE_SSH_AGENT"},
+		{"set: over $SSH_AUTH_SOCK", "user me", set, set, "CABOOSE_SSH_AGENT"},
+		{"set: none", "identityagent " + op, "none", "", "CABOOSE_SSH_AGENT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := agentApp(t, "linux", "", tc.sshG, map[string]string{"SSH_AUTH_SOCK": env})
+			a.Cfg.SSHAgent, a.Cfg.SSHAgentFrom = tc.setting, ""
+			if tc.setting != "" {
+				a.Cfg.SSHAgentFrom = "CABOOSE_SSH_AGENT"
+			}
+			if sock, from := a.hostAgent(); sock != tc.want || from != tc.from {
+				t.Errorf("hostAgent %q (%s), want %q (%s)", sock, from, tc.want, tc.from)
+			}
+			if got := a.sshAgentSource(); got != tc.want {
+				t.Errorf("mounts %q, want %q", got, tc.want)
+			}
+		})
+	}
+	t.Run("a Mac engine forwards its own", func(t *testing.T) {
+		a, _ := agentApp(t, "darwin", info("Docker Desktop"), "", map[string]string{"SSH_AUTH_SOCK": env})
+		a.Cfg.SSHAgent, a.Cfg.SSHAgentFrom = set, "CABOOSE_SSH_AGENT"
+		if got := a.sshAgentSource(); got != hostServicesAgent {
+			t.Errorf("mounts %q", got)
+		}
+		c := &checkup{}
+		if said := a.agentSourceSaid(c); said != "" || !rowsSay(c, "CABOOSE_SSH_AGENT is not used: Docker Desktop forwards the agent it was started with") {
+			t.Errorf("said %q, rows %+v", said, c.rows)
+		}
+	})
+}
+
+// rowsSay is whether some finding of c says text.
+func rowsSay(c *checkup, text string) bool {
+	for _, r := range c.rows {
+		if strings.Contains(r.text, text) {
+			return true
+		}
+	}
+	return false
+}

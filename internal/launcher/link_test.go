@@ -142,6 +142,8 @@ func TestStartLinkReplacesAHelperWithOtherSettings(t *testing.T) {
 		// old one may still run: a helper serves the one it started for.
 		{"other isolation", settingsFor("3000", "ask").withIsolation(isolationVM), true},
 		{"from before the isolation was recorded", settingsFor("3000", "ask").withIsolation(""), true},
+		// ssh_agent set since: the VM is to get another agent.
+		{"other ssh_agent", func() linkSettings { s := settingsFor("3000", "ask"); s.SSHAgent = "/op.sock"; return s }(), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

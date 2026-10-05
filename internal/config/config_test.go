@@ -493,3 +493,30 @@ func TestEgressSettings(t *testing.T) {
 		}
 	}
 }
+
+// ssh_agent names the host's agent for the sandbox: the file's, with ~
+// expanded, the variable winning, and each saying where it came from.
+func TestSSHAgentSetting(t *testing.T) {
+	home := map[string]string{"HOME": "/h"}
+	c, err := Load(envOf(home), fakeFS{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SSHAgent != "" || c.SSHAgentFrom != "" {
+		t.Errorf("default: %q from %q", c.SSHAgent, c.SSHAgentFrom)
+	}
+	fsys := fakeFS{cfgPath: "ssh_agent = \"~/op/agent.sock\"\n"}
+	if c, err = Load(envOf(home), fsys, ""); err != nil {
+		t.Fatal(err)
+	}
+	if c.SSHAgent != "/h/op/agent.sock" || c.SSHAgentFrom != cfgPath {
+		t.Errorf("from the file: %q from %q", c.SSHAgent, c.SSHAgentFrom)
+	}
+	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_SSH_AGENT": "none"}), fsys, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SSHAgent != "none" || c.SSHAgentFrom != "CABOOSE_SSH_AGENT" {
+		t.Errorf("from the variable: %q from %q", c.SSHAgent, c.SSHAgentFrom)
+	}
+}

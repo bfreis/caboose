@@ -581,7 +581,7 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 		c.problem("ssh agent", a.agentFix(status), "%s", status)
 		return nil, "the agent is not usable"
 	}
-	c.ok("ssh agent", "%s", status)
+	c.ok("ssh agent", "%s%s", status, a.agentSourceSaid(c))
 	out, err := backend.Output(a.box(), "ssh-add", "-L")
 	if err != nil {
 		return nil, "the agent's keys cannot be listed"
@@ -589,15 +589,41 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 	return strings.Split(out, "\n"), ""
 }
 
+// agentSourceSaid is ", <socket> (<what chose it>)" for the ssh agent row,
+// where caboose chooses the agent (vm, and docker or gvisor on Linux); on a
+// Mac engine, which forwards its own, "" -- and a note when ssh_agent is
+// set there, since it then does nothing.
+func (a *App) agentSourceSaid(c *checkup) string {
+	if !a.isVM() && goos == "darwin" {
+		if engine := a.macEngine(); engine != "" {
+			if a.Cfg.SSHAgent != "" {
+				c.note("ssh agent", "%s is not used: %s forwards the agent it was started with (its SSH_AUTH_SOCK)", sshAgentOrigin(a.Cfg), engine)
+			}
+			return ""
+		}
+	}
+	sock, from := a.hostAgent()
+	if sock == "" {
+		return ""
+	}
+	return fmt.Sprintf(", %s (%s)", sock, from)
+}
+
 // agentFix is what makes an unusable forwarded agent usable.
 func (a *App) agentFix(status string) string {
 	if a.isVM() {
-		// The link carries the agent into a VM, from the SSH_AUTH_SOCK of
-		// the terminal that started the link.
+		// The link carries the agent into a VM: ssh_agent's, else the one
+		// ssh would use as the launch that started the link saw it.
+		sock, from := a.hostAgent()
 		if held, _ := linkRunning(a.Cfg.DataDir); !held {
-			return "caboose link --restart, from a terminal with SSH_AUTH_SOCK set: under vm the link carries the agent, and none is running"
+			return "caboose link --restart: under vm the link carries the agent, and none is running"
 		}
-		return "caboose link --restart, from a terminal whose SSH_AUTH_SOCK reaches your agent (see the link's log, link.log)"
+		file := config.FileName
+		if a.Cfg.EnvDir != "" {
+			file = filepath.Join(a.Cfg.EnvDir, config.FileName)
+		}
+		return fmt.Sprintf("set ssh_agent in %s to your agent's socket (the link rereads it), or caboose link --restart from a terminal whose SSH_AUTH_SOCK reaches it; this launch would give the sandbox %s (%s), and link.log says what the link gave it",
+			file, or(sock, "none"), from)
 	}
 	engine := or(a.macEngine(), "the Docker engine")
 	switch {

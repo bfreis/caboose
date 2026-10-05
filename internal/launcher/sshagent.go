@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
 )
 
@@ -39,7 +40,7 @@ func (a *App) sshAgentSource() string {
 	if goos == "darwin" && a.macEngine() != "" {
 		return hostServicesAgent
 	}
-	if s := a.hostAgent(); s != "" && isSocket(s) {
+	if s, _ := a.hostAgent(); s != "" && isSocket(s) {
 		return s
 	}
 	return ""
@@ -60,27 +61,47 @@ func (a *App) macEngine() string {
 	return ""
 }
 
-// hostAgent is the agent socket ssh on the host would use for github.com:
-// an IdentityAgent from ~/.ssh/config (1Password's documented setup), else
-// $SSH_AUTH_SOCK. "" when there is none.
-func (a *App) hostAgent() string {
+// hostAgent is the host's SSH agent socket the sandbox gets, and what
+// chose it, for messages; "" when there is none.
+func (a *App) hostAgent() (sock, from string) {
+	return a.agentFrom(a.Cfg.SSHAgent, sshAgentOrigin(a.Cfg))
+}
+
+// agentFrom is hostAgent for a setting of ssh_agent, set, and what set it:
+// that socket ("none" for none), else the one ssh on the host would use for
+// github.com -- an IdentityAgent from ~/.ssh/config (1Password's documented
+// setup), else $SSH_AUTH_SOCK, which a tool like a work login's may have
+// taken over without anything on the host noticing.
+func (a *App) agentFrom(set, origin string) (sock, from string) {
 	env := a.getenv("SSH_AUTH_SOCK")
+	if set != "" {
+		return a.expandAgent(set, env), origin
+	}
+	const fromEnv = "$SSH_AUTH_SOCK"
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
-		return env
+		return env, fromEnv
 	}
 	out, err := exec.Command(ssh, "-G", "github.com").Output()
 	if err != nil {
-		return env
+		return env, fromEnv
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), " ")
 		if !ok || !strings.EqualFold(k, "identityagent") {
 			continue
 		}
-		return a.expandAgent(strings.Trim(strings.TrimSpace(v), `"`), env)
+		return a.expandAgent(strings.Trim(strings.TrimSpace(v), `"`), env), "IdentityAgent in ~/.ssh/config"
 	}
-	return env
+	return env, fromEnv
+}
+
+// sshAgentOrigin says what set ssh_agent, for messages.
+func sshAgentOrigin(c *config.Config) string {
+	if c.File != nil && c.SSHAgentFrom == c.File.Path {
+		return "ssh_agent in " + c.File.Path
+	}
+	return or(c.SSHAgentFrom, "CABOOSE_SSH_AGENT")
 }
 
 // expandAgent resolves an IdentityAgent value as ssh does: "none" is no
