@@ -118,12 +118,6 @@ func (w *Watcher) Close() error {
 	return nil
 }
 
-func (w *Watcher) isClosed() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.closed
-}
-
 func (w *Watcher) signal() {
 	select {
 	case w.wake <- struct{}{}:

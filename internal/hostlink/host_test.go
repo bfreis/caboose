@@ -47,7 +47,7 @@ func TestCheckURL(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"file:///etc/passwd", "javascript:alert(1)", "ssh://host", "https://", "x",
-		"https://user:pw@example.com/", "https://example.com/\x1b[31m", "https://example.com/‮",
+		"https://user:pw@example.com/", "https://example.com/\x1b[31m", "https://example.com/\u202e",
 		"https://example.com/" + strings.Repeat("a", maxURL),
 	} {
 		if _, err := CheckURL(bad); err == nil {
@@ -231,11 +231,11 @@ func TestOpen(t *testing.T) {
 func TestNotifyIsMadePrintable(t *testing.T) {
 	fa := &fakeActions{}
 	socket := linked(t, Config{Ports: PortSet{}, Actions: fa})
-	if err := agent.Notify(socket, "t\x1b]0;x\x07", "done‮ "+strings.Repeat("y", 2*maxText)); err != nil {
+	if err := agent.Notify(socket, "t\x1b]0;x\x07", "done\u202e "+strings.Repeat("y", 2*maxText)); err != nil {
 		t.Fatal(err)
 	}
 	n := fa.notes[0]
-	if strings.ContainsAny(n, "\x1b\x07‮") {
+	if strings.ContainsAny(n, "\x1b\x07\u202e") {
 		t.Errorf("unprintable characters reached the notification: %q", n)
 	}
 	if len(n) > maxTitle+maxText+20 {

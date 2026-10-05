@@ -132,3 +132,9 @@ func (in *inotify) handle(ev *unix.InotifyEvent, raw []byte) {
 		}
 	}
 }
+
+func (w *Watcher) isClosed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
+}

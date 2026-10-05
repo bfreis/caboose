@@ -152,7 +152,7 @@ func TestDirHash(t *testing.T) {
 	write("Dockerfile", "FROM x\n", 0o644)
 	write("files/a.sh", "echo a\n", 0o755)
 	seen := map[string]string{hash(): "start"}
-	if hash() != hash() {
+	if a, b := hash(), hash(); a != b {
 		t.Fatal("not stable")
 	}
 	for _, step := range []struct {

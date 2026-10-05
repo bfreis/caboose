@@ -145,6 +145,13 @@ func Run(sess *agentproto.Session, cfg Config) error {
 		return fmt.Errorf("%w (%v)", ErrNoHello, err)
 	}
 	helloed := false
+	// The relay's watcher, started at the hello, lives as long as the session.
+	var watcher Watcher
+	defer func() {
+		if watcher != nil {
+			watcher.Close()
+		}
+	}()
 	for b := range sess.Control() {
 		m, err := agentproto.Decode(b)
 		if err != nil {
@@ -167,9 +174,8 @@ func Run(sess *agentproto.Session, cfg Config) error {
 				cfg.Log.Printf("windows: this side's streams take %d in flight, the agent's %d%s", sess.Window(), sess.PeerWindow(), note)
 				sess.WatchStalls(cfg.Log.Printf, stallAfter)
 			}
-			if w := h.watch(); w != nil {
-				defer w.Close()
-				go h.relayChanges(w)
+			if watcher = h.watch(); watcher != nil {
+				go h.relayChanges(watcher)
 			}
 			continue
 		}

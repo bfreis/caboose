@@ -189,9 +189,6 @@ func mountList(roots []config.Root) string {
 	return strings.Join(parts, ", ")
 }
 
-// sshDir is where the container has the sandbox's ~/.ssh.
-const sshDir = config.ContainerHome + "/.ssh"
-
 // warnIfRootsDrifted says when the running container mounts other roots, or
 // mounts them elsewhere, than the configuration now says: a root changed,
 // added or removed since the container was created. Only a warning, as for
