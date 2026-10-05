@@ -151,6 +151,13 @@ func (a *App) SyncStatus(args []string) error {
 		g.deadline = time.Now().Add(doctorBudget)
 	}
 	s.Git = g.command
+	// What a sync committed here and never pushed is no change of the
+	// files any more, so "to send" does not count it: say it apart, before
+	// the fetch, which a push that failed may fail just the same.
+	if u, err := s.Unsent(); err == nil && len(u.Paths) > 0 {
+		list(fmt.Sprintf("unsent (%s never pushed)", plural(u.Commits, "1 commit", fmt.Sprintf("%d commits", u.Commits))), u.Paths, "M")
+		fmt.Fprintf(out, "          'caboose sync' sends %s\n", plural(len(u.Paths), "it", "them"))
+	}
 	if err := s.Fetch(); err != nil {
 		if interactive {
 			// git said why on the terminal, above.

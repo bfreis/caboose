@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bfreis/caboose/internal/backend"
@@ -66,5 +67,33 @@ func TestSyncStatusStartsTheLinkBeforeTheFetch(t *testing.T) {
 				t.Errorf("wait-proxy at %d, fetch at %d: %+v", wait, fetch, box.Execs)
 			}
 		})
+	}
+}
+
+// A sync that committed here but never pushed leaves its files in the
+// repo, so "to send" does not count them: sync status lists them apart,
+// even when the fetch fails as that push did.
+func TestSyncStatusShowsUnsentCommits(t *testing.T) {
+	here, _ := pair(t)
+	if _, err := here.syncer().Sync(); err != nil {
+		t.Fatal(err)
+	}
+	here.write(filepath.Join(here.data, "home/.claude/agents/a.md"), "a\n")
+	here.write(filepath.Join(here.data, statesync.Dir, "home/.claude/agents/a.md"), "a\n")
+	here.git("add", "-A")
+	here.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "unsent")
+	here.write(filepath.Join(here.ctl, "hostkey"), "")
+	if err := here.a.SyncStatus(nil); err != nil {
+		t.Fatal(err)
+	}
+	out := here.stdout.String()
+	for _, want := range []string{
+		"to send : 0 files\n",
+		"unsent (1 commit never pushed): 1 file\n  M home/.claude/agents/a.md\n          'caboose sync' sends it\n",
+		"to take : not checked: ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
 	}
 }

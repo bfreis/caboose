@@ -137,6 +137,59 @@ func (s *Syncer) Divergence() (Divergence, error) {
 	return Divergence{Remote: true, Ahead: ahead, Behind: behind}, nil
 }
 
+// Unsent is what a sync committed here that the remote branch, as last
+// fetched, does not have: a push that failed. Commits counts them, and
+// Paths are the files they change. With no remote branch yet (a first push
+// that failed) it is all of HEAD. No network.
+type Unsent struct {
+	Commits int
+	Paths   []string
+}
+
+// Unsent reads what HEAD has that the remote branch, as last fetched, lacks.
+func (s *Syncer) Unsent() (Unsent, error) {
+	g := s.git()
+	if has, err := g.ok("rev-parse", "-q", "--verify", "HEAD"); err != nil || !has {
+		return Unsent{}, err
+	}
+	remote := "refs/remotes/origin/" + Branch
+	known, err := g.ok("rev-parse", "-q", "--verify", remote)
+	if err != nil {
+		return Unsent{}, err
+	}
+	commits := "HEAD"
+	if known {
+		commits = remote + "..HEAD"
+	}
+	out, err := g.str("rev-list", "--count", commits)
+	if err != nil {
+		return Unsent{}, err
+	}
+	n, err := strconv.Atoi(out)
+	if err != nil {
+		return Unsent{}, fmt.Errorf("git rev-list --count: unexpected %q", out)
+	}
+	if n == 0 {
+		return Unsent{}, nil
+	}
+	var names []byte
+	if known {
+		names, err = g.out("diff", "-z", "--name-only", remote, "HEAD")
+	} else {
+		names, err = g.out("ls-tree", "-z", "-r", "--name-only", "HEAD")
+	}
+	if err != nil {
+		return Unsent{}, err
+	}
+	u := Unsent{Commits: n}
+	for _, p := range strings.Split(string(names), "\x00") {
+		if p != "" {
+			u.Paths = append(u.Paths, p)
+		}
+	}
+	return u, nil
+}
+
 // Incoming lists what the remote branch, as last fetched, has changed since
 // HEAD and it parted: taken, the repo paths this machine's rules sync;
 // others, the ones they do not (another machine's rules, a newer

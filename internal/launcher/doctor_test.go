@@ -143,10 +143,18 @@ func TestDoctorSyncEmptyRemoteAndUnsent(t *testing.T) {
 	if _, err := here.syncer().Sync(); err != nil {
 		t.Fatal(err)
 	}
-	// A sync whose push never got through.
-	here.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "unsent")
-	wantLines(t, here.doctorSync(""),
-		"  ! sync  1 commit synced here never reached the remote (a push that failed); 'caboose sync' sends it")
+	// A sync whose push never got through: its files are in the repo, so
+	// nothing is "waiting to be sent", and yet the remote lacks them.
+	here.write(filepath.Join(here.data, "home/.claude/agents/a.md"), "a\n")
+	here.write(filepath.Join(here.data, statesync.Dir, "home/.claude/agents/a.md"), "a\n")
+	here.git("add", "-A")
+	here.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "unsent")
+	const unsent = "  ! sync  1 file in 1 commit synced here never reached the remote (a push that failed); 'caboose sync' sends it"
+	wantLines(t, here.doctorSync(""), "  ✓ sync  nothing here waiting to be sent", unsent)
+
+	// And when the fetch fails as that push did, it is said all the same.
+	here.write(filepath.Join(here.ctl, "hostkey"), "")
+	wantLines(t, here.doctorSync(""), unsent, "  ✗ sync  the remote's SSH host key is not accepted yet")
 }
 
 func TestDoctorSyncProblems(t *testing.T) {

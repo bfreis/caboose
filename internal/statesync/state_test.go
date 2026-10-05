@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -152,6 +153,61 @@ func TestDivergence(t *testing.T) {
 	}
 	if d := a.divergence(); d != (Divergence{Remote: true, Ahead: 1, Behind: behind.Behind}) {
 		t.Fatalf("with a commit not pushed: %+v", d)
+	}
+}
+
+// Unsent is what a failed push left here: nothing after a sync that got
+// through, and the files of a commit that did not; while the remote has no
+// branch at all, all of HEAD.
+func TestUnsent(t *testing.T) {
+	needGit(t)
+	remote := newRemote(t)
+	a := newMachine(t, "a", remote)
+	unsent := func() Unsent {
+		t.Helper()
+		u, err := a.s.Unsent()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	// Init's commit, never pushed: no files in it.
+	if u := unsent(); len(u.Paths) != 0 {
+		t.Fatalf("before any sync: %+v", u)
+	}
+	// A commit with files, the remote never having had the branch: a first
+	// push that failed.
+	commit := func(rel, data string) {
+		t.Helper()
+		p := filepath.Join(a.s.DataDir, Dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.s.git().run("add", "-A"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.s.git().run("commit", "-q", "-m", "unsent"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit("home/.claude/agents/early.md", "x")
+	if u := unsent(); u.Commits != 2 || strings.Join(u.Paths, ",") != "home/.claude/agents/early.md" {
+		t.Fatalf("with no remote branch: %+v", u)
+	}
+
+	a.write(".claude/settings.json", `{"a":1}`)
+	a.sync()
+	if u := unsent(); u.Commits != 0 || len(u.Paths) != 0 {
+		t.Fatalf("after a sync that pushed: %+v", u)
+	}
+
+	commit("home/.claude/agents/x.md", "x")
+	commit("home/.claude/agents/y.md", "y")
+	if u := unsent(); u.Commits != 2 || strings.Join(u.Paths, ",") != "home/.claude/agents/x.md,home/.claude/agents/y.md" {
+		t.Fatalf("with two commits not pushed: %+v", u)
 	}
 }
 

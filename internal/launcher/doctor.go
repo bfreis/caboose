@@ -778,6 +778,12 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 	if dirty, err := s.Dirty(); err == nil && dirty {
 		c.note("sync", "an earlier sync stopped halfway; the next one finishes it (what is waiting to be sent may be miscounted)")
 	}
+	// Before the fetch, which a push that failed may fail just the same.
+	if u, err := s.Unsent(); err == nil && len(u.Paths) > 0 {
+		c.note("sync", "%s in %s synced here never reached the remote (a push that failed); 'caboose sync' sends %s",
+			plural(len(u.Paths), "1 file", fmt.Sprintf("%d files", len(u.Paths))),
+			plural(u.Commits, "1 commit", fmt.Sprintf("%d commits", u.Commits)), plural(len(u.Paths), "it", "them"))
+	}
 	c.checking("fetching from the sync remote")
 	if err := s.Fetch(); err != nil {
 		what, fix := fetchFailure(err)
@@ -791,10 +797,6 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 	case !d.Remote:
 		c.note("sync", "the remote is empty; 'caboose sync' sends this machine's state")
 	default:
-		if d.Ahead > 0 {
-			c.note("sync", "%s synced here never reached the remote (a push that failed); 'caboose sync' sends %s",
-				plural(d.Ahead, "1 commit", fmt.Sprintf("%d commits", d.Ahead)), plural(d.Ahead, "it", "them"))
-		}
 		if d.Behind > 0 {
 			c.note("sync", "the remote has changes not taken yet; %s", a.syncHow())
 		} else {
