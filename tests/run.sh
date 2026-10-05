@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Integration tests for the caboose sandbox.
 #
-# These drive the REAL container and data dir: they recreate the container and
-# plant decoy version files. That kills running sessions, so the suite refuses
-# to start while any tmux session exists unless FORCE=1.
+# These drive a real container and data dir: an environment's, CABOOSE_ENV,
+# which is "test" unless named (`make test` names TEST_ENV), never the one you
+# work in unless you name it. They recreate its container and plant decoy
+# version files, killing its sessions, so the suite refuses to start while
+# that container has any tmux session unless FORCE=1. A "test" that does not
+# exist yet is created, on defaults: its roots are ~/dev, so a checkout
+# elsewhere needs 'caboose -e test setup' once.
 #
 #   tests/run.sh          run everything
-#   FORCE=1 tests/run.sh  run even with live sessions
+#   FORCE=1 tests/run.sh  run even with live sessions in that container
 #   ONLY=vm tests/run.sh  run the isolation vm group alone (a Mac; `make
 #                         test-vm`), which uses a throwaway environment and
 #                         leaves the real one alone; VM_TEST_BUILD_TIMEOUT,
@@ -352,6 +356,17 @@ case "${ONLY:-}" in
     *) printf 'tests/run.sh: no group ONLY=%s; the one it can run alone is vm\n' "$ONLY" >&2; exit 2 ;;
 esac
 
+# The environment under test: "test" unless named. One that does not exist
+# is created (the launcher refuses a missing one, against a typo).
+export CABOOSE_ENV="${CABOOSE_ENV:-test}"
+if [ "$CABOOSE_ENV" != default ]; then
+    env_dir="${CABOOSE_HOME:-$HOME/.caboose}/envs/$CABOOSE_ENV"
+    if [ ! -d "$env_dir" ]; then
+        mkdir -p "$env_dir"
+        printf 'created environment %s (%s), on defaults\n' "$CABOOSE_ENV" "$env_dir"
+    fi
+fi
+
 # Must track the launcher's own choices, which involve more than a default:
 # a CABOOSE_* override, the environment's config.toml, the environment. Ask
 # the launcher rather than restating all of that here; status only reads.
@@ -363,8 +378,12 @@ read_paths() {
     DATA_DIR="$(printf '%s\n' "$status_now" | sed -n 's/^data dir *: //p')"
     CONTAINER="$(printf '%s\n' "$status_now" | sed -n 's/^container *: \(.*\) (.*)$/\1/p')"
     IMAGE="$(printf '%s\n' "$status_now" | sed -n 's/^image *: //p')"
-    DATA_DIR="${DATA_DIR:-${CABOOSE_DATA_DIR:-$HOME/.caboose/envs/default/data}}"
-    CONTAINER="${CONTAINER:-${CABOOSE_CONTAINER:-caboose}}"
+    DATA_DIR="${DATA_DIR:-${CABOOSE_DATA_DIR:-${CABOOSE_HOME:-$HOME/.caboose}/envs/$CABOOSE_ENV/data}}"
+    if [ "$CABOOSE_ENV" = default ]; then
+        CONTAINER="${CONTAINER:-${CABOOSE_CONTAINER:-caboose}}"
+    else
+        CONTAINER="${CONTAINER:-${CABOOSE_CONTAINER:-caboose-$CABOOSE_ENV}}"
+    fi
     # The dir the container has mounted as ~/.local: local/<platform>.
     LOCAL_DIR="$(printf '%s\n' "$status_now" | sed -n 's/^local dir *: //p')"
     LOCAL_DIR="${LOCAL_DIR:-$DATA_DIR/local}"
@@ -420,7 +439,8 @@ cleanup_config_probes() {
 
 live_sessions="$(docker exec "$CONTAINER" tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')"
 if [ "${live_sessions:-0}" -gt 0 ] && [ -z "${FORCE:-}" ]; then
-    printf 'refusing to run: %s live tmux session(s) would be killed.\n' "$live_sessions" >&2
+    printf 'refusing to run: %s live tmux session(s) in %s (environment %s) would be killed.\n' \
+        "$live_sessions" "$CONTAINER" "$CABOOSE_ENV" >&2
     printf 'finish them, or re-run with FORCE=1.\n' >&2
     exit 1
 fi
@@ -700,10 +720,10 @@ else
     esac
 fi
 check 'the data dir defaults outside the checkout' outside "$data_where"
-# Unless the suite runs on a data dir named outright, it is the default
-# environment's.
+# Unless the suite runs on a data dir named outright, it is the environment
+# under test's.
 if [ -z "${CABOOSE_DATA_DIR:-}" ]; then
-    check 'the data dir is the default environment'"'"'s' "${CABOOSE_HOME:-$HOME/.caboose}/envs/default/data" "$DATA_DIR"
+    check "the data dir is environment $CABOOSE_ENV's" "${CABOOSE_HOME:-$HOME/.caboose}/envs/$CABOOSE_ENV/data" "$DATA_DIR"
 fi
 
 group 'launcher version'

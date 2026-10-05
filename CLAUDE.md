@@ -16,13 +16,19 @@ files, `sandbox/CLAUDE.md` and `imagecheck.sh` embedded in it; the bind
 mounts it sets up are fixed when the container is created. None of it is
 read live, so an edit alone changes nothing:
 
-    make build      # rebuild the image (rebuilds ./caboose first if stale)
-    make restart    # recreate the container (prompts; kills sessions)
-    make test       # both, then the integration suite
-    make lint       # bash -n + shellcheck, gofmt + go vet (+ staticcheck)
+    make build      # rebuild the dev environment's image (rebuilds ./caboose first if stale)
+    make restart    # recreate the dev environment's container (prompts; kills its sessions)
+    make test       # the test environment's image, then the integration suite in it
+    make lint       # bash -n + shellcheck, gofmt + go vet + staticcheck (CI runs it)
     make go-test    # Go unit tests; no docker, safe to run in here
     make test-vm    # the integration suite's vm group alone (a Mac; slow)
     make test-byo   # the bring-your-own-image suite (host only; slow)
+
+These act on environments of their own: `build`, `restart` and the rest on
+`dev` (`DEV_ENV`), `test` on `test` (`TEST_ENV`, which a bare `tests/run.sh`
+also defaults to), each created on defaults the first time. The sandbox a
+session works in is the default environment, on a release, and moves only
+when that updates itself; `DEV_ENV=default` aims the targets at it.
 
 `make help` lists the rest. Prefer these over calling the launcher directly:
 every target that runs it depends on `./caboose`, so make rebuilds it first
@@ -30,11 +36,13 @@ whenever a Go source or an embedded file changed. That matters because the
 image is built from copies of those files embedded in the binary, not from
 the checkout — a stale `./caboose` would build the old image.
 
-A running container cannot rebuild the image it runs from, and recreating the
-container kills the session doing the asking — so whenever you touch
+A running container cannot rebuild the image it runs from, and the launcher
+cannot run in here -- so whenever you touch
 `Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
 `tmux.conf`, `shellrc.bash`, the agent's or the launcher's Go code, **say that a host
-terminal has to run `make build && make restart`**, or the change looks applied and isn't
+terminal has to run `make build && make restart`** to try it (in the `dev`
+environment; the sandbox you are in moves only with a release), or `make
+test` to test it, or the change looks applied and isn't
 (`imagecheck.sh` is in no image: it needs only the launcher rebuilt). Never
 build `./caboose` in here: the checkout is shared with the host, so a linux
 binary there replaces the host's own, and `make launcher` refuses inside the

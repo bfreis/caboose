@@ -302,33 +302,50 @@ endif
 ## launcher: build ./caboose from the Go sources (only when something changed)
 launcher: $(LAUNCHER) $(VMM_ON_MAC)
 
-## build: rebuild the image (does not touch your installed Claude Code)
+# The environments these targets drive. The checkout's launcher stays out of
+# the environment you work in (the default one, on a release, which moves
+# only when it updates itself): build, restart and the rest act on DEV_ENV,
+# test on TEST_ENV. DEV_ENV=default aims them at your own, when you mean it.
+DEV_ENV  ?= dev
+TEST_ENV ?= test
+
+# make-env NAME: creates environment NAME when it does not exist yet (the
+# launcher refuses one that does not, in case of a typo), saying so; it then
+# runs on defaults until 'caboose -e NAME setup' asks for its settings.
+define make-env
+d="$${CABOOSE_HOME:-$$HOME/.caboose}/envs/$(1)"; \
+if [ "$(1)" != default ] && [ ! -d "$$d" ]; then \
+  mkdir -p "$$d" && echo "  created environment '$(1)' ($$d), on defaults: '$(CC) -e $(1) setup' asks for its settings"; \
+fi
+endef
+
+## build: rebuild DEV_ENV's image (default dev; does not touch your installed Claude Code)
 build: $(CC)
-	@$(CC) build
+	@$(call make-env,$(DEV_ENV)); CABOOSE_ENV=$(DEV_ENV) $(CC) build
 
-## restart: recreate the container to pick up a rebuilt image (asks; FORCE=1 skips)
+## restart: recreate DEV_ENV's container to pick up a rebuilt image (asks; FORCE=1 skips)
 restart: $(CC)
-	@$(CC) restart
+	@$(call make-env,$(DEV_ENV)); CABOOSE_ENV=$(DEV_ENV) $(CC) restart
 
-## stop: stop the container (asks first; FORCE=1 skips)
+## stop: stop DEV_ENV's container (asks first; FORCE=1 skips)
 stop: $(CC)
-	@$(CC) stop
+	@CABOOSE_ENV=$(DEV_ENV) $(CC) stop
 
-## status: container, version, live sessions and disk use
+## status: DEV_ENV's container, version, live sessions and disk use
 status: $(CC)
-	@$(CC) status
+	@CABOOSE_ENV=$(DEV_ENV) $(CC) status
 
-## prune: delete old installed Claude Code versions now
+## prune: delete DEV_ENV's old installed Claude Code versions now
 prune: $(CC)
-	@$(CC) prune
+	@CABOOSE_ENV=$(DEV_ENV) $(CC) prune
 
-## logs: supervisor log (bootstrap, pruning, stale-state clearing)
+## logs: DEV_ENV's supervisor log (bootstrap, pruning, stale-state clearing)
 logs: $(CC)
-	@$(CC) logs --tail 50
+	@CABOOSE_ENV=$(DEV_ENV) $(CC) logs --tail 50
 
-## shell: bash prompt inside the container
+## shell: bash prompt inside DEV_ENV's container
 shell: $(CC)
-	@$(CC) shell
+	@$(call make-env,$(DEV_ENV)); CABOOSE_ENV=$(DEV_ENV) $(CC) shell
 
 STATICCHECK_VERSION := v0.8.1
 
@@ -374,11 +391,13 @@ lint:
 go-test: $(AGENT_BINS)
 	@go test ./...
 
-## test: build, then run the integration suite (recreates the container)
-# caboose-vmm too, on a Mac: the vm group runs it beside ./caboose, and
-# the two must be the same version.
-test: build $(VMM_ON_MAC)
-	@CABOOSE_BIN=$(CC) ./tests/run.sh
+## test: build TEST_ENV's image (default test), then run the integration suite in it
+# The suite recreates that environment's container, never yours. caboose-vmm
+# too, on a Mac: the vm group runs it beside ./caboose, and the two must be
+# the same version.
+test: $(CC) $(VMM_ON_MAC)
+	@$(call make-env,$(TEST_ENV)); CABOOSE_ENV=$(TEST_ENV) $(CC) build
+	@CABOOSE_ENV=$(TEST_ENV) CABOOSE_BIN=$(CC) ./tests/run.sh
 
 ## test-vm: run only the integration suite's isolation vm group (on a Mac)
 # Not `build`: the group uses an environment of its own, a throwaway, whose

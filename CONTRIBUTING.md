@@ -10,13 +10,23 @@ Docker. `make help` lists the targets; the ones that matter:
 | `make vm-assets` | pack the kernel and builder as `vm-release/caboose-vm_VERSION_arm64.tar.gz`, the release asset (goreleaser runs it) |
 | `make vm-builder` | build `vm-dist/builder-arm64.img`, the vm isolation's builder guest, with docker; on the host, never in the sandbox |
 | `make vmm` | build `./caboose-vmm`, the vm isolation's VM runner, and sign it with the virtualization entitlement: ad-hoc, or with a Developer ID (below); a Mac only |
-| `make build` | the launcher, then the image (`caboose build`) |
-| `make restart` / `make stop` / `make status` | the launcher's commands, launcher rebuilt first |
-| `make lint` | `bash -n` + shellcheck, gofmt + go vet (+ staticcheck when installed) |
+| `make build` | the launcher, then the image (`caboose build`), in the `dev` environment (`DEV_ENV`) |
+| `make restart` / `make stop` / `make status` | the launcher's commands on the `dev` environment, launcher rebuilt first |
+| `make lint` | `bash -n` + shellcheck, gofmt + go vet + staticcheck, for linux and darwin; fails when shellcheck or staticcheck is missing; CI runs it as it is |
 | `make go-test` | the launcher's Go unit tests; touches no container |
-| `make test` | build, then run the integration suite (`tests/run.sh`) |
+| `make test` | build the `test` environment's image (`TEST_ENV`), then run the integration suite (`tests/run.sh`) in it |
 | `make test-vm` | only the integration suite's isolation vm group (`ONLY=vm tests/run.sh`): a throwaway environment, its image built in the builder guest; a Mac only, skipped elsewhere |
 | `make test-byo` | the bring-your-own-image suite (`tests/byo/`): slow, it installs Claude Code twice |
+
+**Work in a release, develop in `dev`.** Use an install made by `install.sh`
+for the sandbox you work in: it is the default environment, and moves only
+when it updates itself. The checkout's `./caboose` drives environments of
+its own: `make build`, `restart`, `stop`, `status`, `prune`, `logs` and
+`shell` act on `dev` (`DEV_ENV`), `make test` on `test` (`TEST_ENV`), each a
+whole caboose with its own container, image and data dir, created on
+defaults the first time (its roots are `~/dev`: `./caboose -e dev setup`
+changes that, and logs in to Claude there). `DEV_ENV=default` aims the
+targets at your own environment, when you mean it.
 
 `./caboose` is gitignored, and symlinked onto `PATH` it finds its checkout
 through the link. Every make target that runs it rebuilds it first when its
@@ -27,23 +37,27 @@ from `git describe` through `caboose.version`, rewritten only when it
 changes. It refuses to build `./caboose` inside the sandbox, which shares
 this checkout with the host: a linux binary there would replace the host's.
 
-The integration suite drives the real launcher against the real container
-and data dir: it recreates the container, so it kills running sessions and
-refuses to start while any exist unless `FORCE=1`. It cannot run from inside
-the sandbox. `make test-byo` is kept out of `make test` because it is slow:
+The integration suite drives the real launcher against a real container
+and data dir, the `test` environment's (`CABOOSE_ENV`, which it sets to
+`test` when unset, so a bare `tests/run.sh` never touches yours either): it
+recreates that container, so it refuses to start while it has any session
+unless `FORCE=1`. It cannot run from inside the sandbox, which has no host
+docker. `make test-byo` is kept out of `make test` because it is slow:
 it builds a Debian and an Alpine test image, runs a session on each against
 one throwaway data dir, and so installs Claude Code once per platform. It
 runs on the host too. The suite's last group, isolation vm, never touches
 the real environment either: it builds, boots and tears down a VM of its own
 in a throwaway data dir, every step bounded in time, and skips, saying why,
 anywhere but a Mac with `caboose-vmm`, the kernel and the builder disk;
-`make test-vm` runs it alone. CI runs gofmt, go vet, go test and shellcheck.
+`make test-vm` runs it alone. CI runs `make lint` and go test on every branch
+push.
 
 **Changes to the image need a rebuild, on the host.** `Dockerfile`,
 `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `tmux.conf` and
 `shellrc.bash` are baked into the image, which is built from the copies embedded in the
 launcher, so an edit needs `make build && make
-restart` (make rebuilds the launcher for you). A launcher change takes effect
+restart` (make rebuilds the launcher for you), which moves the `dev`
+environment onto it. A launcher change takes effect
 on the next run, but anything it decides at container creation — mounts,
 environment — needs `make restart` too. `sandbox/CLAUDE.md` is the
 exception: a launcher run from the checkout reads it from there on every
