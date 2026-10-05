@@ -330,7 +330,16 @@ logs: $(CC)
 shell: $(CC)
 	@$(CC) shell
 
+STATICCHECK_VERSION := v0.8.1
+
+# What CI installs, so the version is said once, here.
+staticcheck-version:
+	@echo $(STATICCHECK_VERSION)
+
 ## lint: bash -n / sh -n + shellcheck over the shell scripts, gofmt + go vet + staticcheck
+# CI runs this target as it is. A missing shellcheck or staticcheck fails it
+# rather than skipping, since a skipped check reads as a passed one:
+# STATICCHECK_VERSION is the one CI installs.
 # imagecheck.sh, layer-user.sh and install.sh get sh -n, not bash -n: they
 # run on images with no bash (or before its absence is known), or on a
 # machine nothing is known about yet, and shellcheck reads their #!/bin/sh
@@ -342,12 +351,10 @@ lint:
 	  for f in imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run; do \
 	    sh -n "$$f" && echo "  ok  $$f"; \
 	  done; \
-	  if command -v shellcheck >/dev/null 2>&1; then \
-	    shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
-	      && echo "  ok  shellcheck"; \
-	  else \
-	    echo "  --  shellcheck not installed, skipped"; \
-	  fi; \
+	  command -v shellcheck >/dev/null 2>&1 || { \
+	    echo "  !!  shellcheck is not installed: https://github.com/koalaman/shellcheck#installing"; exit 1; }; \
+	  shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
+	    && echo "  ok  shellcheck"; \
 	  unformatted="$$(gofmt -l $$(go list -f '{{.Dir}}' ./...))"; \
 	  if [ -n "$$unformatted" ]; then \
 	    echo "  !!  gofmt: $$unformatted"; exit 1; \
@@ -356,11 +363,11 @@ lint:
 	  for os in linux darwin; do \
 	    [ "$$os" = "$$(go env GOOS)" ] || { GOOS=$$os go vet ./... && echo "  ok  go vet ($$os)"; }; \
 	  done; \
-	  if command -v staticcheck >/dev/null 2>&1; then \
-	    staticcheck ./... && echo "  ok  staticcheck"; \
-	  else \
-	    echo "  --  staticcheck not installed, skipped"; \
-	  fi
+	  command -v staticcheck >/dev/null 2>&1 || { \
+	    echo "  !!  staticcheck is not installed: go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)"; exit 1; }; \
+	  for os in linux darwin; do \
+	    GOOS=$$os staticcheck ./... && echo "  ok  staticcheck ($$os)"; \
+	  done
 
 ## go-test: run the Go unit tests (no docker, safe anywhere)
 # The agent first: the image's context hashes cover its binaries.
@@ -388,5 +395,5 @@ test-vm: launcher
 test-byo: $(CC)
 	@CABOOSE_BIN=$(CC) ./tests/byo/run.sh
 
-.PHONY: FORCE help agent vmm vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
+.PHONY: FORCE help staticcheck-version agent vmm vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
 FORCE:

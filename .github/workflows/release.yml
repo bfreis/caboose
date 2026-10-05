@@ -170,8 +170,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -eu
-          set -- $(make -s vm-kernel-pin)
-          ver=$1 sha=$2 rel="kernel-$1"
+          read -r ver sha <<EOF
+          $(make -s vm-kernel-pin)
+          EOF
+          rel="kernel-$ver"
           if ! gh release view "$rel" > /dev/null 2>&1; then
             gh release create "$rel" --target "$GITHUB_SHA" --prerelease --latest=false \
               --title "Linux $ver: the source of caboose's vm guest kernel" \
