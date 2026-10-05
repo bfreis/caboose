@@ -1,0 +1,70 @@
+package launcher
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
+	"github.com/bfreis/caboose/internal/statesync"
+)
+
+// caboose sync status fetches from the remote, and under vm the fetch's
+// ssh goes through the outbound proxy the link serves: so with the VM
+// running, it starts the link and waits for the proxy before the fetch,
+// as caboose sync does, whichever command brought the VM up. Under docker
+// and gvisor there is no proxy to wait for.
+func TestSyncStatusStartsTheLinkBeforeTheFetch(t *testing.T) {
+	waitProxy := []string{AgentPath, "wait-proxy"}
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			box := runningBox(iso)
+			b := newBoxApp(t, iso, box)
+			repo := filepath.Join(b.data, statesync.Dir)
+			box.SandboxMounts = append(box.SandboxMounts, mount(repo, statesync.ContainerDir))
+			if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			conf := "[remote \"origin\"]\n\turl = git@example.com:me/state.git\n"
+			if err := os.WriteFile(filepath.Join(repo, ".git", "config"), []byte(conf), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			box.Exec = func(s backend.ExecSpec) *exec.Cmd {
+				// The fetch took nothing: no remote branch yet.
+				if slices.Contains(s.Argv, "rev-parse") {
+					return backendtest.Reply("", "", 1)
+				}
+				return nil
+			}
+			if err := b.SyncStatus(nil); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			index := func(match func([]string) bool) int {
+				return slices.IndexFunc(box.Execs, func(s backend.ExecSpec) bool { return match(s.Argv) })
+			}
+			wait := index(func(argv []string) bool {
+				return len(argv) >= 2 && slices.Equal(argv[:2], waitProxy)
+			})
+			fetch := index(func(argv []string) bool { return slices.Contains(argv, "fetch") })
+			if fetch < 0 {
+				t.Fatalf("no fetch in %+v", box.Execs)
+			}
+			linked := slices.ContainsFunc(b.spawned, func(argv []string) bool { return slices.Contains(argv, "link") })
+			if iso != isolationVM {
+				if wait >= 0 || linked {
+					t.Errorf("under %s, waited for a proxy (%d) or started a link (%v): %+v", iso, wait, b.spawned, box.Execs)
+				}
+				return
+			}
+			if !linked {
+				t.Errorf("the link was not started: spawned %v", b.spawned)
+			}
+			if wait < 0 || wait > fetch {
+				t.Errorf("wait-proxy at %d, fetch at %d: %+v", wait, fetch, box.Execs)
+			}
+		})
+	}
+}

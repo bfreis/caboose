@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/backend"
@@ -137,6 +138,10 @@ func TestStartLinkReplacesAHelperWithOtherSettings(t *testing.T) {
 		{"same settings", settingsFor("3000", "ask"), false},
 		{"other ports", settingsFor("4000", "ask"), true},
 		{"other open_urls", settingsFor("3000", "off"), true},
+		// The container and the VM share the environment's name, and the
+		// old one may still run: a helper serves the one it started for.
+		{"other isolation", settingsFor("3000", "ask").withIsolation(isolationVM), true},
+		{"from before the isolation was recorded", settingsFor("3000", "ask").withIsolation(""), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -225,6 +230,48 @@ func TestReloadOnConfigChange(t *testing.T) {
 	}
 }
 
+// A helper that sees config.toml change the isolation retires: it cannot
+// serve the new sandbox, and must not stay on the old one, which may still
+// run under the same name. Its session ends, its settings stay, and run
+// returns at once, so the next launch starts a helper for the new one.
+func TestReloadRetiresOnIsolationChange(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(k string) string { return map[string]string{"HOME": home, "CABOOSE_HOME": home}[k] }
+	cfg, err := config.Load(getenv, config.OSFS{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(cfg.EnvDir, 0o755)
+	os.MkdirAll(cfg.DataDir, 0o755)
+	r := &linkRunner{a: &App{Cfg: cfg}, log: log.New(io.Discard, "", 0), settings: settingsOf(cfg)}
+	sess := agentproto.NewSession(bytes.NewReader(nil), nopCloser{io.Discard}, true)
+	r.sess = sess
+	before := r.settings
+
+	if err := os.WriteFile(filepath.Join(cfg.EnvDir, config.FileName), []byte("isolation = \"vm\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+	select {
+	case <-sess.Done():
+	default:
+		t.Fatal("the session goes on with the old sandbox")
+	}
+	if !r.retired || r.settings != before {
+		t.Fatalf("retired %v, settings %+v; want retired, settings as they were", r.retired, r.settings)
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.run(true) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a retired helper goes on running")
+	}
+}
+
 type nopCloser struct{ io.Writer }
 
 func (nopCloser) Close() error { return nil }
@@ -269,12 +316,15 @@ func TestLinkDialsALinker(t *testing.T) {
 	}
 }
 
-// settingsFor is linkSettings with these two and the outbound proxy's
-// defaults.
+// settingsFor is linkSettings with these two, the outbound proxy's
+// defaults, and the default isolation.
 func settingsFor(forwardPorts, openURLs string) linkSettings {
 	return linkSettings{ForwardPorts: forwardPorts, OpenURLs: openURLs,
-		EgressProxy: "on", EgressPorts: config.DefaultEgressPorts}
+		EgressProxy: "on", EgressPorts: config.DefaultEgressPorts, Isolation: isolationDocker}
 }
+
+// withIsolation is s serving a sandbox of another isolation.
+func (s linkSettings) withIsolation(iso string) linkSettings { s.Isolation = iso; return s }
 
 // A vm guest's link offers the outbound proxy in the host's hello, unless
 // egress_proxy is off.

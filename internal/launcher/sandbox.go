@@ -133,6 +133,13 @@ func (a *App) SyncStatus(args []string) error {
 	if err := a.checkSyncMount(); err != nil {
 		return err
 	}
+	// Under vm the fetch's ssh goes through the outbound proxy, which the
+	// link serves: started and waited for as caboose sync does, since a VM
+	// some other command brought up need not have its link yet.
+	if a.isVM() {
+		a.startLink()
+		a.awaitProxy()
+	}
 	// From a terminal the fetch is caboose sync's: it may ask to accept the
 	// remote's host key, or for credentials, and is not cut short. Only a
 	// status nobody can answer (a script, a pipe) fails instead of asking.

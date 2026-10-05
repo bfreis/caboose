@@ -64,12 +64,18 @@ type linkSettings struct {
 	// DebugLink is linkdebug's knobs, from the environment of the launch
 	// that started the helper: a launch with others starts a new one.
 	DebugLink string `json:"debug_link,omitempty"`
+	// Isolation is the sandbox the helper serves: a container (docker,
+	// gvisor) or a VM, both called the environment's name, and the old one
+	// can still be running beside the new. A helper cannot change which it
+	// serves, so a launch under another isolation replaces it, and one that
+	// sees config.toml change it steps aside (reload).
+	Isolation string `json:"isolation"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
 		EgressProxy: c.EgressProxy, EgressPorts: c.EgressPorts, EgressAllow: c.EgressAllow,
-		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw}
+		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c)}
 	// A Config not from config.Load leaves them unset: the defaults.
 	if s.EgressProxy == "" {
 		s.EgressProxy = "on"
@@ -354,6 +360,7 @@ type linkRunner struct {
 	cfg      hostlink.Config
 	sess     *agentproto.Session
 	reloaded bool // the session ended for new settings: reconnect at once
+	retired  bool // the isolation changed: this helper serves no more
 }
 
 func (r *linkRunner) settingsNow() linkSettings {
@@ -375,6 +382,12 @@ func (r *linkRunner) run(background bool) error {
 	a := r.a
 	wait, early := linkRetryMin, false
 	for {
+		r.mu.Lock()
+		retired := r.retired
+		r.mu.Unlock()
+		if retired {
+			return nil
+		}
 		if state := a.box().State(); state != "running" {
 			r.log.Printf("%s %s is %s: done", a.noun(), a.Cfg.Container, state)
 			return nil
@@ -393,9 +406,12 @@ func (r *linkRunner) run(background bool) error {
 			return Die("%s", stop.msg)
 		}
 		r.mu.Lock()
-		reloaded := r.reloaded
+		reloaded, retired := r.reloaded, r.retired
 		r.reloaded = false
 		r.mu.Unlock()
+		if retired {
+			return nil
+		}
 		if reloaded {
 			wait, early = linkRetryMin, false
 			continue
@@ -473,6 +489,17 @@ func (r *linkRunner) reload() {
 	r.mu.Lock()
 	if next == r.settings {
 		r.mu.Unlock()
+		return
+	}
+	if next.Isolation != r.settings.Isolation {
+		r.retired = true
+		sess := r.sess
+		r.mu.Unlock()
+		r.log.Printf("config.toml changed the isolation from %s to %s: this link serves the %s sandbox only, and stops; the next launch starts one for the %s one",
+			r.settings.Isolation, next.Isolation, r.settings.Isolation, next.Isolation)
+		if sess != nil {
+			sess.Close()
+		}
 		return
 	}
 	r.settings = next
