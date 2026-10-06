@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,9 +33,11 @@ var (
 // not register runsc with.
 const gvisorInstall = "https://gvisor.dev/docs/user_guide/install/"
 
-// setupIsolation asks what isolates the sandbox (config.toml's isolation)
-// and writes the answer explicitly, the strongest that works as the
-// default where nothing is written yet. gvisor works when docker lists
+// setupIsolation asks what isolates the sandbox (the kind of config.toml's
+// isolation profile) and writes the answer explicitly -- isolation naming
+// a profile of that kind, the file's own when it has one, else a new,
+// empty <kind>.default -- the strongest that works as the default where
+// no profile is defined yet. gvisor works when docker lists
 // runsc and, with an image to try, a container runs under it. Where docker
 // has no runsc and the engine is OrbStack, it offers to download runsc
 // into CABOOSE_HOME and register it in OrbStack's daemon config: shown as
@@ -45,19 +48,13 @@ func (a *App) setupIsolation(p *prompter) error {
 	c := a.Cfg
 	p.heading("Isolation", "What stands between the sandbox and this machine: docker's own runtime, "+
 		"which shares this machine's kernel; gVisor, a kernel of its own; or, on a Mac, a VM of caboose's own.")
-	if v := c.Getenv("CABOOSE_ISOLATION"); v != "" {
-		p.warn("CABOOSE_ISOLATION is set in this shell (%s), and wins over config.toml; unset it to choose here.", v)
-		p.same("Nothing changed")
-		return nil
-	}
+	// The kind config.toml's profile is of, "" when it defines none.
 	written := ""
-	if c.File != nil {
-		written = c.File.Vals["ISOLATION"]
-	}
-	if written != "" {
-		p.say("Now: %s.", written)
+	if c.Profile != "" {
+		written = c.Isolation
+		p.say("Now: %s (the profile %s).", written, c.Profile)
 	} else {
-		p.say("Now: %s, the default (config.toml does not say).", isolationDocker)
+		p.say("Now: %s, the default (config.toml defines no isolation profile).", isolationContainer)
 	}
 	// vm needs no engine: its files beside the launcher are the question.
 	vf, vmErr := a.findVMFiles()
@@ -121,10 +118,10 @@ func (a *App) setupIsolation(p *prompter) error {
 		p.warn("isolation is %s, which cannot work here: a launch stops until it does.", isolationGVisor)
 		kept = append(kept, option{isolationGVisor, "gvisor, kept for when runsc works"})
 	}
-	opts = append(opts, option{isolationDocker, "docker: this machine's kernel, shared"})
+	opts = append(opts, option{isolationContainer, "docker: this machine's kernel, shared"})
 	works := len(opts)
 	opts = append(opts, kept...)
-	choice := isolationDocker
+	choice := isolationContainer
 	if len(opts) > 1 {
 		def := 0
 		if len(kept) > 0 {
@@ -146,16 +143,32 @@ func (a *App) setupIsolation(p *prompter) error {
 	if choice == written {
 		p.same("Nothing changed")
 	} else {
-		if _, err := a.writeConfig(config.Edit{Set: map[string]any{"isolation": choice}}); err != nil {
+		profile := profileOf(c, choice)
+		if _, err := a.writeConfig(config.Edit{Set: map[string]any{"isolation": profile}, Tables: []string{profile}}); err != nil {
 			return err
 		}
-		p.ok("Wrote isolation = %q to %s", choice, a.short(filepath.Join(c.EnvDir, config.FileName)))
+		p.ok("Wrote isolation = %q to %s", profile, a.short(filepath.Join(c.EnvDir, config.FileName)))
+		if c.Profile != "" && c.File != nil && !slices.Contains(c.File.Profiles, profile) {
+			// Profiles do not inherit: the new one starts at the defaults.
+			var set []string
+			for _, k := range slices.Sorted(maps.Keys(c.File.Vals)) {
+				if strings.HasPrefix(k, c.Profile+".") {
+					set = append(set, strings.TrimPrefix(k, c.Profile+"."))
+				}
+			}
+			if len(set) == 0 {
+				p.note("[%s] starts at the defaults: profiles do not inherit from one another.", profile)
+			} else {
+				p.note("[%s] starts at the defaults: %s of [%s] do not carry over, and stay in the file under it, for when you switch back.",
+					profile, strings.Join(set, ", "), c.Profile)
+			}
+		}
 	}
 	if rt := a.runtimeGone(); rt != "" {
 		if choice == isolationGVisor && !gv {
 			p.warn("The container was created under %s, which docker no longer has, so it cannot start; "+
 				"with isolation %s, no new one can be created until docker has runsc. %s registers it, or choose %s here.",
-				rt, choice, p.code(SetupCommand(c.Env, "isolation")), isolationDocker)
+				rt, choice, p.code(SetupCommand(c.Env, "isolation")), isolationContainer)
 		} else {
 			p.note("The container was created under %s, which docker no longer has, so it cannot start: "+
 				"the next launch recreates it with isolation %s (it is stopped, so no sessions are lost).", rt, choice)
@@ -170,6 +183,19 @@ func (a *App) setupIsolation(p *prompter) error {
 			p.code("caboose restart"), choice)
 	}
 	return nil
+}
+
+// profileOf is the profile setup names for kind: the file's first of that
+// kind, else a new <kind>.default.
+func profileOf(c *config.Config, kind string) string {
+	if c.File != nil {
+		for _, p := range c.File.Profiles {
+			if strings.HasPrefix(p, kind+".") {
+				return p
+			}
+		}
+	}
+	return kind + ".default"
 }
 
 // tryRunsc runs a container under runsc, from the image, when there is
@@ -252,25 +278,16 @@ func (a *App) refreshRunsc(p *prompter) (bool, error) {
 		p.fail("Cannot edit %s (%v). Check its runsc entry by hand.", a.short(daemon), err)
 		return true, nil
 	}
-	if !changed && slices.Equal(loaded.RuntimeArgs, runscArgs) {
-		return true, nil
-	}
 	var file struct {
 		Runtimes map[string]json.RawMessage `json:"runtimes"`
 	}
 	_ = json.Unmarshal(cur, &file)
-	what := orbFlags
-	switch _, listed := file.Runtimes[runscName]; {
-	case !listed:
-		what = orbRegister
-		p.say("Docker runs caboose's runsc, but %s no longer registers it: the engine drops it at its next restart, "+
-			"and a container under gvisor cannot start without it.", a.short(daemon))
-	case changed:
-		p.say("The runsc caboose registered in %s runs without flags this caboose gives it. %s", a.short(daemon), dcacheWhy)
-	default:
-		p.say("Docker runs caboose's runsc without flags this caboose gives it. %s", dcacheWhy)
+	if _, listed := file.Runtimes[runscName]; listed {
+		return true, nil
 	}
-	if _, err := a.applyOrbStack(p, daemon, cur, next, changed, what); err != nil {
+	p.say("Docker runs caboose's runsc, but %s no longer registers it: the engine drops it at its next restart, "+
+		"and a container under gvisor cannot start without it.", a.short(daemon))
+	if _, err := a.applyOrbStack(p, daemon, cur, next, changed, orbRegister); err != nil {
 		return false, err
 	}
 	have, err := a.engineRuntimes()
@@ -318,7 +335,7 @@ func (a *App) offerRunscUpdate(p *prompter, dir string) error {
 		p.say("gVisor has a newer release than the one caboose downloaded into %s on %s.",
 			a.short(dir), rec.Downloaded.Local().Format(time.DateOnly))
 	default:
-		p.say("caboose cannot tell which gVisor release is in %s (it was downloaded before caboose recorded that), "+
+		p.say("caboose cannot read which gVisor release is in %s (its record is missing or damaged), "+
 			"and gVisor's latest may be newer.", a.short(dir))
 	}
 	iso, _, _ := a.createdIsolation()
@@ -349,9 +366,6 @@ func (a *App) offerRunscUpdate(p *prompter, dir string) error {
 	}
 	return nil
 }
-
-// dcacheWhy is what a runsc without runscArgs' --dcache=0 costs.
-const dcacheWhy = "Without --dcache=0, a directory on your repos listed while empty can go on listing empty in the sandbox after files are added."
 
 // registerOrbStack downloads runsc for the engine's architecture into
 // CABOOSE_HOME/runsc, adds it to OrbStack's docker.json (after showing the
@@ -410,10 +424,7 @@ type orbChange struct {
 	diff, done, notDone string
 }
 
-var (
-	orbRegister = orbChange{"with runsc", "Registered runsc", "Not registered"}
-	orbFlags    = orbChange{"with runsc's flags updated", "Updated runsc's flags", "Not updated"}
-)
+var orbRegister = orbChange{"with runsc", "Registered runsc", "Not registered"}
 
 // applyOrbStack writes next over OrbStack's docker.json at daemon, which
 // holds cur, after showing the difference and asking (unless changed is

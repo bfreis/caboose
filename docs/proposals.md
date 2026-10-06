@@ -48,7 +48,7 @@ built into caboose; the first section applied writes caboose's preset, with
 the section, as `image/Dockerfile` — `apply` says so first, since from then
 on the environment builds from a Dockerfile of its own, and a newer
 caboose's changes no longer reach it (`caboose setup image` shows how the
-two differ). On `base_image` there is no Dockerfile, and no section can be
+two differ). On a configured `base` there is no Dockerfile, and no section can be
 applied.
 
 A proposal names the hash of the Dockerfile it was written against, and is
@@ -101,9 +101,7 @@ other = "~/src/other"
 `current/` next to them is written by the host at every launch and after
 every `apply`: `Dockerfile`, the one the next build uses (caboose's preset
 when the environment has none of its own), and `state.toml`, with where it
-comes from, its hash, and the roots `config.toml` has. It is only information: changing it changes nothing, and `apply`
+comes from, its hash, and the roots `config.toml` has (each a `[roots.NAME]` with its `host` and container `path`). It is only information: changing it changes nothing, and `apply`
 checks every proposal against the real files. The sandbox's
 `~/.claude/CLAUDE.md` tells sessions all of this.
 
-A container created before proposals existed does not mount the directory;
-`caboose restart` creates it again with it.

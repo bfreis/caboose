@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -100,8 +99,7 @@ func linked(t *testing.T, cfg Config) (socket string) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	socket = dir + "/s"
-	go agent.RunLink(ar, aw, agent.Config{Socket: socket, ProcRoot: "/proc", Interval: 20 * time.Millisecond,
-		WorkDir: filepath.Clean(os.TempDir())})
+	go agent.RunLink(ar, aw, agent.Config{Socket: socket, ProcRoot: "/proc", Interval: 20 * time.Millisecond})
 	sess := agentproto.NewSession(hr, hw, true)
 	t.Cleanup(func() { sess.Close() })
 	if cfg.Log == nil {

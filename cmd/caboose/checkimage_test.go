@@ -100,8 +100,7 @@ esac`
 
 func checkEnv(t *testing.T, kv ...string) string {
 	t.Helper()
-	// No repo root: caboose check-image needs none.
-	return sandboxEnv(t, append([]string{"CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist"}, kv...)...)
+	return sandboxEnv(t, kv...)
 }
 
 func TestCheckImageComplete(t *testing.T) {
@@ -270,7 +269,7 @@ func TestCheckImagePulls(t *testing.T) {
 	}
 }
 
-// With no IMAGE, CABOOSE_BASE_IMAGE is checked, and pulled if need be...
+// With no IMAGE, [image] base is checked, and pulled if need be...
 func TestCheckImageDefaultsToBaseImage(t *testing.T) {
 	log := scriptedDocker(t, imageMissingButPullable+"\n"+probeRuns(t, probeComplete))
 	checkEnv(t, "CABOOSE_BASE_IMAGE", "mybase:1")
@@ -289,10 +288,10 @@ func TestCheckImageDefaultNotBuilt(t *testing.T) {
 	log := scriptedDocker(t, imageAbsent)
 	checkEnv(t)
 	code, out, errs := runIt("check-image")
-	if code != 2 || out != "\n  caboose check-image  img-base\n\n" {
+	if code != 2 || out != "\n  caboose check-image  caboose-base:default\n\n" {
 		t.Errorf("exit %d, stdout %q", code, out)
 	}
-	if !strings.Contains(errs, "caboose: base image 'img-base' is not built yet\n") || !strings.Contains(errs, "'caboose build'") {
+	if !strings.Contains(errs, "caboose: base image 'caboose-base:default' is not built yet\n") || !strings.Contains(errs, "'caboose build'") {
 		t.Errorf("stderr:\n%s", errs)
 	}
 	for _, l := range dockerLog(t, log) {
@@ -305,10 +304,10 @@ func TestCheckImageDefaultNotBuilt(t *testing.T) {
 func TestCheckImageDefaultBuilt(t *testing.T) {
 	log := scriptedDocker(t, probeRuns(t, probeComplete))
 	checkEnv(t)
-	if code, out, _ := runIt("check-image"); code != 0 || !strings.HasPrefix(out, "\n  caboose check-image  img-base\n\n  ✓ /bin/sh   ok\n") {
+	if code, out, _ := runIt("check-image"); code != 0 || !strings.HasPrefix(out, "\n  caboose check-image  caboose-base:default\n\n  ✓ /bin/sh   ok\n") {
 		t.Errorf("exit %d, stdout:\n%s", code, out)
 	}
-	if b, _ := os.ReadFile(log); !strings.Contains(string(b), " --entrypoint /bin/sh img-base -c ") {
+	if b, _ := os.ReadFile(log); !strings.Contains(string(b), " --entrypoint /bin/sh caboose-base:default -c ") {
 		t.Errorf("docker log:\n%s", b)
 	}
 }

@@ -5,7 +5,7 @@
 // refused, with what to type instead.
 //
 // restart and stop name the sessions they are about to end and ask first;
-// FORCE=1 skips the question, and with no tty they refuse outright.
+// CABOOSE_FORCE=1 skips the question, and with no tty they refuse outright.
 package main
 
 import (
@@ -65,7 +65,10 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	switch {
 	case err != nil && inv.Command == "update":
 		// Machine-wide: no environment's config.toml stands in its way.
-		cfg = config.Machine(os.Getenv)
+		var merr error
+		if cfg, merr = config.Machine(os.Getenv); merr != nil {
+			return exit(stderr, launcher.Die("%v", merr))
+		}
 	case err != nil:
 		return exit(stderr, launcher.Die("%v", err))
 	}
@@ -84,7 +87,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		app.Suffix = inv.Session
 	}
 	// Building, asking for the version, checking an image and doctor need
-	// no repo root; everything else does. version and doctor above all must
+	// no root; everything else does. version and doctor above all must
 	// not: they are what to run when the setup looks wrong. Nor
 	// check-image, which is what to run before there is a setup.
 	if inv.Command == "update" {

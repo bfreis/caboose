@@ -23,7 +23,7 @@ socket is mounted directly: the one `ssh` itself would use, so an
 `$SSH_AUTH_SOCK`. The mount is fixed when the container is created, so a
 change to any of this needs `caboose restart`.
 
-Under `isolation = "vm"` nothing of the Mac's can be mounted into the
+Under a `vm` profile nothing of the Mac's can be mounted into the
 VM, so the [host link](host-link.md) carries the agent instead: the agent
 in the sandbox listens at the same path, and each client there reaches the
 agent `ssh` on the Mac would use, as the launch that started the link saw
@@ -31,17 +31,18 @@ it: an `IdentityAgent` in `~/.ssh/config`, else the terminal's
 `$SSH_AUTH_SOCK`. The link starts with a session; `caboose link
 --restart` starts one without.
 
-**`ssh_agent`** in `config.toml` (or `CABOOSE_SSH_AGENT`) names the
+**`ssh_agent`** in `[link]` of `config.toml` names the
 agent outright, whatever the terminal says, or `none` for none. It is for
 the Mac where something else holds `$SSH_AUTH_SOCK` -- a work login that
 loads its own certificate, say -- while ssh and git there never read it
 (remotes over HTTPS, signing through 1Password's `op-ssh-sign`), so
 nothing on the Mac shows the agent is not yours:
 
+    [link]
     ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
 The link rereads `config.toml`, so it takes effect without a restart. It
-applies under `vm` and, on Linux, to the socket mounted under `docker` and
+applies under `vm` and, on Linux, to the socket mounted under `container` and
 `gvisor`; with OrbStack or Docker Desktop the engine forwards its own, and
 `caboose doctor` says the setting is not used. `caboose doctor` names the
 agent the sandbox gets and what chose it.

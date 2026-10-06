@@ -44,9 +44,8 @@ const (
 	linkRetryMin = time.Second
 	linkRetryMax = 30 * time.Second
 	// linkRetryEarly is the first wait after a session that ended before
-	// the agent's hello, as a VM's agent from before it held the
-	// connection until its boot had started did: it is starting, not
-	// failing, so the proxy should not stay down a whole linkRetryMin.
+	// the agent's hello: the agent is starting, not failing, so the proxy
+	// should not stay down a whole linkRetryMin.
 	linkRetryEarly = 200 * time.Millisecond
 	// linkConfigEvery is how often the helper looks at config.toml.
 	linkConfigEvery = 2 * time.Second
@@ -58,8 +57,10 @@ const (
 type linkSettings struct {
 	ForwardPorts string `json:"forward_ports"`
 	OpenURLs     string `json:"open_urls"`
-	// The outbound proxy's, served only to a vm guest (serveDialed).
-	EgressProxy string `json:"egress_proxy"`
+	// The outbound proxy's, served only to a vm guest (serveDialed):
+	// egress, and egress_ports and egress_allow as ParsePortsOf and
+	// ParseAllow read them.
+	Egress      bool   `json:"egress"`
 	EgressPorts string `json:"egress_ports"`
 	EgressAllow string `json:"egress_allow"`
 	// DebugLink is linkdebug's knobs, from the environment of the launch
@@ -76,22 +77,19 @@ type linkSettings struct {
 	// on this machine would use (agentFrom).
 	SSHAgent     string `json:"ssh_agent,omitempty"`
 	SSHAgentFrom string `json:"ssh_agent_from,omitempty"`
-	// HostExec is host_exec, as written: whether sessions run commands
-	// on this machine through the link.
-	HostExec string `json:"host_exec,omitempty"`
+	// HostExec is host_exec: whether sessions run commands on this
+	// machine through the link.
+	HostExec bool `json:"host_exec,omitempty"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
-		EgressProxy: c.EgressProxy, EgressPorts: c.EgressPorts, EgressAllow: c.EgressAllow,
+		Egress: c.Egress, EgressPorts: c.EgressPorts, EgressAllow: strings.Join(c.EgressAllow, " "),
 		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c), HostExec: c.HostExec}
 	if c.SSHAgent != "" {
 		s.SSHAgent, s.SSHAgentFrom = c.SSHAgent, sshAgentOrigin(c)
 	}
-	// A Config not from config.Load leaves them unset: the defaults.
-	if s.EgressProxy == "" {
-		s.EgressProxy = "on"
-	}
+	// A Config not from config.Load leaves it unset: the default.
 	if s.EgressPorts == "" {
 		s.EgressPorts = config.DefaultEgressPorts
 	}
@@ -101,7 +99,7 @@ func settingsOf(c *config.Config) linkSettings {
 // linkConfig is the settings parsed, as the helper needs them.
 type linkConfig struct {
 	ports hostlink.PortSet
-	// egress is nil when egress_proxy is off.
+	// egress is nil when egress is off.
 	egress *hostlink.Egress
 	// hostExec is host_exec.
 	hostExec bool
@@ -120,10 +118,6 @@ func (s linkSettings) check() (linkConfig, error) {
 	default:
 		return linkConfig{}, fmt.Errorf(`open_urls: %q is not "ask", "allow" or "off"`, s.OpenURLs)
 	}
-	on, err := config.CheckEgressProxy(s.EgressProxy)
-	if err != nil {
-		return linkConfig{}, err
-	}
 	eports, err := hostlink.ParsePortsOf("egress_ports", s.EgressPorts)
 	if err != nil {
 		return linkConfig{}, err
@@ -132,12 +126,8 @@ func (s linkSettings) check() (linkConfig, error) {
 	if err != nil {
 		return linkConfig{}, err
 	}
-	hostExec, err := config.CheckHostExec(s.HostExec)
-	if err != nil {
-		return linkConfig{}, err
-	}
-	lc := linkConfig{ports: ports, hostExec: hostExec}
-	if on {
+	lc := linkConfig{ports: ports, hostExec: s.HostExec}
+	if s.Egress {
 		lc.egress = &hostlink.Egress{Ports: eports, Allow: allow}
 	}
 	return lc, nil
@@ -512,8 +502,7 @@ func (r *linkRunner) watchConfig(stop <-chan struct{}) {
 	}
 }
 
-// reload reads the settings again, as a launch would -- a CABOOSE_ variable
-// this helper was started with still wins over the file -- and, when they
+// reload reads the settings again, as a launch would, and, when they
 // changed, ends the session so the next one runs with them. Settings that
 // do not parse leave the running ones in place.
 func (r *linkRunner) reload() {
@@ -551,8 +540,8 @@ func (r *linkRunner) reload() {
 	r.reloaded = sess != nil
 	r.mu.Unlock()
 	r.writeState()
-	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress_proxy %q, egress_ports %q, egress_allow %q, host_exec %s; reconnecting",
-		next.ForwardPorts, next.OpenURLs, next.EgressProxy, next.EgressPorts, next.EgressAllow, onOff(lc.hostExec))
+	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress %s, egress_ports %q, egress_allow %q, host_exec %s; reconnecting",
+		next.ForwardPorts, next.OpenURLs, onOff(next.Egress), next.EgressPorts, next.EgressAllow, onOff(lc.hostExec))
 	if sess != nil {
 		sess.Close()
 	}
@@ -608,7 +597,7 @@ func (r *linkRunner) once() error {
 		return &linkStop{runErr.Error()}
 	case docker.ExitCode(waitErr) == 126 || docker.ExitCode(waitErr) == 127:
 		// The exec itself failed: no agent in this image.
-		return &linkStop{fmt.Sprintf("the container has no caboose-agent (it was created by an older caboose): 'caboose restart' moves it onto a new image (%s)", said)}
+		return &linkStop{fmt.Sprintf("the container has no caboose-agent: 'caboose restart' recreates it from this caboose's image (%s)", said)}
 	}
 	if said != "" {
 		return fmt.Errorf("%v (the agent said: %s)", runErr, said)
@@ -642,7 +631,7 @@ func (r *linkRunner) serveDialed(l backend.Linker) error {
 		r.log.Printf("SSH agent %s (%s)", sock, from)
 	}
 	// vmnet's NAT reaches none of this machine's VPN routes: the guest's
-	// outbound connections are dialled here, unless egress_proxy is off
+	// outbound connections are dialled here, unless egress is off
 	// (cfg.Egress nil).
 	if cfg.Egress != nil {
 		r.log.Printf("serving the outbound proxy (egress_ports %q)", r.settingsNow().EgressPorts)

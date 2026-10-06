@@ -52,7 +52,7 @@ func (g *fakeImageGuest) Stop() error { g.stopped = true; return nil }
 
 func vmCheckApp(g *fakeImageGuest, bootErr error) (*App, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
-	a := &App{Cfg: &config.Config{Image: "caboose", Isolation: isolationVM}, Stdout: &stdout, Stderr: &stderr}
+	a := &App{Cfg: &config.Config{Env: "default", Image: "caboose:default", Isolation: isolationVM}, Stdout: &stdout, Stderr: &stderr}
 	a.checkGuest = func() (imageGuest, error) {
 		if bootErr != nil {
 			return nil, bootErr
@@ -89,12 +89,12 @@ func exitCode(err error) int {
 // Under vm the default base is checked where caboose build made it, in the
 // builder guest's store, and reported as under docker.
 func TestCheckImageVMDefaultBase(t *testing.T) {
-	g := &fakeImageGuest{store: map[string]*imagecheck.Report{"caboose-base": passingReport(t)}}
+	g := &fakeImageGuest{store: map[string]*imagecheck.Report{"caboose-base:default": passingReport(t)}}
 	a, stdout, _ := vmCheckApp(g, nil)
 	if err := a.CheckImage(nil); err != nil {
 		t.Fatalf("CheckImage: %v", err)
 	}
-	if want := "has caboose-base check caboose-base"; strings.Join(g.calls, " ") != want {
+	if want := "has caboose-base:default check caboose-base:default"; strings.Join(g.calls, " ") != want {
 		t.Errorf("calls %q, want %q", g.calls, want)
 	}
 	if !g.stopped {
@@ -108,13 +108,13 @@ func TestCheckImageVMDefaultBase(t *testing.T) {
 // A default base no build has made yet is not pulled: its name is only
 // caboose's own tag.
 func TestCheckImageVMNotBuilt(t *testing.T) {
-	g := &fakeImageGuest{store: map[string]*imagecheck.Report{}, remote: map[string]*imagecheck.Report{"caboose-base": passingReport(t)}}
+	g := &fakeImageGuest{store: map[string]*imagecheck.Report{}, remote: map[string]*imagecheck.Report{"caboose-base:default": passingReport(t)}}
 	a, _, stderr := vmCheckApp(g, nil)
 	err := a.CheckImage(nil)
 	if exitCode(err) != checkFailed || !strings.Contains(err.Error(), "not built yet") {
 		t.Fatalf("err = %v", err)
 	}
-	if strings.Join(g.calls, " ") != "has caboose-base" {
+	if strings.Join(g.calls, " ") != "has caboose-base:default" {
 		t.Errorf("calls %q", g.calls)
 	}
 	if !strings.Contains(stderr.String(), "caboose build") {
@@ -149,7 +149,7 @@ func TestCheckImageVMPullFails(t *testing.T) {
 	if exitCode(err) != checkFailed || !strings.Contains(err.Error(), "cannot pull image 'local-only:dev' in the builder guest") {
 		t.Fatalf("err = %v", err)
 	}
-	for _, s := range []string{"registry", "CABOOSE_ISOLATION=docker caboose check-image local-only:dev"} {
+	for _, s := range []string{"registry", "caboose -e ENV check-image local-only:dev"} {
 		if !strings.Contains(stderr.String(), s) {
 			t.Errorf("stderr lacks %q:\n%s", s, stderr)
 		}
@@ -172,7 +172,7 @@ func TestCheckImageVMBootFails(t *testing.T) {
 func TestCheckImageVMNoDockerd(t *testing.T) {
 	rep := passingReport(t)
 	rep.Engine = map[string]string{"dockerd": "", "containerd": "", "containerd-shim-runc-v2": "", "runc": "", "iptables": "", "docker": ""}
-	g := &fakeImageGuest{store: map[string]*imagecheck.Report{"caboose-base": rep}}
+	g := &fakeImageGuest{store: map[string]*imagecheck.Report{"caboose-base:default": rep}}
 	a, stdout, stderr := vmCheckApp(g, nil)
 	if err := a.CheckImage(nil); err != nil {
 		t.Fatalf("CheckImage: %v", err)

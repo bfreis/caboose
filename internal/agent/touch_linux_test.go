@@ -79,7 +79,7 @@ func TestTouch(t *testing.T) {
 		{[]string{filepath.Join(outside, "secret"), work + "/../" + filepath.Base(outside) + "/secret", "relative"}, nil},
 	}
 	for _, c := range cases {
-		Touch(work, c.paths)
+		Touch([]string{work}, c.paths)
 		if got := events(t, fd); !slices.Equal(got, c.want) {
 			t.Errorf("Touch(%v): events %v, want %v", c.paths, got, c.want)
 		}

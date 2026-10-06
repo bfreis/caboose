@@ -51,10 +51,10 @@ a remote committed.
 **Project memory follows the checkout.** Claude Code keeps a project's
 memory under a key made from its path, and the sandbox's paths are the same
 on every machine (`/work/...`, [How it works](how-it-works.md)), so `you/project`
-under the repo root is `-work-you-project` on each, and the sync stores it
-as it is. With `[roots]`, name them alike everywhere; the sandbox config's
-`roots` lists the names, and `caboose doctor` says when a machine lacks one.
-Projects outside `/work` (a session started elsewhere) do not sync.
+under the root `dev` is `-work-dev-you-project` on each, and the sync stores it
+as it is. With `[roots]`, name them, and give them paths, alike everywhere; the sandbox config's
+`roots` lists the container paths, and `caboose doctor` says when a machine lacks one.
+Projects outside `/work` (a session started elsewhere, or a root with a path of its own) do not sync, unless a rule of the sandbox config says so.
 
 **Conflicts.** Settings merge key by key, and text files with git's merge,
 so edits to different keys or different lines just combine. When both
@@ -65,8 +65,7 @@ With no terminal, or on abort, it stops before changing anything in
 the data dir; your changes are committed locally and go out with the next
 sync.
 
-**On launch, if you ask for it.** With `auto_sync = true` in `config.toml`
-(or `CABOOSE_AUTO_SYNC=1`), a launch that finds nothing running in the
+**On launch, if you ask for it.** With `auto_sync = true` in `[session]` of `config.toml`, a launch that finds nothing running in the
 container syncs before it attaches — the one moment nothing is writing
 what a sync merges — so each machine picks up the others' changes as it
 starts and sends its own on the next launch. Only a launch on a terminal:
@@ -84,9 +83,9 @@ remote's not taken, or why the remote cannot be reached.
 
 **Only between sessions.** Running sessions write the very files a sync
 merges, and Claude Code rewrites `.claude.json` whole from memory, so
-`caboose sync` refuses while any session is up and names them (`FORCE=1`
+`caboose sync` refuses while any session is up and names them (`CABOOSE_FORCE=1`
 overrides; restart the sessions after). That is every Claude Code process
-in the container, not only tmux sessions: a `CABOOSE_NO_TMUX` session, a
+in the container, not only tmux sessions: a `tmux = false` session, a
 `caboose claude -p` run or background agents count too (`caboose status` lists
 those as "outside tmux"). It starts the container if it is
 stopped, as a launch would.

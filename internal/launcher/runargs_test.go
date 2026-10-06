@@ -103,8 +103,9 @@ esac
 	errb = &bytes.Buffer{}
 	a = &App{
 		Cfg: &config.Config{Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
-			DataDir: filepath.Join(tmp, "data"), KeepVersions: "2", Getenv: func(string) string { return "" },
-			DockerRunArgs: runArgs, DockerRunArgsFrom: "CABOOSE_DOCKER_RUN_ARGS"},
+			DataDir: filepath.Join(tmp, "data"), KeepVersions: 2, Getenv: func(string) string { return "" },
+			RunArgs: runArgs, Profile: "container.default",
+			File: &config.File{Path: "/e/config.toml", Vals: map[string]any{"container.default.run_args": runArgs}}},
 		Docker: &docker.CLI{Path: fake},
 		Stdout: &bytes.Buffer{}, Stderr: errb,
 	}
@@ -130,7 +131,7 @@ func TestCreateContainerRunArgs(t *testing.T) {
 		if got := strings.Join(args[img-2-len(user):img], "\n"); got != want {
 			t.Errorf("before the image:\n%s\nwant\n%s", got, want)
 		}
-		if len(user) > 0 && !strings.Contains(errb.String(), "--cap-add=NET_ADMIN --device=/dev/net/tun (CABOOSE_DOCKER_RUN_ARGS)") {
+		if len(user) > 0 && !strings.Contains(errb.String(), "--cap-add=NET_ADMIN --device=/dev/net/tun (run_args in [container.default] of /e/config.toml)") {
 			t.Errorf("not said: %s", errb)
 		}
 	}
@@ -141,7 +142,7 @@ func TestCreateContainerRefusesRunArgs(t *testing.T) {
 	for _, arg := range []string{"--name=x", "--volume=/x:/home/agent/.claude"} {
 		a, log, _ := runFake(t, []string{arg})
 		err := a.createContainer(false)
-		if err == nil || !strings.Contains(err.Error(), "'"+arg+"'") || !strings.Contains(err.Error(), "(CABOOSE_DOCKER_RUN_ARGS)") {
+		if err == nil || !strings.Contains(err.Error(), "'"+arg+"'") || !strings.Contains(err.Error(), "(run_args in [container.default] of /e/config.toml)") {
 			t.Errorf("%s: err = %v", arg, err)
 		}
 		if _, err := os.Stat(log); err == nil {
@@ -150,8 +151,8 @@ func TestCreateContainerRefusesRunArgs(t *testing.T) {
 	}
 }
 
-// The container's label against the configuration: a container from before
-// the label, or with none, was created with no arguments.
+// The container's label against the configuration: an empty label is no
+// arguments, and no label at all is not this caboose's container.
 func TestRunArgsDrift(t *testing.T) {
 	label := func(v string) map[string]string { return map[string]string{assets.LabelRunArgs: v} }
 	for _, tc := range []struct {
@@ -160,17 +161,17 @@ func TestRunArgsDrift(t *testing.T) {
 		config []string
 		drift  string
 	}{
-		{"no label, none", map[string]string{}, nil, ""},
-		{"no labels at all", nil, nil, ""},
+		{"no label", map[string]string{}, nil, "records no docker run arguments"},
+		{"no labels at all", nil, nil, "records no docker run arguments"},
 		{"empty label, none", label(""), nil, ""},
 		{"same", label(`["--a=1","--b"]`), []string{"--a=1", "--b"}, ""},
-		{"added", map[string]string{}, []string{"--a=1"}, "created with docker run arguments none; the configuration says --a=1"},
+		{"added", label(""), []string{"--a=1"}, "created with docker run arguments none; the configuration says --a=1"},
 		{"removed", label(`["--a=1"]`), nil, "created with docker run arguments --a=1; the configuration says none"},
 		{"unreadable", label("nope"), []string{"--a=1"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := &backendtest.Fake{Status: "running", SandboxLabels: tc.labels}
-			a := &App{Cfg: &config.Config{Container: "box", DockerRunArgs: tc.config}, Backend: box}
+			a := &App{Cfg: &config.Config{Container: "box", RunArgs: tc.config}, Backend: box}
 			if got := a.runArgsDrift(); !strings.Contains(got, tc.drift) || (tc.drift == "") != (got == "") {
 				t.Errorf("drift %q, want %q", got, tc.drift)
 			}

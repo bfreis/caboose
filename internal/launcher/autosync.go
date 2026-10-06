@@ -27,7 +27,7 @@ const lockPoll = 200 * time.Millisecond
 // Nothing here fails the launch: whatever goes wrong is one note, and
 // `caboose sync` is how to see to it.
 func (a *App) beforeAttach(terminal bool) {
-	if a.Cfg.AutoSync != "" && terminal {
+	if a.Cfg.AutoSync && terminal {
 		a.autoSync()
 		return
 	}

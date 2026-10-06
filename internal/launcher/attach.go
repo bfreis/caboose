@@ -70,8 +70,8 @@ func (a *App) attachRecords() map[int]string {
 
 // orphaned reports whether a session's clients were all left by terminals
 // that closed: at least as many records of ended processes as clients, and
-// none of a running one. A client with no record (a launcher from before
-// these, a docker exec by hand) keeps it busy.
+// none of a running one. A client with no record (a docker exec by hand)
+// keeps it busy.
 func orphaned(clients, live, ended int) bool {
 	return clients > 0 && live == 0 && ended >= clients
 }

@@ -42,7 +42,6 @@ type Link struct {
 	sess     *agentproto.Session
 	procRoot string
 	interval time.Duration
-	workDir  string
 
 	mu       sync.Mutex
 	nextID   uint64
@@ -61,6 +60,9 @@ type Link struct {
 	egressServing bool
 	egressPort    int
 
+	// roots are where the host's hello says it relays changes from: the
+	// only paths touched (Touch).
+	roots []string
 	// hostExec is whether the host's hello offered OpHostExec, and
 	// helloed is closed once that hello came.
 	hostExec  bool
@@ -73,7 +75,6 @@ type Config struct {
 	Socket   string        // SocketPath, or another for tests
 	ProcRoot string        // "/proc", or a fixture
 	Interval time.Duration // between port scans
-	WorkDir  string        // WorkDir, or another for tests
 }
 
 // RunLink runs the link over in and out until the host goes away.
@@ -82,7 +83,6 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 		sess:     agentproto.NewSession(in, out, false),
 		procRoot: cfg.ProcRoot,
 		interval: cfg.Interval,
-		workDir:  cmp.Or(cfg.WorkDir, WorkDir),
 		pending:  map[uint64]chan agentproto.Message{},
 		changed:  make(chan []string, changedQueue),
 
@@ -155,7 +155,7 @@ func (l *Link) readControl() {
 				l.serveEgress(m.Egress)
 			}
 			l.mu.Lock()
-			l.hostExec = m.HostExec
+			l.hostExec, l.roots = m.HostExec, m.Roots
 			l.mu.Unlock()
 			l.helloOnce.Do(func() { close(l.helloed) })
 		case agentproto.TypeResponse:

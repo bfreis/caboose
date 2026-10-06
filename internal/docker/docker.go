@@ -190,7 +190,7 @@ func (c *CLI) ImageID(name string) string {
 // launch died over "docker engine not running" instead of building.
 //
 // The one stderr that is matched is "invalid reference format", which
-// docker and podman share: a CABOOSE_IMAGE with an uppercase letter, say.
+// docker and podman share: an image name with an uppercase letter, say.
 // That fails every inspect against a perfectly healthy engine, and calling
 // it absent would start a multi-minute setup only for `docker build -t` to
 // reject the name; it is an error, with docker's own words, instead.

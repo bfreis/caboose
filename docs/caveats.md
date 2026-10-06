@@ -12,7 +12,7 @@
   deleted one, which needs `caboose restart` to repair. Edit it in
   place, or from inside the container.
 - The docker **CLI** is in the default image but has no socket to talk to,
-  so it is inert. `CABOOSE_DOCKER_SOCK=1` mounts the host's socket, and you should
+  so it is inert. `engine_socket = true` in a `container` or `gvisor` profile mounts the host's socket, and you should
   understand what that means before doing it: anything that reaches
   `/var/run/docker.sock` can run `docker run -v /:/host --privileged` and
   own the host as root. The container reads untrusted input all day (repo
@@ -20,10 +20,10 @@
   injection escalating out of the container, not the model going rogue.
   Note it does **not** let the test suite run from inside either — the
   suite restarts the container on its third line and would kill the session
-  running it. Point the variable at a socket proxy instead if you only want
+  running it. Point `DOCKER_HOST` at a socket proxy instead if you only want
   read-only endpoints. `caboose status` always says which side of this line a
   container is on.
-- A caboose checkout under the repo root is, like any other checkout
+- A caboose checkout under a root is, like any other checkout
   there, **writable** from inside — and its `CLAUDE.md` invites the agent to
   edit the launcher's source and the `Dockerfile`, which the *host* then
   builds and executes. That is the price of being able to fix the sandbox

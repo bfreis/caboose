@@ -77,7 +77,7 @@ func plainHostname(s string) bool {
 // sshEgressDropIn is the drop-in's text, for the agent at agent, in the
 // guest called hostname.
 func sshEgressDropIn(agent, hostname string) string {
-	return `# Written by caboose at every boot of the sandbox's VM, while egress_proxy
+	return `# Written by caboose at every boot of the sandbox's VM, while egress
 # is on: ssh connects through the host's caboose link, as everything else
 # in the sandbox does, so the host's VPN routes and DNS apply. Your own
 # ~/.ssh/config is read first: a ProxyCommand or ProxyJump of yours for a

@@ -21,7 +21,7 @@ func TestHostExecOffHere(t *testing.T) {
 	if code != agentproto.ExitCannotRun || err == nil || err.Error() != agentproto.HostExecOff {
 		t.Fatalf("got %d %v", code, err)
 	}
-	if !strings.Contains(agentproto.HostExecOff, "host_exec = true") || !strings.Contains(agentproto.HostExecOff, "caboose link --restart") {
+	if !strings.Contains(agentproto.HostExecOff, "host_exec = true") || !strings.Contains(agentproto.HostExecOff, "rereads") {
 		t.Errorf("the refusal does not say what turns it on: %s", agentproto.HostExecOff)
 	}
 }

@@ -34,7 +34,7 @@ func TestClassifyImageDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &App{Cfg: &config.Config{Image: "caboose", ImageDir: dir}}
+	a := &App{Cfg: &config.Config{Image: "caboose", ImageDir: dir, AutoBuild: true}}
 	onDir := labelsFor(assets.BaseKindEnv, built, "caboose-base")
 
 	if st := a.classifyImage(onDir, true, ""); st.state != imageCurrent {
@@ -48,7 +48,7 @@ func TestClassifyImageDir(t *testing.T) {
 	}{
 		{"built on the embedded Dockerfile", labelsFor(assets.BaseKindDefault, assets.BaseHash(), "caboose-base"),
 			defaultBasePhrase, "on the embedded Dockerfile's base, not on the environment's " + dir},
-		{"built on CABOOSE_BASE_IMAGE", labelsFor(assets.BaseKindBYO, "", "node:22"),
+		{"built on [image] base", labelsFor(assets.BaseKindBYO, "", "node:22"),
 			"'node:22'", "on 'node:22', not on the environment's " + dir},
 	} {
 		st := a.classifyImage(tc.labels, true, "")
@@ -87,7 +87,7 @@ func TestClassifyImageDir(t *testing.T) {
 }
 
 // The dir gone again: an image built from it is on another base than the
-// embedded Dockerfile's, or than CABOOSE_BASE_IMAGE.
+// embedded Dockerfile's, or than the [image] base.
 func TestClassifyAwayFromImageDir(t *testing.T) {
 	onDir := labelsFor(assets.BaseKindEnv, "abc", "caboose-base")
 	a := &App{Cfg: &config.Config{Image: "caboose"}}
@@ -97,7 +97,7 @@ func TestClassifyAwayFromImageDir(t *testing.T) {
 	}
 	a.Cfg.BaseImage = "node:22"
 	if st := a.classifyImage(onDir, true, ""); !st.switched() || st.builtOn != envDirPhrase ||
-		st.reason != "on the environment's image dir, not on CABOOSE_BASE_IMAGE 'node:22'" {
+		st.reason != "on the environment's image dir, not on the [image] base 'node:22'" {
 		t.Errorf("byo: %+v", st)
 	}
 }

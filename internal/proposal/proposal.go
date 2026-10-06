@@ -1,5 +1,5 @@
 // Package proposal is how a session in the sandbox asks for a change only
-// the host can make: a tool installed in the image, or another repo root.
+// the host can make: a tool installed in the image, or another root.
 // (What the sandbox keeps of its home is its own to change, in the sandbox
 // config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
@@ -65,7 +65,7 @@ type Section struct {
 	Body  string `toml:"body"`
 }
 
-// Root is a repo root to add: its name, the directory under /work, and
+// Root is a root to add: its name, the directory under /work, and
 // its host path as proposed.
 type Root struct{ Name, Path string }
 

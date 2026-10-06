@@ -101,7 +101,7 @@ exec "$@"
 		t.Fatal(err)
 	}
 	e.a = &App{
-		Cfg:    &config.Config{Container: "box", DataDir: e.data, AutoSync: "1"},
+		Cfg:    &config.Config{Container: "box", DataDir: e.data, AutoSync: true},
 		Docker: &docker.CLI{Path: fake},
 		Stdout: e.stdout, Stderr: e.stderr,
 	}
@@ -221,7 +221,7 @@ func TestAutoSyncTakesAndSends(t *testing.T) {
 func TestAutoSyncOnlyWhenItShould(t *testing.T) {
 	t.Run("off", func(t *testing.T) {
 		here, _ := pair(t)
-		here.a.Cfg.AutoSync = ""
+		here.a.Cfg.AutoSync = false
 		if got := here.launch(); got != "" || here.ranGit() {
 			t.Errorf("said %q, or ran git", got)
 		}
@@ -327,7 +327,7 @@ func TestAutoSyncSlowRemote(t *testing.T) {
 // A launch that finds a sync running waits for it, and then does not sync
 // again: that one just did.
 func TestAutoSyncWaitsForARunningSync(t *testing.T) {
-	for _, auto := range []string{"1", ""} {
+	for _, auto := range []bool{true, false} {
 		here, _ := pair(t)
 		here.a.Cfg.AutoSync = auto
 		unlock, err := here.syncer().Lock()
@@ -346,7 +346,7 @@ func TestAutoSyncWaitsForARunningSync(t *testing.T) {
 			t.Error("did not wait")
 		}
 		if got != "caboose: waiting for a sync to finish\n" || here.ranGit() {
-			t.Errorf("auto_sync=%q: said %q", auto, got)
+			t.Errorf("auto_sync=%v: said %q", auto, got)
 		}
 	}
 }

@@ -106,7 +106,9 @@ type Config struct {
 	// them is taken as current.
 	Format   int
 	Defaults int
-	// Roots are the names of the repo roots the projects expect.
+	// Roots are the paths in the sandbox of the roots the projects expect:
+	// Claude Code keys a project's state by its path, so a machine that
+	// mounts no root there never reads it.
 	Roots []string
 	// Keep are the entries in effect, in the file's order, then any
 	// Required one it does not list.
@@ -206,8 +208,8 @@ func Parse(data []byte) (*Config, error) {
 	return c, nil
 }
 
-// Default is the sandbox config caboose writes for roots, the root names
-// of the host config (none for a single root).
+// Default is the sandbox config caboose writes for roots, the container
+// paths of the host config's roots.
 func Default(roots []string) []byte {
 	q := make([]string, len(roots))
 	for i, r := range roots {
@@ -256,14 +258,14 @@ func (c *Config) add(k Keep) {
 func (c *Config) parseRoots(v any) []string {
 	list, ok := v.([]any)
 	if !ok {
-		c.problem("roots must be a list of root names")
+		c.problem("roots must be a list of paths in the sandbox")
 		return nil
 	}
 	var roots []string
 	for _, e := range list {
 		s, ok := e.(string)
-		if !ok || !validName(s) {
-			c.problem("roots: %v is not a root name (lowercase letters, digits, - and _), ignored", e)
+		if !ok || !path.IsAbs(s) || path.Clean(s) != s {
+			c.problem("roots: %v is not an absolute, clean path in the sandbox, ignored", e)
 			continue
 		}
 		roots = append(roots, s)
@@ -671,23 +673,6 @@ func parent(rel string) string {
 // overlaps reports whether a and b are one path, or one holds the other.
 func overlaps(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
-}
-
-// validName is config.ValidRootName, which this package does not import:
-// the sandbox config knows nothing of the host's.
-func validName(s string) bool {
-	if s == "" || len(s) > 32 {
-		return false
-	}
-	for i, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-		case (r == '-' || r == '_') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 func sortedKeys[V any](m map[string]V) []string {

@@ -109,7 +109,7 @@ func TestCreateRefuses(t *testing.T) {
 		say  string
 	}{
 		{Spec{Runtime: "runsc"}, "runtime"},
-		{Spec{RunArgs: []string{"--cpus=2"}}, "vm_cpus"},
+		{Spec{RunArgs: []string{"--cpus=2"}}, "docker run arguments"},
 		{Spec{Groups: []string{"20"}}, "groups"},
 		{Spec{}, "UID or UID:GID"},
 	} {

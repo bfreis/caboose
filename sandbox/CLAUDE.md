@@ -30,9 +30,9 @@ creates it otherwise, which is also how to put two terminals on one session
 on purpose. Either way every session lives in the same container, so they all
 see each other in the fleet roster.
 
-## Repos are mounted under /work
+## Repos are mounted at fixed paths
 
-The host directories that hold the projects are mounted at fixed paths:
+The host directories that hold the projects are mounted at fixed container paths, `/work/<name>` unless a root was given a path of its own:
 @@CABOOSE_ROOTS@@. A project lives at its path under one of them, which is
 the same on every machine whatever the host's user name or layout — so a
 host path someone pastes in is not a path in here: translate it through
@@ -47,7 +47,7 @@ which is where all sandbox state lives — outside any checkout), so it
 is that persisted binary.
 
 What else is installed depends on the base the image was built on: caboose's
-default, or one the user chose (`CABOOSE_BASE_IMAGE`). caboose installs
+default, or one the user chose (`base` in `[image]` of the environment's `config.toml`). caboose installs
 nothing into a base, so a missing tool is the image's to add, on the host —
 not something to install from in here: propose it (below).
 
@@ -82,7 +82,7 @@ tool only after it. Never sync anything that holds a token.
 ## Reaching the host: ports, URLs, notifications, commands
 
 A server listening in here is forwarded to the same port on the host's
-`localhost` while it runs, if the host's `forward_ports` allows the port
+`localhost` while it runs, if `forward_ports` in the host's `config.toml` allows the port
 (by default 3000-3999, 5173 and 8000-8999), whatever address it is bound
 to: tell the user to open `http://localhost:PORT`. `caboose-agent ports`
 lists what listens and what is forwarded. `caboose-agent open URL` opens an
@@ -91,12 +91,12 @@ http(s) URL in the user's browser (usually after a dialog there), and
 host's `caboose link`, which every launch starts; "no host is linked"
 means it is not running.
 
-In a VM sandbox (`CABOOSE_ISOLATION=vm`), outbound connections go through
+In a VM sandbox (`CABOOSE_ISOLATION=vm` is set in it), outbound connections go through
 the host by default: `HTTPS_PROXY` (and the rest) is then
 `http://127.0.0.1:9128`, and what the host reaches, VPN included, this
-reaches, on the ports its `egress_ports` allows (22, 80 and 443 by
+reaches, on the ports its `vm` profile's `egress_ports` allows (22, 80 and 443 by
 default). Private, LAN, loopback and tailnet addresses are refused, with
-an HTTP 403 saying why, unless the host's `egress_allow` names them. ssh
+an HTTP 403 saying why, unless its `egress_allow` names them. ssh
 goes the same way, through `caboose-agent connect %h %p` as its
 `ProxyCommand`. Containers run by the sandbox's own dockerd do not: they
 stay on the VM's NAT.
@@ -151,7 +151,7 @@ RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/loca
 '''
 
 [roots]                                # one host directory to mount, at /work/NAME
-other = "~/src/other"
+other = "~/src/other"                # long form for another path: [roots.other] host = ..., path = ...
 ```
 
 - One request, one proposal, and one `[section]` in it: applying a section
@@ -163,8 +163,8 @@ other = "~/src/other"
 - Nothing else can be proposed — not the base image, the docker socket, or
   any other setting. For those, tell the user what to change on the host:
   a capability, a device or another `docker run` flag is
-  `docker_run_args` in the environment's `config.toml`, then
-  `caboose restart`.
+  `run_args` in a `[container.NAME]` or `[gvisor.NAME]` profile of the
+  environment's `config.toml`, then `caboose restart`.
 - Then tell the user to run `caboose apply` in a host terminal (with the
   same `-e ENV` as this session's, if it has one); the host also shows
   them a notification saying so, once the file is written, but it may be
@@ -172,8 +172,6 @@ other = "~/src/other"
   and offers `caboose restart`, which ends this session: nothing proposed
   is in effect before that. A tool installed this way whose settings
   should last needs a `[[keep]]` entry too (above), in the same restart.
-- No `~/.caboose-proposals` means the container is older than proposals:
-  `caboose restart` on the host creates it again with one.
 
 ## The sandbox itself is just another repo
 

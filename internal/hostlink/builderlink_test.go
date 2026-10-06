@@ -145,7 +145,7 @@ func builderLinked(t *testing.T, buf int, g *gate) string {
 		go g.copy(hr, ar)
 	}
 	dir := t.TempDir()
-	go agent.RunLink(ac, ac, agent.Config{Socket: dir + "/s", ProcRoot: "/proc", Interval: 20 * time.Millisecond, WorkDir: dir})
+	go agent.RunLink(ac, ac, agent.Config{Socket: dir + "/s", ProcRoot: "/proc", Interval: 20 * time.Millisecond})
 	sess := agentproto.NewSession(hc, hc, true)
 	t.Cleanup(func() { sess.Close() })
 	ports, _ := ParsePortsOf("egress_ports", "443")

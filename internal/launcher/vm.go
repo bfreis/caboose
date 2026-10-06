@@ -26,7 +26,6 @@ import (
 // (backend.VM). What of the data dir it uses sits in vm/: a directory per
 // VM (the sandbox's is named after the container, the builder's
 // "builder"), and images/.
-const isolationVM = "vm"
 
 // vmDirName is the data dir's directory of everything vm.
 const vmDirName = "vm"
@@ -61,12 +60,8 @@ func (a *App) vmBox() *backend.VM {
 // machine's CPUs and half its memory, at most 8 GiB.
 func vmSize(c *config.Config) (cpus, memMiB int, err error) {
 	cpus = max(1, runtime.NumCPU()/2)
-	if c.VMCPUs != "" {
-		n, err := strconv.Atoi(c.VMCPUs)
-		if err != nil || n < 1 {
-			return 0, 0, fmt.Errorf("vm_cpus must be a whole number of CPUs, 1 or more, not %q", c.VMCPUs)
-		}
-		cpus = n
+	if c.VMCPUs > 0 {
+		cpus = c.VMCPUs
 	}
 	memMiB = 4096
 	if m := hostMemory(); m > 0 {
@@ -74,7 +69,7 @@ func vmSize(c *config.Config) (cpus, memMiB int, err error) {
 	}
 	if c.VMMemory != "" {
 		if memMiB, err = parseMemory(c.VMMemory); err != nil {
-			return 0, 0, err
+			return 0, 0, fmt.Errorf("%s: %v", c.ProfileKey("memory"), err)
 		}
 	}
 	return cpus, memMiB, nil
@@ -93,10 +88,10 @@ func parseMemory(s string) (int, error) {
 	}
 	n, err := strconv.Atoi(t)
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("vm_memory must be an amount like \"8G\" or \"4096M\", not %q", s)
+		return 0, fmt.Errorf("%q is not an amount like \"8G\" or \"4096M\"", s)
 	}
 	if n*mul < 512 {
-		return 0, fmt.Errorf("vm_memory %q is under 512M, too little for the sandbox", s)
+		return 0, fmt.Errorf("%q is under 512M, too little for the sandbox", s)
 	}
 	return n * mul, nil
 }
@@ -111,8 +106,8 @@ type vmFiles struct {
 
 // findVMFiles finds caboose-vmm next to this launcher (as a release
 // installs it, and make vmm builds it), and the kernel and builder disk in
-// CABOOSE_HOME/vm/, else the checkout's vm-dist/ (make vm-kernel and make
-// vm-builder). A release carries neither yet, which the error says.
+// CABOOSE_HOME/vm/<tag>/<arch>/ (a release's), else the checkout's vm-dist/
+// (make vm-kernel and make vm-builder). A release carries neither yet, which the error says.
 func (a *App) findVMFiles() (vmFiles, error) {
 	if a.vmFiles != nil {
 		return a.vmFiles()
@@ -140,7 +135,6 @@ func (a *App) findVMFiles() (vmFiles, error) {
 		if tag := a.releaseTag(); tag != "" {
 			dirs = append(dirs, a.vmReleaseDir(tag, f.Arch))
 		}
-		dirs = append(dirs, filepath.Join(a.Cfg.CabooseHome, vmDirName, f.Arch))
 		if a.Checkout != "" {
 			dirs = append(dirs, filepath.Join(a.Checkout, "vm-dist"))
 		}
@@ -180,10 +174,6 @@ func (a *App) checkVM() error {
 			return Die("the data dir's path is too long for the VM's socket: %s is %d bytes, and macOS allows %d. Set CABOOSE_DATA_DIR to a shorter path",
 				s, len(s), maxSocketPath)
 		}
-	}
-	if len(a.Cfg.DockerRunArgs) > 0 {
-		return Die("docker_run_args means nothing to a VM (%s): vm_cpus and vm_memory size it; remove them, or set isolation to docker or gvisor",
-			runArgsOrigin(a.Cfg))
 	}
 	return nil
 }
@@ -333,7 +323,7 @@ func (a *App) doctorVM(c *checkup) {
 		return
 	}
 	if err != nil {
-		c.problem("isolation", fmt.Sprintf("in the checkout, make vmm vm-kernel vm-builder; or set isolation = %q or %q (%s)", isolationDocker, isolationGVisor, isolationOrigin(a.Cfg)),
+		c.problem("isolation", "in the checkout, make vmm vm-kernel vm-builder; or "+otherProfile(a.Cfg),
 			"%v", err)
 		return
 	}

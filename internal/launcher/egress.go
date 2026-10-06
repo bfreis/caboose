@@ -17,7 +17,7 @@ import (
 )
 
 // The outbound proxy, as the sandbox is created with it: under vm with
-// egress_proxy on, every process in the VM has HTTP(S)_PROXY naming the
+// egress on, every process in the VM has HTTP(S)_PROXY naming the
 // agent's proxy (agentproto.EgressEnv) -- the entrypoint and its first
 // install of Claude Code, the VM's dockerd and its pulls, every exec and
 // so every session -- and the agent points ssh there at boot
@@ -28,14 +28,9 @@ import (
 // config.toml.
 
 // egressOn reports whether the sandbox's outbound connections go through
-// this machine: under vm, with egress_proxy on. An egress_proxy neither
-// on nor off is the error. A Config not from config.Load leaves it unset:
-// the default, on.
+// this machine: under vm, with the profile's egress on.
 func (a *App) egressOn() (bool, error) {
-	if !a.isVM() {
-		return false, nil
-	}
-	return config.CheckEgressProxy(or(a.Cfg.EgressProxy, "on"))
+	return a.isVM() && a.Cfg.Egress, nil
 }
 
 // egressLabel is assets.LabelEgress's value.
@@ -57,14 +52,15 @@ func withEgress(spec *backend.Spec, on bool) {
 }
 
 // createdEgress is whether the sandbox was created with the outbound
-// proxy; ok is false when that cannot be told. One from before the label
-// had none.
+// proxy; ok is false when that cannot be told, or the sandbox records
+// none.
 func (a *App) createdEgress() (on, ok bool) {
 	labels, err := a.box().Labels()
 	if err != nil {
 		return false, false
 	}
-	return labels[assets.LabelEgress] == "on", true
+	v, ok := labels[assets.LabelEgress]
+	return v == "on", ok
 }
 
 // egressDrift says how the VM's outbound proxy differs from the
@@ -78,11 +74,14 @@ func (a *App) egressDrift() string {
 	if iso, _, ok := a.createdIsolation(); !ok || iso != isolationVM {
 		return "" // the isolation's drift says it
 	}
+	if d := a.missingLabel(assets.LabelEgress, "outbound proxy setting"); d != "" {
+		return d
+	}
 	have, ok := a.createdEgress()
 	if !ok || have == want {
 		return ""
 	}
-	return fmt.Sprintf("the VM was created with egress_proxy %s; the configuration says %s", onOff(have), onOff(want))
+	return fmt.Sprintf("the VM was created with egress %s; the configuration says %s", onOff(have), onOff(want))
 }
 
 func onOff(on bool) string {
@@ -110,18 +109,14 @@ func (a *App) egressSummary() string {
 	case err != nil:
 		return err.Error()
 	case on:
-		return fmt.Sprintf("through this machine, so its VPN routes and DNS apply (egress_proxy on; egress_ports %q)",
+		return fmt.Sprintf("through this machine, so its VPN routes and DNS apply (egress on; egress_ports %q)",
 			or(a.Cfg.EgressPorts, config.DefaultEgressPorts))
 	}
-	return "the VM's own NAT, which reaches none of this machine's VPN routes (egress_proxy off)"
+	return "the VM's own NAT, which reaches none of this machine's VPN routes (egress off)"
 }
 
 // doctorEgress is doctor's row on the outbound proxy, under vm.
 func (a *App) doctorEgress(c *checkup) {
-	if _, err := a.egressOn(); err != nil {
-		c.problem("egress", `set egress_proxy = "on" or "off" in config.toml`, "%v", err)
-		return
-	}
 	c.ok("egress", "%s", a.egressSummary())
 }
 
@@ -137,9 +132,8 @@ const linkStopPoll = 100 * time.Millisecond
 // accepts connections, before a launch runs something there that may
 // reach out: the proxy is the link's, which a VM's start only begins
 // (ensureRunning), so a command run straight after it found nothing
-// listening. Only under vm with egress_proxy on; a launch never fails for
-// it, but says what a timeout means. An agent from before wait-proxy
-// says nothing of it either: its usage, and no waiting.
+// listening. Only under vm with egress on; a launch never fails for
+// it, but says what a timeout means.
 //
 // A link that has stopped for good (link.stop) is not waited on: the
 // proxy is not coming, and the stop says why and what to do. The helper
@@ -183,9 +177,6 @@ func (a *App) awaitProxy() {
 		t.Stop()
 	}
 	if err == nil {
-		return
-	}
-	if strings.Contains(errb.String(), "usage:") {
 		return
 	}
 	if a.saidLinkStop() {

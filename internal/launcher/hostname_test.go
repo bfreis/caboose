@@ -87,8 +87,8 @@ func TestSyncHost(t *testing.T) {
 	}
 }
 
-// The container's label against the hostname: one from before the label
-// was created as plain "caboose".
+// The container's label against the hostname: one with no label is not
+// this caboose's, and drifts.
 func TestHostnameDrift(t *testing.T) {
 	label := func(v string) map[string]string { return map[string]string{assets.LabelHostname: v} }
 	for _, tc := range []struct {
@@ -99,8 +99,8 @@ func TestHostnameDrift(t *testing.T) {
 		wantNone bool
 	}{
 		{"same", label("caboose-laptop"), "", "", true},
-		{"no label, differs", map[string]string{}, "", "created with hostname caboose; the configuration says caboose-laptop", false},
-		{"no label, configured caboose", nil, "caboose", "", true},
+		{"no label", map[string]string{}, "", "records no hostname", false},
+		{"no labels at all, configured", nil, "caboose", "records no hostname", false},
 		{"changed", label("caboose-old"), "", "created with hostname caboose-old; the configuration says caboose-laptop", false},
 		{"configured", label("caboose-laptop"), "mybox", "created with hostname caboose-laptop; the configuration says mybox", false},
 	} {
@@ -118,7 +118,7 @@ func TestHostnameDrift(t *testing.T) {
 
 // A new container gets the hostname in its Spec and in its label.
 func TestCreateContainerHostname(t *testing.T) {
-	b := newBoxApp(t, isolationDocker, &backendtest.Fake{})
+	b := newBoxApp(t, isolationContainer, &backendtest.Fake{})
 	b.Cfg.Env = "test"
 	if err := b.createContainer(false); err != nil {
 		t.Fatalf("%v\n%s", err, b.errb)

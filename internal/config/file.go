@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"sort"
+	"maps"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -14,65 +16,120 @@ import (
 // FileName is an environment's config file, in its EnvDir.
 const FileName = "config.toml"
 
-// fileKeys maps each key config.toml accepts to the setting it stands for:
-// the name, after CABOOSE_, of the variable that overrides it.
-var fileKeys = map[string]string{
-	"repo_root":     "REPO_ROOT",
-	"image":         "IMAGE",
-	"container":     "CONTAINER",
-	"base_image":    "BASE_IMAGE",
-	"keep_versions": "KEEP_VERSIONS",
-	"ready_timeout": "READY_TIMEOUT",
-	"docker_sock":   "DOCKER_SOCK",
-	"tz":            "TZ",
-	"no_tmux":       "NO_TMUX",
-	"no_auto_build": "NO_AUTO_BUILD",
-	"auto_sync":     "AUTO_SYNC",
-	// A list, or a string split at whitespace as the variable is.
-	"docker_run_args": "DOCKER_RUN_ARGS",
-	"forward_ports":   "FORWARD_PORTS",
-	"open_urls":       "OPEN_URLS",
-	"isolation":       "ISOLATION",
-	"vm_cpus":         "VM_CPUS",
-	"vm_memory":       "VM_MEMORY",
-	"egress_proxy":    "EGRESS_PROXY",
-	"egress_ports":    "EGRESS_PORTS",
-	"egress_allow":    "EGRESS_ALLOW",
-	"ssh_agent":       "SSH_AGENT",
-	"host_exec":       "HOST_EXEC",
-	"hostname":        "HOSTNAME",
-}
-
-// rootsKey is the one table config.toml accepts: several repo roots by
-// name, each mounted at /work/<name>, in place of repo_root.
-const rootsKey = "roots"
-
-// formatKey is config.toml's structure, a whole number. A file without
-// one is from before it had one, and read as FileFormat.
-const formatKey = "format"
-
 // FileFormat is the config.toml structure this caboose reads and writes. A
 // file of a newer one is refused: it may mean something this caboose
 // cannot tell.
 const FileFormat = 1
 
-// File is an environment's config.toml as read: each setting's value by its
-// CABOOSE_ name, as an environment variable would give it.
-type File struct {
-	Path string
-	Vals map[string]string
-	// Roots is the [roots] table: host path by name, as written.
-	Roots map[string]string
-	// Format is the file's format key, 0 when it has none.
-	Format int
-	// RunArgs is docker_run_args written as a list, nil otherwise; written
-	// as a string, it is in Vals, as the variable would give it.
-	RunArgs []string
+// ConfigDoc is where config.toml is documented, for errors that send the
+// reader there.
+const ConfigDoc = "docs/configuration.md"
+
+// The isolation kinds, each the name of a family of profile tables:
+// [container.NAME] runs the sandbox under docker's own runtime (runc),
+// [gvisor.NAME] under runsc, [vm.NAME] in a VM of caboose's own.
+const (
+	KindContainer = "container"
+	KindGVisor    = "gvisor"
+	KindVM        = "vm"
+)
+
+// Kinds are the isolation kinds, the default first.
+var Kinds = []string{KindContainer, KindGVisor, KindVM}
+
+// valueType is what a key's value must be.
+type valueType int
+
+const (
+	typeString valueType = iota
+	typeInt
+	typeBool
+	// typeStrings is an array of non-empty strings.
+	typeStrings
+	// typePorts is an array of ports (whole numbers) and ranges ("a-b").
+	typePorts
+)
+
+var portRangeSyntax = regexp.MustCompile(`^[0-9]+-[0-9]+$`)
+
+func (t valueType) String() string {
+	return [...]string{"a string", "a whole number", "true or false", "an array of strings",
+		`an array of ports and "a-b" ranges`}[t]
 }
 
-// readFile reads path, or returns nil when there is none. Every key must be
-// one of fileKeys -- a misspelled one would otherwise be ignored without a
-// word -- and a string, a whole number or a boolean.
+// tables are the keys of config.toml's plain tables, by table, "" for the
+// top level. [roots] and the isolation profiles are read apart.
+var tables = map[string]map[string]valueType{
+	"": {"format": typeInt, "isolation": typeString},
+	"image": {
+		"base":       typeString,
+		"auto_build": typeBool,
+	},
+	"session": {
+		"tmux":          typeBool,
+		"tz":            typeString,
+		"hostname":      typeString,
+		"auto_sync":     typeBool,
+		"keep_versions": typeInt,
+		"ready_timeout": typeInt,
+	},
+	"link": {
+		"forward_ports": typePorts,
+		"open_urls":     typeString,
+		"ssh_agent":     typeString,
+		"host_exec":     typeBool,
+	},
+}
+
+// profileKeys are the keys of each kind's profiles. Each kind has its own:
+// a key another kind has is an error in this one's table, so a setting
+// that cannot apply under a kind cannot be written for it.
+var profileKeys = map[string]map[string]valueType{
+	KindContainer: {"run_args": typeStrings, "engine_socket": typeBool},
+	KindGVisor:    {"run_args": typeStrings, "engine_socket": typeBool},
+	KindVM: {
+		"cpus":         typeInt,
+		"memory":       typeString,
+		"egress":       typeBool,
+		"egress_ports": typePorts,
+		"egress_allow": typeStrings,
+	},
+}
+
+// rootsKey is the [roots] table: host directories by name, each mounted at
+// /work/<name> unless its long form names another path.
+const rootsKey = "roots"
+
+// File is an environment's config.toml as read and checked.
+type File struct {
+	Path string
+	// Vals are the keys the file sets, by their dotted names ("isolation",
+	// "session.tmux", "vm.default.cpus"), as TOML gave them: a string, an
+	// int64, a bool or a []any, each of its key's type.
+	Vals map[string]any
+	// Roots is the [roots] table, as written; nil when there is none.
+	Roots map[string]FileRoot
+	// Profiles are the isolation profiles the file defines, as
+	// "<kind>.<name>", sorted.
+	Profiles []string
+	// Format is the file's format key, 0 when it has none.
+	Format int
+}
+
+// FileRoot is a [roots] entry as written: the host path, ~ and all, and
+// the container path when the long form names one ("" for /work/<name>).
+type FileRoot struct{ Host, Path string }
+
+// Has reports whether the file sets key, a dotted name.
+func (f *File) Has(key string) bool {
+	if f == nil {
+		return false
+	}
+	_, ok := f.Vals[key]
+	return ok
+}
+
+// readFile reads path, or returns nil when there is none.
 func readFile(path string, fsys FS) (*File, error) {
 	data, err := fsys.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -85,109 +142,268 @@ func readFile(path string, fsys FS) (*File, error) {
 }
 
 // ParseFile is readFile for contents already read: path only names the
-// file in errors.
+// file in errors. Every table and key must be one this caboose knows --
+// a misspelled one would otherwise be ignored without a word -- and every
+// value of its key's type.
 func ParseFile(path string, data []byte) (*File, error) {
 	var raw map[string]any
 	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("%s: %v", path, err)
 	}
-	f := &File{Path: path, Vals: map[string]string{}}
-	var err error
-	var unknown []string
-	for k, v := range raw {
-		if k == rootsKey {
-			if f.Roots, err = readRoots(path, v); err != nil {
-				return nil, err
-			}
-			continue
+	f := &File{Path: path, Vals: map[string]any{}}
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("%s: "+format, append([]any{path}, args...)...)
+	}
+	// The format first: a newer file may have keys this caboose does not
+	// know, and what it needs to hear is that it is too old.
+	if n, ok := raw["format"].(int64); ok && n > FileFormat {
+		return nil, fmt.Errorf("%s is format %d, and this caboose reads up to format %d: 'caboose update' installs one that reads it", path, n, FileFormat)
+	}
+	for _, k := range slices.Sorted(maps.Keys(raw)) {
+		v := raw[k]
+		if _, table := v.(map[string]any); !table && slices.ContainsFunc(Moved, func(m movedSetting) bool { return m.Key == k }) {
+			// image and container were keys of the flat layout.
+			return nil, fail("%s", unknownKey("", k))
 		}
-		if k == formatKey {
-			n, ok := v.(int64)
-			switch {
-			case !ok || n < 1:
-				return nil, fmt.Errorf("%s: format must be a whole number, 1 or more", path)
-			case n > FileFormat:
-				return nil, fmt.Errorf("%s is format %d, and this caboose reads up to format %d: 'caboose update' installs one that reads it", path, n, FileFormat)
+		switch {
+		case k == rootsKey:
+			roots, err := readRoots(v)
+			if err != nil {
+				return nil, fail("%v", err)
 			}
-			f.Format = int(n)
-			continue
-		}
-		name, ok := fileKeys[k]
-		if !ok {
-			unknown = append(unknown, k)
-			continue
-		}
-		switch v := v.(type) {
-		case []any:
-			if name != "DOCKER_RUN_ARGS" {
-				return nil, fmt.Errorf("%s: %s must be a string, a number or true/false", path, k)
+			f.Roots = roots
+		case slices.Contains(Kinds, k):
+			profiles, ok := v.(map[string]any)
+			if !ok {
+				return nil, fail("%s must be tables of profiles, [%s.NAME]", k, k)
 			}
-			f.RunArgs = []string{}
-			for _, e := range v {
-				s, ok := e.(string)
-				if !ok || s == "" {
-					return nil, fmt.Errorf("%s: %s must be a list of strings, each an argument to docker run", path, k)
+			for _, name := range slices.Sorted(maps.Keys(profiles)) {
+				if _, ok := profiles[name].(map[string]any); !ok {
+					return nil, fail("%s must be tables of profiles, [%s.NAME]", k, k)
 				}
-				f.RunArgs = append(f.RunArgs, s)
+				if !ValidProfileName(name) {
+					return nil, fail("[%s.%s]: '%s' is not a profile name: lowercase letters, digits, - and _, starting with a letter or digit, at most 32", k, name, name)
+				}
+				if err := f.readTable(k+"."+name, profiles[name], profileKeys[k]); err != nil {
+					return nil, fail("%v", err)
+				}
+				f.Profiles = append(f.Profiles, k+"."+name)
 			}
-		case string:
-			f.Vals[name] = v
-		case int64:
-			f.Vals[name] = fmt.Sprint(v)
-		case bool:
-			// egress_proxy is "on" or "off", and false must not read as
-			// unset, which is on.
-			// Nor host_exec, whose false must say off over a variable's
-			// absence as plainly as its true says on.
-			if name == "EGRESS_PROXY" || name == "HOST_EXEC" {
-				f.Vals[name] = map[bool]string{true: "on", false: "off"}[v]
-				continue
-			}
-			// The variables' own meaning: set (non-empty) or not.
-			if v {
-				f.Vals[name] = "1"
+		case tables[k] != nil && k != "":
+			if err := f.readTable(k, v, tables[k]); err != nil {
+				return nil, fail("%v", err)
 			}
 		default:
-			return nil, fmt.Errorf("%s: %s must be a string, a number or true/false", path, k)
+			t, ok := tables[""][k]
+			if !ok {
+				return nil, fail("%s", unknownKey("", k))
+			}
+			if err := f.readValue(k, v, t); err != nil {
+				return nil, fail("%v", err)
+			}
 		}
 	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		var known []string
-		for k := range fileKeys {
-			known = append(known, k)
+	if v, ok := f.Vals["format"]; ok {
+		switch n := v.(int64); {
+		case n < 1:
+			return nil, fail("format must be a whole number, 1 or more")
+		default:
+			f.Format = int(n)
 		}
-		sort.Strings(known)
-		known = append(known, formatKey, "["+rootsKey+"]")
-		return nil, fmt.Errorf("%s: unknown setting %s (known: %s)", path,
-			strings.Join(unknown, ", "), strings.Join(known, ", "))
-	}
-	if f.Roots != nil && f.Vals["REPO_ROOT"] != "" {
-		return nil, fmt.Errorf("%s: repo_root and [roots] both name the repo roots; keep one", path)
 	}
 	return f, nil
 }
 
-// readRoots reads the [roots] table: at least one entry, each a path by a
-// name that becomes a directory under /work.
-func readRoots(path string, v any) (map[string]string, error) {
+// readTable reads table name's keys, each of keys.
+func (f *File) readTable(name string, v any, keys map[string]valueType) error {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be a table, [%s]", name, name)
+	}
+	for _, k := range slices.Sorted(maps.Keys(t)) {
+		vt, ok := keys[k]
+		if !ok {
+			return errors.New(unknownKey(name, k))
+		}
+		if err := f.readValue(name+"."+k, t[k], vt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readValue checks v is of type t, and keeps it as key's.
+func (f *File) readValue(key string, v any, t valueType) error {
+	bad := fmt.Errorf("%s must be %s", displayKey(key), t)
+	switch t {
+	case typeString:
+		if _, ok := v.(string); !ok {
+			return bad
+		}
+	case typeInt:
+		if _, ok := v.(int64); !ok {
+			return bad
+		}
+	case typeBool:
+		if _, ok := v.(bool); !ok {
+			return bad
+		}
+	case typeStrings:
+		list, ok := v.([]any)
+		if !ok {
+			return bad
+		}
+		for _, e := range list {
+			if s, ok := e.(string); !ok || s == "" {
+				return bad
+			}
+		}
+	case typePorts:
+		list, ok := v.([]any)
+		if !ok {
+			return bad
+		}
+		for _, e := range list {
+			switch e := e.(type) {
+			case int64:
+			case string:
+				if !portRangeSyntax.MatchString(e) {
+					return fmt.Errorf(`%s: %q is not a range of ports, "a-b"`, displayKey(key), e)
+				}
+			default:
+				return bad
+			}
+			// The same reading the launch makes of them, so a port that
+			// cannot be one is said when the file is read.
+			if _, err := ParsePortsOf(displayKey(key), fmt.Sprint(e)); err != nil {
+				return err
+			}
+		}
+	}
+	f.Vals[key] = v
+	return nil
+}
+
+// displayKey is a dotted key as a person finds it in the file: "tz in
+// [session]", "isolation".
+func displayKey(key string) string {
+	i := strings.LastIndex(key, ".")
+	if i < 0 {
+		return key
+	}
+	return key[i+1:] + " in [" + key[:i] + "]"
+}
+
+// unknownKey is the error for key in table ("" for the top level): the
+// keys there are, or, for a key of caboose's first, flat layout, where it
+// went.
+func unknownKey(table, key string) string {
+	if table == "" {
+		for _, m := range Moved {
+			if m.Key == key {
+				return fmt.Sprintf("%s is not a setting any more: config.toml's layout changed, and it is now %s (see %s)", key, m.Now, ConfigDoc)
+			}
+		}
+		if slices.Contains(Kinds, key) || key == rootsKey || tables[key] != nil {
+			return fmt.Sprintf("%s must be a table", key)
+		}
+	}
+	var known []string
+	if table == "" {
+		for k := range tables[""] {
+			known = append(known, k)
+		}
+		for k := range tables {
+			if k != "" {
+				known = append(known, "["+k+"]")
+			}
+		}
+		known = append(known, "["+rootsKey+"]")
+		for _, k := range Kinds {
+			known = append(known, "["+k+".NAME]")
+		}
+	} else {
+		keys := tables[table]
+		if keys == nil {
+			kind, _, _ := strings.Cut(table, ".")
+			keys = profileKeys[kind]
+		}
+		for k := range keys {
+			known = append(known, k)
+		}
+	}
+	slices.Sort(known)
+	where := "top-level setting"
+	if table != "" {
+		where = "setting in [" + table + "]"
+	}
+	return fmt.Sprintf("unknown %s %s (known: %s; see %s, or 'caboose update' if this caboose predates it)", where, key, strings.Join(known, ", "), ConfigDoc)
+}
+
+// Moved are the settings of caboose's first, flat config.toml, and the
+// CABOOSE_ variables that went with them, with where each is now. A file
+// that still has one, or a shell that still sets one, is refused with
+// this, never read.
+var Moved = []movedSetting{
+	{"repo_root", "CABOOSE_REPO_ROOT", "a [roots] table, each root by name"},
+	{"image", "CABOOSE_IMAGE", "nothing: the image is named after the environment, caboose:<env>"},
+	{"container", "CABOOSE_CONTAINER", "nothing: the container is named after the environment, caboose-<env>"},
+	{"base_image", "CABOOSE_BASE_IMAGE", "base in [image]"},
+	{"no_auto_build", "CABOOSE_NO_AUTO_BUILD", "auto_build in [image], true or false"},
+	{"keep_versions", "CABOOSE_KEEP_VERSIONS", "keep_versions in [session]"},
+	{"ready_timeout", "CABOOSE_READY_TIMEOUT", "ready_timeout in [session]"},
+	{"tz", "CABOOSE_TZ", "tz in [session]"},
+	{"hostname", "CABOOSE_HOSTNAME", "hostname in [session]"},
+	{"no_tmux", "CABOOSE_NO_TMUX", "tmux in [session], true or false"},
+	{"auto_sync", "CABOOSE_AUTO_SYNC", "auto_sync in [session]"},
+	{"forward_ports", "CABOOSE_FORWARD_PORTS", "forward_ports in [link]"},
+	{"open_urls", "CABOOSE_OPEN_URLS", "open_urls in [link]"},
+	{"ssh_agent", "CABOOSE_SSH_AGENT", "ssh_agent in [link]"},
+	{"host_exec", "CABOOSE_HOST_EXEC", "host_exec in [link]"},
+	{"docker_sock", "CABOOSE_DOCKER_SOCK", "engine_socket in a [container.NAME] or [gvisor.NAME] profile, true or false"},
+	{"docker_run_args", "CABOOSE_DOCKER_RUN_ARGS", "run_args in a [container.NAME] or [gvisor.NAME] profile"},
+	{"vm_cpus", "CABOOSE_VM_CPUS", "cpus in a [vm.NAME] profile"},
+	{"vm_memory", "CABOOSE_VM_MEMORY", "memory in a [vm.NAME] profile"},
+	{"egress_proxy", "CABOOSE_EGRESS_PROXY", "egress in a [vm.NAME] profile, true or false"},
+	{"egress_ports", "CABOOSE_EGRESS_PORTS", "egress_ports in a [vm.NAME] profile"},
+	{"egress_allow", "CABOOSE_EGRESS_ALLOW", "egress_allow in a [vm.NAME] profile"},
+	{"", "CABOOSE_ISOLATION", "isolation, naming a profile"},
+	{"", "CABOOSE_PROJECT", "nothing: run caboose in the project's directory"},
+}
+
+type movedSetting struct{ Key, Variable, Now string }
+
+// readRoots reads the [roots] table: at least one entry, each a host path
+// by a name, or the long form, a table of exactly host and path.
+func readRoots(v any) (map[string]FileRoot, error) {
 	table, ok := v.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("%s: roots must be a table, [roots], of name = \"path\"", path)
+		return nil, errors.New(`roots must be a table, [roots], of name = "path"`)
 	}
 	if len(table) == 0 {
-		return nil, fmt.Errorf("%s: [roots] names no roots", path)
+		return nil, errors.New("[roots] names no roots")
 	}
-	roots := map[string]string{}
-	for name, p := range table {
+	roots := map[string]FileRoot{}
+	for name, e := range table {
 		if !ValidRootName(name) {
-			return nil, fmt.Errorf("%s: '%s' is not a root name: lowercase letters, digits, - and _, starting with a letter or digit, at most 32", path, name)
+			return nil, fmt.Errorf("'%s' is not a root name: lowercase letters, digits, - and _, starting with a letter or digit, at most 32", name)
 		}
-		s, ok := p.(string)
-		if !ok || s == "" {
-			return nil, fmt.Errorf("%s: roots.%s must be a path", path, name)
+		switch e := e.(type) {
+		case string:
+			if e == "" {
+				return nil, fmt.Errorf("root %s must be a path", name)
+			}
+			roots[name] = FileRoot{Host: e}
+		case map[string]any:
+			host, hok := e["host"].(string)
+			p, pok := e["path"].(string)
+			if len(e) != 2 || !hok || !pok || host == "" || p == "" {
+				return nil, fmt.Errorf(`root %s must be a path, or a table of exactly host = "path on this machine" and path = "path in the sandbox"`, name)
+			}
+			roots[name] = FileRoot{Host: host, Path: p}
+		default:
+			return nil, fmt.Errorf("root %s must be a path", name)
 		}
-		roots[name] = s
 	}
 	return roots, nil
 }
@@ -196,105 +412,108 @@ func readRoots(path string, v any) (map[string]string, error) {
 // directory /work/<name>, so it follows the same rule as an environment's.
 func ValidRootName(name string) bool { return envName.MatchString(name) }
 
+// ValidProfileName reports whether name can name an isolation profile, as
+// in [vm.NAME]: the same rule as a root's.
+func ValidProfileName(name string) bool { return envName.MatchString(name) }
+
 // Template is the config.toml `caboose setup` writes: every setting,
 // commented out, at its default.
-const Template = `# This environment's settings. Each can also be set for one shell by the
-# CABOOSE_ variable in brackets, which wins over this file. What the sandbox
-# keeps of its home, and what of that syncs, is not here: that is the
-# sandbox's own ~/.config/caboose/sandbox.toml.
+const Template = `# This environment's settings (see docs/configuration.md). What the
+# sandbox keeps of its home, and what of that syncs, is not here: that is
+# the sandbox's own ~/.config/caboose/sandbox.toml.
 
 format = 1    # this file's structure
 
-# The directory holding your projects, mounted into the container at /work.
-# [CABOOSE_REPO_ROOT]
-#repo_root = "~/dev"
+# The isolation profile the sandbox runs under, "<kind>.<name>": one of the
+# [container.NAME], [gvisor.NAME] and [vm.NAME] tables below. Needed only
+# when there are several; with none, the sandbox is a plain container.
+#isolation = "gvisor.default"
 
-# Or several, in place of repo_root, each mounted at /work/<name>:
+# The directories holding your projects, each mounted into the sandbox at
+# /work/<name>, or at a path of its own in the long form. By default
+# dev = "~/dev". A sole root may take path = "/work" itself.
 #[roots]
 #dev = "~/dev"
-#work = "~/work"
+#[roots.tools]
+#host = "~/src/tools"
+#path = "/opt/tools"
 
-# An image to build the sandbox on, instead of caboose's own default.
-# [CABOOSE_BASE_IMAGE]
-#base_image = "debian:13.7-slim"
+#[image]
+# An image to build the sandbox on. By default the environment's
+# image/Dockerfile when it has one, else caboose's own.
+#base = "debian:13.7-slim"
+# Build a missing image, or rebuild a stale one, when the sandbox is
+# created; false says to run 'caboose build' instead.
+#auto_build = true
 
-# How many Claude Code versions to keep installed (~224MB each).
-# [CABOOSE_KEEP_VERSIONS]
-#keep_versions = 2
-
-# What keeps the sandbox from this machine: "docker" (runc, the default,
-# which shares this machine's kernel), "gvisor" (runsc, a kernel of its
-# own; docker must have runsc registered) or "vm" (a VM of caboose's own,
-# on a Mac, with no Docker needed). [CABOOSE_ISOLATION]
-#isolation = "gvisor"
-
-# The vm isolation's size: CPUs, and memory ("8G", "4096M"). By default
-# half this machine's CPUs and half its memory, at most 8G.
-# [CABOOSE_VM_CPUS, CABOOSE_VM_MEMORY]
-#vm_cpus = 4
-#vm_memory = "8G"
-
+#[session]
+# Run sessions in tmux, which detaches and reattaches them; false renders
+# natively, with no detach.
+#tmux = true
+# The sandbox's timezone. By default this machine's.
+#tz = "Europe/Lisbon"
 # The sandbox's hostname: one lowercase DNS label. By default
-# caboose-<this machine's name>, with -<env> after it in any environment but
-# the default one. Takes effect at the next 'caboose restart'.
-# [CABOOSE_HOSTNAME]
+# caboose-<this machine's name>, with -<env> after it in any environment
+# but the default one. Takes effect at the next 'caboose restart'.
 #hostname = "caboose-laptop"
+# Sync (caboose sync) before a launch that finds nothing running, once a
+# sync remote is set.
+#auto_sync = false
+# How many Claude Code versions to keep installed (~224MB each).
+#keep_versions = 2
+# Seconds to wait for the sandbox's first start.
+#ready_timeout = 600
 
-# Mount the host's docker socket: root-equivalent access to the host.
-# [CABOOSE_DOCKER_SOCK]
-#docker_sock = "/var/run/docker.sock"
-
-# Skip tmux: native rendering, but no detach/reattach. [CABOOSE_NO_TMUX]
-#no_tmux = true
-
-# Refuse to build a missing image on the first launch. [CABOOSE_NO_AUTO_BUILD]
-#no_auto_build = true
-
-# Sync (caboose sync) before a launch that finds nothing running in the
-# container, once a sync remote is set. [CABOOSE_AUTO_SYNC]
-#auto_sync = true
-
-# More arguments for docker run as the container is created, each written
-# --flag=value; caboose's own flags are refused. Some remove isolation, as
-# the docker socket does. [CABOOSE_DOCKER_RUN_ARGS, split at whitespace]
-#docker_run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun"]
-
+#[link]
 # Which ports listening in the sandbox are forwarded to the same port on
-# this machine's localhost: ports and ranges, or "none". A running link
-# rereads this file when it changes. [CABOOSE_FORWARD_PORTS]
-#forward_ports = "3000-3999 5173 8000-8999"
-
+# this machine's localhost: ports and "a-b" ranges; [] for none. A running
+# link rereads this file when it changes.
+#forward_ports = ["3000-3999", 5173, "8000-8999"]
 # Whether the sandbox may open URLs in this machine's browser: "ask" (a
-# dialog each time), "allow" or "off". [CABOOSE_OPEN_URLS]
+# dialog each time), "allow" or "off".
 #open_urls = "ask"
-
-# Under isolation "vm": whether the sandbox's outbound connections are
-# made from this machine, through the link, so that a VPN's routes and
-# DNS apply as they do here: "on" (the default) or "off" (the VM's own
-# NAT). Ignored under docker and gvisor. [CABOOSE_EGRESS_PROXY]
-#egress_proxy = "off"
-
-# The ports the sandbox may reach through it: ports and ranges, or
-# "none". [CABOOSE_EGRESS_PORTS]
-#egress_ports = "22 80 443"
-
-# Private addresses it may reach anyway (loopback, private, link-local,
-# tailnet and multicast ones are refused otherwise): names, "*.suffix"
-# patterns, CIDRs or addresses. [CABOOSE_EGRESS_ALLOW]
-#egress_allow = "git.corp.example *.internal.example 10.20.0.0/16"
-
 # The SSH agent the sandbox gets: a socket on this machine, or "none". By
 # default the one ssh here would use, an IdentityAgent in ~/.ssh/config
-# or else $SSH_AUTH_SOCK -- which a work tool may have taken over. Under
-# isolation "vm", and docker or gvisor on Linux; on a Mac OrbStack and
-# Docker Desktop forward the agent they were started with instead.
-# [CABOOSE_SSH_AGENT]
-#ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-
+# or else $SSH_AUTH_SOCK. Under vm, and container or gvisor on Linux; on
+# a Mac OrbStack and Docker Desktop forward the agent they were started
+# with instead.
+#ssh_agent = "~/.ssh/agent.sock"
 # Let sessions run commands on this machine, as you, through the link
 # (caboose-agent host CMD): a hole in the wall, on purpose. Sessions, and
 # whatever steers them (a web page, a repo they work in), can then run
 # anything here. For an environment whose point is a separate login and
-# tools, not containment. Off by default. [CABOOSE_HOST_EXEC]
-#host_exec = true
+# tools, not containment.
+#host_exec = false
+
+# A plain container, under docker's own runtime: it shares this machine's
+# kernel.
+#[container.default]
+# More arguments for docker run as the container is created, each written
+# --flag=value; caboose's own flags are refused. Some remove isolation, as
+# the engine socket does.
+#run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun"]
+# Mount the engine's socket: root-equivalent access to this machine.
+#engine_socket = false
+
+# A container under gVisor (runsc), a kernel of its own; docker must have
+# runsc registered ('caboose setup isolation' does that where it can).
+# It takes the keys [container.NAME] takes.
+#[gvisor.default]
+
+# A VM of caboose's own, on a Mac, with no Docker needed.
+#[vm.default]
+# CPUs, and memory ("8G", "4096M"). By default half this machine's CPUs
+# and half its memory, at most 8G.
+#cpus = 4
+#memory = "8G"
+# Make the sandbox's outbound connections from this machine, through the
+# link, so that a VPN's routes and DNS apply as they do here; false uses
+# the VM's own NAT.
+#egress = true
+# The ports the sandbox may reach that way: ports and "a-b" ranges.
+#egress_ports = [22, 80, 443]
+# Private addresses it may reach anyway (loopback, private, link-local,
+# tailnet and multicast ones are refused otherwise): names, "*.suffix"
+# patterns, CIDRs or addresses.
+#egress_allow = ["git.corp.example", "*.internal.example", "10.20.0.0/16"]
 `

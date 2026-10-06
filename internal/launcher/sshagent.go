@@ -97,12 +97,7 @@ func (a *App) agentFrom(set, origin string) (sock, from string) {
 }
 
 // sshAgentOrigin says what set ssh_agent, for messages.
-func sshAgentOrigin(c *config.Config) string {
-	if c.File != nil && c.SSHAgentFrom == c.File.Path {
-		return "ssh_agent in " + c.File.Path
-	}
-	return or(c.SSHAgentFrom, "CABOOSE_SSH_AGENT")
-}
+func sshAgentOrigin(c *config.Config) string { return c.Origin("link.ssh_agent") }
 
 // expandAgent resolves an IdentityAgent value as ssh does: "none" is no
 // agent, SSH_AUTH_SOCK (bare or as $SSH_AUTH_SOCK) is the environment's,

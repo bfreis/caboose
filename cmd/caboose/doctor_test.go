@@ -15,7 +15,7 @@ import (
 )
 
 // doctorBox is what a healthy environment answers doctor with: the engine
-// up, image img current, container box running on it with the configured
+// up, image caboose:default current, container caboose-default running on it with the configured
 // root, a platform dir and the sync repo mounted, Claude Code in it, no
 // sessions, the container's TZ and keep-versions as the host has them, and
 // an agent holding one key. Each of over's lines comes first, so a test
@@ -36,15 +36,15 @@ func doctorBox(t *testing.T, home string, over ...string) string {
 case "$1" in version) exit 0 ;; esac
 ` + imageLabels(defaultLabels("v1")) + "\n" + imageIDIs("sha:1") + "\n" + containerRunning + `
 case "$*" in
-  "inspect --type=container box --format "*)
-    printf '/work\t%s\n/home/agent/.local/bin\t%s\n` + statesync.ContainerDir + `\t%s\n' '` + root + `' '` +
+  "inspect --type=container caboose-default --format "*)
+    printf '/work/dev\t%s\n/home/agent/.local/bin\t%s\n` + statesync.ContainerDir + `\t%s\n' '` + root + `' '` +
 		filepath.Join(data, "local", "linux-arm64", "bin") + `' '` + filepath.Join(data, statesync.Dir) + `'; printf '%s' '` + keeps.String() + `'; exit 0 ;;
-  "exec box claude --version") echo "2.1.0 (Claude Code)"; exit 0 ;;
-  "exec box bash -c for d in /proc/"*) echo "7 1 sleep"; exit 0 ;;
-  "exec box bash -c printf '%s\0%s\0'"*) printf 'Etc/UTC\0002\0'; exit 0 ;;
-  "exec box bash -c printf '%s' \"\${SSH_AUTH_SOCK-}\"") printf /ssh-agent.sock; exit 0 ;;
-  "exec box ssh-add -l") echo "256 SHA256:abc me@mac (ED25519)"; exit 0 ;;
-  "exec box ssh-add -L") echo "ssh-ed25519 AAAAkey me@mac"; exit 0 ;;
+  "exec caboose-default claude --version") echo "2.1.0 (Claude Code)"; exit 0 ;;
+  "exec caboose-default bash -c for d in /proc/"*) echo "7 1 sleep"; exit 0 ;;
+  "exec caboose-default bash -c printf '%s\0%s\0'"*) printf 'Etc/UTC\0002\0'; exit 0 ;;
+  "exec caboose-default bash -c printf '%s' \"\${SSH_AUTH_SOCK-}\"") printf /ssh-agent.sock; exit 0 ;;
+  "exec caboose-default ssh-add -l") echo "256 SHA256:abc me@mac (ED25519)"; exit 0 ;;
+  "exec caboose-default ssh-add -L") echo "ssh-ed25519 AAAAkey me@mac"; exit 0 ;;
 esac`
 }
 
@@ -52,7 +52,7 @@ esac`
 // the host) whose docker answers with doctorBox and over.
 func doctorEnv(t *testing.T, over ...string) (home, log string) {
 	t.Helper()
-	home = sandboxEnv(t, "CABOOSE_CONTAINER", "box", "CABOOSE_IMAGE", "img", "TZ", "Etc/UTC", "SSH_AUTH_SOCK", "")
+	home = sandboxEnv(t, "TZ", "Etc/UTC", "SSH_AUTH_SOCK", "")
 	log = scriptedDocker(t, doctorBox(t, home, over...))
 	return home, log
 }
@@ -172,8 +172,8 @@ func TestDoctorHealthy(t *testing.T) {
 		"env":       "default",
 		"roots":     " at /work",
 		"docker":    "the engine answers",
-		"image":     "img, matching this launcher (built by v1)",
-		"container": "box, running",
+		"image":     "caboose:default, matching this launcher (built by v1)",
+		"container": "caboose-default, running",
 		"claude":    "2.1.0",
 		"sessions":  "none running",
 		"ssh agent": "forwarded, 1 key",
@@ -194,7 +194,7 @@ func TestDoctorHealthy(t *testing.T) {
 }
 
 func TestDoctorDockerDown(t *testing.T) {
-	sandboxEnv(t, "CABOOSE_CONTAINER", "box", "CABOOSE_IMAGE", "img")
+	sandboxEnv(t)
 	log := scriptedDocker(t, daemonDown)
 	code, out, _ := runIt("doctor")
 	if code != 1 {
@@ -215,7 +215,7 @@ func TestDoctorDockerDown(t *testing.T) {
 func TestDoctorContainerNotRunning(t *testing.T) {
 	for _, state := range []string{"exited", "absent"} {
 		t.Run(state, func(t *testing.T) {
-			answer := `[ "$*" = "inspect --type=container -f {{.State.Status}} box" ] && { echo ` + state + `; exit 0; }`
+			answer := `[ "$*" = "inspect --type=container -f {{.State.Status}} caboose-default" ] && { echo ` + state + `; exit 0; }`
 			if state == "absent" {
 				answer = `case "$*" in "inspect --type=container"*) exit 1 ;; esac`
 			}
@@ -229,9 +229,9 @@ func TestDoctorContainerNotRunning(t *testing.T) {
 				"sessions": "not checked: the container is not running",
 			}
 			if state == "absent" {
-				want["container"] = "note: box does not exist; a launch creates it"
+				want["container"] = "note: caboose-default does not exist; a launch creates it"
 			} else {
-				want["container"] = "note: box is exited; a launch starts it"
+				want["container"] = "note: caboose-default is exited; a launch starts it"
 			}
 			wantRows(t, out, want)
 			changesNothing(t, log)
@@ -242,29 +242,29 @@ func TestDoctorContainerNotRunning(t *testing.T) {
 func TestDoctorImage(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		env    []string
+		toml   string
 		answer string
 		code   int
 		row    string
 		fix    string
 	}{
-		{"stale", nil, imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
-			"problem: img is out of date: built by v0, with a different layer", "caboose restart, which rebuilds it (this ends running sessions)"},
-		{"stale, no auto build", []string{"CABOOSE_NO_AUTO_BUILD", "1"}, imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
-			"problem: img is out of date: built by v0, with a different layer", "caboose build, then caboose restart (this ends running sessions)"},
-		{"on another base", []string{"CABOOSE_BASE_IMAGE", "node:20"}, "", 1,
-			"problem: img is out of date", "caboose restart, which rebuilds it on the configured base"},
-		{"missing", nil, imageAbsent, 0, "note: 'img' is not built yet; the first launch builds it", ""},
-		{"missing, no auto build", []string{"CABOOSE_NO_AUTO_BUILD", "1"}, imageAbsent, 1,
-			"problem: 'img' is not built, and CABOOSE_NO_AUTO_BUILD", "caboose build"},
-		{"unlabelled", nil, imageLabels("{}"), 0, "note: img was not built by caboose build (it has none of its labels)", ""},
-		{"its own base", []string{"CABOOSE_BASE_IMAGE", "img"}, "", 1,
-			"problem: CABOOSE_BASE_IMAGE names the same image as CABOOSE_IMAGE", "unset CABOOSE_IMAGE"},
+		{"stale", "", imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
+			"problem: caboose:default is out of date: built by v0, with a different layer", "caboose restart, which rebuilds it (this ends running sessions)"},
+		{"stale, no auto build", "[image]\nauto_build = false\n", imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
+			"problem: caboose:default is out of date: built by v0, with a different layer", "caboose build, then caboose restart (this ends running sessions)"},
+		{"on another base", "[image]\nbase = \"node:20\"\n", "", 1,
+			"problem: caboose:default is out of date", "caboose restart, which rebuilds it on the configured base"},
+		{"missing", "", imageAbsent, 0, "note: 'caboose:default' is not built yet; the first launch builds it", ""},
+		{"missing, no auto build", "[image]\nauto_build = false\n", imageAbsent, 1,
+			"problem: 'caboose:default' is not built, and auto_build = false in [image]", "caboose build"},
+		{"unlabelled", "", imageLabels("{}"), 0, "note: caboose:default was not built by caboose build (it has none of its labels)", ""},
+		{"its own base", "[image]\nbase = \"caboose:default\"\n", "", 1,
+			"problem: base in [image] names the environment's own image ('caboose:default')", "name the image to build on in base in [image]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			doctorEnv(t, tc.answer)
-			for i := 0; i+1 < len(tc.env); i += 2 {
-				t.Setenv(tc.env[i], tc.env[i+1])
+			home, _ := doctorEnv(t, tc.answer)
+			if tc.toml != "" {
+				writeConfig(t, home, tc.toml)
 			}
 			code, out, _ := runIt("doctor", "--offline")
 			if code != tc.code || row(out, "image", tc.row) == "" {
@@ -281,21 +281,21 @@ func TestDoctorContainerDrift(t *testing.T) {
 	t.Run("older image", func(t *testing.T) {
 		doctorEnv(t, imageIDIs("sha:2"))
 		code, out, _ := runIt("doctor", "--offline")
-		if code != 1 || row(out, "container", "problem: the container runs an older image than the local 'img'") == "" ||
+		if code != 1 || row(out, "container", "problem: the container runs an older image than the local 'caboose:default'") == "" ||
 			!fixFor(out, "container", "caboose restart, which moves it onto the local image (this ends running sessions)") {
 			t.Fatalf("exit %d:\n%s", code, out)
 		}
 	})
 	t.Run("roots", func(t *testing.T) {
 		other := t.TempDir()
-		doctorEnv(t, `[ "$1 $2" = "inspect --type=container" ] && [ "$4" = --format ] && { printf '/work\t%s\n' '`+other+`'; exit 0; }`)
+		doctorEnv(t, containerLabels("/work/dev"), `[ "$1 $2" = "inspect --type=container" ] && [ "$4" = --format ] && { printf '/work/dev\t%s\n' '`+other+`'; exit 0; }`)
 		code, out, _ := runIt("doctor", "--offline")
-		if code != 1 || row(out, "roots", "problem: the container mounts "+other+" at /work; the configuration says") == "" {
+		if code != 1 || row(out, "roots", "problem: the container mounts "+other+" at /work/dev; the configuration says") == "" {
 			t.Fatalf("exit %d:\n%s", code, out)
 		}
 	})
 	t.Run("timezone and versions", func(t *testing.T) {
-		doctorEnv(t, `case "$*" in "exec box bash -c printf '%s\0%s\0'"*) printf '\0005\0sock'; exit 0 ;; esac`)
+		doctorEnv(t, `case "$*" in "exec caboose-default bash -c printf '%s\0%s\0'"*) printf '\0005\0sock'; exit 0 ;; esac`)
 		code, out, _ := runIt("doctor", "--offline")
 		if code != 0 {
 			t.Fatalf("exit %d:\n%s", code, out)
@@ -309,31 +309,31 @@ func TestDoctorContainerDrift(t *testing.T) {
 }
 
 func TestDoctorRootMissing(t *testing.T) {
-	doctorEnv(t)
-	t.Setenv("CABOOSE_REPO_ROOT", "/nonexistent/src")
+	home, _ := doctorEnv(t)
+	writeConfig(t, home, "[roots]\nsrc = \"/nonexistent/src\"\n")
 	code, out, _ := runIt("doctor", "--offline")
 	if code != 1 {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	wantRows(t, out, map[string]string{
-		"roots":  "problem: repo root /nonexistent/src does not exist",
+		"roots":  "problem: root src, /nonexistent/src, does not exist",
 		"docker": "the engine answers", // and it went on
 	})
-	if !fixFor(out, "roots", "point the roots at directories that exist (set by CABOOSE_REPO_ROOT)") {
+	if !fixFor(out, "roots", "point the roots at directories that exist (set by [roots] in "+filepath.Join(home, ".caboose", "envs", "default", "config.toml")+")") {
 		t.Errorf("no fix:\n%s", out)
 	}
 }
 
 func TestDoctorAgent(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		doctorEnv(t, `[ "$*" = "exec box ssh-add -l" ] && { echo "The agent has no identities." >&2; exit 1; }`)
+		doctorEnv(t, `[ "$*" = "exec caboose-default ssh-add -l" ] && { echo "The agent has no identities." >&2; exit 1; }`)
 		code, out, _ := runIt("doctor", "--offline")
 		if code != 1 || row(out, "ssh agent", "problem: forwarded, but the agent holds no keys") == "" ||
 			!fixFor(out, "ssh agent", "add a key to the host's agent (ssh-add)") {
 			t.Fatalf("exit %d:\n%s", code, out)
 		}
 	})
-	notForwarded := `[ "$*" = "exec box bash -c printf '%s' \"\${SSH_AUTH_SOCK-}\"" ] && exit 0`
+	notForwarded := `[ "$*" = "exec caboose-default bash -c printf '%s' \"\${SSH_AUTH_SOCK-}\"" ] && exit 0`
 	t.Run("the host has none", func(t *testing.T) {
 		doctorEnv(t, notForwarded)
 		code, out, _ := runIt("doctor", "--offline")
@@ -392,13 +392,12 @@ func TestDoctorSync(t *testing.T) {
 		home := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(data))))
 		return doctorBox(t, home) + "\n" + mountedHere(git, data)
 	})
-	t.Setenv("CABOOSE_IMAGE", "img")
 	t.Setenv("SSH_AUTH_SOCK", "")
 	t.Setenv("TZ", "Etc/UTC")
 	if code, _, errOut := runIt("sync", "--remote", remote); code != 0 {
 		t.Fatalf("sync: exit %d: %s", code, errOut)
 	}
-	mem := filepath.Join(data, "home", ".claude", "projects", statesync.ProjectKey("/work/proj"), "memory", "MEMORY.md")
+	mem := filepath.Join(data, "home", ".claude", "projects", statesync.ProjectKey("/work/dev/proj"), "memory", "MEMORY.md")
 	if err := os.MkdirAll(filepath.Dir(mem), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -433,13 +432,13 @@ func TestDoctorSync(t *testing.T) {
 
 func TestDoctorTwoBases(t *testing.T) {
 	home, _ := doctorEnv(t)
-	t.Setenv("CABOOSE_BASE_IMAGE", "node:22")
+	writeConfig(t, home, "[image]\nbase = \"node:22\"\n")
 	dir := filepath.Join(home, ".caboose", "envs", "default", "image")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	code, out, _ := runIt("doctor", "--offline")
-	if code != 1 || row(out, "image", "problem: the environment has "+dir+", and CABOOSE_BASE_IMAGE names 'node:22'") == "" ||
+	if code != 1 || row(out, "image", "problem: the environment has "+dir+", and base in [image] names 'node:22'") == "" ||
 		!strings.Contains(out, "or move "+dir+" away") || strings.Count(out, "\n  ✗ image  ") != 1 {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
@@ -449,14 +448,14 @@ func TestDoctorTwoBases(t *testing.T) {
 // entries -- here none of its own -- is a problem a restart fixes. A bad
 // entry is a problem of its own, with where to fix it.
 func TestDoctorKeep(t *testing.T) {
-	home, _ := doctorEnv(t, `[ "$1 $2" = "inspect --type=container" ] && [ "$4" = --format ] && { printf '/work\t%s\n' "$HOME/dev"; exit 0; }`)
+	home, _ := doctorEnv(t, `[ "$1 $2" = "inspect --type=container" ] && [ "$4" = --format ] && { printf '/work/dev\t%s\n' "$HOME/dev"; exit 0; }`)
 	data := filepath.Join(home, ".caboose", "envs", "default", "data")
 	cfg := filepath.Join(data, "home", ".config", "caboose", "sandbox.toml")
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	extra := "\n[[keep]]\npath = \"~/.aws\"\n\n[[keep]]\npath = \"~/.config/deep/er\"\n\n[[keep]]\npath = \"~/.npmrc\"\nfile = true\n"
-	if err := os.WriteFile(cfg, append(sandboxcfg.Default([]string{"oss"}), extra...), 0o644); err != nil {
+	if err := os.WriteFile(cfg, append(sandboxcfg.Default([]string{"/work/oss"}), extra...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	code, out, _ := runIt("doctor", "--offline")
@@ -465,7 +464,7 @@ func TestDoctorKeep(t *testing.T) {
 	}
 	wantRows(t, out, map[string]string{
 		"keep":  "~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc; 8 sync rules",
-		"roots": "problem: the sandbox config expects a root named oss, which this machine has not",
+		"roots": "problem: the sandbox config expects a root at /work/oss, which none of this machine's configured roots is at",
 	})
 	for _, want := range []string{
 		`problem: keep "~/.config/deep/er": "~/.config/deep/er" is too deep`,

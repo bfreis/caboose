@@ -53,23 +53,25 @@ func TestHostTimezone(t *testing.T) {
 }
 
 func TestDockerSockPath(t *testing.T) {
-	cases := []struct{ setting, host, want string }{
-		{"", "", ""}, {"0", "", ""}, {"no", "", ""}, {"false", "", ""},
-		{"1", "", "/var/run/docker.sock"},
-		{"yes", "tcp://x:2375", "/var/run/docker.sock"},
-		{"true", "unix:///run/user/1/docker.sock", "/run/user/1/docker.sock"},
-		{"/tmp/proxy.sock", "unix:///ignored", "/tmp/proxy.sock"},
+	cases := []struct {
+		on         bool
+		host, want string
+	}{
+		{false, "", ""}, {false, "unix:///run/user/1/docker.sock", ""},
+		{true, "", "/var/run/docker.sock"},
+		{true, "tcp://x:2375", "/var/run/docker.sock"},
+		{true, "unix:///run/user/1/docker.sock", "/run/user/1/docker.sock"},
 	}
 	for _, tc := range cases {
-		if got := DockerSockPath(tc.setting, tc.host); got != tc.want {
-			t.Errorf("DockerSockPath(%q, %q) = %q, want %q", tc.setting, tc.host, got, tc.want)
+		if got := DockerSockPath(tc.on, tc.host); got != tc.want {
+			t.Errorf("DockerSockPath(%v, %q) = %q, want %q", tc.on, tc.host, got, tc.want)
 		}
 	}
 }
 
 func TestCheckInsideRoot(t *testing.T) {
-	const deflt = "the default: CABOOSE_REPO_ROOT is unset"
-	const byEnv = "set by CABOOSE_REPO_ROOT"
+	const deflt = "the default: config.toml has no [roots]"
+	const byEnv = "set by [roots] in /c.toml"
 	one := func(host string) []config.Root { return []config.Root{{Host: host, Container: "/work"}} }
 	dev := one("/h/dev")
 	for _, tc := range []struct {
@@ -93,13 +95,13 @@ func TestCheckInsideRoot(t *testing.T) {
 	// Outside the one root there is: say what the root is, where its value
 	// came from, and how to change it. tests/run.sh matches the first part.
 	_, err := CheckInsideRoot("/h/devx", nil, dev, deflt, "container")
-	want := "/h/devx is outside the mounted repo root, /h/dev (" + deflt + ").\n" + config.RepoRootHelp
+	want := "/h/devx is outside the mounted root, /h/dev at /work (" + deflt + ").\n" + config.RootsHelp
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
 	}
 	several := []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "b", Host: "/b", Container: "/work/b"}}
 	_, err = CheckInsideRoot("/c", nil, several, "set by [roots] in /c.toml", "container")
-	want = "/c is outside every mounted root, /a at /work/a, /b at /work/b (set by [roots] in /c.toml).\n" + config.RepoRootHelp
+	want = "/c is outside every mounted root, /a at /work/a, /b at /work/b (set by [roots] in /c.toml).\n" + config.RootsHelp
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
 	}
@@ -108,8 +110,8 @@ func TestCheckInsideRoot(t *testing.T) {
 	// a restart is the fix when the configured value holds the path...
 	_, err = CheckInsideRoot("/", dev, one("/"), byEnv, "container")
 	want = `/ is outside the root this container has mounted.
-       mounted: /h/dev (fixed when the container was created)
-       current: / (set by CABOOSE_REPO_ROOT)
+       mounted: /h/dev at /work (fixed when the container was created)
+       current: / at /work (set by [roots] in /c.toml)
        Bind mounts cannot change under a live container: 'caboose restart'
        remounts it at the current value (this kills running sessions).`
 	if err == nil || err.Error() != want {
@@ -128,9 +130,9 @@ func TestCheckInsideRoot(t *testing.T) {
 	// ...but not when it does not.
 	_, err = CheckInsideRoot("/tmp/x", dev, one("/h/src"), deflt, "container")
 	if err == nil || !strings.Contains(err.Error(), "outside the root this container has mounted") ||
-		!strings.Contains(err.Error(), "current: /h/src ("+deflt+")") ||
+		!strings.Contains(err.Error(), "current: /h/src at /work ("+deflt+")") ||
 		!strings.Contains(err.Error(), "/tmp/x is outside the current value too") ||
-		!strings.HasSuffix(err.Error(), config.RepoRootHelp) {
+		!strings.HasSuffix(err.Error(), config.RootsHelp) {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -148,14 +150,14 @@ func TestIndent(t *testing.T) {
 // engine: there is no Docker here to ask.
 func TestStatusHeaderWhenNotRunning(t *testing.T) {
 	for _, tc := range []struct{ iso, noun, shown, outbound string }{
-		{"", "container", "docker", ""},
-		{isolationVM, "VM       ", "vm",
-			"outbound  : through this machine, so its VPN routes and DNS apply (egress_proxy on; egress_ports \"22 80 443\")\n"},
+		{"", "container", "container (the default: config.toml defines no profile)", ""},
+		{isolationVM, "VM       ", "vm (the default: config.toml defines no profile)",
+			"outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports \"22 80 443\")\n"},
 	} {
 		var out, errb bytes.Buffer
 		a := &App{
 			Cfg: &config.Config{Env: "default", Container: "caboose-x", Image: "img", Roots: []config.Root{{Host: "/h/dev", Container: "/work"}},
-				DataDir: "/h/.caboose", KeepVersions: "2", Isolation: tc.iso, Getenv: func(string) string { return "" }},
+				DataDir: "/h/.caboose", KeepVersions: 2, Egress: true, Isolation: tc.iso, Getenv: func(string) string { return "" }},
 			Backend: &backendtest.Fake{},
 			Stdout:  &out, Stderr: &errb,
 		}
@@ -165,7 +167,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		want := "env       : default\n" +
 			tc.noun + " : caboose-x (absent)\n" +
 			"image     : img\n" +
-			"repo root : /h/dev -> /work\n" +
+			"root      : /h/dev -> /work\n" +
 			"data dir  : /h/.caboose\n" +
 			"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +
 			"isolation : " + tc.shown + "\n" + tc.outbound +
@@ -180,7 +182,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		if err := a.Status(); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "\nrepo root : /a -> /work/a\nrepo root : /h/dev -> /work/dev\n") {
+		if !strings.Contains(out.String(), "\nroot      : /a -> /work/a\nroot      : /h/dev -> /work/dev\n") {
 			t.Errorf("status with two roots:\n%s", out.String())
 		}
 	}

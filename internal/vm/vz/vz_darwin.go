@@ -312,18 +312,15 @@ func configure(m vm.Machine) (objc.ID, error) {
 		nic := class("VZVirtioNetworkDeviceConfiguration").Send(sel("new"))
 		nic.Send(sel("setAttachment:"), class("VZNATNetworkDeviceAttachment").Send(sel("new")))
 		// The launcher's MAC, the same at every boot, so bootpd hands the
-		// VM its lease again; none (an older machine.json) leaves
-		// Virtualization.framework's random one.
-		if m.MAC != "" {
-			if err := vm.CheckMAC(m.MAC); err != nil {
-				return 0, err
-			}
-			mac := class("VZMACAddress").Send(sel("alloc")).Send(sel("initWithString:"), nsstring(m.MAC))
-			if mac == 0 {
-				return 0, fmt.Errorf("Virtualization.framework refuses the MAC %s", m.MAC)
-			}
-			nic.Send(sel("setMACAddress:"), mac)
+		// VM its lease again (Dir.Boot always writes one).
+		if err := vm.CheckMAC(m.MAC); err != nil {
+			return 0, err
 		}
+		mac := class("VZMACAddress").Send(sel("alloc")).Send(sel("initWithString:"), nsstring(m.MAC))
+		if mac == 0 {
+			return 0, fmt.Errorf("Virtualization.framework refuses the MAC %s", m.MAC)
+		}
+		nic.Send(sel("setMACAddress:"), mac)
 		cfg.Send(sel("setNetworkDevices:"), array(nic))
 	case "none":
 	default:

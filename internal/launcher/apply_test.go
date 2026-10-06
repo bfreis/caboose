@@ -160,11 +160,10 @@ func TestApplyRefusesASectionOnABaseImage(t *testing.T) {
 	if err := e.apply("2\n"); err != nil {
 		t.Fatal(err)
 	}
-	e.wantOut("builds on base_image debian:13")
+	e.wantOut("builds on base debian:13 in [image]")
 }
 
-// A root: the single root there is gets a name, the move is said and
-// confirmed, and the root is added only once its name is typed.
+// A root is added only once its name is typed.
 func TestApplyRoot(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	other := e.dir("src/other")
@@ -173,13 +172,12 @@ func TestApplyRoot(t *testing.T) {
 	}
 	p := e.propose("other.toml", "title = \"Mount other\"\n[roots]\nother = \"~/src/other\"\n")
 
-	// Apply; name the root there is "dev" (Enter); go ahead with the move;
-	// type the name wrong.
-	if err := e.apply("1\n\ny\nothre\n"); err != nil {
+	// Apply; type the name wrong.
+	if err := e.apply("1\nothre\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("/work/other", other, "readable and writable from the sandbox", "credentials or keys: .env",
-		"move from /work/... to /work/dev/...", "That is not other")
+		"That is not other")
 	if c := e.configFile(); c != "" {
 		t.Errorf("config.toml written on a wrong name:\n%s", c)
 	}
@@ -195,15 +193,15 @@ func TestApplyRoot(t *testing.T) {
 		t.Errorf("Enter applied a root:\n%s", e.errb)
 	}
 
-	if err := e.apply("1\n\ny\nother\n"); err != nil {
+	if err := e.apply("1\nother\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	f, err := config.ParseFile("config.toml", []byte(e.configFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Roots["dev"] != "~/dev" || f.Roots["other"] != "~/src/other" || len(f.Roots) != 2 || f.Vals["REPO_ROOT"] != "" {
-		t.Errorf("roots %v, repo_root %q", f.Roots, f.Vals["REPO_ROOT"])
+	if f.Roots["dev"].Host != "~/dev" || f.Roots["other"].Host != "~/src/other" || len(f.Roots) != 2 {
+		t.Errorf("roots %v", f.Roots)
 	}
 	if _, err := os.Stat(p); !os.IsNotExist(err) {
 		t.Errorf("the proposal is still there: %v", err)
@@ -217,7 +215,7 @@ func TestApplyRootThroughASymlink(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(e.a.Cfg.Home, "link")); err != nil {
 		t.Fatal(err)
 	}
-	e.a.Cfg.File = &config.File{Roots: map[string]string{"dev": "~/dev"}}
+	e.a.Cfg.File = &config.File{Roots: map[string]config.FileRoot{"dev": {Host: "~/dev"}}}
 	e.propose("x.toml", "title = \"t\"\n[roots]\nx = \"~/link\"\n")
 	if err := e.apply("1\nx\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
@@ -226,7 +224,7 @@ func TestApplyRootThroughASymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Roots["x"] != "~/src/real" {
+	if f.Roots["x"].Host != "~/src/real" {
 		t.Errorf("roots %v", f.Roots)
 	}
 }
@@ -259,7 +257,7 @@ func TestProposedRootRefusals(t *testing.T) {
 		{"x", e.a.Cfg.DataDir, "overlaps caboose's home"},
 		{"x", e.a.Cfg.CabooseHome, "overlaps caboose's home"},
 		{"x", "~/dev/sub", "overlaps the root ~/dev"},
-		{"dev", "~/ok", ""}, // the root there is has no name: only a path
+		{"ok", "~/ok", ""},
 		{"x", "~/nope", "does not exist"},
 		{"x", "relative", "not an absolute path"},
 	} {
@@ -270,7 +268,7 @@ func TestProposedRootRefusals(t *testing.T) {
 		}
 	}
 	// A name one of several roots has is taken.
-	e.a.Cfg.File = &config.File{Roots: map[string]string{"dev": "~/dev"}}
+	e.a.Cfg.File = &config.File{Roots: map[string]config.FileRoot{"dev": {Host: "~/dev"}}}
 	if _, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "dev", Path: "~/ok"}); len(refusals) != 1 || !strings.Contains(refusals[0], "named dev already") {
 		t.Errorf("refusals %q", refusals)
 	}
@@ -306,7 +304,7 @@ func TestLaunchNotesPendingProposals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`dockerfile = "preset"`, presetHash(t), `repo_root = "~/dev"`} {
+	for _, want := range []string{`dockerfile = "preset"`, presetHash(t), `host = "~/dev"`, `path = "/work/dev"`} {
 		if !strings.Contains(string(state), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, state)
 		}

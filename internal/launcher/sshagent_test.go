@@ -251,15 +251,15 @@ func TestSSHAgentSetting(t *testing.T) {
 	}{
 		{"unset: ssh's IdentityAgent", "identityagent " + op, "", op, "IdentityAgent in ~/.ssh/config"},
 		{"unset: $SSH_AUTH_SOCK", "user me", "", env, "$SSH_AUTH_SOCK"},
-		{"set: over IdentityAgent", "identityagent " + op, set, set, "CABOOSE_SSH_AGENT"},
-		{"set: over $SSH_AUTH_SOCK", "user me", set, set, "CABOOSE_SSH_AGENT"},
-		{"set: none", "identityagent " + op, "none", "", "CABOOSE_SSH_AGENT"},
+		{"set: over IdentityAgent", "identityagent " + op, set, set, "ssh_agent in [link] of /e/config.toml"},
+		{"set: over $SSH_AUTH_SOCK", "user me", set, set, "ssh_agent in [link] of /e/config.toml"},
+		{"set: none", "identityagent " + op, "none", "", "ssh_agent in [link] of /e/config.toml"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _ := agentApp(t, "linux", "", tc.sshG, map[string]string{"SSH_AUTH_SOCK": env})
-			a.Cfg.SSHAgent, a.Cfg.SSHAgentFrom = tc.setting, ""
+			a.Cfg.SSHAgent = tc.setting
 			if tc.setting != "" {
-				a.Cfg.SSHAgentFrom = "CABOOSE_SSH_AGENT"
+				a.Cfg.File = &config.File{Path: "/e/config.toml", Vals: map[string]any{"link.ssh_agent": tc.setting}}
 			}
 			if sock, from := a.hostAgent(); sock != tc.want || from != tc.from {
 				t.Errorf("hostAgent %q (%s), want %q (%s)", sock, from, tc.want, tc.from)
@@ -271,12 +271,13 @@ func TestSSHAgentSetting(t *testing.T) {
 	}
 	t.Run("a Mac engine forwards its own", func(t *testing.T) {
 		a, _ := agentApp(t, "darwin", info("Docker Desktop"), "", map[string]string{"SSH_AUTH_SOCK": env})
-		a.Cfg.SSHAgent, a.Cfg.SSHAgentFrom = set, "CABOOSE_SSH_AGENT"
+		a.Cfg.SSHAgent = set
+		a.Cfg.File = &config.File{Path: "/e/config.toml", Vals: map[string]any{"link.ssh_agent": set}}
 		if got := a.sshAgentSource(); got != hostServicesAgent {
 			t.Errorf("mounts %q", got)
 		}
 		c := &checkup{}
-		if said := a.agentSourceSaid(c); said != "" || !rowsSay(c, "CABOOSE_SSH_AGENT is not used: Docker Desktop forwards the agent it was started with") {
+		if said := a.agentSourceSaid(c); said != "" || !rowsSay(c, "ssh_agent in [link] of /e/config.toml is not used: Docker Desktop forwards the agent it was started with") {
 			t.Errorf("said %q, rows %+v", said, c.rows)
 		}
 	})

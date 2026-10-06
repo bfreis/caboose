@@ -18,9 +18,9 @@ const (
 	// SourcePreset is caboose's preset, which the first proposal for a
 	// section writes as image/Dockerfile: the environment has none yet.
 	SourcePreset = "preset"
-	// SourceBaseImage is CABOOSE_BASE_IMAGE: an image, not a Dockerfile,
-	// so no section can be proposed.
-	SourceBaseImage = "base_image"
+	// SourceBaseImage is config.toml's [image] base: an image, not a
+	// Dockerfile, so no section can be proposed.
+	SourceBaseImage = "base"
 )
 
 // State is what a proposal is made against, as the host last saw it.
@@ -29,20 +29,25 @@ type State struct {
 	Source string
 	// Dockerfile is the next build's Dockerfile; nil on SourceBaseImage.
 	Dockerfile []byte
-	// BaseImage is CABOOSE_BASE_IMAGE, on SourceBaseImage.
+	// BaseImage is [image] base, on SourceBaseImage.
 	BaseImage string
-	// RepoRoot, or else Roots, are config.toml's, as written.
-	RepoRoot string
-	Roots    map[string]string
+	// Roots are config.toml's roots, by name, the host path as written.
+	Roots map[string]StateRoot
+}
+
+// StateRoot is one root in state.toml: its host path as config.toml has
+// it, and its path in the sandbox.
+type StateRoot struct {
+	Host string `toml:"host"`
+	Path string `toml:"path"`
 }
 
 // stateFile is State as state.toml has it.
 type stateFile struct {
-	Dockerfile       string            `toml:"dockerfile"`
-	DockerfileSHA256 string            `toml:"dockerfile_sha256,omitempty"`
-	BaseImage        string            `toml:"base_image,omitempty"`
-	RepoRoot         string            `toml:"repo_root,omitempty"`
-	Roots            map[string]string `toml:"roots,omitempty"`
+	Dockerfile       string               `toml:"dockerfile"`
+	DockerfileSHA256 string               `toml:"dockerfile_sha256,omitempty"`
+	BaseImage        string               `toml:"base,omitempty"`
+	Roots            map[string]StateRoot `toml:"roots,omitempty"`
 }
 
 const stateHeader = `# Written by caboose on the host, at every launch and after 'caboose apply':
@@ -51,8 +56,8 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 #
 # dockerfile: where the next build's Dockerfile comes from -- "image/Dockerfile"
 # (the environment's own), "preset" (none yet: a proposed section is added to
-# caboose's preset, which becomes image/Dockerfile) or "base_image" (an image,
-# not a Dockerfile: no section can be proposed). Dockerfile, next to this file,
+# caboose's preset, which becomes image/Dockerfile) or "base" (an image, not
+# a Dockerfile: no section can be proposed). Dockerfile, next to this file,
 # is it, and dockerfile_sha256 its hash, which a proposal names.
 
 `
@@ -61,7 +66,7 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 // the Dockerfile when there is one (a stale one removed when not). Every
 // write goes through nofollow: the container can write the directory too.
 func WriteCurrent(dataDir string, s State) error {
-	sf := stateFile{Dockerfile: s.Source, BaseImage: s.BaseImage, RepoRoot: s.RepoRoot, Roots: s.Roots}
+	sf := stateFile{Dockerfile: s.Source, BaseImage: s.BaseImage, Roots: s.Roots}
 	if s.Dockerfile != nil {
 		sf.DockerfileSHA256 = Hash(s.Dockerfile)
 	}

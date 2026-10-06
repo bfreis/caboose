@@ -75,9 +75,8 @@ const (
 
 // HostExecOff is the refusal of an OpHostExec on a host that offers none:
 // what turns it on, and what makes a running link see that.
-const HostExecOff = "running commands on the host is off for this environment: host_exec = true in its config.toml, " +
-	"on the host, turns it on, and the running link rereads that file within seconds " +
-	"(set by CABOOSE_HOST_EXEC instead, it takes the next launch, or 'caboose link --restart' on the host)"
+const HostExecOff = "running commands on the host is off for this environment: host_exec = true in [link] of its " +
+	"config.toml, on the host, turns it on, and the running link rereads that file within seconds"
 
 // The Reason of a refused OpConnect, for the agent to choose what it
 // answers its client with; Error says the rest, written for a person.
@@ -176,11 +175,16 @@ type Message struct {
 	// HostExec, in the host's hello, offers OpHostExec: host_exec, in the
 	// host's config.toml.
 	HostExec bool `json:"host_exec,omitempty"`
+	// Roots, in the host's hello, are the container paths of the roots it
+	// relays changes under (TypeChanged): the agent touches nothing
+	// outside them. A root may be mounted anywhere, so the agent cannot
+	// tell them itself.
+	Roots []string `json:"roots,omitempty"`
 
 	// Window, in a hello, is how many bytes each of the sender's streams
 	// takes in flight, unread (HostWindow, AgentWindow); the session reads
 	// it from the peer's first message. 0, from a side that announces
-	// none, is DefaultWindow, so it needs no new Version.
+	// none, is DefaultWindow.
 	Window uint32 `json:"window,omitempty"`
 
 	Boot *BootSpec `json:"boot,omitempty"`

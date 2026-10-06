@@ -5,13 +5,14 @@
 # which is "test" unless named (`make test` names TEST_ENV), never the one you
 # work in unless you name it. They recreate its container and plant decoy
 # version files, killing its sessions, so the suite refuses to start while
-# that container has any tmux session unless FORCE=1. A "test" that does not
+# that container has any tmux session unless CABOOSE_FORCE=1. A "test" that does not
 # exist yet is created, on defaults: its roots are ~/dev, so a checkout
-# elsewhere needs 'caboose -e test setup' once.
+# elsewhere needs 'caboose -e test setup' once. A few checks swap that
+# environment's config.toml for a moment, putting it back as it was.
 #
 #   tests/run.sh          run everything
-#   FORCE=1 tests/run.sh  run even with live sessions in that container
-#   ONLY=vm tests/run.sh  run the isolation vm group alone (a Mac; `make
+#   CABOOSE_FORCE=1 tests/run.sh  run even with live sessions in that container
+#   ONLY=vm tests/run.sh  run the vm isolation group alone (a Mac; `make
 #                         test-vm`), which uses a throwaway environment and
 #                         leaves the real one alone; VM_TEST_BUILD_TIMEOUT,
 #                         VM_TEST_BOOT_TIMEOUT and VM_TEST_CMD_TIMEOUT (seconds)
@@ -41,24 +42,23 @@ group() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 # accident. Same 0/1 answer, stated outright.
 exists() { if [ -e "$1" ]; then echo 0; else echo 1; fi; }
 
-# --- isolation = vm ---------------------------------------------------------
+# --- isolation vm -----------------------------------------------------------
 # Defined up here and run last, or alone (ONLY=vm): unlike every other group
 # it never touches the real environment. Each launcher call gets a throwaway
-# CABOOSE_HOME, data dir and repo root (one mktemp -d under /tmp, short
-# enough for the VM's socket path), and a VM and image named
-# caboose-vm-test, with none of the caller's CABOOSE_* settings. The image is
+# CABOOSE_HOME, data dir and root (one mktemp -d under /tmp, short
+# enough for the VM's socket path), configured by a config.toml of the
+# group's own in its default environment (so the VM and image are
+# caboose-default and caboose:default), with none of the caller's CABOOSE_*
+# settings. The image is
 # built from scratch in the builder guest, so this group takes a while.
 #
 # A VM boot can hang where a container start cannot, so every launcher call
 # here is bounded in time (bounded), each kind by its own VM_TEST_*_TIMEOUT,
 # and the teardown stops whatever vmm and link the run left behind.
-VM_NAME=caboose-vm-test
+VM_NAME=caboose-default
 VM_T_BUILD="${VM_TEST_BUILD_TIMEOUT:-3600}"  # the image, base and layer, in the builder
 VM_T_BOOT="${VM_TEST_BOOT_TIMEOUT:-1500}"    # create and boot; the first waits for Claude Code
 VM_T_CMD="${VM_TEST_CMD_TIMEOUT:-180}"       # a command in a running VM, stop, sync, prune
-# The caller's CABOOSE_HOME, read before any of this changes it: where the
-# kernel and the builder disk may be, besides the checkout's vm-dist/.
-VM_REAL_HOME="${CABOOSE_HOME:-$HOME/.caboose}"
 VM_WORK="" VM_PROJ="" VM_DATA=""
 VM_UNSET=() VM_ENV=()
 
@@ -129,8 +129,8 @@ vm_unavailable() {
     fi
     local f
     for f in kernel-arm64:vm-kernel builder-arm64.img:vm-builder; do
-        if [ ! -f "$ROOT/vm-dist/${f%%:*}" ] && [ ! -f "$VM_REAL_HOME/vm/arm64/${f%%:*}" ]; then
-            echo "no ${f%%:*} in $ROOT/vm-dist or $VM_REAL_HOME/vm/arm64 ('make ${f#*:}' writes it)"; return
+        if [ ! -f "$ROOT/vm-dist/${f%%:*}" ]; then
+            echo "no ${f%%:*} in $ROOT/vm-dist ('make ${f#*:}' writes it)"; return
         fi
     done
 }
@@ -141,23 +141,32 @@ vm_setup() {
     # symlink to /private/tmp.
     VM_WORK="$(cd "$VM_WORK" && pwd -P)"
     VM_HOME="$VM_WORK/home"; VM_DATA="$VM_WORK/data"; VM_ROOT="$VM_WORK/root"; VM_PROJ="$VM_ROOT/proj"
-    mkdir -p "$VM_HOME/vm/arm64" "$VM_DATA" "$VM_PROJ" || return 1
-    # The kernel and the builder disk, when the caller's CABOOSE_HOME has
-    # them: the launcher looks in CABOOSE_HOME/vm/<arch>, then the checkout.
-    local f
-    for f in kernel-arm64 builder-arm64.img; do
-        [ -f "$VM_REAL_HOME/vm/arm64/$f" ] && ln -s "$VM_REAL_HOME/vm/arm64/$f" "$VM_HOME/vm/arm64/$f"
-    done
-    # None of the caller's settings: no CABOOSE_* of theirs, no FORCE, and
+    mkdir -p "$VM_HOME" "$VM_DATA" "$VM_PROJ" || return 1
+    # The kernel and the builder disk are the checkout's vm-dist/, which a
+    # launcher built from it looks in.
+    # None of the caller's settings: no CABOOSE_* of theirs (CABOOSE_FORCE included), and
     # a CABOOSE_HOME of the group's own, so no config.toml of theirs either.
-    VM_UNSET=(-u FORCE)
+    VM_UNSET=(-u CABOOSE_FORCE)
     local v
     for v in $(compgen -e); do
         case "$v" in CABOOSE_*) VM_UNSET+=(-u "$v") ;; esac
     done
-    VM_ENV=(CABOOSE_HOME="$VM_HOME" CABOOSE_DATA_DIR="$VM_DATA" CABOOSE_REPO_ROOT="$VM_ROOT"
-            CABOOSE_IMAGE="$VM_NAME" CABOOSE_CONTAINER="$VM_NAME" CABOOSE_ISOLATION=vm
-            CABOOSE_READY_TIMEOUT="$VM_T_BOOT")
+    VM_ENV=(CABOOSE_HOME="$VM_HOME" CABOOSE_DATA_DIR="$VM_DATA")
+    mkdir -p "$VM_HOME/envs/default" || return 1
+    vm_config 2 vm
+}
+
+# vm_config KEEP KIND: the group's config.toml: the one root at /work, a
+# boot timeout, keep_versions KEEP, and the isolation KIND, a vm profile or,
+# for 'container', none (the default).
+vm_config() {
+    {
+        printf 'format = 1\n'
+        [ "$2" = vm ] && printf 'isolation = "vm.suite"\n'
+        printf '\n[roots.work]\nhost = "%s"\npath = "/work"\n' "$VM_ROOT"
+        printf '\n[session]\nready_timeout = %s\nkeep_versions = %s\n' "$VM_T_BOOT" "$1"
+        [ "$2" = vm ] && printf '\n[vm.suite]\n'
+    } > "$VM_HOME/envs/default/config.toml"
 }
 
 # vm_kill PID: ends a caboose process (vmm, the link) the run left behind.
@@ -189,7 +198,7 @@ vm_pids() {
 # again at exit, for a run cut short; a no-op once done.
 vm_teardown() {
     [ -n "$VM_WORK" ] && [ -d "$VM_WORK" ] || return 0
-    vcc "$VM_T_CMD" FORCE=1 stop >/dev/null 2>&1
+    vcc "$VM_T_CMD" CABOOSE_FORCE=1 stop >/dev/null 2>&1
     local pid
     for pid in $(vm_pids); do vm_kill "$pid"; done
     rm -rf "$VM_WORK" 2>/dev/null \
@@ -201,7 +210,7 @@ vm_teardown() {
 vm_show() { [ -s "$1" ] && tail -n 15 "$1" | sed 's/^/        | /'; return 0; }
 
 vm_group() {
-    group 'isolation = vm'
+    group 'isolation vm'
     local why; why="$(vm_unavailable)"
     if [ -n "$why" ]; then
         printf '  \033[33mSKIP\033[0m %s\n' "$why"
@@ -227,7 +236,8 @@ vm_group() {
     fi
     st="$(vcc "$VM_T_CMD" status 2>/dev/null)"
     check 'status says the VM runs' running "$(printf '%s\n' "$st" | sed -n 's/^VM *: .*(\(.*\))$/\1/p')"
-    check 'and that its isolation is vm' vm "$(printf '%s\n' "$st" | sed -n 's/^isolation : //p')"
+    check 'and that its isolation is the vm profile' 'vm (profile vm.suite)' \
+        "$(printf '%s\n' "$st" | sed -n 's/^isolation : //p')"
     vcc "$VM_T_CMD" doctor --offline >"$VM_WORK/doctor.log" 2>/dev/null
     check 'doctor finds no problem with the isolation' 0 "$(grep -c '^  ✗ isolation' "$VM_WORK/doctor.log")"
     grep -E '^(  ✗ |    )isolation ' "$VM_WORK/doctor.log" | sed 's/^/        | /'
@@ -286,7 +296,9 @@ vm_group() {
     nreals="$(ls -1 "$versions" 2>/dev/null | wc -l | tr -d ' ')"
     check 'Claude Code is installed in the data dir' 1 "$([ -n "$local_dir" ] && [ "$nreals" -gt 0 ] && echo 1 || echo 0)"
     for v in 0.0.9 0.0.10 0.0.11; do printf 'decoy' > "$versions/$v"; done
-    vcc "$VM_T_CMD" CABOOSE_KEEP_VERSIONS=$((nreals + 2)) prune >/dev/null 2>&1; rc=$?
+    vm_config $((nreals + 2)) vm
+    vcc "$VM_T_CMD" prune >/dev/null 2>&1; rc=$?
+    vm_config 2 vm
     check 'caboose prune runs in the VM' 0 "$rc"
     check 'and keeps the newest N by version order' "$reals 0.0.11 0.0.10" "$(vm_versions)"
     check 'claude still runs after it' 0 "$(vsh 'claude --version >/dev/null 2>&1; echo $?')"
@@ -303,8 +315,8 @@ vm_group() {
         check 'prune --docker refuses to delete it non-interactively' 1 \
             "$(printf '%s\n' "$out" | grep -c 'refusing to delete it non-interactively')"
         check 'and leaves the VM running' running "$(vstate)"
-        vcc "$VM_T_CMD" FORCE=1 prune --docker >"$VM_WORK/prune.log" 2>&1; rc=$?
-        check 'FORCE=1 prune --docker deletes it' 0 "$rc"
+        vcc "$VM_T_CMD" CABOOSE_FORCE=1 prune --docker >"$VM_WORK/prune.log" 2>&1; rc=$?
+        check 'CABOOSE_FORCE=1 prune --docker deletes it' 0 "$rc"
         [ "$rc" -eq 0 ] || vm_show "$VM_WORK/prune.log"
         check 'stopping the VM first' exited "$(vstate)"
         check 'and making an empty disk in its place' 0 "$(exists "$disk")"
@@ -312,10 +324,12 @@ vm_group() {
             "$(vcc "$VM_T_BOOT" shell -c "$wait_dockerd; docker info >/dev/null 2>&1 || exit 1; docker image inspect caboose-vm-fixture >/dev/null 2>&1 && echo kept || echo gone" 2>/dev/null | tr -d '\r')"
     else
         printf '  \033[33mSKIP\033[0m the image has no dockerd: prune --docker only, with nothing to delete\n'
-        vcc "$VM_T_CMD" FORCE=1 prune --docker >/dev/null 2>&1; rc=$?
-        check 'FORCE=1 prune --docker succeeds' 0 "$rc"
+        vcc "$VM_T_CMD" CABOOSE_FORCE=1 prune --docker >/dev/null 2>&1; rc=$?
+        check 'CABOOSE_FORCE=1 prune --docker succeeds' 0 "$rc"
     fi
-    out="$(vcc "$VM_T_CMD" CABOOSE_ISOLATION=docker prune --docker 2>&1)"
+    vm_config 2 container
+    out="$(vcc "$VM_T_CMD" prune --docker 2>&1)"
+    vm_config 2 vm
     check 'prune --docker is refused under another isolation' 1 \
         "$(printf '%s\n' "$out" | grep -c 'prune --docker is for isolation vm')"
 
@@ -328,7 +342,7 @@ vm_group() {
     check 'caboose stop stops the VM' "0 exited" "$rc $(vstate)"
     check 'a command starts it again' up "$(vcc "$VM_T_BOOT" shell -c 'echo up' 2>/dev/null | tr -d '\r')"
     check 'the same VM' 0 "$(exists "$VM_DATA/vm/$VM_NAME/caboose-test-marker")"
-    vcc "$VM_T_BOOT" FORCE=1 restart >"$VM_WORK/restart.log" 2>&1; rc=$?
+    vcc "$VM_T_BOOT" CABOOSE_FORCE=1 restart >"$VM_WORK/restart.log" 2>&1; rc=$?
     check 'caboose restart recreates the VM, running' "0 running" "$rc $(vstate)"
     [ "$rc" -eq 0 ] || vm_show "$VM_WORK/restart.log"
     check 'a new one' 1 "$(exists "$VM_DATA/vm/$VM_NAME/caboose-test-marker")"
@@ -371,9 +385,9 @@ if [ "$CABOOSE_ENV" != default ]; then
 fi
 
 # Must track the launcher's own choices, which involve more than a default:
-# a CABOOSE_* override, the environment's config.toml, the environment. Ask
-# the launcher rather than restating all of that here; status only reads.
-# Restated defaults are the fallback if it can't. Asked again after the
+# the environment's config.toml, the environment. Ask the launcher rather
+# than restating all of that here; status only reads. Restated defaults are
+# the fallback if it can't. Asked again after the
 # bring-up restart, which may have mounted another platform's dir.
 read_paths() {
     local status_now
@@ -382,11 +396,7 @@ read_paths() {
     CONTAINER="$(printf '%s\n' "$status_now" | sed -n 's/^container *: \(.*\) (.*)$/\1/p')"
     IMAGE="$(printf '%s\n' "$status_now" | sed -n 's/^image *: //p')"
     DATA_DIR="${DATA_DIR:-${CABOOSE_DATA_DIR:-${CABOOSE_HOME:-$HOME/.caboose}/envs/$CABOOSE_ENV/data}}"
-    if [ "$CABOOSE_ENV" = default ]; then
-        CONTAINER="${CONTAINER:-${CABOOSE_CONTAINER:-caboose}}"
-    else
-        CONTAINER="${CONTAINER:-${CABOOSE_CONTAINER:-caboose-$CABOOSE_ENV}}"
-    fi
+    CONTAINER="${CONTAINER:-caboose-$CABOOSE_ENV}"
     # The dir the container has mounted as ~/.local: local/<platform>.
     LOCAL_DIR="$(printf '%s\n' "$status_now" | sed -n 's/^local dir *: //p')"
     LOCAL_DIR="${LOCAL_DIR:-$DATA_DIR/local}"
@@ -422,7 +432,55 @@ restore() {
 # calls restore() mid-suite, which sits between the 'tool config' group that
 # writes the probes and the restart in 'stale runtime state' that checks they
 # survived -- cleaning them there made those checks fail every time.
-trap 'restore; cleanup_config_probes; vm_teardown' EXIT
+trap 'restore; restore_config; restore_image_tag; cleanup_config_probes; vm_teardown' EXIT
+
+# The environment's config.toml, which a few checks change for a moment:
+# save_config keeps the file as it is (or its absence), restore_config puts
+# it back, and is a no-op when nothing was saved. The edits are awk over
+# the file, so every other setting in it stays as the user wrote it.
+ENV_CFG="${CABOOSE_HOME:-$HOME/.caboose}/envs/$CABOOSE_ENV/config.toml"
+CFG_SAVED="" CFG_HAD=""
+save_config() {
+    [ -z "$CFG_SAVED" ] || return 0
+    CFG_SAVED="$(mktemp)"
+    if [ -f "$ENV_CFG" ]; then cp -p "$ENV_CFG" "$CFG_SAVED" && CFG_HAD=1; else CFG_HAD=""; fi
+}
+restore_config() {
+    [ -n "$CFG_SAVED" ] || return 0
+    if [ -n "$CFG_HAD" ]; then cat "$CFG_SAVED" > "$ENV_CFG"; else rm -f "$ENV_CFG"; fi
+    rm -f "$CFG_SAVED"; CFG_SAVED="" CFG_HAD=""
+}
+# cfg_isolation VALUE: the top-level isolation = VALUE (a TOML string).
+cfg_isolation() {
+    local tmp; tmp="$(mktemp)"
+    { printf 'isolation = %s\n' "$1"; grep -v '^[[:space:]]*isolation[[:space:]]*=' "$ENV_CFG" 2>/dev/null; } > "$tmp"
+    cat "$tmp" > "$ENV_CFG"; rm -f "$tmp"
+}
+# cfg_put TABLE KEY VALUE: KEY = VALUE in [TABLE], which is added when the
+# file has none; an active KEY there is replaced.
+cfg_put() {
+    local tmp; tmp="$(mktemp)"
+    awk -v t="[$1]" -v k="$2" -v v="$3" '
+        { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+        line ~ /^\[/ { cur = line; print $0; if (cur == t) { print k " = " v; found = 1 }; next }
+        cur == t && line ~ ("^" k "[ \t]*=") { next }
+        { print $0 }
+        END { if (!found) { print ""; print t; print k " = " v } }' "$ENV_CFG" > "$tmp" 2>/dev/null \
+        || awk -v t="[$1]" -v k="$2" -v v="$3" 'BEGIN { print t; print k " = " v }' > "$tmp"
+    cat "$tmp" > "$ENV_CFG"; rm -f "$tmp"
+}
+# cfg_table TABLE: an empty [TABLE], when the file has none.
+cfg_table() {
+    grep -q "^\[$1\]" "$ENV_CFG" 2>/dev/null || printf '\n[%s]\n' "$1" >> "$ENV_CFG"
+}
+# retag_image TAG: points $IMAGE at another image, for the drift check;
+# restore_image_tag puts it back, whatever happens in between.
+IMAGE_ORIG_ID=""
+retag_image() { IMAGE_ORIG_ID="$(docker image inspect --format '{{.Id}}' "$IMAGE")"; docker tag "$1" "$IMAGE"; }
+restore_image_tag() {
+    [ -n "$IMAGE_ORIG_ID" ] || return 0
+    docker tag "$IMAGE_ORIG_ID" "$IMAGE" >/dev/null 2>&1; IMAGE_ORIG_ID=""
+}
 
 # Throwaway keys the 'tool config' group writes through the container, removed
 # here on the host so an aborted run cannot leave them behind. The jj key is
@@ -441,10 +499,10 @@ cleanup_config_probes() {
 }
 
 live_sessions="$(docker exec "$CONTAINER" tmux list-sessions 2>/dev/null | wc -l | tr -d ' ')"
-if [ "${live_sessions:-0}" -gt 0 ] && [ -z "${FORCE:-}" ]; then
+if [ "${live_sessions:-0}" -gt 0 ] && [ -z "${CABOOSE_FORCE:-}" ]; then
     printf 'refusing to run: %s live tmux session(s) in %s (environment %s) would be killed.\n' \
         "$live_sessions" "$CONTAINER" "$CABOOSE_ENV" >&2
-    printf 'finish them, or re-run with FORCE=1.\n' >&2
+    printf 'finish them, or re-run with CABOOSE_FORCE=1.\n' >&2
     exit 1
 fi
 
@@ -472,11 +530,10 @@ check 'the placeholder was substituted' 0 \
 # status lists as holding it.
 checkout_in_container=""
 while IFS= read -r line; do
-    host="${line#repo root : }"; ctr="${host##* -> }"; host="${host% -> *}"
+    host="${line#root      : }"; ctr="${host##* -> }"; host="${host% -> *}"
     case "$ROOT/" in "${host%/}/"*) checkout_in_container="$ctr${ROOT#"${host%/}"}" ;; esac
-done < <("$CC" status 2>/dev/null | grep '^repo root : ')
-check 'the checkout is under a root, below /work' 0 \
-    "$(case "$checkout_in_container" in /work|/work/*) echo 0 ;; *) echo 1 ;; esac)"
+done < <("$CC" status 2>/dev/null | grep '^root      : ')
+check 'the checkout is under a root' 1 "$([ -n "$checkout_in_container" ] && echo 1 || echo 0)"
 check 'it names this checkout at its container path' 0 \
     "$(grep -qF "$checkout_in_container" "$installed" 2>/dev/null; echo $?)"
 check 'which is where the container has it' 0 \
@@ -545,7 +602,7 @@ check 'a launch tells sessions what a proposal is made against' 0 \
     "$(docker exec "$CONTAINER" test -f /home/agent/.caboose-proposals/current/state.toml >/dev/null 2>&1; echo $?)"
 check 'git runs in the container (sync needs it)' 0 \
     "$(docker exec "$CONTAINER" git --version >/dev/null 2>&1; echo $?)"
-# A Claude Code run outside tmux (CABOOSE_NO_TMUX, caboose claude -p) is seen, from
+# A Claude Code run outside tmux (tmux = false, caboose claude -p) is seen, from
 # docker top, as writing the data dir -- which is what keeps a sync away.
 # A sleep named as the launcher symlink stands in for one.
 docker exec -d "$CONTAINER" bash -c 'echo $$ > /tmp/caboose-test-claude.pid; exec -a /home/agent/.local/bin/claude sleep 60'
@@ -563,18 +620,24 @@ group 'version pruning'
 # The trap: 0.0.9 vs 0.0.10. Keeping the reals plus two, a correct version
 # sort keeps {reals, 0.0.11, 0.0.10}; a lexical sort would rank 0.0.9 above
 # both and keep {reals, 0.0.11, 0.0.9} instead.
+# prune_keep N: caboose prune with keep_versions = N, which is config.toml's.
+prune_keep() {
+    save_config; cfg_put session keep_versions "$1"
+    "$CC" prune >/dev/null 2>&1
+    restore_config
+}
 real="$(basename "$ORIGINAL_LINK")"
 find "$VERSIONS" -maxdepth 1 -name '0.0.*' -delete 2>/dev/null  # an aborted run's decoys
 reals="$(versions_now)"
 nreals="$(ls -1 "$VERSIONS" 2>/dev/null | wc -l | tr -d ' ')"
 for v in 0.0.9 0.0.10 0.0.11; do printf 'decoy' > "$VERSIONS/$v"; done
-CABOOSE_KEEP_VERSIONS=$((nreals + 2)) "$CC" prune >/dev/null 2>&1
+prune_keep $((nreals + 2))
 check 'keeps newest N by version order, not lexically' "$reals 0.0.11 0.0.10" "$(versions_now)"
 
 find "$VERSIONS" -maxdepth 1 -name '0.0.*' -delete 2>/dev/null
 for v in 0.0.1 0.0.2; do printf 'decoy' > "$VERSIONS/$v"; done
 ln -sfn "/home/agent/.local/share/claude/versions/0.0.1" "$BIN/claude"
-CABOOSE_KEEP_VERSIONS=$nreals "$CC" prune >/dev/null 2>&1
+prune_keep "$nreals"
 check 'protects the active version even when it is oldest' "$reals 0.0.1" "$(versions_now)"
 restore
 check 'real version survived the suite' 0 "$(exists "$VERSIONS/$real")"
@@ -746,9 +809,9 @@ check 'the container is on the local image' "$CONTAINER (running, on the local i
     "$(ver_field container)"
 label() { docker image inspect --format "{{index .Config.Labels \"$1\"}}" "$IMAGE" 2>/dev/null; }
 check 'the image carries a version label' 1 \
-    "$([ -n "$(label io.github.bfreis.caboose.version)" ] && echo 1 || echo 0)"
-layer_label="$(label io.github.bfreis.caboose.layer-hash)"
-base_label="$(label io.github.bfreis.caboose.base-hash)"
+    "$([ -n "$(label dev.bfreis.caboose.version)" ] && echo 1 || echo 0)"
+layer_label="$(label dev.bfreis.caboose.layer-hash)"
+base_label="$(label dev.bfreis.caboose.base-hash)"
 check 'the image carries a full layer hash' 64 "${#layer_label}"
 # The environment may build its base from its own image/ dir instead of
 # the embedded Dockerfile: the same kind of base to the suite, a full hash
@@ -756,25 +819,25 @@ check 'the image carries a full layer hash' 64 "${#layer_label}"
 base_kind=default
 case "$(ver_field base)" in *"(built from "*) base_kind="env" ;; esac
 check 'and, built on caboose'"'"'s base, a full base hash' 64 "${#base_label}"
-check "and says outright it is on that base ($base_kind)" "$base_kind" "$(label io.github.bfreis.caboose.base-kind)"
+check "and says outright it is on that base ($base_kind)" "$base_kind" "$(label dev.bfreis.caboose.base-kind)"
 check 'the image records the host user it was built for' "$(id -u):$(id -g)" \
-    "$(label io.github.bfreis.caboose.uid):$(label io.github.bfreis.caboose.gid)"
-# The suite runs on the default base, which is named <image>-base and
+    "$(label dev.bfreis.caboose.uid):$(label dev.bfreis.caboose.gid)"
+# The suite runs on the default base, which is named caboose-base:<env> and
 # checked and built on by ID: the labels say which.
 BASE="$(ver_field base | cut -d' ' -f1)"
-check 'version names the default base' "$IMAGE-base" "$BASE"
-check 'its base-name label is that base' "$BASE" "$(label io.github.bfreis.caboose.base-name)"
+check 'version names the default base' "caboose-base:$CABOOSE_ENV" "$BASE"
+check 'its base-name label is that base' "$BASE" "$(label dev.bfreis.caboose.base-name)"
 check 'its base-id label is that base as it is now' \
-    "$(docker image inspect --format '{{.Id}}' "$BASE" 2>/dev/null)" "$(label io.github.bfreis.caboose.base-id)"
+    "$(docker image inspect --format '{{.Id}}' "$BASE" 2>/dev/null)" "$(label dev.bfreis.caboose.base-id)"
 check 'its platform label is the one the container mounts' \
     "$(cd "$ROOT" && "$CC" status 2>/dev/null | sed -n 's/^platform *: //p')" \
-    "$(label io.github.bfreis.caboose.platform)"
+    "$(label dev.bfreis.caboose.platform)"
 
 group 'base and layer'
 # The default base passes the check it is built on, and holds nothing of the
 # layer's: no agent user, no entrypoint. The layer is where both come from.
 check 'check-image passes the default base' 0 \
-    "$(cd "$ROOT" && env -u CABOOSE_BASE_IMAGE "$CC" check-image >/dev/null 2>&1; echo $?)"
+    "$(cd "$ROOT" && "$CC" check-image >/dev/null 2>&1; echo $?)"
 check 'the base has no entrypoint of ours' 1 \
     "$(docker run --rm --entrypoint /bin/sh "$BASE" -c 'test -e /usr/local/bin/caboose-entrypoint' >/dev/null 2>&1; echo $?)"
 check 'the base has no agent user' 1 \
@@ -783,7 +846,7 @@ check 'the base has no agent user' 1 \
 # what the layer's UID/GID are for. Under gVisor on an engine that hides the
 # mounts from the agent, the container runs as root instead (its user
 # label says so), and the engine maps what root writes to the host user.
-if [ "$(docker inspect --type=container -f '{{index .Config.Labels "io.github.bfreis.caboose.user"}}' "$CONTAINER")" = 0:0 ]; then
+if [ "$(docker inspect --type=container -f '{{index .Config.Labels "dev.bfreis.caboose.user"}}' "$CONTAINER")" = 0:0 ]; then
     check 'the container runs as root, as its label says' 0:0 "$(cexec id -u):$(cexec id -g)"
     check 'as root' root "$(cexec id -un)"
 else
@@ -905,13 +968,13 @@ check 'docker CLI is present in the image' 0 \
     "$(docker exec "$CONTAINER" docker --version >/dev/null 2>&1; echo $?)"
 # Security regression tests. If these fail, the sandbox boundary is gone, not
 # merely weakened -- a reachable socket is root-equivalent access to the host.
-if [ -z "${CABOOSE_DOCKER_SOCK:-}" ]; then
+if ! grep -qE '^[[:space:]]*engine_socket[[:space:]]*=[[:space:]]*true' "$ENV_CFG" 2>/dev/null; then
     check 'docker socket is NOT mounted by default' 1 \
         "$(docker exec "$CONTAINER" test -S /var/run/docker.sock 2>/dev/null; echo $?)"
     check 'and the CLI is therefore inert' 1 \
         "$(docker exec "$CONTAINER" docker ps >/dev/null 2>&1; echo $?)"
 else
-    printf '  \033[33mSKIP\033[0m CABOOSE_DOCKER_SOCK is set; the socket is expected here\n'
+    printf '  \033[33mSKIP\033[0m engine_socket is true in %s; the socket is expected here\n' "$ENV_CFG"
 fi
 
 group 'terminfo import'
@@ -937,17 +1000,24 @@ docker exec "$CONTAINER" sh -c 'rm -f "$HOME/.terminfo/c/caboose-probe"' 2>/dev/
 group 'launcher guards'
 out="$(cd / && "$CC" claude --version </dev/null 2>&1)"
 case "$out" in
-    *"outside the mounted repo root"*) ok 'rejects a cwd outside the repo root' ;;
-    *) bad "rejects a cwd outside the repo root (got: ${out:0:60})" ;;
+    *"is outside the mounted root"* | *"is outside every mounted root"*) ok 'rejects a cwd outside the roots' ;;
+    *) bad "rejects a cwd outside the roots (got: ${out:0:60})" ;;
 esac
-# Bind mounts are fixed at container creation, so a CABOOSE_REPO_ROOT that no
-# longer matches the mount must be caught here -- otherwise it sails through
-# and dies inside tmux on a container path the user never typed.
-out="$(cd / && CABOOSE_REPO_ROOT=/ "$CC" claude --version </dev/null 2>&1)"
+# Bind mounts are fixed at container creation, so roots in config.toml that
+# no longer match the mounts must be caught here -- otherwise a directory
+# under them sails through and dies inside tmux on a container path the user
+# never typed. The environment's config.toml says, for a moment, that its one
+# root is a directory of its own.
+drift_root="$(mktemp -d)"
+save_config
+printf 'format = 1\n\n[roots]\ndrift = "%s"\n' "$drift_root" > "$ENV_CFG"
+out="$(cd "$drift_root" && "$CC" claude --version </dev/null 2>&1)"
+restore_config
+rm -rf "$drift_root"
 case "$out" in
-    *"outside the root this container has mounted"*)
-        ok 'detects CABOOSE_REPO_ROOT drifting from the real mount' ;;
-    *) bad "detects CABOOSE_REPO_ROOT drifting from the real mount (got: ${out:0:60})" ;;
+    *"outside the root"*"this container has mounted"*)
+        ok 'detects the roots drifting from the real mounts' ;;
+    *) bad "detects the roots drifting from the real mounts (got: ${out:0:60})" ;;
 esac
 # shell must not skip the guard and hand the user a raw "docker exec"
 # error about a path that does not exist in the container.
@@ -966,14 +1036,14 @@ check 'caboose --help is caboose'"'"'s' 1 \
     "$(cd "$ROOT" && "$CC" --help </dev/null 2>/dev/null | grep -c '^Usage:$')"
 
 group 'where the data dir is'
-# A probe is status in a throwaway HOME, against a container name nothing
-# uses: status only reads, so nothing is created, stopped or moved, and the
-# real container and data dir are never in play. DOCKER_CONFIG keeps docker
+# A probe is status in a throwaway HOME, which has no environment of its
+# own yet: status only reads, so nothing is created, stopped or moved, and
+# the real data dir is never in play. DOCKER_CONFIG keeps docker
 # pointed at the same daemon despite the HOME.
 probe="$(mktemp -d)"
-(cd "$ROOT" && env -u CABOOSE_DATA_DIR -u CABOOSE_HOME -u CABOOSE_ENV HOME="$probe/home" \
+mkdir -p "$probe/home/dev"
+(cd "$probe/home/dev" && env -u CABOOSE_DATA_DIR -u CABOOSE_HOME -u CABOOSE_ENV HOME="$probe/home" \
     DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker}" \
-    CABOOSE_REPO_ROOT="$ROOT" CABOOSE_CONTAINER="caboose-test-absent-$$" \
     "$CC" status >"$probe/out" 2>/dev/null </dev/null)
 check 'the default data dir is ~/.caboose/envs/default/data' "$probe/home/.caboose/envs/default/data" \
     "$(sed -n 's/^data dir *: //p' "$probe/out")"
@@ -1054,9 +1124,9 @@ tmux_kill "$plain-drv"; tmux_kill "$plain-2"; tmux_kill "$plain"
 group 'destructive commands ask first'
 docker exec "$CONTAINER" tmux new-session -d -s confirm-canary 'sleep 120' 2>/dev/null
 id_before="$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER")"
-# env -u FORCE: the suite itself may have been started with FORCE=1, which is
+# env -u CABOOSE_FORCE: the suite itself may have been started with CABOOSE_FORCE=1, which is
 # exactly what must NOT leak into this assertion.
-out="$(cd "$ROOT" && env -u FORCE "$CC" restart </dev/null 2>&1)"
+out="$(cd "$ROOT" && env -u CABOOSE_FORCE "$CC" restart </dev/null 2>&1)"
 case "$out" in
     *"refusing to restart"*) ok 'refuses to restart non-interactively with live sessions' ;;
     *) bad "refuses to restart non-interactively with live sessions (got: ${out:0:60})" ;;
@@ -1067,8 +1137,8 @@ check 'container was NOT recreated' "$id_before" \
     "$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER")"
 check 'canary survived the refusal' 1 \
     "$(docker exec "$CONTAINER" tmux has-session -t confirm-canary 2>/dev/null && echo 1 || echo 0)"
-FORCE=1 "$CC" restart >/dev/null 2>&1
-check 'FORCE=1 overrides the prompt' 1 \
+CABOOSE_FORCE=1 "$CC" restart >/dev/null 2>&1
+check 'CABOOSE_FORCE=1 overrides the prompt' 1 \
     "$([ "$id_before" != "$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER")" ] && echo 1 || echo 0)"
 
 group 'doctor'
@@ -1126,49 +1196,83 @@ docker exec "$CONTAINER" tmux new-session -d -s drift-canary 'sleep 120' 2>/dev/
 # can fail even right after a successful build, leaving the warning silent and
 # this check green-by-accident in the other direction. Build a throwaway image
 # instead -- guaranteed present, guaranteed a different ID to caboose, and no
-# network needed.
+# network needed -- and point the environment's image tag at it for a moment.
 printf 'FROM scratch\nLABEL caboose.fixture=drift\n' \
   | docker build -q -t caboose-drift-fixture - >/dev/null
-drift="$(cd "$ROOT" && CABOOSE_IMAGE=caboose-drift-fixture "$CC" status 2>&1 | grep -c 'older image')"
+retag_image caboose-drift-fixture
+drift="$(cd "$ROOT" && "$CC" status 2>&1 | grep -c 'older image')"
 check 'drift is reported' 1 "$drift"
 check 'doctor reports the drift as a problem, with restart for its fix' 1 \
-    "$(cd "$ROOT" && CABOOSE_IMAGE=caboose-drift-fixture "$CC" doctor --offline 2>/dev/null \
+    "$(cd "$ROOT" && "$CC" doctor --offline 2>/dev/null \
         | grep -c '^    container  *caboose restart')"
 check 'container was NOT recreated' "$before" \
     "$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER")"
 check 'canary session survived' 1 \
     "$(docker exec "$CONTAINER" tmux has-session -t drift-canary 2>/dev/null && echo 1 || echo 0)"
 docker exec "$CONTAINER" tmux kill-session -t drift-canary 2>/dev/null
+restore_image_tag
 docker image rm -f caboose-drift-fixture >/dev/null 2>&1 || true
 check 'no drift reported against the real image' 0 \
     "$(cd "$ROOT" && "$CC" status 2>&1 | grep -c 'older image')"
 
-group 'isolation = gvisor'
+group 'config.toml'
+# What a launch refuses, and says to do. Each swaps the environment's
+# config.toml (or sets a variable) for one command, which only reads.
+cfg_run() { (cd "$ROOT" && "$CC" status 2>&1 </dev/null); }
+out="$(cd "$ROOT" && CABOOSE_ISOLATION=gvisor "$CC" status 2>&1 </dev/null)"
+check 'a variable that was a setting is refused' 1 "$(printf '%s\n' "$out" | grep -c 'caboose no longer reads it')"
+check 'and its hint names the setting' 1 "$(printf '%s\n' "$out" | grep -c 'docs/configuration.md')"
+out="$(cd "$ROOT" && CABOOSE_FORCE=maybe "$CC" status 2>&1 </dev/null)"
+check 'a boolean variable that is none is refused, naming it' 1 "$(printf '%s\n' "$out" | grep -c 'CABOOSE_FORCE')"
+save_config
+printf 'format = 1\nrepo_root = "~/dev"\n' > "$ENV_CFG"
+out="$(cfg_run)"
+check 'a key of the flat layout is refused, saying the layout changed' 1 "$(printf '%s\n' "$out" | grep -c 'layout changed')"
+printf 'format = 1\n\n[container.a]\n\n[gvisor.b]\n' > "$ENV_CFG"
+out="$(cfg_run)"
+check 'several profiles and no isolation is refused, listing them' 1 \
+    "$(printf '%s\n' "$out" | grep -c 'container.a, gvisor.b.*does not say which')"
+printf 'format = 1\nisolation = "docker"\n\n[container.a]\n' > "$ENV_CFG"
+out="$(cfg_run)"
+check 'isolation = "docker" is refused, with the kind to use' 1 "$(printf '%s\n' "$out" | grep -c 'is the container kind now')"
+printf 'format = 1\n\n[vm.a]\nrun_args = []\n' > "$ENV_CFG"
+out="$(cfg_run)"
+check 'a key a profile kind lacks is refused' 1 "$(printf '%s\n' "$out" | grep -c 'run_args')"
+restore_config
+
+group 'isolation gvisor'
 # Only where docker has runsc registered: registering it is not the
 # launcher's. The user is the probe's to choose -- the agent where it can
 # write its mounts under gVisor (a Linux host), root where it cannot
 # (OrbStack) -- so what is checked is that the container runs as the label
 # says, and that whoever that is can write the login's kind of file.
 if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; then
-    CABOOSE_ISOLATION=gvisor FORCE=1 "$CC" restart >/dev/null 2>&1
+    # The environment's config.toml names a gvisor profile for the length of
+    # the group, everything else in it as it is.
+    save_config
+    cfg_isolation '"gvisor.suite"'; cfg_table gvisor.suite
+    CABOOSE_FORCE=1 "$CC" restart >/dev/null 2>&1
+    check 'status names the profile' 'gvisor (profile gvisor.suite)' \
+        "$(cd "$ROOT" && "$CC" status 2>/dev/null | sed -n 's/^isolation : //p')"
     check 'the container runs under runsc' runsc \
         "$(docker inspect --type=container -f '{{.HostConfig.Runtime}}' "$CONTAINER")"
     check 'it is labelled gvisor' gvisor \
-        "$(docker inspect --type=container -f '{{index .Config.Labels "io.github.bfreis.caboose.isolation"}}' "$CONTAINER")"
-    user_label="$(docker inspect --type=container -f '{{index .Config.Labels "io.github.bfreis.caboose.user"}}' "$CONTAINER")"
-    want_uid="$(label io.github.bfreis.caboose.uid)"
+        "$(docker inspect --type=container -f '{{index .Config.Labels "dev.bfreis.caboose.isolation"}}' "$CONTAINER")"
+    user_label="$(docker inspect --type=container -f '{{index .Config.Labels "dev.bfreis.caboose.user"}}' "$CONTAINER")"
+    want_uid="$(label dev.bfreis.caboose.uid)"
     [ "$user_label" = 0:0 ] && want_uid=0
     check 'it runs as the user its label says' "$want_uid" "$(cexec id -u)"
     check 'that user writes a 600 file in ~/.claude' ok \
         "$(cexec sh -c 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
     check 'doctor names the isolation' 'gvisor (runsc)' \
-        "$(cd "$ROOT" && CABOOSE_ISOLATION=gvisor "$CC" doctor --offline 2>/dev/null | sed -n 's/^  ✓ isolation  *//p')"
+        "$(cd "$ROOT" && "$CC" doctor --offline 2>/dev/null | sed -n 's/^  ✓ isolation  *//p')"
+    restore_config
     # Unless the environment's own config.toml says gvisor too.
-    if [ "$(cd "$ROOT" && "$CC" status 2>/dev/null | sed -n 's/^isolation : //p')" = docker ]; then
+    case "$(cd "$ROOT" && "$CC" status 2>/dev/null | sed -n 's/^isolation : //p')" in gvisor*) ;; *)
         check 'a launch without it says the container is gvisor' 1 \
-            "$(cd "$ROOT" && "$CC" status 2>&1 | grep -c 'created with isolation gvisor')"
-    fi
-    FORCE=1 "$CC" restart >/dev/null 2>&1
+            "$(cd "$ROOT" && "$CC" status 2>&1 | grep -c 'created with isolation gvisor')" ;;
+    esac
+    CABOOSE_FORCE=1 "$CC" restart >/dev/null 2>&1
 else
     printf '  \033[33mSKIP\033[0m docker has no runsc runtime\n'
 fi

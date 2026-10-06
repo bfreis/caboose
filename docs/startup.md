@@ -81,8 +81,8 @@ harmless; `alias rm='rm -i'` or `alias grep=rg` changes what the agent's
 commands do, so keep what you put here deliberate.
 
 To use the aliases of another machine, copy the file in, or, if it lives in
-a repo under a [root](configuration.md#the-repo-root), source it from one
-line: `. /work/dotfiles/aliases.sh`. caboose never copies the host's
+a repo under a [root](configuration.md#roots), source it from one
+line: `. /work/dev/dotfiles/aliases.sh`. caboose never copies the host's
 shell config itself. Guard what is only for one system or shell:
 
 ```sh

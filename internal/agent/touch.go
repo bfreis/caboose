@@ -8,10 +8,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// WorkDir is where the roots are mounted: the only paths the host's
-// changes are touched under (Config.WorkDir in tests).
-const WorkDir = "/work"
-
 // changedQueue is how many of the host's change messages wait to be
 // touched; past it they are dropped, and the host's next ones still come.
 const changedQueue = 64
@@ -22,7 +18,10 @@ func (l *Link) touchChanged() {
 	for {
 		select {
 		case paths := <-l.changed:
-			Touch(l.workDir, paths)
+			l.mu.Lock()
+			roots := l.roots
+			l.mu.Unlock()
+			Touch(roots, paths)
 		case <-l.sess.Done():
 			return
 		}
@@ -34,11 +33,11 @@ func (l *Link) touchChanged() {
 // raises IN_ATTRIB and leaves its contents and times alone. A path that is
 // gone (deleted or renamed on the host) cannot raise anything itself, so
 // its directory is touched instead. Anything that is not a regular file or
-// a directory, or is outside work, is left alone.
-func Touch(work string, paths []string) {
+// a directory, or is outside every one of roots, is left alone.
+func Touch(roots []string, paths []string) {
 	parents := map[string]bool{}
 	for _, p := range paths {
-		if !under(work, p) {
+		if !underAny(roots, p) {
 			continue
 		}
 		if err := touch(p); errors.Is(err, unix.ENOENT) {
@@ -46,10 +45,21 @@ func Touch(work string, paths []string) {
 		}
 	}
 	for d := range parents {
-		if under(work, d) {
+		if underAny(roots, d) {
 			_ = touch(d)
 		}
 	}
+}
+
+// underAny reports whether p, clean and absolute, is one of roots or
+// inside one.
+func underAny(roots []string, p string) bool {
+	for _, r := range roots {
+		if under(r, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func under(work, p string) bool {

@@ -26,7 +26,7 @@ func TestOrphaned(t *testing.T) {
 		{2, 0, 1, false}, // a client no record accounts for
 		{1, 1, 0, false},
 		{1, 1, 1, false}, // someone is still looking at it
-		{1, 0, 0, false}, // attached by a launcher from before the records
+		{1, 0, 0, false}, // a client with no record at all
 	} {
 		if got := orphaned(tc.clients, tc.live, tc.ended); got != tc.want {
 			t.Errorf("orphaned(%d clients, %d live, %d ended) = %v", tc.clients, tc.live, tc.ended, got)

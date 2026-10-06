@@ -10,7 +10,7 @@ import (
 )
 
 // CheckFormat is the first line of caboose-vmm --check's output, and its
-// format's version: a caboose-vmm without it is one older than the check.
+// format's version.
 const CheckFormat = "caboose-vmm-check=1"
 
 // Tri-state answers of a Check: what the check found, or that it could
@@ -81,9 +81,9 @@ func oneLine(s string) string {
 // maxCheck bounds what ParseCheck reads: a check is a few hundred bytes.
 const maxCheck = 16 << 10
 
-// ErrNoCheck is output that is not a check's: a caboose-vmm from before
-// --check, which prints its usage instead.
-var ErrNoCheck = errors.New("caboose-vmm has no --check")
+// ErrNoCheck is output that is not a check's: what a binary that is not
+// this caboose's caboose-vmm prints instead.
+var ErrNoCheck = errors.New("caboose-vmm did not answer --check")
 
 // ParseCheck reads caboose-vmm --check's output. Keys it does not know
 // are skipped, for a newer caboose-vmm's sake.

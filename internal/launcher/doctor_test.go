@@ -48,9 +48,9 @@ func wantLines(t *testing.T, got *checkup, want ...string) {
 
 func TestDoctorSyncNotSetUp(t *testing.T) {
 	e := newAutoEnv(t, newBare(t))
-	e.a.Cfg.AutoSync = ""
+	e.a.Cfg.AutoSync = false
 	wantLines(t, e.doctorSync(""), "  ✓ sync  not set up ('caboose sync --remote URL' starts it)")
-	e.a.Cfg.AutoSync = "1"
+	e.a.Cfg.AutoSync = true
 	c := e.doctorSync("")
 	wantLines(t, c, "  ! sync  auto_sync is on, but no remote is set; 'caboose sync --remote URL' sets one")
 	if e.ranGit() {
@@ -75,7 +75,7 @@ func TestDoctorSyncInStep(t *testing.T) {
 
 func TestDoctorSyncBothWays(t *testing.T) {
 	here, there := pair(t)
-	here.a.Cfg.AutoSync = ""
+	here.a.Cfg.AutoSync = false
 	if _, err := here.syncer().Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func (e *autoEnv) git(args ...string) string {
 
 func TestDoctorSyncManyChanges(t *testing.T) {
 	here, _ := pair(t)
-	here.a.Cfg.AutoSync = "1"
+	here.a.Cfg.AutoSync = true
 	if _, err := here.syncer().Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -386,34 +386,30 @@ func TestDoctorIdentity(t *testing.T) {
 }
 
 // host_exec on is a note, since it opens the wall, naming what set it; off
-// says nothing; a value it does not take is a problem.
+// says nothing.
 func TestDoctorHostExec(t *testing.T) {
-	file := &config.File{Path: "/e/config.toml"}
+	file := &config.File{Path: "/e/config.toml", Vals: map[string]any{"link.host_exec": true}}
 	for _, tc := range []struct {
 		cfg  config.Config
 		want string
 	}{
 		{config.Config{}, ""},
-		{config.Config{HostExec: "off", HostExecFrom: file.Path, File: file}, ""},
-		{config.Config{HostExec: "on", HostExecFrom: file.Path, File: file},
-			"  ! host exec  on: sessions in this environment can run commands on this machine as you (host_exec in /e/config.toml)\n"},
-		{config.Config{HostExec: "1", HostExecFrom: "CABOOSE_HOST_EXEC"},
-			"  ! host exec  on: sessions in this environment can run commands on this machine as you (CABOOSE_HOST_EXEC)\n"},
-		{config.Config{HostExec: "maybe", HostExecFrom: "CABOOSE_HOST_EXEC"},
-			"  ✗ host exec  host_exec: \"maybe\" is not true or false (\"on\" or \"off\")\n"},
+		{config.Config{File: &config.File{Path: file.Path, Vals: map[string]any{"link.host_exec": false}}}, ""},
+		{config.Config{HostExec: true, File: file},
+			"  ! host exec  on: sessions in this environment can run commands on this machine as you (host_exec in [link] of /e/config.toml)\n"},
 	} {
 		c := &checkup{}
 		a := &App{Cfg: &tc.cfg}
 		a.doctorHostExec(c)
 		if tc.want == "" {
 			if len(c.rows) != 0 {
-				t.Errorf("%q: %v", tc.cfg.HostExec, c.rows)
+				t.Errorf("%v: %v", tc.cfg.HostExec, c.rows)
 			}
 		} else if got := c.String(); strings.TrimSpace(got) != strings.TrimSpace(tc.want) {
 			t.Errorf("%+v:\n%q\nwant\n%q", tc.cfg.HostExec, got, tc.want)
 		}
 		if s := a.hostExecSummary(); (s != "") != (tc.want != "") {
-			t.Errorf("%q: status says %q", tc.cfg.HostExec, s)
+			t.Errorf("%v: status says %q", tc.cfg.HostExec, s)
 		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
@@ -49,9 +50,8 @@ func TestLinkRefusesBadSettings(t *testing.T) {
 	cases := map[string]config.Config{
 		"forward_ports": {ForwardPorts: "3000-", OpenURLs: "ask"},
 		"open_urls":     {ForwardPorts: "3000", OpenURLs: "sometimes"},
-		"egress_proxy":  {ForwardPorts: "3000", OpenURLs: "ask", EgressProxy: "maybe"},
 		"egress_ports":  {ForwardPorts: "3000", OpenURLs: "ask", EgressPorts: "443 70000"},
-		"egress_allow":  {ForwardPorts: "3000", OpenURLs: "ask", EgressAllow: "10.0.0.0/33"},
+		"egress_allow":  {ForwardPorts: "3000", OpenURLs: "ask", EgressAllow: []string{"10.0.0.0/33"}},
 	}
 	for want, cfg := range cases {
 		cfg.DataDir = t.TempDir()
@@ -141,17 +141,16 @@ func TestStartLinkReplacesAHelperWithOtherSettings(t *testing.T) {
 		// The container and the VM share the environment's name, and the
 		// old one may still run: a helper serves the one it started for.
 		{"other isolation", settingsFor("3000", "ask").withIsolation(isolationVM), true},
-		{"from before the isolation was recorded", settingsFor("3000", "ask").withIsolation(""), true},
 		// ssh_agent set since: the VM is to get another agent.
 		{"other ssh_agent", func() linkSettings { s := settingsFor("3000", "ask"); s.SSHAgent = "/op.sock"; return s }(), true},
-		// host_exec turned off by a variable the helper does not read: the
-		// launch replaces it, so it stops offering it.
-		{"other host_exec", func() linkSettings { s := settingsFor("3000", "ask"); s.HostExec = "on"; return s }(), true},
+		// host_exec turned on in config.toml, which the helper has not read:
+		// the launch replaces it, so it stops offering it.
+		{"other host_exec", func() linkSettings { s := settingsFor("3000", "ask"); s.HostExec = true; return s }(), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			killed := fakeHelper(t, dir, tc.running)
-			a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask"}}
+			a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask", Egress: true}}
 			spawned := spawnRecorder(a)
 			a.startLink()
 			if got := len(*spawned) == 1 && len(*killed) == 1 && (*killed)[0] == 4242; got != tc.replaced {
@@ -165,7 +164,7 @@ func TestRestartLink(t *testing.T) {
 	dir := t.TempDir()
 	killed := fakeHelper(t, dir, settingsFor("3000", "ask"))
 	var stderr bytes.Buffer
-	a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, Container: "c", ForwardPorts: "3000", OpenURLs: "ask"},
+	a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, Container: "c", ForwardPorts: "3000", OpenURLs: "ask", Egress: true},
 		Docker: &docker.CLI{Path: "/nonexistent/docker"}, Stderr: &stderr}
 	spawned := spawnRecorder(a)
 	if err := a.Link([]string{"--restart"}); err != nil {
@@ -206,7 +205,7 @@ func TestReloadOnConfigChange(t *testing.T) {
 	sess := agentproto.NewSession(bytes.NewReader(nil), nopCloser{io.Discard}, true)
 	r.sess = sess
 
-	write("forward_ports = \"4000-4100\"\nopen_urls = \"off\"\n")
+	write("[link]\nforward_ports = [\"4000-4100\"]\nopen_urls = \"off\"\n")
 	r.reload()
 	if r.settings != (settingsFor("4000-4100", "off")) || !r.cfg.Ports.Has(4050) || r.cfg.OpenURL != "off" {
 		t.Fatalf("settings %+v after the edit", r.settings)
@@ -220,18 +219,10 @@ func TestReloadOnConfigChange(t *testing.T) {
 		t.Fatalf("link.json %+v", st)
 	}
 
-	write("forward_ports = \"4000-\"\n")
+	write("[link]\nforward_ports = [\"4000-\"]\n")
 	r.reload()
 	if r.settings != (settingsFor("4000-4100", "off")) {
 		t.Fatalf("a broken edit replaced the settings: %+v", r.settings)
-	}
-
-	// A variable the helper was started with still wins over the file.
-	env["CABOOSE_FORWARD_PORTS"] = "5000"
-	write("forward_ports = \"6000\"\n")
-	r.reload()
-	if r.settings.ForwardPorts != "5000" {
-		t.Fatalf("forward_ports %q, want the variable's", r.settings.ForwardPorts)
 	}
 }
 
@@ -253,7 +244,7 @@ func TestReloadRetiresOnIsolationChange(t *testing.T) {
 	r.sess = sess
 	before := r.settings
 
-	if err := os.WriteFile(filepath.Join(cfg.EnvDir, config.FileName), []byte("isolation = \"vm\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.EnvDir, config.FileName), []byte("isolation = \"vm.default\"\n[vm.default]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	r.reload()
@@ -325,17 +316,17 @@ func TestLinkDialsALinker(t *testing.T) {
 // defaults, and the default isolation.
 func settingsFor(forwardPorts, openURLs string) linkSettings {
 	return linkSettings{ForwardPorts: forwardPorts, OpenURLs: openURLs,
-		EgressProxy: "on", EgressPorts: config.DefaultEgressPorts, Isolation: isolationDocker}
+		Egress: true, EgressPorts: config.DefaultEgressPorts, Isolation: isolationContainer}
 }
 
 // withIsolation is s serving a sandbox of another isolation.
 func (s linkSettings) withIsolation(iso string) linkSettings { s.Isolation = iso; return s }
 
 // A vm guest's link offers the outbound proxy in the host's hello, unless
-// egress_proxy is off.
+// egress is off.
 func TestLinkOffersEgressToALinker(t *testing.T) {
-	for proxy, want := range map[string]string{"on": agentproto.EgressListen, "off": ""} {
-		lc, err := settingsFor("3000", "ask").withProxy(proxy).check()
+	for egress, want := range map[bool]string{true: agentproto.EgressListen, false: ""} {
+		lc, err := settingsFor("3000", "ask").withEgress(egress).check()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -355,12 +346,12 @@ func TestLinkOffersEgressToALinker(t *testing.T) {
 			cfg: hostlink.Config{Ports: lc.ports, Egress: lc.egress}}
 		_ = r.once()
 		if got := <-offered; got != want {
-			t.Errorf("egress_proxy %s: offered %q, want %q", proxy, got, want)
+			t.Errorf("egress %v: offered %q, want %q", egress, got, want)
 		}
 	}
 }
 
-func (s linkSettings) withProxy(v string) linkSettings { s.EgressProxy = v; return s }
+func (s linkSettings) withEgress(on bool) linkSettings { s.Egress = on; return s }
 
 // link.log is appended to across links, and moved aside to link.log.1,
 // saying so, rather than grow past its cap.
@@ -537,7 +528,7 @@ func TestReloadHostExec(t *testing.T) {
 	os.MkdirAll(cfg.EnvDir, 0o755)
 	os.MkdirAll(cfg.DataDir, 0o755)
 	r := &linkRunner{a: &App{Cfg: cfg}, log: log.New(io.Discard, "", 0), settings: settingsOf(cfg)}
-	if r.settings.HostExec != "" || r.cfg.HostExec != nil {
+	if r.settings.HostExec || r.cfg.HostExec != nil {
 		t.Fatalf("on by default: %+v", r.settings)
 	}
 	sess := agentproto.NewSession(bytes.NewReader(nil), nopCloser{io.Discard}, true)
@@ -547,9 +538,9 @@ func TestReloadHostExec(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("host_exec = true\n")
+	write("[link]\nhost_exec = true\n")
 	r.reload()
-	if r.settings.HostExec != "on" || r.cfg.HostExec == nil {
+	if !r.settings.HostExec || r.cfg.HostExec == nil {
 		t.Fatalf("settings %+v, offer %v after turning it on", r.settings, r.cfg.HostExec)
 	}
 	select {
@@ -557,14 +548,10 @@ func TestReloadHostExec(t *testing.T) {
 	default:
 		t.Fatal("the session goes on without it")
 	}
-	write("host_exec = \"maybe\"\n")
+	write("[link]\nhost_exec = \"maybe\"\n")
 	r.reload()
-	if r.settings.HostExec != "on" || r.cfg.HostExec == nil {
+	if !r.settings.HostExec || r.cfg.HostExec == nil {
 		t.Fatalf("a value it does not take replaced it: %+v", r.settings)
-	}
-	if _, err := (linkSettings{ForwardPorts: "3000", OpenURLs: "ask", EgressProxy: "on", EgressPorts: "22", HostExec: "maybe"}).check(); err == nil ||
-		!strings.Contains(err.Error(), "host_exec") {
-		t.Errorf("check took host_exec maybe: %v", err)
 	}
 }
 
@@ -576,6 +563,15 @@ type mountsBox struct {
 
 func (b mountsBox) Mounts() ([]backend.Mount, error) { return b.mounts, nil }
 
+// Labels names the mounts as the roots the sandbox was created with.
+func (b mountsBox) Labels() (map[string]string, error) {
+	var roots []config.Root
+	for _, m := range b.mounts {
+		roots = append(roots, config.Root{Host: m.Source, Container: m.Target})
+	}
+	return map[string]string{assets.LabelRoots: rootsLabel(roots)}, nil
+}
+
 // With host_exec on, the hello offers host exec, and a command runs in the
 // host directory of the root the sandbox mounts, not a configured one.
 func TestLinkOffersHostExec(t *testing.T) {
@@ -584,7 +580,7 @@ func TestLinkOffersHostExec(t *testing.T) {
 		lc, err := func() (linkConfig, error) {
 			s := settingsFor("3000", "ask")
 			if on {
-				s.HostExec = "on"
+				s.HostExec = true
 			}
 			return s.check()
 		}()

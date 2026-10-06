@@ -101,13 +101,13 @@ func layerArgs(base string, byo bool, platform string) string {
 		" --label " + assets.LabelCompat + "=" + strconv.Itoa(assets.Compat)
 }
 
-// The default base: the embedded Dockerfile built as img-base with the extra
+// The default base: the embedded Dockerfile built as caboose-base:default with the extra
 // args, checked by ID, then the layer FROM it, labelled with what it was
 // built from. Only the layer's build writes to stdout, so -q still prints
 // one image ID.
 func TestBuildOnDefaultBase(t *testing.T) {
-	log := scriptedDocker(t, baseBuilds(t, "img-base"))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
+	sandboxEnv(t)
 	code, out, errs := runIt("build", "--no-cache")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
@@ -116,10 +116,10 @@ func TestBuildOnDefaultBase(t *testing.T) {
 		t.Errorf("stdout %q", out)
 	}
 	for _, w := range []string{
-		"caboose: building the base image 'img-base' from the Dockerfile embedded in this launcher\n" +
+		"caboose: building the base image 'caboose-base:default' from the Dockerfile embedded in this launcher\n" +
 			"docker build stdout\ndocker build stderr\n",
-		"caboose: checking base image 'img-base' (ba5e00000000) against caboose's requirements\n",
-		"caboose: building the caboose layer on 'img-base' as 'img'\ndocker build stderr\n",
+		"caboose: checking base image 'caboose-base:default' (ba5e00000000) against caboose's requirements\n",
+		"caboose: building the caboose layer on 'caboose-base:default' as 'caboose:default'\ndocker build stderr\n",
 	} {
 		if !strings.Contains(errs, w) {
 			t.Errorf("stderr lacks %q:\n%s", w, errs)
@@ -129,7 +129,7 @@ func TestBuildOnDefaultBase(t *testing.T) {
 	if len(bs) != 2 {
 		t.Fatalf("builds: %v", bs)
 	}
-	wantBase := "build -t img-base --label " + assets.LabelVersion + "=" + version.Get().Version +
+	wantBase := "build -t caboose-base:default --label " + assets.LabelVersion + "=" + version.Get().Version +
 		" --label " + assets.LabelBaseHash + "=" + assets.BaseHash() + " --no-cache "
 	if !strings.HasPrefix(bs[0].argv, wantBase) || bs[0].context != "Dockerfile" {
 		t.Errorf("base build %s (context %q)\nwant prefix %s", bs[0].argv, bs[0].context, wantBase)
@@ -138,8 +138,8 @@ func TestBuildOnDefaultBase(t *testing.T) {
 		t.Errorf("the base took the host's IDs: %s", bs[0].argv)
 	}
 	dir := ctxDir(t, bs[1].argv)
-	want := layerPrefix("img") + dir + "/layer.Dockerfile" +
-		layerArgs("img-base", false, "linux-arm64") + " --no-cache " + dir
+	want := layerPrefix("caboose:default") + dir + "/layer.Dockerfile" +
+		layerArgs("caboose-base:default", false, "linux-arm64") + " --no-cache " + dir
 	if bs[1].argv != want {
 		t.Errorf("layer build\n%s\nwant\n%s", bs[1].argv, want)
 	}
@@ -151,7 +151,7 @@ func TestBuildOnDefaultBase(t *testing.T) {
 	b, _ := os.ReadFile(log)
 	s := string(b)
 	check := strings.Index(s, "\nrun --rm --init --user 0:0 -e CABOOSE_PROBE_ROOT= --entrypoint /bin/sh "+baseID+" -c ")
-	if check < 0 || check < strings.Index(s, "build -t img-base") || check > strings.Index(s, "build -t img -f") {
+	if check < 0 || check < strings.Index(s, "build -t caboose-base:default") || check > strings.Index(s, "build -t caboose:default -f") {
 		t.Errorf("no check on the base's ID between the builds:\n%s", s)
 	}
 }
@@ -159,8 +159,8 @@ func TestBuildOnDefaultBase(t *testing.T) {
 // --pull is for the base: the default base's build gets it, the layer never
 // (its FROM is local only), and a user's base is pulled first instead.
 func TestBuildPull(t *testing.T) {
-	log := scriptedDocker(t, baseBuilds(t, "img-base"))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
+	sandboxEnv(t)
 	if code, _, errs := runIt("build", "--pull", "--progress=plain"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
@@ -172,9 +172,9 @@ func TestBuildPull(t *testing.T) {
 
 	// A local user's base is pulled only because --pull asks.
 	log = scriptedDocker(t, imageLabels("{}")+"\n"+baseBuilds(t, "node:22"))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist", "CABOOSE_BASE_IMAGE", "node:22")
+	sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22")
 	code, _, errs := runIt("build", "--pull=true")
-	if code != 1 || !strings.Contains(errs, "caboose: pulling base image 'node:22' (CABOOSE_BASE_IMAGE), as --pull asks\n") {
+	if code != 1 || !strings.Contains(errs, "caboose: pulling base image 'node:22' (base in [image]), as --pull asks\n") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
 	}
 	for _, l := range dockerLog(t, log) {
@@ -184,7 +184,7 @@ func TestBuildPull(t *testing.T) {
 	}
 }
 
-// CABOOSE_BASE_IMAGE: no base build, a pull only when it is not local, the
+// [image] base: no base build, a pull only when it is not local, the
 // layer FROM it with its name, and the platform the check found -- here
 // musl's.
 func TestBuildOnOwnBase(t *testing.T) {
@@ -196,7 +196,7 @@ func TestBuildOnOwnBase(t *testing.T) {
 				present = imageLabels("{}")
 			}
 			log := scriptedDocker(t, present+"\n"+imageIDOf("alpine:3", baseID)+"\n"+probePasses(t, probeMusl)+"\n"+imageAbsent)
-			sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist", "CABOOSE_BASE_IMAGE", "alpine:3")
+			sandboxEnv(t, "CABOOSE_BASE_IMAGE", "alpine:3")
 			code, out, errs := runIt("build", "--no-cache")
 			if code != 0 {
 				t.Fatalf("exit %d: %s", code, errs)
@@ -216,7 +216,7 @@ func TestBuildOnOwnBase(t *testing.T) {
 				t.Fatalf("builds: %v", bs)
 			}
 			dir := ctxDir(t, bs[0].argv)
-			want := layerPrefix("img") + dir + "/layer.Dockerfile" +
+			want := layerPrefix("caboose:default") + dir + "/layer.Dockerfile" +
 				layerArgs("alpine:3", true, "linux-arm64-musl") + " --no-cache " + dir
 			if bs[0].argv != want {
 				t.Errorf("layer build\n%s\nwant\n%s", bs[0].argv, want)
@@ -229,7 +229,7 @@ func TestBuildOnOwnBase(t *testing.T) {
 // is missing and where to see the rest.
 func TestBuildRefusesAFailingBase(t *testing.T) {
 	log := scriptedDocker(t, imageLabels("{}")+"\n"+imageIDOf("alpine", baseID)+"\n"+probePasses(t, probeAlpine))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist", "CABOOSE_BASE_IMAGE", "alpine")
+	sandboxEnv(t, "CABOOSE_BASE_IMAGE", "alpine")
 	code, out, errs := runIt("build")
 	if code != 1 || out != "" {
 		t.Errorf("exit %d, stdout %q", code, out)
@@ -256,9 +256,9 @@ func TestBuildRefusesAFailingBase(t *testing.T) {
 // say) is not checked or built on.
 func TestBuildNeedsTheBaseID(t *testing.T) {
 	log := scriptedDocker(t, probePasses(t, probeComplete))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	sandboxEnv(t)
 	code, _, errs := runIt("build")
-	if code != 1 || !strings.Contains(errs, "caboose: cannot read the ID of base image 'img-base'\n") {
+	if code != 1 || !strings.Contains(errs, "caboose: cannot read the ID of base image 'caboose-base:default'\n") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
 	}
 	if bs := builds(t, log); len(bs) != 1 {
@@ -277,9 +277,9 @@ func TestBuildInterruptedDuringTheCheck(t *testing.T) {
 	if err := os.WriteFile(f, []byte(probeComplete), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	log := scriptedDocker(t, imageIDOf("img-base", baseID)+"\n"+
+	log := scriptedDocker(t, imageIDOf("caboose-base:default", baseID)+"\n"+
 		`[ "$1 $2 $3" = "run --rm --init" ] && { kill -INT $PPID; sleep 0.3; cat "`+f+`"; exit 0; }`+"\n"+imageAbsent)
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	sandboxEnv(t)
 	code, _, errs := runIt("build")
 	if code != 130 || !strings.HasSuffix(errs, "caboose: interrupted\n") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
@@ -291,14 +291,14 @@ func TestBuildInterruptedDuringTheCheck(t *testing.T) {
 
 // Same after a base build that ^C cut short but that exited 0 regardless.
 func TestBuildInterruptedDuringTheBase(t *testing.T) {
-	log := scriptedDocker(t, `[ "$1 $2 $3" = "build -t img-base" ] && { kill -INT $PPID; sleep 0.3; exit 0; }`+"\n"+baseBuilds(t, "img-base"))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	log := scriptedDocker(t, `[ "$1 $2 $3" = "build -t caboose-base:default" ] && { kill -INT $PPID; sleep 0.3; exit 0; }`+"\n"+baseBuilds(t, "caboose-base:default"))
+	sandboxEnv(t)
 	code, _, errs := runIt("build")
 	if code != 130 || !strings.HasSuffix(errs, "caboose: interrupted\n") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
 	}
 	for _, l := range dockerLog(t, log) {
-		if strings.HasPrefix(l, "run ") || strings.HasPrefix(l, "build -t img -f") {
+		if strings.HasPrefix(l, "run ") || strings.HasPrefix(l, "build -t caboose:default -f") {
 			t.Errorf("went on after ^C: %s", l)
 		}
 	}
@@ -311,7 +311,7 @@ func TestBuildPlatformReachesTheCheck(t *testing.T) {
 	for _, form := range [][]string{{"--platform", "linux/amd64"}, {"--platform=linux/amd64"}} {
 		log := scriptedDocker(t, imageMissingButPullable+"\n"+imageIDOf("alpine:3", baseID)+"\n"+
 			`[ "$1 $2 $3 $4 $5" = "run --rm --init --platform linux/amd64" ] && { cat "`+probeFile(t, probeMusl)+`"; exit 0; }`+"\n"+imageAbsent)
-		sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist", "CABOOSE_BASE_IMAGE", "alpine:3")
+		sandboxEnv(t, "CABOOSE_BASE_IMAGE", "alpine:3")
 		code, _, errs := runIt(append([]string{"build"}, form...)...)
 		if code != 0 {
 			t.Fatalf("%v: exit %d: %s", form, code, errs)
@@ -326,9 +326,9 @@ func TestBuildPlatformReachesTheCheck(t *testing.T) {
 		}
 	}
 	// The default base: its build and the check both get it.
-	log := scriptedDocker(t, imageIDOf("img-base", baseID)+"\n"+
+	log := scriptedDocker(t, imageIDOf("caboose-base:default", baseID)+"\n"+
 		`[ "$1 $2 $3 $4 $5" = "run --rm --init --platform linux/amd64" ] && { cat "`+probeFile(t, probeComplete)+`"; exit 0; }`+"\n"+imageAbsent)
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	sandboxEnv(t)
 	if code, _, errs := runIt("build", "--platform", "linux/amd64"); code != 0 {
 		t.Fatalf("default base: exit %d: %s", code, errs)
 	}
@@ -350,15 +350,14 @@ func probeFile(t *testing.T, out string) string {
 // is refused before docker is asked anything.
 func TestBuildRefusesATag(t *testing.T) {
 	for _, arg := range []string{"-t", "-tfoo", "--tag", "--tag=foo"} {
-		log := scriptedDocker(t, baseBuilds(t, "img-base"))
-		sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+		log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
+		sandboxEnv(t)
 		code, _, errs := runIt("build", arg, "x")
 		want := "--tag"
 		if strings.HasPrefix(arg, "-t") {
 			want = "-t"
 		}
-		if code != 1 || errs != "caboose: caboose build names its images itself, so it takes no "+want+
-			": set CABOOSE_IMAGE to build under another name\n" {
+		if code != 1 || errs != "caboose: caboose build names its images after the environment itself (caboose:default), so it takes no "+want+"\n" {
 			t.Errorf("%s: exit %d, stderr %q", arg, code, errs)
 		}
 		if b, _ := os.ReadFile(log); len(b) != 0 {
@@ -367,37 +366,36 @@ func TestBuildRefusesATag(t *testing.T) {
 	}
 }
 
-// CABOOSE_BASE_IMAGE naming CABOOSE_IMAGE -- in any spelling docker takes
-// for the same image -- would build the layer over its own base, and stack
-// one more on every rebuild: a build refuses it before docker is asked
+// [image] base naming the environment's own image -- in any spelling docker
+// takes for the same image -- would build the layer over its own base, and
+// stack one more on every rebuild: a build refuses it before docker is asked
 // anything, and so does a launch. (The reviewer's repro.)
 func TestImageIsItsOwnBase(t *testing.T) {
-	for _, tc := range []struct{ image, base string }{
-		{"img", "img"},
-		{"img", "img:latest"},
-		{"img:latest", "docker.io/library/img"},
-		{"ghcr.io/x/img:1", "ghcr.io/x/img:1"},
+	for _, base := range []string{
+		"caboose:default",
+		"docker.io/library/caboose:default",
+		"library/caboose:default",
 	} {
 		for _, argv := range [][]string{{"build"}, {"claude", "-p", "hi"}} {
 			log := fakeDocker(t)
-			home := sandboxEnv(t, "CABOOSE_IMAGE", tc.image, "CABOOSE_BASE_IMAGE", tc.base)
+			home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", base)
 			inProject(t, home)
 			code, _, errs := runIt(argv...)
-			if code != 1 || !strings.Contains(errs, "caboose: CABOOSE_BASE_IMAGE ('"+tc.base+"') names the same image as CABOOSE_IMAGE ('"+tc.image+"')") {
-				t.Errorf("%v %v: exit %d, stderr:\n%s", tc, argv, code, errs)
+			if code != 1 || !strings.Contains(errs, "caboose: base in [image] ('"+base+"') is the environment's own image") {
+				t.Errorf("%v %v: exit %d, stderr:\n%s", base, argv, code, errs)
 			}
 			for _, l := range dockerLog(t, log) {
 				if strings.HasPrefix(l, "build ") || strings.HasPrefix(l, "run ") || strings.HasPrefix(l, "image ") {
-					t.Errorf("%v %v: docker %s", tc, argv, l)
+					t.Errorf("%v %v: docker %s", base, argv, l)
 				}
 			}
 		}
 	}
 	// A different tag of the same repository is a different image.
-	log := scriptedDocker(t, imageLabels("{}")+"\n"+baseBuilds(t, "img:base"))
-	sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist", "CABOOSE_BASE_IMAGE", "img:base")
+	log := scriptedDocker(t, imageLabels("{}")+"\n"+baseBuilds(t, "caboose:base"))
+	sandboxEnv(t, "CABOOSE_BASE_IMAGE", "caboose:base")
 	if code, _, errs := runIt("build"); code != 0 {
-		t.Errorf("img on img:base: exit %d: %s", code, errs)
+		t.Errorf("caboose:default on caboose:base: exit %d: %s", code, errs)
 	}
 	if bs := builds(t, log); len(bs) != 1 {
 		t.Errorf("builds %v", bs)
@@ -408,8 +406,8 @@ func TestImageIsItsOwnBase(t *testing.T) {
 // copied, not removed afterwards), and the layer says so: kind env, and
 // the dir's hash, as it was when the build started.
 func TestBuildOnImageDir(t *testing.T) {
-	log := scriptedDocker(t, baseBuilds(t, "img-base"))
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
+	home := sandboxEnv(t)
 	dir := filepath.Join(home, ".caboose", "envs", "default", "image")
 	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o755); err != nil {
 		t.Fatal(err)
@@ -427,14 +425,14 @@ func TestBuildOnImageDir(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
-	if !strings.Contains(errs, "caboose: building the base image 'img-base' from "+filepath.Join(dir, "Dockerfile")+"\n") {
+	if !strings.Contains(errs, "caboose: building the base image 'caboose-base:default' from "+filepath.Join(dir, "Dockerfile")+"\n") {
 		t.Errorf("stderr:\n%s", errs)
 	}
 	bs := builds(t, log)
 	if len(bs) != 2 {
 		t.Fatalf("builds: %v", bs)
 	}
-	wantBase := "build -t img-base --label " + assets.LabelVersion + "=" + version.Get().Version +
+	wantBase := "build -t caboose-base:default --label " + assets.LabelVersion + "=" + version.Get().Version +
 		" --label " + assets.LabelBaseHash + "= " + dir
 	if bs[0].argv != wantBase || bs[0].context != "Dockerfile files" {
 		t.Errorf("base build %s (context %q)\nwant %s", bs[0].argv, bs[0].context, wantBase)
@@ -445,7 +443,7 @@ func TestBuildOnImageDir(t *testing.T) {
 	for _, label := range []string{
 		" --label " + assets.LabelBaseKind + "=env ",
 		" --label " + assets.LabelBaseHash + "=" + hash + " ",
-		" --label " + assets.LabelBaseName + "=img-base ",
+		" --label " + assets.LabelBaseName + "=caboose-base:default ",
 	} {
 		if !strings.Contains(bs[1].argv, label) {
 			t.Errorf("layer build lacks %q:\n%s", label, bs[1].argv)
@@ -453,15 +451,15 @@ func TestBuildOnImageDir(t *testing.T) {
 	}
 }
 
-// An image dir and CABOOSE_BASE_IMAGE: which to build on would be a guess.
+// An image dir and [image] base: which to build on would be a guess.
 func TestBuildRefusesTwoBases(t *testing.T) {
 	log := scriptedDocker(t, "")
-	home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22")
 	if err := os.MkdirAll(filepath.Join(home, ".caboose", "envs", "default", "image"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	code, _, errs := runIt("build")
-	if code != 1 || !strings.Contains(errs, "remove base_image from") {
+	if code != 1 || !strings.Contains(errs, "remove base from") {
 		t.Errorf("exit %d\n%s", code, errs)
 	}
 	if len(builds(t, log)) != 0 {

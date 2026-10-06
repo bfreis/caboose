@@ -6,10 +6,13 @@
 # It downloads the latest release for this OS and architecture, checks it
 # against the release's checksums.txt, and installs it the way caboose
 # updates itself afterwards (internal/selfupdate, whose layout this must
-# match): the binary in ~/.local/share/caboose/versions/<tag>/caboose, and
-# ~/.local/bin/caboose a symlink to it. Nothing needs root. Run again, it
-# installs the latest release next to the one there, keeping one before it.
+# match): the binary in ~/.caboose/versions/<tag>/caboose, and
+# ~/.local/bin/caboose a symlink to it, the one thing outside ~/.caboose.
+# Nothing needs root. Run again, it installs the latest release next to the
+# one there, keeping one before it.
 #
+#   CABOOSE_HOME=DIR         install under DIR instead of ~/.caboose (the
+#                            same variable caboose itself reads)
 #   CABOOSE_VERSION=v1.2.3   install that release instead of the latest
 #   CABOOSE_NO_SETUP=1       install only; do not run caboose setup after
 #   CABOOSE_RELEASES_URL     where releases are (tests)
@@ -99,7 +102,7 @@ tar -xzf "$tmp/$asset" -C "$tmp/x" caboose || die "$asset has no caboose in it"
 tar -xzf "$tmp/$asset" -C "$tmp/x" caboose-vmm 2>/dev/null || true
 
 bin="$HOME/.local/bin"
-versions="$HOME/.local/share/caboose/versions"
+versions="${CABOOSE_HOME:-$HOME/.caboose}/versions"
 link="$bin/caboose"
 mkdir -p "$bin" "$versions"
 

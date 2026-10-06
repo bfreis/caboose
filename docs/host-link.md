@@ -24,30 +24,25 @@ machine is mounted into it for this: the exec is the whole channel, so it
 works the same on OrbStack, Docker Desktop and Docker on Linux.
 
 It rereads `config.toml` by itself within a couple of seconds of a change:
-new `forward_ports`, `open_urls`, `egress_*` or `host_exec` settings reconnect the link with them (forwarded
+new `[link]` settings, or a `vm` profile's `egress_*`, reconnect the link with them (forwarded
 connections open at that moment are cut, and host commands running are ended), and an edit it cannot read is
-logged and leaves the running settings in place. A `CABOOSE_` variable it
-was started with still wins over the file. A launch whose settings differ
-from the running helper's, a variable set differently in that shell for
-instance, replaces the helper. `caboose link --restart` stops the running
+logged and leaves the running settings in place. A launch whose settings differ
+from the running helper's replaces the helper. `caboose link --restart` stops the running
 helper and starts a new one in the background, whatever changed.
-
-A container created by a caboose older than the link has no
-`caboose-agent`; the link says so in its log and stops, and `caboose
-restart` moves the container onto an image that has it.
 
 ## Ports
 
 The agent watches the container's listening TCP ports, once a second. Each
-one that `forward_ports` allows is forwarded to the same port on this
+one that `forward_ports` (in `[link]`) allows is forwarded to the same port on this
 machine's `127.0.0.1`, while it keeps listening; a port already in use here
 is skipped. A server bound only to `127.0.0.1` in the sandbox, as many dev
 servers are by default, is forwarded too: the agent connects to it on the
 container's own loopback.
 
 ```toml
-forward_ports = "3000-3999 5173 8000-8999"   # the default
-forward_ports = "none"                       # forward nothing
+[link]
+forward_ports = ["3000-3999", 5173, "8000-8999"]   # the default
+forward_ports = []                                 # forward nothing
 ```
 
 `caboose-agent ports`, in the sandbox, lists what listens and what came of
@@ -75,14 +70,14 @@ On a Mac these use `open` and `osascript`; on Linux `xdg-open`,
 
 ## File changes
 
-Under `isolation = "gvisor"` or `"vm"`, an edit made on this machine under
+Under a `gvisor` or `vm` profile, an edit made on this machine under
 the roots never becomes an inotify event in the sandbox: a dev server's reload, a
 watch-mode test or a `--watch` build there would not see it. So the link
 watches the roots the container mounts (FSEvents on a Mac, inotify on
 Linux) and sends the agent the paths that changed. The agent sets each
 one's mode to what it already is, which raises `IN_ATTRIB` inside and
 leaves the file's contents and times alone; for a file deleted or renamed
-away, it does that to its directory. Under `docker` the engine passes
+away, it does that to its directory. Under a `container` profile the engine passes
 events on itself, and the link relays nothing.
 
 Watchers that take any event on a file as a change see it: Node's
@@ -102,19 +97,20 @@ cannot.
 
 ## Outbound connections
 
-Under `isolation = "vm"`, the VM's traffic leaves through macOS's NAT,
+Under a `vm` profile, the VM's traffic leaves through macOS's NAT,
 which reaches none of the routes a VPN gives your Mac: a host your Mac
 reaches over Tailscale or a company VPN times out from the VM. So, with
-`egress_proxy = "on"` (the default), the link offers the agent an
+`egress = true` (the default), the link offers the agent an
 outbound proxy, and each of the sandbox's connections through it is made
 by `caboose link` on your Mac, with its own resolver and routes, as Docker
-Desktop and OrbStack do for a container. Under `docker` and `gvisor` the
-engine already does, and the setting is ignored.
+Desktop and OrbStack do for a container. Under `container` and `gvisor` the
+engine already does, and there is no such setting.
 
 ```toml
-egress_proxy = "off"                    # the VM's own NAT instead
-egress_ports = "22 80 443"              # the default
-egress_allow = "git.corp.example *.internal.example 10.20.0.0/16"
+[vm.default]
+egress = false                         # the VM's own NAT instead
+egress_ports = [22, 80, 443]           # the default
+egress_allow = ["git.corp.example", "*.internal.example", "10.20.0.0/16"]
 ```
 
 The sandbox sends a name and a port, never an address. The port must be
@@ -170,7 +166,7 @@ connections or a link that is down.
 `caboose-agent connect HOST PORT` makes one connection through it, on its
 stdin and stdout, as ssh's `ProxyCommand caboose-agent connect %h %p`.
 
-What uses it, with `egress_proxy` on as the VM is created:
+What uses it, with `egress` on as the VM is created:
 
 - every process in the VM has `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`
   and `https_proxy` set to `http://127.0.0.1:9128`, and `NO_PROXY` and
@@ -208,18 +204,17 @@ What uses it, with `egress_proxy` on as the VM is created:
   cache keys. Refusals are said among the build's output.
 
 The environment is fixed when the VM is created: a change to
-`egress_proxy` takes `caboose restart`, which a launch, `caboose status`
+`egress` takes `caboose restart`, which a launch, `caboose status`
 and `caboose doctor` say. `egress_ports` and `egress_allow` apply as the
 link rereads them.
 
 ## Host commands
 
-Off by default. With `host_exec = true` in `config.toml` (or
-`CABOOSE_HOST_EXEC=1`), a session can run a command on this machine:
+Off by default. With `host_exec = true` in `[link]` of `config.toml`, a session can run a command on this machine:
 
 ```sh
 caboose-agent host make release           # in the host directory of the current one
-caboose-agent host -C /work/site ls       # in another
+caboose-agent host -C /work/dev/site ls     # in another
 caboose-agent host sh -c 'cd .. && ls'    # shell syntax takes a shell
 ```
 
@@ -227,7 +222,7 @@ The command runs as you, the user who ran `caboose`, with the environment
 the link has: it was started from your terminal, so `PATH`,
 `SSH_AUTH_SOCK` and the rest are yours. It runs in the host directory of
 the sandbox's current one (or `-C DIR`'s), which must be under a root the
-sandbox mounts: `/work/site` is wherever that root is here. Its stdin,
+sandbox mounts: `/work/dev/site` is wherever that root is here. Its stdin,
 stdout and stderr are the sandbox command's, and its exit status is
 `caboose-agent host`'s; 127 is a command not found in your `PATH`, 126 one
 that could not run, or a refusal (said on stderr). There is no shell, so

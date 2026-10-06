@@ -40,7 +40,7 @@ func (a *App) vmmFix() string {
 
 // otherIsolation is the way out when this Mac cannot run vm at all.
 func (a *App) otherIsolation() string {
-	return fmt.Sprintf("set isolation = %q or %q (%s)", isolationDocker, isolationGVisor, isolationOrigin(a.Cfg))
+	return otherProfile(a.Cfg)
 }
 
 // checkVMM runs path --check and judges what it says.
@@ -74,7 +74,7 @@ func (a *App) judgeVMM(path string, out []byte, stderr string, runErr, ctxErr er
 	}
 	c, err := vm.ParseCheck(out)
 	if errors.Is(err, vm.ErrNoCheck) {
-		return fail(a.vmmFix(), "%s is older than this caboose: it has no --check%s", path, said(stderr))
+		return fail(a.vmmFix(), "%s did not answer --check as this caboose's caboose-vmm does%s", path, said(stderr))
 	}
 	if err != nil {
 		return fail(a.vmmFix(), "%v", err)

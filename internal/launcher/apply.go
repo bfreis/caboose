@@ -201,7 +201,7 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		case err != nil:
 			refusals = append(refusals, fmt.Sprintf("Cannot read the Dockerfile: %v", err))
 		case source == proposal.SourceBaseImage:
-			refusals = append(refusals, fmt.Sprintf("This environment builds on base_image %s, an image rather than a Dockerfile, so a section cannot go into it.", c.BaseImage))
+			refusals = append(refusals, fmt.Sprintf("This environment builds on base %s in [image], an image rather than a Dockerfile, so a section cannot go into it.", c.BaseImage))
 		case proposal.Hash(old) != pr.DockerfileSHA256:
 			refusals = append(refusals, "The Dockerfile has changed since this was proposed. Ask the session to propose it again: it reads the current one in "+
 				proposal.ContainerDir+"/"+proposal.CurrentDir+".")
@@ -253,27 +253,23 @@ func (a *App) showPlan(p *prompter, pl plan) {
 	}
 }
 
-// confirmRoot asks for what adding pl's root takes: a name for the single
-// root there is now, when there is one (it moves to /work/NAME), and the
-// root's own name typed out. It fills edit's roots when the user goes
-// ahead; ok is false when not.
+// confirmRoot asks for what adding pl's root takes: the root's name typed
+// out, after saying what moves -- a sole root at /work itself moves to its
+// own /work/NAME, since /work is for a sole root. It fills edit's
+// roots when the user goes ahead; ok is false when not.
 func (a *App) confirmRoot(p *prompter, pl plan, edit *config.Edit) (ok bool, err error) {
-	c := a.Cfg
-	if v := c.Getenv("CABOOSE_REPO_ROOT"); v != "" {
-		p.warn("CABOOSE_REPO_ROOT is set (%s), and wins over config.toml's roots while it is.", v)
-	}
 	cur := a.fileRoots()
 	roots := append([]setupRoot(nil), cur...)
-	if len(roots) == 1 && roots[0].Name == "" {
-		p.note("The root there is now, %s, is mounted at %s. With two, each is mounted at %s/NAME, so it needs a name too.",
-			roots[0].Path, config.WorkDir, config.WorkDir)
-		name, err := a.askRootName(p, roots[0].Path, append(roots, setupRoot{Name: pl.root.Name}), 0)
-		if err != nil {
-			return false, err
-		}
-		roots[0].Name = name
+	if len(roots) == 1 && roots[0].Container == config.WorkDir {
+		p.note("The root there is now, %s, is mounted at %s itself. With two, each is mounted at %s/NAME, so it moves to %s/%s.",
+			roots[0].Path, config.WorkDir, config.WorkDir, config.WorkDir, roots[0].Name)
+		roots[0].Container = ""
 	}
 	roots = append(roots, setupRoot{Name: pl.root.Name, Path: a.rootSpelling(pl.host)})
+	if _, err := config.FileRoots(rootsEdit(roots).Roots, a.Cfg.Home); err != nil {
+		p.fail("The roots cannot take it: %v; nothing was applied, and the proposal is left pending", err)
+		return false, nil
+	}
 	if moves := a.rootMoves(cur, roots); len(moves) > 0 {
 		for _, m := range moves {
 			p.warn("%s", capFirst(m))
@@ -295,11 +291,8 @@ func (a *App) confirmRoot(p *prompter, pl plan, edit *config.Edit) (ok bool, err
 		p.fail("That is not %s: nothing was applied, and the proposal is left pending", pl.root.Name)
 		return false, nil
 	}
-	edit.SetRoots, edit.Unset = true, []string{"repo_root"}
-	edit.Roots = map[string]string{}
-	for _, r := range roots {
-		edit.Roots[r.Name] = r.Path
-	}
+	re := rootsEdit(roots)
+	edit.SetRoots, edit.Roots = re.SetRoots, re.Roots
 	return true, nil
 }
 
@@ -440,7 +433,7 @@ func (a *App) reloadConfig() error {
 // dockerfileBase is the Dockerfile a proposed section goes into, and where
 // it comes from: the environment's image/Dockerfile, or, when it has none,
 // caboose's default preset, which the first section proposed becomes. On
-// CABOOSE_BASE_IMAGE there is none.
+// an [image] base there is none.
 func (a *App) dockerfileBase() (source string, data []byte, err error) {
 	c := a.Cfg
 	if c.BaseImage != "" {
@@ -470,14 +463,9 @@ func (a *App) exportProposals() {
 		a.Note("not telling sessions about the Dockerfile: %v", err)
 		return
 	}
-	s := proposal.State{Source: source, Dockerfile: df, BaseImage: c.BaseImage}
-	if roots := a.fileRoots(); len(roots) == 1 && roots[0].Name == "" {
-		s.RepoRoot = roots[0].Path
-	} else {
-		s.Roots = map[string]string{}
-		for _, r := range roots {
-			s.Roots[r.Name] = r.Path
-		}
+	s := proposal.State{Source: source, Dockerfile: df, BaseImage: c.BaseImage, Roots: map[string]proposal.StateRoot{}}
+	for _, r := range a.fileRoots() {
+		s.Roots[r.Name] = proposal.StateRoot{Host: r.Path, Path: r.container()}
 	}
 	if err := proposal.WriteCurrent(c.DataDir, s); err != nil {
 		a.Note("not telling sessions what a proposal is made against: %v", err)

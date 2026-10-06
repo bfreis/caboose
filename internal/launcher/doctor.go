@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -286,17 +287,14 @@ func (a *App) doctorConfig(c *checkup) bool {
 	}
 	switch err := cfg.CheckImages(); {
 	case errors.Is(err, config.ErrTwoBases):
-		c.problem("image", "remove base_image from "+cfg.EnvDir+"/"+config.FileName+" (or unset CABOOSE_BASE_IMAGE), or move "+cfg.ImageDir+" away",
-			"the environment has %s, and CABOOSE_BASE_IMAGE names '%s': which to build on would be a guess", cfg.ImageDir, cfg.BaseImage)
+		c.problem("image", "remove base from [image] in "+cfg.EnvDir+"/"+config.FileName+", or move "+cfg.ImageDir+" away",
+			"the environment has %s, and base in [image] names '%s': which to build on would be a guess", cfg.ImageDir, cfg.BaseImage)
 	case err != nil:
-		c.problem("image", "unset CABOOSE_IMAGE (the default is caboose), or give it a tag of its own",
-			"CABOOSE_BASE_IMAGE names the same image as CABOOSE_IMAGE ('%s'): the build would build over its own base", cfg.Image)
+		c.problem("image", "name the image to build on in base in [image]",
+			"base in [image] names the environment's own image ('%s'): the build would build over its own base", cfg.Image)
 	}
 	a.doctorRunArgs(c)
 	a.doctorHostExec(c)
-	if err := checkIsolation(cfg); err != nil {
-		c.problem("isolation", "fix "+isolationOrigin(cfg), "%v", err)
-	}
 	if err := cfg.ResolveRoots(); err != nil {
 		c.problem("roots", "point the roots at directories that exist ("+cfg.RootsOrigin()+")", "%s", firstLine(err.Error()))
 		return false
@@ -309,15 +307,15 @@ func (a *App) doctorConfig(c *checkup) bool {
 // that widen what the sandbox reaches: theirs to choose, but never unseen.
 func (a *App) doctorRunArgs(c *checkup) {
 	cfg := a.Cfg
-	if len(cfg.DockerRunArgs) == 0 {
+	if len(cfg.RunArgs) == 0 {
 		return
 	}
-	if err := checkRunArgs(cfg.DockerRunArgs, nil, cfg.Roots); err != nil {
+	if err := checkRunArgs(cfg.RunArgs, nil, cfg.Roots); err != nil {
 		c.problem("run args", "fix "+runArgsOrigin(cfg), "%v", err)
 		return
 	}
-	c.ok("run args", "%s (%s)", describeRunArgs(cfg.DockerRunArgs), runArgsOrigin(cfg))
-	if w := wideningRunArgs(cfg.DockerRunArgs); len(w) > 0 {
+	c.ok("run args", "%s (%s)", describeRunArgs(cfg.RunArgs), runArgsOrigin(cfg))
+	if w := wideningRunArgs(cfg.RunArgs); len(w) > 0 {
 		c.note("run args", "%s widen what the sandbox reaches of this host, beyond what caboose gives it", strings.Join(w, " "))
 	}
 }
@@ -372,11 +370,11 @@ func (a *App) doctorSandbox(c *checkup) {
 				envCommand(a.Cfg.Env, "sandbox-config update"), plural(len(pending), "it", "them"))
 		}
 	}
-	have := a.rootNames()
+	have := a.rootPaths()
 	for _, r := range sb.Roots {
 		if !slices.Contains(have, r) {
 			c.problem("roots", SetupCommand(a.Cfg.Env, "roots"),
-				"the sandbox config expects a root named %s, which this machine has not: the synced memory of its projects is never read here", r)
+				"the sandbox config expects a root at %s, which none of this machine's configured roots is at: the synced memory of its projects is never read here", r)
 		}
 	}
 }
@@ -455,14 +453,14 @@ func (a *App) doctorImage(c *checkup) {
 	}
 	labels, exists, err := a.images().ImageLabels(cfg.Image)
 	if err != nil && !exists {
-		c.problem("image", "check CABOOSE_IMAGE (or image in config.toml)", "cannot inspect '%s': %v", cfg.Image, err)
+		c.problem("image", "check that docker runs ('docker info')", "cannot inspect '%s': %v", cfg.Image, err)
 		return
 	}
 	built := or(labels[assets.LabelVersion], "unknown")
 	switch st := a.imageStatus(labels, exists); st.state {
 	case imageMissing:
-		if cfg.NoAutoBuild != "" {
-			c.problem("image", "caboose build", "'%s' is not built, and CABOOSE_NO_AUTO_BUILD keeps a launch from building it", cfg.Image)
+		if !cfg.AutoBuild {
+			c.problem("image", "caboose build", "'%s' is not built, and auto_build = false in [image] keeps a launch from building it", cfg.Image)
 			return
 		}
 		c.note("image", "'%s' is not built yet; the first launch builds it (or 'caboose build' now)", cfg.Image)
@@ -556,8 +554,8 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 				c.note("timezone", "the %s has %s, the host %s now; new sessions get %s anyway, and 'caboose restart' realigns it",
 					a.noun(), or(tz, "UTC"), host, host)
 			}
-			if keep != "" && keep != cfg.KeepVersions {
-				c.note("versions", "the %s keeps %s Claude Code versions, the configuration %s; 'caboose restart' picks that up",
+			if keep != "" && keep != strconv.Itoa(cfg.KeepVersions) {
+				c.note("versions", "the %s keeps %s Claude Code versions, the configuration %d; 'caboose restart' picks that up",
 					a.noun(), keep, cfg.KeepVersions)
 			}
 			// Under vm the "docker" row is this machine's engine, which
@@ -566,7 +564,7 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 			if sock == "sock" && a.isVM() {
 				c.ok("dockerd", "in the VM, its own, not this machine's; its images on a disk that caboose restart keeps")
 			} else if sock == "sock" {
-				c.note("docker", "the host's docker socket is mounted: root-equivalent access to this host (unset CABOOSE_DOCKER_SOCK and 'caboose restart' to undo)")
+				c.note("docker", "the host's docker socket is mounted: root-equivalent access to this host (remove engine_socket from the isolation profile and 'caboose restart' to undo)")
 			}
 		}
 	}
@@ -763,7 +761,7 @@ func holds(agentKeys []string, pub string) bool {
 func (a *App) doctorSync(c *checkup, remoteWhy string) {
 	s := a.newSyncer(nil)
 	if !s.MaybeRemote() {
-		if a.Cfg.AutoSync != "" {
+		if a.Cfg.AutoSync {
 			c.note("sync", "auto_sync is on, but no remote is set; 'caboose sync --remote URL' sets one")
 			return
 		}
@@ -782,7 +780,7 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 	defer unlock()
 
 	auto := "auto_sync off"
-	if a.Cfg.AutoSync != "" {
+	if a.Cfg.AutoSync {
 		auto = "auto_sync on"
 	}
 	c.ok("sync", "%s, %s", or(s.RemoteHint(), "a remote is set"), auto)
@@ -867,7 +865,7 @@ func (a *App) doctorPending(c *checkup, p *statesync.Pending) {
 
 // syncHow says what will sync, for a note about something waiting to.
 func (a *App) syncHow() string {
-	if a.Cfg.AutoSync != "" {
+	if a.Cfg.AutoSync {
 		return "the next launch with nothing running syncs, or 'caboose sync'"
 	}
 	return "'caboose sync' syncs"

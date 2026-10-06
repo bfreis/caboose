@@ -18,7 +18,7 @@ import (
 
 // isolations are what a scenario about the sandbox runs under: each has
 // its own words for it, and its own image store.
-var isolations = []string{isolationDocker, isolationGVisor, isolationVM}
+var isolations = []string{isolationContainer, isolationGVisor, isolationVM}
 
 // boxImageID is the ID of the image a boxApp has.
 const boxImageID = "sha256:0123456789abcdef0123"
@@ -74,7 +74,7 @@ exit 99
 	}
 	b.App = &App{
 		Cfg: &config.Config{Env: "default", Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
-			DataDir: b.data, KeepVersions: "2", ReadyTimeout: "0", Isolation: iso, Getenv: func(string) string { return "" }},
+			DataDir: b.data, KeepVersions: 2, ReadyTimeout: 0, Egress: true, Isolation: iso, Getenv: func(string) string { return "" }},
 		Docker:   &docker.CLI{Path: fake},
 		HostPart: func() string { return "laptop" },
 		Backend:  box,

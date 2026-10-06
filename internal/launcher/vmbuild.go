@@ -57,7 +57,7 @@ func (a *App) buildVM(extra []string) error {
 	switch {
 	case byo:
 		req.BaseRef = base
-		a.Note("pulling base image '%s' (CABOOSE_BASE_IMAGE) in the builder when it lacks it", base)
+		a.Note("pulling base image '%s' (base in [image]) in the builder when it lacks it", base)
 	case c.ImageDir != "":
 		// Before the build, so that the label never claims an edit made
 		// while it ran.

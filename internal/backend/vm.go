@@ -105,7 +105,7 @@ func (v *VM) Create(s Spec) error {
 	case s.Runtime != "":
 		return fmt.Errorf("a VM has no runtime to choose (%s)", s.Runtime)
 	case len(s.RunArgs) > 0:
-		return errors.New("docker_run_args means nothing to a VM: vm_cpus and vm_memory size it")
+		return errors.New("docker run arguments mean nothing to a VM")
 	case len(s.Groups) > 0:
 		return errors.New("a VM's user takes no host groups")
 	}
@@ -264,8 +264,7 @@ func (v *VM) Start() error {
 	if err := v.Host.NewScratch(v.Dir.Scratch()); err != nil {
 		return fmt.Errorf("the VM's scratch disk: %w", err)
 	}
-	// A state from before Volumes was recorded names none, and boots its
-	// disks as they are.
+	// The volumes' disks follow the scratch disk, after the image's root.
 	for i, name := range st.Volumes {
 		if 2+i >= len(st.Machine.Disks) {
 			break

@@ -72,8 +72,8 @@ func TestContainerStateAbsentWhenDockerFails(t *testing.T) {
 }
 
 func TestParseLabels(t *testing.T) {
-	got, err := ParseLabels(`{"io.github.bfreis.caboose.version":"v1.2.3","a":""}`)
-	want := map[string]string{"io.github.bfreis.caboose.version": "v1.2.3", "a": ""}
+	got, err := ParseLabels(`{"dev.bfreis.caboose.version":"v1.2.3","a":""}`)
+	want := map[string]string{"dev.bfreis.caboose.version": "v1.2.3", "a": ""}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, %v", got, err)
 	}

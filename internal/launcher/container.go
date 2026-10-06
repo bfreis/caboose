@@ -3,12 +3,14 @@ package launcher
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +45,20 @@ func (a *App) warnIfImageDrifted() {
 	}
 }
 
+// missingLabel says that the container records no value for label, which
+// every container this caboose creates does (even an empty one), or ""
+// when it does, or the labels cannot be read. what names it for the user.
+func (a *App) missingLabel(label, what string) string {
+	labels, err := a.box().Labels()
+	if err != nil {
+		return ""
+	}
+	if _, ok := labels[label]; ok {
+		return ""
+	}
+	return fmt.Sprintf("the container records no %s, which a container made by this caboose always does", what)
+}
+
 // compatOf is assets.Compat as the launcher that built an image had it, from
 // the image's labels. ok is false when that cannot be told: no label (an
 // image caboose build did not make) or one that is not a number.
@@ -53,11 +69,17 @@ func compatOf(labels map[string]string) (compat int, ok bool) {
 
 // containerCompat is compatOf the container, whose labels are its image's
 // as it was created from it; ok is false when that cannot be told (no
-// container, docker not answering).
+// container, docker not answering). A container with labels but no compat
+// one is compat 0.
 func (a *App) containerCompat() (compat int, ok bool) {
 	labels, err := a.box().Labels()
 	if err != nil {
 		return 0, false
+	}
+	if _, has := labels[assets.LabelCompat]; !has {
+		// Every container this caboose makes carries it: one without is
+		// from an older caboose, which compat 0 refuses.
+		return 0, labels != nil
 	}
 	return compatOf(labels)
 }
@@ -100,26 +122,45 @@ func (a *App) checkExisting() error {
 	return nil
 }
 
-// mountedRoots are the roots the container actually has mounted under
-// /work, or nil when the container does not exist yet -- in which case the
-// configured ones are about to become the truth anyway.
+// mountedRoots are the roots the container actually has mounted -- its
+// mounts at the container paths its LabelRoots names -- or nil when the
+// container does not exist yet, in which case the configured ones are
+// about to become the truth anyway.
 //
-// The roots are bind-mounted when the container is created, so changing
-// them afterwards does not move the mounts. Ask the container what it
-// actually has rather than trusting this process's values: read as it is,
-// that puts its sessions where it has their projects.
+// The roots are mounted when the container is created, so changing them
+// afterwards does not move the mounts. Ask the container what it actually
+// has rather than trusting this process's values: read as it is, that puts
+// its sessions where it has their projects.
 func (a *App) mountedRoots() []config.Root {
+	labels, err := a.box().Labels()
+	if err != nil || labels == nil {
+		return nil
+	}
+	var paths []string
+	if json.Unmarshal([]byte(labels[assets.LabelRoots]), &paths) != nil {
+		return nil
+	}
 	mounts, err := a.box().Mounts()
 	if err != nil {
 		return nil
 	}
 	var roots []config.Root
 	for _, m := range mounts {
-		if m.Target == config.WorkDir || strings.HasPrefix(m.Target, config.WorkDir+"/") {
+		if slices.Contains(paths, m.Target) {
 			roots = append(roots, config.Root{Host: m.Source, Container: m.Target})
 		}
 	}
 	return roots
+}
+
+// rootsLabel is LabelRoots' value for roots.
+func rootsLabel(roots []config.Root) string {
+	paths := []string{}
+	for _, r := range roots {
+		paths = append(paths, r.Container)
+	}
+	b, _ := json.Marshal(paths)
+	return string(b)
 }
 
 // visibleRoots are the roots as seen from inside: mounted, or configured
@@ -138,7 +179,7 @@ func (a *App) visibleRoots() []config.Root {
 // opaque "no such directory" for a container path the user never typed.
 //
 // origin is config.RootsOrigin for configured. The messages say what the
-// repo root is and where its value came from, because the default is one
+// roots are and where they came from, because the default is one
 // person's layout and a new user meets this having never heard of it.
 // noun is what the sandbox is called (App.noun).
 func CheckInsideRoot(dir string, mounted, configured []config.Root, origin, noun string) (string, error) {
@@ -162,15 +203,15 @@ func CheckInsideRoot(dir string, mounted, configured []config.Root, origin, noun
 			dir, plural(len(roots), "root", "roots"), noun, config.DescribeRoots(roots), noun,
 			config.DescribeRoots(configured), origin, mounts, noun, plural(len(roots), "it", "them"))
 		if _, ok := config.ContainerPath(configured, dir); !ok {
-			msg += "\n       That alone would not do: " + dir + " is outside the current value too.\n" + config.RepoRootHelp
+			msg += "\n       That alone would not do: " + dir + " is outside the current value too.\n" + config.RootsHelp
 		}
 		return "", Die("%s", msg)
 	}
-	what := "the mounted repo root"
-	if len(roots) > 1 || roots[0].Container != config.WorkDir {
+	what := "the mounted root"
+	if len(roots) > 1 {
 		what = "every mounted root"
 	}
-	return "", Die("%s is outside %s, %s (%s).\n%s", dir, what, config.DescribeRoots(roots), origin, config.RepoRootHelp)
+	return "", Die("%s is outside %s, %s (%s).\n%s", dir, what, config.DescribeRoots(roots), origin, config.RootsHelp)
 }
 
 // containerDir is where the container sees host dir, or the error saying
@@ -260,9 +301,7 @@ func (a *App) syncSandboxInstructions() error {
 	// describes what is visible from inside, which a root changed since
 	// creation does not alter.
 	roots := a.visibleRoots()
-	// As the link offers it, which rereads config.toml: a value that does
-	// not parse is off there too, until it is fixed.
-	hostExec, _ := config.CheckHostExec(a.Cfg.HostExec)
+	hostExec := a.Cfg.HostExec
 	// The checkout's copy wins so that an edit needs no rebuild -- but the
 	// placeholders are this binary's to fill, and a pull can bring a copy
 	// with one it predates. Installing @@SOMETHING@@ literally would mislead
@@ -303,7 +342,7 @@ func (a *App) createContainer(mayBuild bool) error {
 	}
 	// Before a build that may take minutes; again below, with the mounts.
 	// Under vm there are no docker run arguments at all (checkVM).
-	if err := checkRunArgs(c.DockerRunArgs, nil, c.Roots); err != nil && !a.isVM() {
+	if err := checkRunArgs(c.RunArgs, nil, c.Roots); err != nil && !a.isVM() {
 		return a.runArgsError(err)
 	}
 	if err := a.checkRuntime(); err != nil {
@@ -328,7 +367,7 @@ func (a *App) createContainer(mayBuild bool) error {
 		Cmd:      []string{"--cc-supervise"},
 		Hostname: a.hostname(),
 		Env: []string{
-			"CABOOSE_KEEP_VERSIONS=" + c.KeepVersions,
+			"CABOOSE_KEEP_VERSIONS=" + strconv.Itoa(c.KeepVersions),
 			// On a stop, tini (the docker backend's --init, which reaps
 			// the zombies a long-lived container accumulates from agents,
 			// MCP servers and tool subprocesses) signals the entrypoint's
@@ -356,10 +395,9 @@ func (a *App) createContainer(mayBuild bool) error {
 		spec.Env = append(spec.Env, "TZ="+tz)
 	}
 
-	if sock := DockerSockPath(c.DockerSock, a.getenv("DOCKER_HOST")); sock != "" && a.isVM() {
-		// A Unix socket does not cross virtio-fs.
-		a.Note("CABOOSE_DOCKER_SOCK is set, but a VM cannot reach this machine's docker socket: not mounting it")
-	} else if sock != "" {
+	// A vm profile has no engine_socket: a Unix socket does not cross
+	// virtio-fs.
+	if sock := DockerSockPath(c.EngineSocket, a.getenv("DOCKER_HOST")); sock != "" && !a.isVM() {
 		if isSocket(sock) {
 			spec.Mounts = append(spec.Mounts, backend.Mount{Source: sock, Target: "/var/run/docker.sock"})
 			// On a Linux host the socket is root:docker 0660, so the
@@ -372,10 +410,10 @@ func (a *App) createContainer(mayBuild bool) error {
 			}
 			a.Note("WARNING: mounting %s into the container.", sock)
 			a.Note("         that is root-equivalent access to this host, and the")
-			a.Note("         sandbox boundary no longer holds. unset CABOOSE_DOCKER_SOCK")
+			a.Note("         sandbox boundary no longer holds. remove %s", c.ProfileKey("engine_socket"))
 			a.Note("         and caboose restart to undo it.")
 		} else {
-			a.Note("CABOOSE_DOCKER_SOCK is set but '%s' is not a socket; not mounting it", sock)
+			a.Note("%s is set but '%s' is not a socket; not mounting it", c.ProfileKey("engine_socket"), sock)
 		}
 	}
 
@@ -415,10 +453,12 @@ func (a *App) createContainer(mayBuild bool) error {
 		backend.Mount{Source: d + "/" + datadir.ProposalsDir, Target: proposal.ContainerDir},
 	)
 	// Each root at a path of its own that is the same on every machine:
-	// /work, or /work/<name> for several (config.WorkDir).
+	// /work/<name> (config.WorkDir), or its long form's, and labelled so
+	// that mountedRoots tells them from the other mounts.
 	for _, r := range c.Roots {
 		spec.Mounts = append(spec.Mounts, backend.Mount{Source: r.Host, Target: r.Container})
 	}
+	spec.Labels = append(spec.Labels, assets.LabelRoots+"="+rootsLabel(c.Roots))
 	// The runtime and the user it needs, probed against the image just
 	// ensured (isolation.go).
 	if err := a.isolate(&spec); err != nil {
@@ -429,16 +469,16 @@ func (a *App) createContainer(mayBuild bool) error {
 	// The user's own arguments, last, so they are checked against all of
 	// caboose's, and labelled, so a change to them shows (runargs.go).
 	if !a.isVM() {
-		if err := checkRunArgs(c.DockerRunArgs, backend.RunArgv(c.Container, spec), c.Roots); err != nil {
+		if err := checkRunArgs(c.RunArgs, backend.RunArgv(c.Container, spec), c.Roots); err != nil {
 			return a.runArgsError(err)
 		}
-		if len(c.DockerRunArgs) > 0 {
-			a.Note("creating the container with docker run arguments %s (%s)", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
-			spec.RunArgs = c.DockerRunArgs
+		if len(c.RunArgs) > 0 {
+			a.Note("creating the container with docker run arguments %s (%s)", describeRunArgs(c.RunArgs), runArgsOrigin(c))
+			spec.RunArgs = c.RunArgs
 		}
 	}
 	spec.Labels = append(spec.Labels, assets.LabelHostname+"="+spec.Hostname)
-	spec.Labels = append(spec.Labels, assets.LabelRunArgs+"="+runArgsLabel(c.DockerRunArgs))
+	spec.Labels = append(spec.Labels, assets.LabelRunArgs+"="+runArgsLabel(c.RunArgs))
 	if a.isVM() {
 		// Level 3: dockerd in the guest, which the entrypoint starts when
 		// the image has one, its storage on a disk kept across restarts
@@ -464,7 +504,7 @@ func (a *App) createContainer(mayBuild bool) error {
 // included, with its log on stderr since stdout is claude's. It builds with
 // no tty too: a first `caboose claude -p` in a script has no one to ask, and
 // failing it would only defer the same build to the next run.
-// CABOOSE_NO_AUTO_BUILD restores the error, for anyone who would rather
+// auto_build = false in [image] restores the error, for anyone who would rather
 // build (or pull) deliberately.
 //
 // mayBuild is false for the commands that only look after a container --
@@ -476,7 +516,7 @@ func (a *App) createContainer(mayBuild bool) error {
 // even look up (an invalid name), which a build would only reject later.
 //
 // An image that exists but was built on another base than the configured
-// one -- CABOOSE_BASE_IMAGE set, unset or changed since, compared as
+// one -- [image] base set, unset or changed since, compared as
 // classifyImage does -- is rebuilt the same way: the user changed the base
 // and ran a command that creates the container, so creating it on the old
 // base, with a warning, would be doing the opposite of what they asked.
@@ -484,7 +524,7 @@ func (a *App) createContainer(mayBuild bool) error {
 // embeds a different Dockerfile or layer, another host user) stays a
 // warning: nobody asked for that rebuild, and it takes minutes. This is
 // only ever reached with no container (createContainer), so no rebuild
-// moves an image out from under a running one. CABOOSE_NO_AUTO_BUILD and
+// moves an image out from under a running one. auto_build = false and
 // !mayBuild refuse instead, naming both bases: going ahead on the old one
 // is the silent mistake this exists to prevent.
 //
@@ -519,7 +559,7 @@ func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 		// launch does not ignore.
 		st := a.imageStatus(labels, exists)
 		drifted := st.state == imageStale && !st.keep && !st.switched()
-		if drifted && (c.NoAutoBuild != "" || !mayBuild) || !drifted && !st.switched() {
+		if drifted && (!c.AutoBuild || !mayBuild) || !drifted && !st.switched() {
 			a.warnIfStale(labels, st)
 			return labels, nil
 		}
@@ -528,35 +568,28 @@ func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 			why = fmt.Sprintf("image '%s' is out of date (built by %s, %s)", c.Image, or(labels[assets.LabelVersion], "unknown"), st.reason)
 		}
 		switch {
-		case c.NoAutoBuild != "":
+		case !c.AutoBuild:
 			return nil, Die("%s —\n"+
 				"       run 'caboose build' to rebuild it on that base first\n"+
-				"       (CABOOSE_NO_AUTO_BUILD is set, so a launch does not rebuild it)", why)
+				"       (auto_build in [image] is false, so a launch does not rebuild it)", why)
 		case !mayBuild:
 			return nil, Die("%s,\n"+
 				"       and there is no %s yet — run caboose in a project (it rebuilds the image first)\n"+
 				"       or 'caboose build'", why, a.noun())
 		}
 		a.Note("%s — rebuilding", why)
-		a.Note("%s; a few minutes, and CABOOSE_NO_AUTO_BUILD=1 turns this off.", a.buildNote())
+		a.Note("%s; a few minutes, and auto_build = false in [image] turns this off.", a.buildNote())
 	} else {
 		switch {
-		case c.NoAutoBuild != "":
+		case !c.AutoBuild:
 			return nil, Die("image '%s' not found — run 'caboose build' first\n"+
-				"       (CABOOSE_NO_AUTO_BUILD is set, so a launch does not build it)", c.Image)
+				"       (auto_build in [image] is false, so a launch does not build it)", c.Image)
 		case !mayBuild:
 			return nil, Die("no %s yet, and no image '%s' to create it from — run caboose in a project\n"+
 				"       (it builds the image first) or 'caboose build'", a.noun(), c.Image)
 		}
 		a.Note("no image '%s' yet — %s", c.Image, a.buildNote())
-		a.Note("(a few minutes, once; CABOOSE_NO_AUTO_BUILD=1 turns this off).")
-		// A name with a registry in it was probably meant to be pulled.
-		// Building under it is what caboose build would do too, but say so,
-		// since the image that results is this launcher's, not the
-		// registry's.
-		if strings.Contains(c.Image, "/") {
-			a.Note("'%s' is not in the local store; to use the registry's image instead, ^C and 'docker pull' it.", c.Image)
-		}
+		a.Note("(a few minutes, once; auto_build = false in [image] turns this off).")
 	}
 	if err := a.build(nil, a.Stderr); err != nil {
 		return nil, err
@@ -648,10 +681,7 @@ func (a *App) noteInstall(local, platform string) {
 }
 
 func (a *App) waitUntilReady() error {
-	timeout, err := a.Cfg.ReadyTimeoutSeconds()
-	if err != nil {
-		return Die("%v", err)
-	}
+	timeout := a.Cfg.ReadyTimeout
 	if v, ok := a.box().(*backend.VM); ok {
 		return a.waitVMReady(v, timeout)
 	}
@@ -665,7 +695,7 @@ func (a *App) waitUntilReady() error {
 		if waited >= timeout {
 			a.Note("not ready after %ds; last log lines:", timeout)
 			a.lastLogLines()
-			return Die("giving up (raise CABOOSE_READY_TIMEOUT if the install is just slow)")
+			return Die("giving up (raise ready_timeout in [session] if the install is just slow)")
 		}
 		// An install is said at once; anything else only once it is slow.
 		switch in := a.install; {
@@ -694,7 +724,7 @@ func (a *App) waitVMReady(v *backend.VM, timeout int) error {
 		a.Note("the sandbox's VM is not ready: %v", err)
 		a.Note("last lines of its console:")
 		a.lastLogLines()
-		return Die("startup failed (raise CABOOSE_READY_TIMEOUT if the install is just slow)")
+		return Die("startup failed (raise ready_timeout in [session] if the install is just slow)")
 	}
 	return nil
 }
@@ -779,7 +809,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 // The entire point of the long-lived container is that sessions -- and the
 // background agents inside them -- outlive any one terminal. So the two
 // commands that destroy them say what they are about to kill and ask first.
-// FORCE=1 skips the prompt, which is the same escape hatch tests/run.sh uses
+// CABOOSE_FORCE=1 skips the prompt, which is the same escape hatch tests/run.sh uses
 // and what lets the suite drive caboose restart unattended. With no tty they
 // refuse outright rather than assume.
 func (a *App) confirmSessionLoss(action string) error {
@@ -792,14 +822,14 @@ func (a *App) confirmSessionLoss(action string) error {
 	}
 	a.Note("%s will kill these live session(s):", action)
 	fmt.Fprint(a.Stderr, indent(sessions+"\n", "  "))
-	if a.getenv("FORCE") != "" {
-		a.Note("FORCE=1 set, continuing.")
+	if a.force() {
+		a.Note("CABOOSE_FORCE=1 set, continuing.")
 		return nil
 	}
 	yes, asked := a.askYes("continue?")
 	switch {
 	case !asked:
-		return Die("refusing to %s non-interactively with live sessions (set FORCE=1 to override)", action)
+		return Die("refusing to %s non-interactively with live sessions (set CABOOSE_FORCE=1 to override)", action)
 	case !yes:
 		return Die("aborted; nothing was changed")
 	}

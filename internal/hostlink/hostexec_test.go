@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -406,5 +407,18 @@ func TestHostExecThroughAgent(t *testing.T) {
 	code, err = agent.HostExec(context.Background(), off, []string{"true"}, "/work", agentproto.ExecIO{})
 	if code != agentproto.ExitCannotRun || err == nil || err.Error() != agentproto.HostExecOff {
 		t.Fatalf("with host_exec off: %d %v", code, err)
+	}
+}
+
+// The hello names the container paths of the roots the host relays
+// changes under, wherever each is mounted: the agent touches nothing
+// outside them.
+func TestHelloNamesRelayRoots(t *testing.T) {
+	a := startExecHost(t, Config{Relay: []Root{{Host: t.TempDir(), Container: "/work/dev"}, {Host: t.TempDir(), Container: "/opt/tools"}}})
+	if want := []string{"/work/dev", "/opt/tools"}; !slices.Equal(a.hello.Roots, want) {
+		t.Errorf("hello roots %q, want %q", a.hello.Roots, want)
+	}
+	if a := startExecHost(t, Config{}); a.hello.Roots != nil {
+		t.Errorf("no relay, hello roots %q", a.hello.Roots)
 	}
 }

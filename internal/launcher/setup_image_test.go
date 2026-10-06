@@ -155,60 +155,44 @@ func TestSetupImageOldOrNoPreset(t *testing.T) {
 		"2 [x] Bun", "  - FROM mine\n")
 }
 
-// CABOOSE_BASE_IMAGE: from config.toml it can be kept, or given up for
-// caboose's own image, which removes it from the file; from the shell it
-// is only said.
+// [image] base: it can be kept, or given up for caboose's own image, which
+// removes it from the file.
 func TestSetupImageFromBaseImage(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
-	e.writeConfig("base_image = \"node:22\"\n")
+	e.writeConfig("[image]\nbase = \"node:22\"\n")
 	e.a.Cfg.BaseImage = "node:22"
 	if err := e.run("\n", "image"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("Now: your own image, 'node:22' (CABOOSE_BASE_IMAGE).\n", "? Keep building on 'node:22'? [Y/n] ", "· Nothing changed")
+	e.wantOut("Now: your own image, 'node:22' (base in [image]).\n", "? Keep building on 'node:22'? [Y/n] ", "· Nothing changed")
 
 	// Give it up for the default image, written into the dir; no build.
 	if err := e.run("n\n2\nn\n", "image"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	if f := e.file(); f.Vals["BASE_IMAGE"] != "" {
+	if f := e.file(); f.Has("image.base") {
 		t.Errorf("base_image still set: %+v", f.Vals)
 	}
 	if e.a.Cfg.BaseImage != "" || e.dockerfile() != preset(t, assets.DefaultSections()...) {
 		t.Errorf("BaseImage %q, Dockerfile:\n%s", e.a.Cfg.BaseImage, e.dockerfile())
 	}
-	e.wantOut("1 Build from the Dockerfile built into caboose\n", "✓ Removed base_image from "+e.configPath())
+	e.wantOut("1 Build from the Dockerfile built into caboose\n", "✓ Removed base from [image] in "+e.configPath())
 }
 
 func TestSetupImageBaseImageToEmbedded(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
-	e.writeConfig("base_image = \"node:22\"\n")
+	e.writeConfig("[image]\nbase = \"node:22\"\n")
 	e.a.Cfg.BaseImage = "node:22"
 	if err := e.run("n\n\nn\n", "image"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	if f := e.file(); f.Vals["BASE_IMAGE"] != "" {
+	if f := e.file(); f.Has("image.base") {
 		t.Errorf("base_image still set: %+v", f.Vals)
 	}
 	if _, err := os.Stat(e.imageDir()); err == nil {
 		t.Error("wrote an image dir")
 	}
 	e.wantOut("? Build the image now")
-}
-
-func TestSetupImageBaseImageFromTheShell(t *testing.T) {
-	e := newSetupEnv(t, "default", "", false)
-	e.a.Cfg.BaseImage = "node:22"
-	e.a.Cfg.Getenv = func(k string) string {
-		if k == "CABOOSE_BASE_IMAGE" {
-			return "node:22"
-		}
-		return ""
-	}
-	if err := e.run("", "image"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	e.wantOut("! CABOOSE_BASE_IMAGE is set in this shell; unset it to build on anything else.", "· Nothing changed")
 }
 
 func TestSetupImageTwoBases(t *testing.T) {
@@ -227,7 +211,7 @@ func TestSetupImageBuildFails(t *testing.T) {
 	if err := e.run("2\n\n", "image"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("caboose: building the base image 'caboose-base' from "+filepath.Join(e.imageDir(), "Dockerfile"),
+	e.wantOut("caboose: building the base image 'caboose-base:default' from "+filepath.Join(e.imageDir(), "Dockerfile"),
 		"✗ The build failed (above). Fix what it says, then run caboose build.")
 }
 

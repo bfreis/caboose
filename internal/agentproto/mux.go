@@ -39,8 +39,8 @@ const (
 	// MaxPayload is the most a frame carries; a control message must fit.
 	MaxPayload = 64 << 10
 	// DefaultWindow is how much a stream may have in flight, unread, to a
-	// side that announced no window of its own in its hello: an agent or
-	// a host from before the window was announced.
+	// side that announced no window of its own in its hello, or whose hello
+	// has not been read yet.
 	DefaultWindow = 256 << 10
 	// HostWindow and AgentWindow are what each side's streams receive in
 	// flight, unread, and announce in their hello (Message.Window). The
@@ -55,7 +55,7 @@ const (
 	// grantAt is how much a stream reads before granting it back. It is
 	// fixed, not half the window, since the peer may be using less than
 	// this side's window: DefaultWindow, until it has read this side's
-	// hello, or for good when it is older.
+	// hello.
 	grantAt = DefaultWindow / 2
 	// MaxStreams is how many streams may be open at once.
 	MaxStreams = 256

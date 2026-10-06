@@ -99,7 +99,7 @@ func Ports(socket string, w io.Writer) error {
 
 // ErrNoProxy is a connect while nothing serves the outbound proxy.
 var ErrNoProxy = errors.New("caboose's outbound proxy is off: no host is linked to this sandbox right now, " +
-	"or egress_proxy is off (config.toml on the host), or the sandbox is not under isolation vm")
+	"or egress is off in the vm profile (config.toml on the host), or the sandbox is not under isolation vm")
 
 // connectTimeout bounds the proxy's answer to a CONNECT: above its own
 // wait for the host.

@@ -1,7 +1,7 @@
 # check=skip=InvalidDefaultArgInFrom,UndefinedVar
 # The caboose layer: what turns a base image into the sandbox. The base is
 # either the embedded Dockerfile's image (built first, and tagged
-# <CABOOSE_IMAGE>-base) or CABOOSE_BASE_IMAGE, the user's own; the launcher
+# caboose-base:<env>) or the `base` of config.toml's [image], the user's own; the launcher
 # builds this FROM it, and only after the image check has passed.
 #
 # It installs nothing. The base is the user's to fill (see the README's
@@ -80,7 +80,7 @@ ENV PATH=/home/agent/.local/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin
 
 # Stock images tend to leave LANG unset, so LC_CTYPE is POSIX. The tmux path
 # gets away with it because the launcher passes `tmux -u`, but
-# CABOOSE_NO_TMUX=1 has no equivalent -- which would make the one path you
+# `tmux = false` has no equivalent -- which would make the one path you
 # reach for when rendering looks wrong the one path guaranteed to mangle
 # box-drawing characters. It also leaves every non-Python subprocess in the C locale
 # (Python 3 coerces itself out of it, per PEP 538). C.UTF-8 is built into

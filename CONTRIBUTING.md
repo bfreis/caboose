@@ -41,7 +41,7 @@ The integration suite drives the real launcher against a real container
 and data dir, the `test` environment's (`CABOOSE_ENV`, which it sets to
 `test` when unset, so a bare `tests/run.sh` never touches yours either): it
 recreates that container, so it refuses to start while it has any session
-unless `FORCE=1`. It cannot run from inside the sandbox, which has no host
+unless `CABOOSE_FORCE=1`. It cannot run from inside the sandbox, which has no host
 docker. `make test-byo` is kept out of `make test` because it is slow:
 it builds a Debian and an Alpine test image, runs a session on each against
 one throwaway data dir, and so installs Claude Code once per platform. It

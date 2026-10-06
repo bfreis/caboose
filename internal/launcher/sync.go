@@ -136,7 +136,7 @@ func (a *App) newSyncer(g *syncGit) *statesync.Syncer {
 	return &statesync.Syncer{
 		DataDir:  a.Cfg.DataDir,
 		Host:     host,
-		Defaults: sandboxcfg.Default(a.rootNames()),
+		Defaults: sandboxcfg.Default(a.rootPaths()),
 		Git:      g.command, // on a nil g, a call panics rather than run host git
 		GitDir:   statesync.ContainerDir,
 	}
@@ -170,7 +170,7 @@ type live struct {
 	// sessions are the tmux sessions.
 	sessions []string
 	// others counts the Claude Code processes in none of them: a
-	// CABOOSE_NO_TMUX session or a `caboose claude -p` run (plain docker execs),
+	// session with tmux = false or a `caboose claude -p` run (plain docker execs),
 	// or a background supervisor.
 	others int
 }
@@ -184,7 +184,7 @@ func (l live) describe() string {
 		fmt.Fprintf(&b, "  %s\n", s)
 	}
 	if l.others > 0 {
-		fmt.Fprintf(&b, "  %d Claude Code %s outside tmux (CABOOSE_NO_TMUX, caboose claude -p, background agents)\n",
+		fmt.Fprintf(&b, "  %d Claude Code %s outside tmux (tmux = false, caboose claude -p, background agents)\n",
 			l.others, plural(l.others, "process", "processes"))
 	}
 	return b.String()
@@ -248,24 +248,24 @@ func (a *App) liveWork() (live, error) {
 }
 
 // refuseLiveSessions stops a sync while anything in the container could be
-// writing the files it merges. FORCE=1 overrides, as it does for caboose
+// writing the files it merges. CABOOSE_FORCE=1 overrides, as it does for caboose
 // restart.
 func (a *App) refuseLiveSessions() error {
 	l, err := a.liveWork()
-	if err != nil && a.getenv("FORCE") == "" {
-		return Die("%v; refusing to sync (set FORCE=1 to sync anyway)", err)
+	if err != nil && !a.force() {
+		return Die("%v; refusing to sync (set CABOOSE_FORCE=1 to sync anyway)", err)
 	}
 	if l.none() {
 		return nil
 	}
-	if a.getenv("FORCE") != "" {
-		a.Note("FORCE=1 set: syncing while these run:")
+	if a.force() {
+		a.Note("CABOOSE_FORCE=1 set: syncing while these run:")
 		fmt.Fprint(a.Stderr, l.describe())
 		return nil
 	}
 	a.Note("sessions are running, and they write what a sync merges:")
 	fmt.Fprint(a.Stderr, l.describe())
-	return Die("refusing to sync; end them first (or set FORCE=1, and restart them after)")
+	return Die("refusing to sync; end them first (or set CABOOSE_FORCE=1, and restart them after)")
 }
 
 func (a *App) reportSync(r *statesync.Report) {

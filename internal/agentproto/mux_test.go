@@ -333,10 +333,9 @@ func TestHelloAnnouncesTheWindow(t *testing.T) {
 	}
 }
 
-// A peer whose hello announces no window, an older one, is sent no more
-// than DefaultWindow ahead, and gets its grants as before: in time for it
-// to go on.
-func TestOlderPeerGetsTheDefaultWindow(t *testing.T) {
+// A peer whose hello announces no window is sent no more than
+// DefaultWindow ahead, and gets its grants in time for it to go on.
+func TestPeerWithoutWindowGetsTheDefaultWindow(t *testing.T) {
 	hr, pw := io.Pipe()
 	pr, hw := io.Pipe()
 	host := NewSession(hr, hw, true)
@@ -353,7 +352,7 @@ func TestOlderPeerGetsTheDefaultWindow(t *testing.T) {
 	if n := sendable(t, st); n != DefaultWindow {
 		t.Fatalf("sent %d ahead, want %d", n, DefaultWindow)
 	}
-	// The older peer sends a whole DefaultWindow, and the host grants
+	// The peer sends a whole DefaultWindow, and the host grants
 	// before it has read all of it.
 	chunk := make([]byte, MaxPayload)
 	go func() {
@@ -367,7 +366,7 @@ func TestOlderPeerGetsTheDefaultWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if grantAt > DefaultWindow/2 {
-		t.Fatalf("grants at %d: an older peer stalls", grantAt)
+		t.Fatalf("grants at %d: a peer stalls", grantAt)
 	}
 }
 

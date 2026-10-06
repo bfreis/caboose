@@ -36,7 +36,7 @@ func newUpdateEnv(t *testing.T) *updateEnv {
 	srv.Publish(t, "v1.1.0", true, plat)
 	e := &updateEnv{t: t, srv: srv, out: &bytes.Buffer{}, err: &bytes.Buffer{},
 		env: map[string]string{"CABOOSE_RELEASES_URL": srv.Base}, now: time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)}
-	l := selfupdate.DefaultLayout(home)
+	l := selfupdate.DefaultLayout(home, filepath.Join(home, ".caboose"))
 	if err := l.Install(context.Background(), selfupdate.Source{Base: srv.Base}, "v1.0.0", runtime.GOOS, runtime.GOARCH, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -243,8 +243,8 @@ func TestUpdateSummary(t *testing.T) {
 // install.sh's layout and DefaultLayout must agree; the script is tested
 // against it in the root package.
 func TestLayoutUnderHome(t *testing.T) {
-	l := selfupdate.DefaultLayout("/h")
-	if l.Link != "/h/.local/bin/caboose" || l.Versions != "/h/.local/share/caboose/versions" {
+	l := selfupdate.DefaultLayout("/h", "/c")
+	if l.Link != "/h/.local/bin/caboose" || l.Versions != "/c/versions" {
 		t.Errorf("%+v", l)
 	}
 }

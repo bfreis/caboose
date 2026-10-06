@@ -23,23 +23,21 @@ import (
 // sessions read.
 const sandboxProblems = "sandbox-config.txt"
 
-// rootNames are the names of the configured roots, none for a single one:
-// what a sandbox config written now expects.
-func (a *App) rootNames() []string {
-	var names []string
+// rootPaths are the container paths of the configured roots: what a
+// sandbox config written now expects.
+func (a *App) rootPaths() []string {
+	var paths []string
 	for _, r := range a.Cfg.Roots {
-		if r.Name != "" {
-			names = append(names, r.Name)
-		}
+		paths = append(paths, r.Container)
 	}
-	return names
+	return paths
 }
 
 // sandboxConfig is the sandbox config in effect (datadir.LoadSandboxConfig),
 // read once per run.
 func (a *App) sandboxConfig() (*datadir.Sandbox, error) {
 	if a.sb == nil {
-		sb, err := datadir.LoadSandboxConfig(a.Cfg.DataDir, a.rootNames())
+		sb, err := datadir.LoadSandboxConfig(a.Cfg.DataDir, a.rootPaths())
 		if err != nil {
 			return nil, fmt.Errorf("reading the sandbox config: %v", err)
 		}

@@ -221,7 +221,7 @@ func (a *App) writeConfig(e config.Edit) (changed bool, err error) {
 	if string(edited) == string(data) {
 		return false, nil
 	}
-	if err := config.CheckEdit(path, edited, e); err != nil {
+	if err := config.CheckEdit(path, data, edited, e); err != nil {
 		return false, Die("cannot edit %s safely (%v);\n"+
 			"       nothing was written to it. Make this change by hand:\n%s", path, err, indent(e.Snippet(), "         "))
 	}

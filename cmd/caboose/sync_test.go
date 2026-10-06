@@ -10,17 +10,17 @@ import (
 	"github.com/bfreis/caboose/internal/statesync"
 )
 
-// syncContainer is a running, ready container "box" with no sessions,
+// syncContainer is a running, ready container "caboose-default" with no sessions,
 // mounting the sync repo at mount (the data dir's, unless a test says
-// otherwise), whose `docker exec box git ...` runs the real git on the host
+// otherwise), whose `docker exec caboose-default git ...` runs the real git on the host
 // copy, translating the container path. git is called by absolute path: the
 // launcher's own PATH has none, since the host needs no git.
 func syncContainer(git, data, mount string) string {
 	return containerRunning + `
 case "$*" in
-  "exec box test -f /tmp/.caboose-ready") exit 0 ;;
-  "exec box bash -c for d in /proc/"*) echo "` + procRow("7", "1", "sleep") + `"; exit 0 ;;
-  "inspect --type=container box --format "*) printf '` + statesync.ContainerDir + `\t%s\n' "` + mount + `"; exit 0 ;;
+  "exec caboose-default test -f /tmp/.caboose-ready") exit 0 ;;
+  "exec caboose-default bash -c for d in /proc/"*) echo "` + procRow("7", "1", "sleep") + `"; exit 0 ;;
+  "inspect --type=container caboose-default --format "*) printf '` + statesync.ContainerDir + `\t%s\n' "` + mount + `"; exit 0 ;;
 esac
 if [ "$1" = exec ]; then
   shift
@@ -32,7 +32,7 @@ if [ "$1" = exec ]; then
     esac
   done
   # git, or git under the watchdog: bash -c SCRIPT NAME SECS git ...
-  if [ "$1" = box ] && { [ "$2" = git ] || { [ "$2" = bash ] && [ "$3" = -c ] && [ "$5" = watchdog ]; }; }; then
+  if [ "$1" = caboose-default ] && { [ "$2" = git ] || { [ "$2" = bash ] && [ "$3" = -c ] && [ "$5" = watchdog ]; }; }; then
     shift
     n=$#
     for a; do
@@ -55,7 +55,7 @@ func procRow(pid, ppid, arg0 string) string {
 
 // procs answers the container's process listing with rows.
 func procs(rows ...string) string {
-	return `case "$*" in "exec box bash -c for d in /proc/"*) printf '%s\n' "` + strings.Join(rows, `" "`) + `"; exit 0 ;; esac
+	return `case "$*" in "exec caboose-default bash -c for d in /proc/"*) printf '%s\n' "` + strings.Join(rows, `" "`) + `"; exit 0 ;; esac
 `
 }
 
@@ -73,7 +73,7 @@ func syncEnv(t *testing.T, body func(git, data string) string) (data, remote, gi
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	home := sandboxEnv(t, "CABOOSE_CONTAINER", "box", "CABOOSE_READY_TIMEOUT", "1")
+	home := sandboxEnv(t, "CABOOSE_READY_TIMEOUT", "1")
 	data = filepath.Join(home, ".caboose", "envs", "default", "data")
 	scriptedDocker(t, body(git, data))
 	inProject(t, home)
@@ -87,7 +87,7 @@ func mountedHere(git, data string) string {
 func TestSyncCommand(t *testing.T) {
 	data, remote, git := syncEnv(t, mountedHere)
 	// The project's key as the sandbox has it: under /work, whatever HOME is.
-	key := statesync.ProjectKey("/work/proj")
+	key := statesync.ProjectKey("/work/dev/proj")
 	mem := filepath.Join(data, "home", ".claude", "projects", key, "memory")
 	if err := os.MkdirAll(mem, 0o755); err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestSyncCommand(t *testing.T) {
 
 func TestSyncRefusesLiveSessions(t *testing.T) {
 	data, _, _ := syncEnv(t, func(git, data string) string {
-		return `[ "$*" = "exec box tmux list-sessions -F #{session_name}" ] && { echo proj; echo proj-2; exit 0; }
+		return `[ "$*" = "exec caboose-default tmux list-sessions -F #{session_name}" ] && { echo proj; echo proj-2; exit 0; }
 ` + mountedHere(git, data)
 	})
 	code, _, errs := runIt("sync")
@@ -146,7 +146,7 @@ func TestSyncRefusesLiveSessions(t *testing.T) {
 	}
 }
 
-// Claude Code runs outside tmux -- a CABOOSE_NO_TMUX session, a `caboose claude -p`
+// Claude Code runs outside tmux -- a tmux = false session, a `caboose claude -p`
 // -- write the data dir just as much, and only the process list shows them. One
 // under a tmux session, or started by another, is that one's.
 func TestSyncRefusesClaudeOutsideTmux(t *testing.T) {
@@ -190,7 +190,7 @@ func TestSyncRefusesClaudeOutsideTmux(t *testing.T) {
 // With no way to tell what runs, a sync does not guess.
 func TestSyncRefusesWhenProcessesCannotBeListed(t *testing.T) {
 	syncEnv(t, func(git, data string) string {
-		return `case "$*" in "exec box bash -c for d in /proc/"*) echo "bash: /proc: nope" >&2; exit 1 ;; esac
+		return `case "$*" in "exec caboose-default bash -c for d in /proc/"*) echo "bash: /proc: nope" >&2; exit 1 ;; esac
 ` + mountedHere(git, data)
 	})
 	code, _, errs := runIt("sync")
@@ -224,7 +224,7 @@ func TestSyncNeedsTheMount(t *testing.T) {
 
 func TestSyncNeedsGitInTheContainer(t *testing.T) {
 	syncEnv(t, func(git, data string) string {
-		return `[ "$*" = "exec box git --version" ] && { echo 'OCI runtime exec failed: "git": executable file not found' >&2; exit 127; }
+		return `[ "$*" = "exec caboose-default git --version" ] && { echo 'OCI runtime exec failed: "git": executable file not found' >&2; exit 127; }
 ` + mountedHere(git, data)
 	})
 	code, _, errs := runIt("sync")
@@ -258,10 +258,10 @@ func TestStatusCountsClaudeOutsideTmux(t *testing.T) {
 		{[]string{procRow("20", "0", "/home/agent/.local/bin/claude")}, true},
 		{[]string{procRow("7", "1", "sleep")}, false},
 	} {
-		sandboxEnv(t, "CABOOSE_CONTAINER", "box")
+		sandboxEnv(t)
 		scriptedDocker(t, procs(tc.rows...)+containerRunning)
 		_, out, _ := runIt("status")
-		line := "\nClaude Code outside tmux: 1 process (CABOOSE_NO_TMUX, caboose claude -p, background agents)\n"
+		line := "\nClaude Code outside tmux: 1 process (tmux = false, caboose claude -p, background agents)\n"
 		if strings.Contains(out, line) != tc.want {
 			t.Errorf("%q: want the line %v; stdout:\n%s", tc.rows, tc.want, out)
 		}

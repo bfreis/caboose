@@ -11,38 +11,43 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 )
 
-// setupRoot is one repo root as setup edits it: Name "" for the single
-// root at /work, Path as written in config.toml (~ and all).
-type setupRoot struct{ Name, Path string }
+// setupRoot is one root as setup edits it: Path is the host path as
+// written in config.toml (~ and all), Container the long form's path in
+// the sandbox, "" for /work/<Name>.
+type setupRoot struct{ Name, Path, Container string }
 
 // container is where the container mounts r.
 func (r setupRoot) container() string {
-	if r.Name == "" {
-		return config.WorkDir
+	if r.Container != "" {
+		return r.Container
 	}
 	return config.WorkDir + "/" + r.Name
 }
 
-// fileRoots are the roots config.toml sets -- [roots], else repo_root, else
-// the default -- whatever CABOOSE_REPO_ROOT says for this shell: the file
-// is what setup edits.
+// fileRoots are the roots config.toml sets, else the default: the file is
+// what setup edits.
 func (a *App) fileRoots() []setupRoot {
-	f := a.Cfg.File
-	if f != nil && len(f.Roots) > 0 {
+	if f := a.Cfg.File; f != nil && len(f.Roots) > 0 {
 		var roots []setupRoot
 		for _, name := range slices.Sorted(maps.Keys(f.Roots)) {
-			roots = append(roots, setupRoot{name, f.Roots[name]})
+			roots = append(roots, setupRoot{name, f.Roots[name].Host, f.Roots[name].Path})
 		}
 		return roots
 	}
-	if f != nil && f.Vals["REPO_ROOT"] != "" {
-		return []setupRoot{{"", f.Vals["REPO_ROOT"]}}
-	}
-	return []setupRoot{{"", "~/" + config.DefaultRepoRoot}}
+	return []setupRoot{{Name: config.DefaultRootName, Path: "~/" + config.DefaultRootName}}
 }
 
-// setupRoots asks for the repo roots: the directories whose projects the
-// container sees, one at /work, or several, each at /work/<name>. The
+// rootsEdit is the edit that writes roots as config.toml's [roots].
+func rootsEdit(roots []setupRoot) config.Edit {
+	e := config.Edit{SetRoots: true, Roots: map[string]config.FileRoot{}}
+	for _, r := range roots {
+		e.Roots[r.Name] = config.FileRoot{Host: r.Path, Path: r.Container}
+	}
+	return e
+}
+
+// setupRoots asks for the roots: the directories whose projects the
+// container sees, each at /work/<name> or the path its long form names. The
 // current ones are edited in a loop -- change one, add one, remove one --
 // until they are taken as they are, which needs every one to exist and
 // none to hold another.
@@ -54,10 +59,7 @@ func (a *App) fileRoots() []setupRoot {
 func (a *App) setupRoots(p *prompter) error {
 	c := a.Cfg
 	cur := a.fileRoots()
-	p.heading("Roots", "The directories that hold your projects. The sandbox mounts one at /work, or each of several at /work/NAME.")
-	if v := c.Getenv("CABOOSE_REPO_ROOT"); v != "" {
-		p.warn("CABOOSE_REPO_ROOT is set (%s), and wins over what is chosen here while it is.", v)
-	}
+	p.heading("Roots", "The directories that hold your projects. The sandbox mounts each at /work/NAME.")
 	roots := slices.Clone(cur)
 	for first := true; ; first = false {
 		if !first {
@@ -138,17 +140,7 @@ func (a *App) setupRoots(p *prompter) error {
 		}
 	}
 
-	e := config.Edit{SetRoots: true}
-	if len(roots) == 1 && roots[0].Name == "" {
-		e.Set = map[string]any{"repo_root": roots[0].Path}
-	} else {
-		e.Unset = []string{"repo_root"}
-		e.Roots = map[string]string{}
-		for _, r := range roots {
-			e.Roots[r.Name] = r.Path
-		}
-	}
-	if _, err := a.writeConfig(e); err != nil {
+	if _, err := a.writeConfig(rootsEdit(roots)); err != nil {
 		return err
 	}
 	p.ok("Wrote them to %s", a.short(filepath.Join(c.EnvDir, config.FileName)))
@@ -160,9 +152,6 @@ func (a *App) setupRoots(p *prompter) error {
 
 // rootLabel names roots[i] in a menu.
 func rootLabel(roots []setupRoot, i int) string {
-	if roots[i].Name == "" {
-		return roots[i].Path
-	}
 	return roots[i].Name + " (" + roots[i].Path + ")"
 }
 
@@ -177,13 +166,17 @@ func (a *App) hostPath(p string) string {
 }
 
 // rootProblems is what keeps roots from being used: a path that is not an
-// existing directory, or roots that hold one another.
+// existing directory, roots that hold one another, or container paths
+// config.FileRoots refuses.
 func (a *App) rootProblems(roots []setupRoot) []string {
 	var out []string
 	for _, r := range roots {
 		if why := a.badRootPath(r.Path); why != "" {
 			out = append(out, why)
 		}
+	}
+	if _, err := config.FileRoots(rootsEdit(roots).Roots, a.Cfg.Home); err != nil && len(out) == 0 {
+		out = append(out, err.Error())
 	}
 	for i, r := range roots {
 		for _, o := range roots[i+1:] {
@@ -233,7 +226,7 @@ func (a *App) askRootPath(p *prompter, def string) (string, error) {
 }
 
 // askRootName asks for a root's name, the directory under /work, until it
-// is a valid one no other root in roots (but skip) has.
+// is a valid one no other root in roots (but skip) has, nor mounts at.
 func (a *App) askRootName(p *prompter, path string, roots []setupRoot, skip int) (string, error) {
 	def := rootNameFor(path)
 	for {
@@ -243,7 +236,7 @@ func (a *App) askRootName(p *prompter, path string, roots []setupRoot, skip int)
 		}
 		taken := false
 		for i, r := range roots {
-			taken = taken || i != skip && r.Name == name
+			taken = taken || i != skip && (r.Name == name || r.container() == config.WorkDir+"/"+name)
 		}
 		switch {
 		case !config.ValidRootName(name):
@@ -290,20 +283,17 @@ func (a *App) changeRoot(p *prompter, roots []setupRoot, i int) error {
 	return nil
 }
 
-// addRoot asks for another root. A single root at /work needs a name once
-// it is one of several, so it is asked for first.
+// addRoot asks for another root, at /work/NAME. A sole root at /work
+// itself moves to its own /work/NAME, since /work is for a sole root;
+// rootMoves says so before anything is written.
 func (a *App) addRoot(p *prompter, roots []setupRoot) ([]setupRoot, error) {
 	path, err := a.askRootPath(p, "")
 	if err != nil || path == "" {
 		return roots, err
 	}
 	roots = slices.Clone(roots)
-	if len(roots) == 1 && roots[0].Name == "" {
-		name, err := a.askRootName(p, roots[0].Path, roots, 0)
-		if err != nil {
-			return nil, err
-		}
-		roots[0].Name = name
+	if len(roots) == 1 && roots[0].Container == config.WorkDir {
+		roots[0].Container = ""
 	}
 	roots = append(roots, setupRoot{Path: path})
 	name, err := a.askRootName(p, path, roots, len(roots)-1)

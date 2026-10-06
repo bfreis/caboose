@@ -330,11 +330,11 @@ endef
 build: $(CC)
 	@$(call make-env,$(DEV_ENV)); CABOOSE_ENV=$(DEV_ENV) $(CC) build
 
-## restart: recreate DEV_ENV's container to pick up a rebuilt image (asks; FORCE=1 skips)
+## restart: recreate DEV_ENV's container to pick up a rebuilt image (asks; CABOOSE_FORCE=1 skips)
 restart: $(CC)
 	@$(call make-env,$(DEV_ENV)); CABOOSE_ENV=$(DEV_ENV) $(CC) restart
 
-## stop: stop DEV_ENV's container (asks first; FORCE=1 skips)
+## stop: stop DEV_ENV's container (asks first; CABOOSE_FORCE=1 skips)
 stop: $(CC)
 	@CABOOSE_ENV=$(DEV_ENV) $(CC) stop
 

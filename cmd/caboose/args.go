@@ -51,7 +51,7 @@ already running ignores them, and says so.`},
 	{Name: "setup", Usage: "[SECTION]...", Args: ownArgs,
 		Summary: "set up the environment (creating it, after asking)",
 		Help: `Asks for what the defaults do not know, on the terminal, each question
-showing what is there now as its default: the repo roots, what the sandbox
+showing what is there now as its default: the roots, what the sandbox
 is built on, what isolates it (and, on OrbStack, getting gVisor's runsc),
 its git identity and commit signing, and whether and where to sync. Naming
 SECTIONs -- roots, image, isolation, git, sync -- asks only those. A
@@ -62,7 +62,7 @@ it refuses.`},
 		Summary: "review the changes sessions proposed, and apply them",
 		Help: `A session in the sandbox cannot change what the sandbox is: it proposes
 the change instead, into ~/.caboose-proposals -- a Dockerfile section to
-install a tool, or another repo root. (What it keeps of its home is its own
+install a tool, or another root. (What it keeps of its home is its own
 sandbox config's, which it edits itself.) This shows each proposal whole, and
 applies it, leaves it pending or deletes it as you say. Nothing else in
 config.toml can be proposed, and a root that would hand the sandbox your
@@ -93,7 +93,7 @@ that off. A build from a checkout never updates itself.`},
 	{Name: "build", Usage: "[ARGS]", Args: passArgs,
 		Summary: "build the image: base, checked, then caboose's layer",
 		Help: `Builds the base (the embedded Dockerfile, the environment's image/, or
-pulls CABOOSE_BASE_IMAGE), checks it, and builds the layer on it. ARGS go
+pulls the [image] base), checks it, and builds the layer on it. ARGS go
 to both docker builds (--no-cache, --progress=plain, -q), except --pull,
 which only the default base's build gets. The sandbox is not touched:
 'caboose restart' moves it onto the new image.`},
@@ -109,7 +109,7 @@ it cannot see a docker engine's images.`},
 		Help: `Recreates the sandbox, building the image first when it is stale, so
 it picks up a rebuilt image, changed roots, or a change to what the sandbox
 config keeps. Every running
-session ends: it lists them and asks first. FORCE=1 skips the question;
+session ends: it lists them and asks first. CABOOSE_FORCE=1 skips the question;
 with no terminal it refuses.`},
 	{Name: "stop", Args: noArgs,
 		Summary: "stop the sandbox (asks before ending sessions)"},
@@ -139,13 +139,13 @@ and starts another in the background.`},
 	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
 		Summary: "delete old Claude Code versions now",
 		Help: `Deletes the installed Claude Code versions beyond the newest
-CABOOSE_KEEP_VERSIONS, and says what the rest take up.
+keep_versions in [session], and says what the rest take up.
 
 --docker, under isolation vm, deletes the disk the sandbox's own dockerd
 keeps everything on -- images, containers, volumes, build cache -- for an
 empty one, which caboose restart keeps otherwise. It says the size it
 frees and asks first (no by default); a running VM is stopped first,
-ending its sessions, which it lists. FORCE=1 skips the question; with no
+ending its sessions, which it lists. CABOOSE_FORCE=1 skips the question; with no
 terminal it refuses. Under docker and gvisor the sandbox has no dockerd of
 its own, so there is nothing of caboose's to delete.`},
 	{Name: "sync", Usage: "[ARGS]", Args: ownArgs,
@@ -156,7 +156,7 @@ Sends this machine's changes since the last sync to the remote, takes the
 other machines', and writes back only the files that changed. What syncs
 is the sandbox config's rules (~/.config/caboose/sandbox.toml, which syncs
 too). --remote URL sets the remote first (use a private repo). It refuses
-while a session is running (FORCE=1 overrides).
+while a session is running (CABOOSE_FORCE=1 overrides).
 
 'status' shows what a sync would send and take, changing nothing. 'add
 PATH' makes a path of the sandbox's home (~/...) sync, keeping it too when
@@ -397,7 +397,7 @@ Usage:
   caboose [FLAGS] claude [ARGS...]   the same, passing ARGS to claude
   caboose [FLAGS] COMMAND [ARGS]     one of the commands below
 
-Run it from a project under a repo root (see 'caboose help setup').
+Run it from a project under a root (see 'caboose help setup').
 
 Commands:
 `)

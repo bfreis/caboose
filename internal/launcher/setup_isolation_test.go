@@ -152,7 +152,8 @@ func (e *isolationEngine) isolation() string {
 	if _, err := os.Stat(e.configPath()); err != nil {
 		return ""
 	}
-	return e.file().Vals["ISOLATION"]
+	v, _ := e.file().Vals["isolation"].(string)
+	return v
 }
 
 func (e *isolationEngine) runsc() string {
@@ -176,7 +177,7 @@ func TestSetupIsolationRegistersOnOrbStack(t *testing.T) {
 	}
 	e.wantOut("Downloaded gVisor into", "its checksum verified", "+ \"runtimes\": {",
 		"Registered runsc in", "OrbStack's Docker engine restarted, with runsc",
-		"it is tried when the container is created", `Wrote isolation = "gvisor"`)
+		"it is tried when the container is created", `Wrote isolation = "gvisor.default"`)
 	var cfg struct {
 		Features map[string]bool
 		Runtimes map[string]struct {
@@ -200,7 +201,7 @@ func TestSetupIsolationRegistersOnOrbStack(t *testing.T) {
 	if _, err := os.Stat(e.runsc()); err != nil {
 		t.Error(err)
 	}
-	if got := e.isolation(); got != "gvisor" {
+	if got := e.isolation(); got != "gvisor.default" {
 		t.Errorf("isolation = %q", got)
 	}
 
@@ -210,61 +211,6 @@ func TestSetupIsolationRegistersOnOrbStack(t *testing.T) {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	if e.said("Downloaded") || !e.said("Nothing changed") {
-		t.Errorf("second run:\n%s", e.errb)
-	}
-}
-
-// writeDaemon puts a docker.json registering runsc at path with args.
-func (e *isolationEngine) writeDaemon(path string, args ...string) string {
-	e.t.Helper()
-	if err := os.MkdirAll(filepath.Dir(e.daemon), 0o755); err != nil {
-		e.t.Fatal(err)
-	}
-	b, _ := json.Marshal(map[string]any{
-		"features": map[string]bool{"buildkit": true},
-		"runtimes": map[string]daemonRuntime{"runsc": {Path: path, RuntimeArgs: args}},
-	})
-	if err := os.WriteFile(e.daemon, b, 0o644); err != nil {
-		e.t.Fatal(err)
-	}
-	return string(b)
-}
-
-// The runsc caboose registered, with flags from an older caboose, in
-// docker.json and in the engine: the change is shown, written when agreed
-// to (the rest kept), and the engine restarted onto it; gvisor is still
-// offered and chosen.
-func TestSetupIsolationUpdatesRunscFlags(t *testing.T) {
-	e := newIsolationEngine(t, "darwin", "OrbStack", true, false, "")
-	old := []string{"--host-uds=open", "--net-raw", "--allow-packet-socket-write"}
-	orig := e.writeDaemon(e.runsc(), old...)
-	e.setLoaded(daemonRuntime{Path: e.runsc(), RuntimeArgs: old})
-	if err := e.run("\n\n", "isolation"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	e.wantOut("runs without flags this caboose gives it", `+ "--dcache=0"`, "Updated runsc's flags in",
-		"OrbStack's Docker engine restarted, with runsc", `Wrote isolation = "gvisor"`)
-	var cfg struct {
-		Features map[string]bool
-		Runtimes map[string]daemonRuntime
-	}
-	data, _ := os.ReadFile(e.daemon)
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("docker.json: %v\n%s", err, data)
-	}
-	if !cfg.Features["buildkit"] || cfg.Runtimes["runsc"].Path != e.runsc() || !slices.Equal(cfg.Runtimes["runsc"].RuntimeArgs, runscArgs) {
-		t.Errorf("docker.json:\n%s", data)
-	}
-	if b, _ := os.ReadFile(e.daemon + ".before-caboose"); string(b) != orig {
-		t.Errorf("backup = %q", b)
-	}
-
-	// Run again: the engine has the flags, so nothing is offered.
-	os.Remove(filepath.Join(e.dir, "restarted"))
-	if err := e.run("\n", "isolation"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	if e.said("without flags") || e.restarted() {
 		t.Errorf("second run:\n%s", e.errb)
 	}
 }
@@ -283,51 +229,11 @@ func TestSetupIsolationRunscLostFromDaemon(t *testing.T) {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("no longer registers it: the engine drops it at its next restart", `+ "runtimes": {`,
-		"Registered runsc in", "OrbStack's Docker engine restarted, with runsc", `Wrote isolation = "gvisor"`)
+		"Registered runsc in", "OrbStack's Docker engine restarted, with runsc", `Wrote isolation = "gvisor.default"`)
 	var cfg struct{ Runtimes map[string]daemonRuntime }
 	data, _ := os.ReadFile(e.daemon)
 	if err := json.Unmarshal(data, &cfg); err != nil || !slices.Equal(cfg.Runtimes["runsc"].RuntimeArgs, runscArgs) {
 		t.Errorf("docker.json (%v):\n%s", err, data)
-	}
-}
-
-// docker.json already right, the engine not restarted since: only the
-// restart is offered, and nothing written.
-func TestSetupIsolationRunscFlagsNotLoaded(t *testing.T) {
-	e := newIsolationEngine(t, "darwin", "OrbStack", true, false, "")
-	orig := e.writeDaemon(e.runsc(), runscArgs...)
-	e.setLoaded(daemonRuntime{Path: e.runsc(), RuntimeArgs: []string{"--host-uds=open"}})
-	if err := e.run("\n\n", "isolation"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	e.wantOut("Docker runs caboose's runsc without flags this caboose gives it", "the engine has not loaded it",
-		"OrbStack's Docker engine restarted, with runsc")
-	if b, _ := os.ReadFile(e.daemon); string(b) != orig {
-		t.Errorf("docker.json = %s", b)
-	}
-	if !e.restarted() {
-		t.Error("engine not restarted")
-	}
-}
-
-// Declined, docker.json and the engine are left as they are, and gvisor,
-// which still works on the old flags, is still offered.
-func TestSetupIsolationRunscFlagsDeclined(t *testing.T) {
-	e := newIsolationEngine(t, "darwin", "OrbStack", true, false, "")
-	orig := e.writeDaemon(e.runsc(), "--host-uds=open")
-	e.setLoaded(daemonRuntime{Path: e.runsc(), RuntimeArgs: []string{"--host-uds=open"}})
-	if err := e.run("n\n\n", "isolation"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	e.wantOut("Not updated; caboose setup isolation offers it again", `Wrote isolation = "gvisor"`)
-	if b, _ := os.ReadFile(e.daemon); string(b) != orig {
-		t.Errorf("docker.json = %s", b)
-	}
-	if _, err := os.Stat(e.daemon + ".before-caboose"); err == nil {
-		t.Error("backup written")
-	}
-	if e.restarted() {
-		t.Error("engine restarted")
 	}
 }
 
@@ -345,7 +251,7 @@ func TestSetupIsolationForeignRunscKept(t *testing.T) {
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut(`Wrote isolation = "gvisor"`)
+	e.wantOut(`Wrote isolation = "gvisor.default"`)
 	if e.said("without flags") || e.said("no longer registers") || e.restarted() {
 		t.Errorf("offered:\n%s", e.errb)
 	}
@@ -366,7 +272,7 @@ func TestSetupIsolationUpdatesRunsc(t *testing.T) {
 	}{
 		{"older", "ab", "\n\n", true, "gVisor has a newer release than the one caboose downloaded into"},
 		{"declined", "ab", "n\n\n", false, "Not updated; caboose setup isolation offers it again"},
-		{"no record", "", "\n\n", true, "caboose cannot tell which gVisor release is in"},
+		{"no record", "", "\n\n", true, "caboose cannot read which gVisor release is in"},
 		{"latest", "latest", "\n", false, "is its latest release (downloaded "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -382,7 +288,7 @@ func TestSetupIsolationUpdatesRunsc(t *testing.T) {
 			if err := e.run(tc.answer, "isolation"); err != nil {
 				t.Fatalf("%v\n%s", err, e.errb)
 			}
-			e.wantOut(tc.want, `Wrote isolation = "gvisor"`)
+			e.wantOut(tc.want, `Wrote isolation = "gvisor.default"`)
 			b, _ := os.ReadFile(e.runsc())
 			if updated := string(b) == "\x7fELF runsc"; updated != tc.updated {
 				t.Errorf("updated = %v, runsc = %q\n%s", updated, b, e.errb)
@@ -407,7 +313,7 @@ func TestSetupIsolationRunscUpdateUnknown(t *testing.T) {
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("Could not tell whether gVisor has a newer release", `Wrote isolation = "gvisor"`)
+	e.wantOut("Could not tell whether gVisor has a newer release", `Wrote isolation = "gvisor.default"`)
 }
 
 // Declined, nothing is downloaded or edited, and docker is written: the
@@ -417,14 +323,14 @@ func TestSetupIsolationDeclined(t *testing.T) {
 	if err := e.run("n\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("Not downloaded", `Wrote isolation = "docker"`)
+	e.wantOut("Not downloaded", `Wrote isolation = "container.default"`)
 	if _, err := os.Stat(e.daemon); err == nil {
 		t.Error("docker.json written")
 	}
 	if _, err := os.Stat(filepath.Join(e.a.Cfg.CabooseHome, "runsc")); err == nil {
 		t.Error("runsc downloaded")
 	}
-	if got := e.isolation(); got != "docker" {
+	if got := e.isolation(); got != "container.default" {
 		t.Errorf("isolation = %q", got)
 	}
 }
@@ -436,7 +342,7 @@ func TestSetupIsolationRegisterDeclined(t *testing.T) {
 	if err := e.run("\nn\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("Not registered; caboose setup isolation offers it again", `Wrote isolation = "docker"`)
+	e.wantOut("Not registered; caboose setup isolation offers it again", `Wrote isolation = "container.default"`)
 	if _, err := os.Stat(e.daemon); err == nil {
 		t.Error("docker.json written")
 	}
@@ -454,7 +360,7 @@ func TestSetupIsolationRestartFails(t *testing.T) {
 	if err := e.run("\ny\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("'"+orbCommand+" restart docker' failed: no such engine", "Restart Docker from OrbStack's menu", `Wrote isolation = "docker"`)
+	e.wantOut("'"+orbCommand+" restart docker' failed: no such engine", "Restart Docker from OrbStack's menu", `Wrote isolation = "container.default"`)
 }
 
 // runsc already there, with an image to try it: a probe runs under it,
@@ -464,7 +370,7 @@ func TestSetupIsolationTriesRunsc(t *testing.T) {
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("A container runs under runsc. On this engine the agent user cannot write its mounts under it", `Wrote isolation = "gvisor"`)
+	e.wantOut("A container runs under runsc. On this engine the agent user cannot write its mounts under it", `Wrote isolation = "gvisor.default"`)
 	if b, _ := os.ReadFile(filepath.Join(e.dir, "probe")); !strings.Contains(string(b), "--runtime\nrunsc\n") {
 		t.Errorf("probe: %q", b)
 	}
@@ -473,11 +379,11 @@ func TestSetupIsolationTriesRunsc(t *testing.T) {
 // docker written, it stays the default, even with gvisor available.
 func TestSetupIsolationKeepsDocker(t *testing.T) {
 	e := newIsolationEngine(t, "linux", "Ubuntu 24.04", true, false, "")
-	e.writeConfig("isolation = \"docker\"\n")
+	e.writeConfig("isolation = \"container.default\"\n[container.default]\n")
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("Now: docker.", "Nothing changed")
+	e.wantOut("Now: container (the profile container.default).", "Nothing changed")
 }
 
 // On Linux caboose does not register runsc: it says how, and writes
@@ -488,13 +394,13 @@ func TestSetupIsolationLinux(t *testing.T) {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("install it as "+gvisorInstall+" says", "sudo runsc install -- --host-uds=open --net-raw --allow-packet-socket-write",
-		`Wrote isolation = "docker"`)
+		`Wrote isolation = "container.default"`)
 
-	e.writeConfig("isolation = \"gvisor\"\n")
+	e.writeConfig("isolation = \"gvisor.default\"\n[gvisor.default]\n")
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("isolation is gvisor, which cannot work here", `Wrote isolation = "docker"`)
+	e.wantOut("isolation is gvisor, which cannot work here", `Wrote isolation = "container.default"`)
 }
 
 // On Linux, a runsc gVisor's install registered without --host-uds=open
@@ -507,7 +413,7 @@ func TestSetupIsolationLinuxRunscFlags(t *testing.T) {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("Docker's runsc runs without --host-uds=open", "/etc/docker/daemon.json",
-		"sudo systemctl reload docker", `Wrote isolation = "gvisor"`)
+		"sudo systemctl reload docker", `Wrote isolation = "gvisor.default"`)
 
 	e.setLoaded(daemonRuntime{Path: "/usr/local/bin/runsc", RuntimeArgs: runscInstallArgs})
 	e.errb.Reset()
@@ -525,20 +431,7 @@ func TestSetupIsolationDockerDesktop(t *testing.T) {
 	if err := e.run("", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("cannot register one with Docker Desktop yet", `Wrote isolation = "docker"`)
-}
-
-// The variable wins, so setup asks nothing and writes nothing.
-func TestSetupIsolationVariable(t *testing.T) {
-	e := newIsolationEngine(t, "darwin", "OrbStack", false, false, "")
-	e.a.Cfg.Getenv = func(k string) string { return map[string]string{"CABOOSE_ISOLATION": "docker"}[k] }
-	if err := e.run("", "isolation"); err != nil {
-		t.Fatalf("%v\n%s", err, e.errb)
-	}
-	e.wantOut("CABOOSE_ISOLATION is set in this shell (docker)", "Nothing changed")
-	if got := e.isolation(); got != "" {
-		t.Errorf("isolation = %q", got)
-	}
+	e.wantOut("cannot register one with Docker Desktop yet", `Wrote isolation = "container.default"`)
 }
 
 // A container created under runsc, which docker no longer has: setup says
@@ -553,13 +446,13 @@ func TestSetupIsolationContainerRuntimeGone(t *testing.T) {
 	if err := os.WriteFile(e.a.Docker.Path, []byte(s), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	e.writeConfig("isolation = \"gvisor\"\n")
+	e.writeConfig("isolation = \"gvisor.default\"\n[gvisor.default]\n")
 	if err := e.run("\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut(`Wrote isolation = "docker"`, "the next launch recreates it with isolation docker (it is stopped, so no sessions are lost)")
+	e.wantOut(`Wrote isolation = "container.default"`, "the next launch recreates it with isolation container (it is stopped, so no sessions are lost)")
 
-	e.writeConfig("isolation = \"gvisor\"\n")
+	e.writeConfig("isolation = \"gvisor.default\"\n[gvisor.default]\n")
 	if err := e.run("2\n", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}

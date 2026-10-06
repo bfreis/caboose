@@ -12,21 +12,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
-	"github.com/bfreis/caboose/internal/config"
 )
-
-func TestCheckIsolation(t *testing.T) {
-	for _, iso := range []string{"", "docker", "gvisor", "vm"} {
-		if err := checkIsolation(&config.Config{Isolation: iso}); err != nil {
-			t.Errorf("%q: %v", iso, err)
-		}
-	}
-	env := func(k string) string { return map[string]string{"CABOOSE_ISOLATION": "kvm"}[k] }
-	err := checkIsolation(&config.Config{Isolation: "kvm", Getenv: env})
-	if err == nil || !strings.Contains(err.Error(), `isolation "kvm" is not "docker", "gvisor" or "vm" (CABOOSE_ISOLATION)`) {
-		t.Errorf("err = %v", err)
-	}
-}
 
 // The agent where it can write its mounts; else root, told it is a sandbox.
 func TestRunAs(t *testing.T) {
@@ -71,7 +57,7 @@ func TestDoctorIsolation(t *testing.T) {
 		name, iso, runtimes, want string
 	}{
 		{"docker", "docker", `{"runc":{}}`, "docker, the weakest"},
-		{"docker, runsc there", "docker", withRunsc, `isolation = "gvisor" would give the sandbox a kernel of its own`},
+		{"docker, runsc there", "docker", withRunsc, `a gvisor profile ('caboose setup isolation') would give the sandbox a kernel of its own`},
 		{"gvisor", "gvisor", withRunsc, "gvisor (runsc)"},
 		{"gvisor, no runsc", "gvisor", `{"runc":{}}`, "gvisor needs docker's runsc runtime, which it does not have (it has runc)"},
 	} {
@@ -103,7 +89,7 @@ func TestDoctorRunscRelease(t *testing.T) {
 	}{
 		{"recent", 10 * 24 * time.Hour, false, "caboose's gVisor, downloaded 2026-09-", levelOK},
 		{"old", 100 * 24 * time.Hour, false, "downloaded 100 days ago, and gVisor releases about weekly: caboose setup isolation checks it", levelNote},
-		{"no record", -1, false, "downloaded before caboose recorded its release: caboose setup isolation checks it", levelNote},
+		{"no record", -1, false, "has no readable record of its release: caboose setup isolation checks it", levelNote},
 		{"not caboose's", 100 * 24 * time.Hour, true, "", levelOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

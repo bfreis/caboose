@@ -27,7 +27,7 @@ import (
 func (a *App) readSandboxFile() (data []byte, absent bool, err error) {
 	data, _, err = nofollow.Dir(a.Cfg.DataDir).ReadFile(datadir.SandboxConfig)
 	if errors.Is(err, fs.ErrNotExist) {
-		return sandboxcfg.Default(a.rootNames()), true, nil
+		return sandboxcfg.Default(a.rootPaths()), true, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("reading %s: %v", sandboxcfg.HomePath, err)

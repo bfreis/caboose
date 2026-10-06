@@ -150,7 +150,7 @@ func egressReason(err error) string {
 func (h *Host) connect(id uint64, host string, port int) error {
 	e := h.cfg.Egress
 	if e == nil {
-		return refuse(agentproto.EgressOff, "the host offers no outbound proxy (egress_proxy in config.toml on the host)")
+		return refuse(agentproto.EgressOff, "the host offers no outbound proxy (egress in the vm profile of config.toml on the host)")
 	}
 	// Every request costs a token, refused ones too: the bucket bounds
 	// what reaches the log as well as what is dialled.

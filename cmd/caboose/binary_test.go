@@ -82,31 +82,30 @@ func TestInstalledBinary(t *testing.T) {
 		t.Error("installed CLAUDE.md has an unfilled placeholder")
 	}
 
-	if code, out := runBin(project, "status"); code != 0 || !strings.Contains(out, "repo root : "+root) {
+	if code, out := runBin(project, "status"); code != 0 || !strings.Contains(out, "root      : "+root+" -> /work/dev") {
 		t.Errorf("caboose status: exit %d\n%s", code, out)
 	}
 
-	// Outside the repo root: told what it is and how to move it.
+	// Outside the roots: told what they are and how to move them.
 	code, out := runBin(t.TempDir(), "claude", "--version")
-	if code != 1 || !strings.Contains(out, "is outside the mounted repo root, "+root+
-		" (the default: CABOOSE_REPO_ROOT is unset)") || !strings.Contains(out, "export CABOOSE_REPO_ROOT=") {
+	if code != 1 || !strings.Contains(out, "is outside the mounted root, "+root+
+		" at /work/dev (the default: config.toml has no [roots])") || !strings.Contains(out, "[roots]") {
 		t.Errorf("outside the root: exit %d\n%s", code, out)
 	}
 
 	// A running container: the session starts at the project's path under
-	// /work, the same whatever the host path -- or, in a container created
-	// with other roots than the configuration has now (here [roots], since
-	// gone), where that one mounted it, with a note that a restart moves it.
+	// /work/dev, the same whatever the host path -- or, in a container
+	// created with other roots than the configuration has now (here one at
+	// /work), where that one mounted it, with a note that a restart moves it.
 	for _, tc := range []struct{ mount, want, note string }{
-		{"/work", "/work/proj", ""},
-		{"/work/dev", "/work/dev/proj", "the container mounts " + root + " at /work/dev; the configuration says " + root + " at /work"},
+		{"/work/dev", "/work/dev/proj", ""},
+		{"/work", "/work/proj", "the container mounts " + root + " at /work; the configuration says " + root + " at /work/dev"},
 	} {
-		log := scriptedDocker(t, containerRunning+`
+		log := scriptedDocker(t, containerRunning+"\n"+containerLabels(tc.mount)+`
 case "$*" in
-  "inspect --type=container box --format "*) printf '%s\t%s\n' "`+tc.mount+`" "`+root+`"; exit 0 ;;
+  "inspect --type=container caboose-default --format "*) printf '%s\t%s\n' "`+tc.mount+`" "`+root+`"; exit 0 ;;
 esac
 [ "$1" = exec ] && exit 0`)
-		t.Setenv("CABOOSE_CONTAINER", "box")
 		for _, args := range [][]string{{"claude", "--version"}, {"shell", "-c", "true"}} {
 			code, out := runBin(project, args...)
 			if code != 0 {
@@ -116,7 +115,7 @@ esac
 				t.Errorf("caboose %v with %s mounted: note %q missing or out of place\n%s", args, tc.mount, tc.note, out)
 			}
 			lines := dockerLog(t, log)
-			if last := lines[len(lines)-1]; !strings.Contains(last, " -w "+tc.want+" box ") {
+			if last := lines[len(lines)-1]; !strings.Contains(last, " -w "+tc.want+" caboose-default ") {
 				t.Errorf("caboose %v with %s mounted: last docker call %q, want it at %s", args, tc.mount, last, tc.want)
 			}
 		}

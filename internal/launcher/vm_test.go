@@ -67,12 +67,12 @@ func TestVMSize(t *testing.T) {
 	if err != nil || cpus < 1 || mem < 512 || mem > 8192 {
 		t.Errorf("defaults: %d CPUs, %d MiB, %v", cpus, mem, err)
 	}
-	cpus, mem, err = vmSize(&config.Config{VMCPUs: "3", VMMemory: "6G"})
+	cpus, mem, err = vmSize(&config.Config{VMCPUs: 3, VMMemory: "6G"})
 	if err != nil || cpus != 3 || mem != 6144 {
 		t.Errorf("configured: %d CPUs, %d MiB, %v", cpus, mem, err)
 	}
-	if _, _, err := vmSize(&config.Config{VMCPUs: "none"}); err == nil {
-		t.Error("vm_cpus \"none\" accepted")
+	if _, _, err := vmSize(&config.Config{VMMemory: "lots"}); err == nil {
+		t.Error("memory \"lots\" accepted")
 	}
 }
 

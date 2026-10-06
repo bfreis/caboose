@@ -23,18 +23,18 @@ const (
 
 // CheckImage is caboose check-image [IMAGE]: whether IMAGE can be the base of
 // the sandbox, as a checklist on stdout and the unmet requirements, with why
-// each is needed, on stderr. Like caboose version it needs no repo root and
+// each is needed, on stderr. Like caboose version it needs no root and
 // creates nothing but a throwaway container, which `docker run --rm` removes.
 //
-// IMAGE defaults to the base in use: CABOOSE_BASE_IMAGE, else the embedded
-// Dockerfile's image, which caboose build tags config.DefaultBaseTag of
-// CABOOSE_IMAGE -- the image the layer is built on, not the one caboose runs,
+// IMAGE defaults to the base in use: [image] base, else the embedded
+// Dockerfile's image, which caboose build tags config.BaseImageFor the
+// environment -- the image the layer is built on, not the one caboose runs,
 // which has the layer's user in it already. A build runs this same check on
 // the base before building the layer on it.
 //
 // An image that is not in the local store is pulled first, with docker's
 // progress on stderr -- but only one that was named, on the command line or
-// in CABOOSE_BASE_IMAGE. The default base is built locally, and pulling its
+// in [image] base. The default base is built locally, and pulling its
 // name would fetch whatever a registry happens to hold under it.
 func (a *App) CheckImage(args []string) error {
 	image, named := a.Cfg.Base()
@@ -161,7 +161,7 @@ func (a *App) checkImageVM(out *ui, image string, named bool) (*imagecheck.Repor
 		if err := g.Pull(image, a.Stderr); err != nil {
 			a.Note("under isolation vm an image is checked in caboose's builder guest, which pulls it from its registry:")
 			a.Note("an image only a docker engine on this Mac holds cannot reach it. Push it to a registry first, or")
-			a.Note("check it in that engine: CABOOSE_ISOLATION=docker caboose check-image %s", image)
+			a.Note("check it in that engine, from an environment whose isolation is container or gvisor: caboose -e ENV check-image %s", image)
 			return nil, &ExitError{Code: checkFailed, Msg: fmt.Sprintf("cannot pull image '%s' in the builder guest (%v)", image, err)}
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -26,20 +27,6 @@ func (f fakeFS) ReadFile(p string) ([]byte, error) {
 }
 
 func envOf(m map[string]string) Env { return func(k string) string { return m[k] } }
-
-func TestDefaults(t *testing.T) {
-	c, _ := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{}, "")
-	want := Config{Env: "default", CabooseHome: "/h/.caboose", EnvDir: "/h/.caboose/envs/default",
-		Image: "caboose", Container: "caboose", DataDir: "/h/.caboose/envs/default/data",
-		Roots:        []Root{{Host: "/h/dev", Container: "/work"}},
-		ReadyTimeout: "600", KeepVersions: "2", Home: "/h",
-		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: "docker",
-		EgressProxy: "on", EgressPorts: DefaultEgressPorts}
-	c.Getenv = nil
-	if !reflect.DeepEqual(*c, want) {
-		t.Errorf("got %+v\nwant %+v", *c, want)
-	}
-}
 
 func TestDataDirResolution(t *testing.T) {
 	const dst = "/h/.caboose/envs/default/data"
@@ -70,41 +57,6 @@ func TestDataDirResolution(t *testing.T) {
 	}
 }
 
-// An environment is a whole caboose: its own dir, container and image. The
-// default one's are named plain caboose.
-func TestEnvironments(t *testing.T) {
-	for _, tc := range []struct {
-		name, flag, envVar         string
-		env, dir, container, image string
-	}{
-		{"default", "", "", "default", "/h/.caboose/envs/default", "caboose", "caboose"},
-		{"CABOOSE_ENV", "", "work", "work", "/h/.caboose/envs/work", "caboose-work", "caboose-work"},
-		{"--env", "play", "", "play", "/h/.caboose/envs/play", "caboose-play", "caboose-play"},
-		{"--env wins", "play", "work", "play", "/h/.caboose/envs/play", "caboose-play", "caboose-play"},
-		{"naming default", "default", "work", "default", "/h/.caboose/envs/default", "caboose", "caboose"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_ENV": tc.envVar}), fakeFS{}, tc.flag)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if c.Env != tc.env || c.EnvDir != tc.dir || c.Container != tc.container || c.Image != tc.image {
-				t.Errorf("env %q dir %q container %q image %q", c.Env, c.EnvDir, c.Container, c.Image)
-			}
-		})
-	}
-	// The variables still name them outright.
-	c, _ := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_CONTAINER": "box", "CABOOSE_IMAGE": "img"}), fakeFS{}, "work")
-	if c.Container != "box" || c.Image != "img" {
-		t.Errorf("container %q image %q", c.Container, c.Image)
-	}
-	for _, bad := range []string{"Work", "-x", "a/b", "..", "a b", strings.Repeat("a", 33)} {
-		if _, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{}, bad); err == nil {
-			t.Errorf("env %q accepted", bad)
-		}
-	}
-}
-
 // Only the default environment exists without being created.
 func TestCheckEnv(t *testing.T) {
 	fs := fakeFS{"/h/.caboose/envs/work": "dir"}
@@ -116,69 +68,6 @@ func TestCheckEnv(t *testing.T) {
 		}
 		if err != nil && !strings.Contains(err.Error(), "caboose -e wrok setup") {
 			t.Errorf("%s: %v", env, err)
-		}
-	}
-}
-
-func TestResolveRoots(t *testing.T) {
-	dir := t.TempDir()
-	real := filepath.Join(dir, "real")
-	if err := os.Mkdir(real, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
-	c := &Config{Roots: []Root{{Host: link, Container: "/work"}}}
-	if err := c.ResolveRoots(); err != nil {
-		t.Fatal(err)
-	}
-	want, _ := filepath.EvalSymlinks(real)
-	if c.Roots[0].Host != want || c.Roots[0].Container != "/work" {
-		t.Errorf("Roots = %+v, want %q at /work", c.Roots, want)
-	}
-	file := filepath.Join(dir, "file")
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	nope := filepath.Join(dir, "nope")
-	cfg := &File{Path: "/c.toml"}
-	cases := []struct {
-		root  Root
-		from  string
-		first string
-	}{
-		// The first run of someone whose repos are not in ~/dev.
-		{Root{Host: nope}, "", "repo root " + nope + " does not exist (the default: CABOOSE_REPO_ROOT is unset)."},
-		{Root{Host: nope}, "CABOOSE_REPO_ROOT", "repo root " + nope + " does not exist (set by CABOOSE_REPO_ROOT)."},
-		{Root{Host: file}, "CABOOSE_REPO_ROOT", "repo root " + file + " is not a directory (set by CABOOSE_REPO_ROOT)."},
-		{Root{Name: "dev", Host: nope}, cfg.Path, "root dev, " + nope + ", does not exist (set by [roots] in /c.toml)."},
-	}
-	for _, tc := range cases {
-		c := &Config{Roots: []Root{tc.root}, RootsFrom: tc.from, File: cfg}
-		err := c.ResolveRoots()
-		if err == nil {
-			t.Errorf("%+v: no error", tc)
-			continue
-		}
-		first, rest, _ := strings.Cut(err.Error(), "\n")
-		if first != tc.first {
-			t.Errorf("first line %q\nwant       %q", first, tc.first)
-		}
-		// Every variant says what the root is and how to change it.
-		if rest != RepoRootHelp {
-			t.Errorf("%+v: explanation:\n%s", tc, rest)
-		}
-	}
-	for _, want := range []string{
-		"mounted into the container, at\n       /work",
-		"export CABOOSE_REPO_ROOT=/path/holding/your/projects",
-		"[roots]",
-		"'caboose restart'",
-	} {
-		if !strings.Contains(RepoRootHelp, want) {
-			t.Errorf("RepoRootHelp lacks %q", want)
 		}
 	}
 }
@@ -212,23 +101,6 @@ func TestResolveRootsRefusesOverlap(t *testing.T) {
 	}
 }
 
-func TestRootsFrom(t *testing.T) {
-	cases := []struct {
-		env  map[string]string
-		root string
-		from string
-	}{
-		{map[string]string{"HOME": "/h"}, "/h/dev", ""},
-		{map[string]string{"HOME": "/h", "CABOOSE_REPO_ROOT": "/r"}, "/r", "CABOOSE_REPO_ROOT"},
-	}
-	for _, tc := range cases {
-		c, err := Load(envOf(tc.env), fakeFS{}, "")
-		if err != nil || len(c.Roots) != 1 || c.Roots[0] != (Root{Host: tc.root, Container: "/work"}) || c.RootsFrom != tc.from {
-			t.Errorf("%v: roots=%+v from=%q err=%v", tc.env, c.Roots, c.RootsFrom, err)
-		}
-	}
-}
-
 func TestWithin(t *testing.T) {
 	cases := []struct {
 		path, root string
@@ -245,25 +117,6 @@ func TestWithin(t *testing.T) {
 		if got := Within(tc.path, tc.root); got != tc.want {
 			t.Errorf("Within(%q, %q) = %v", tc.path, tc.root, got)
 		}
-	}
-}
-
-func TestEmptyHome(t *testing.T) {
-	for _, env := range []map[string]string{
-		{},
-		{"HOME": ""},
-		{"CABOOSE_DATA_DIR": "/d"},
-		{"CABOOSE_REPO_ROOT": "/r"},
-	} {
-		c, err := Load(envOf(env), fakeFS{}, "")
-		if err == nil || !strings.Contains(err.Error(), "HOME is not set") || c != nil {
-			t.Errorf("%v: c=%+v err=%v", env, c, err)
-		}
-	}
-	// Nothing left that defaults under HOME: fine without it.
-	c, err := Load(envOf(map[string]string{"CABOOSE_DATA_DIR": "/d", "CABOOSE_REPO_ROOT": "/r"}), fakeFS{}, "")
-	if err != nil || c.DataDir != "/d" || c.Roots[0].Host != "/r" {
-		t.Errorf("c=%+v err=%v", c, err)
 	}
 }
 
@@ -313,51 +166,6 @@ func TestSameRoots(t *testing.T) {
 	}
 }
 
-func TestDescribeRoots(t *testing.T) {
-	if got := DescribeRoots([]Root{{Host: "/h/dev", Container: "/work"}}); got != "/h/dev" {
-		t.Errorf("one: %q", got)
-	}
-	got := DescribeRoots([]Root{{Host: "/a", Container: "/work/a"}, {Host: "/h/dev", Container: "/work/h/dev"}})
-	if want := "/a at /work/a, /h/dev at /work/h/dev"; got != want {
-		t.Errorf("several: %q, want %q", got, want)
-	}
-}
-
-// CABOOSE_BASE_IMAGE is read as is.
-func TestBaseImage(t *testing.T) {
-	c, _ := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_BASE_IMAGE": "alpine:3.20"}), fakeFS{}, "")
-	if c.BaseImage != "alpine:3.20" || c.Image != "caboose" {
-		t.Errorf("base %q, image %q", c.BaseImage, c.Image)
-	}
-}
-
-func TestDefaultBaseTag(t *testing.T) {
-	for in, want := range map[string]string{
-		"caboose":                     "caboose-base",
-		"caboose:dev":                 "caboose-base:dev",
-		"ghcr.io/x/caboose:1":         "ghcr.io/x/caboose-base:1",
-		"localhost:5000/caboose":      "localhost:5000/caboose-base",
-		"localhost:5000/caboose:t":    "localhost:5000/caboose-base:t",
-		"caboose@sha256:0123abcd":     "caboose-base",
-		"x/caboose:1@sha256:0123abcd": "x/caboose-base:1",
-	} {
-		if got := DefaultBaseTag(in); got != want {
-			t.Errorf("DefaultBaseTag(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestBase(t *testing.T) {
-	c := &Config{Image: "img"}
-	if ref, byo := c.Base(); ref != "img-base" || byo {
-		t.Errorf("default: %q, %v", ref, byo)
-	}
-	c.BaseImage = "node:22"
-	if ref, byo := c.Base(); ref != "node:22" || !byo {
-		t.Errorf("byo: %q, %v", ref, byo)
-	}
-}
-
 func TestNormalizeImage(t *testing.T) {
 	for in, want := range map[string]string{
 		"alpine":                              "alpine:latest",
@@ -379,195 +187,6 @@ func TestNormalizeImage(t *testing.T) {
 	}
 	if SameImage("caboose", "caboose-base") || SameImage("img", "img:base") || !SameImage("img", "docker.io/library/img:latest") {
 		t.Error("SameImage")
-	}
-}
-
-// CABOOSE_BASE_IMAGE may be any image but CABOOSE_IMAGE itself -- caboose's
-// own default base included, which is a separate image.
-func TestCheckImages(t *testing.T) {
-	for _, tc := range []struct {
-		image, base string
-		ok          bool
-	}{
-		{"caboose", "", true},
-		{"caboose", "caboose-base", true},
-		{"caboose", "node:22", true},
-		{"caboose", "caboose", false},
-		{"caboose", "caboose:latest", false},
-		{"caboose:latest", "docker.io/library/caboose", false},
-	} {
-		c := &Config{Image: tc.image, BaseImage: tc.base}
-		if err := c.CheckImages(); (err == nil) != tc.ok {
-			t.Errorf("%+v: %v", tc, err)
-		} else if err != nil && !strings.Contains(err.Error(), "names the same image as CABOOSE_IMAGE") {
-			t.Errorf("%+v: %v", tc, err)
-		}
-	}
-}
-
-// An environment's image/ dir is its base, found by Load; with
-// CABOOSE_BASE_IMAGE as well, which to build on would be a guess.
-func TestImageDir(t *testing.T) {
-	fs := fakeFS{"/h/.caboose/envs/work": "dir", "/h/.caboose/envs/work/image": "dir", "/h/.caboose/envs/default/image": "file"}
-	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fs, "work")
-	if err != nil || c.ImageDir != "/h/.caboose/envs/work/image" {
-		t.Fatalf("ImageDir %q, %v", c.ImageDir, err)
-	}
-	if ref, byo := c.Base(); ref != "caboose-work-base" || byo {
-		t.Errorf("Base = %q, %v", ref, byo)
-	}
-	if err := c.CheckImages(); err != nil {
-		t.Error(err)
-	}
-	c.BaseImage = "node:22"
-	if err := c.CheckImages(); !errors.Is(err, ErrTwoBases) || !strings.Contains(err.Error(), "remove base_image from /h/.caboose/envs/work/config.toml") {
-		t.Errorf("both: %v", err)
-	}
-	// Not a directory: not an image dir.
-	if c, _ := Load(envOf(map[string]string{"HOME": "/h"}), fs, "default"); c.ImageDir != "" {
-		t.Errorf("default: ImageDir %q", c.ImageDir)
-	}
-}
-
-// The isolation and the vm's size come from config.toml, and a CABOOSE_
-// variable wins over it, as every setting's does.
-func TestIsolationSettings(t *testing.T) {
-	file := "isolation = \"gvisor\"\nvm_cpus = 4\nvm_memory = \"8G\"\n"
-	fsys := fakeFS{"/h/.caboose/envs/default/config.toml": file}
-	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fsys, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Isolation != "gvisor" || c.VMCPUs != "4" || c.VMMemory != "8G" {
-		t.Errorf("from the file: %q %q %q", c.Isolation, c.VMCPUs, c.VMMemory)
-	}
-	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_ISOLATION": "vm", "CABOOSE_VM_CPUS": "2", "CABOOSE_VM_MEMORY": "4096M"}), fsys, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Isolation != "vm" || c.VMCPUs != "2" || c.VMMemory != "4096M" {
-		t.Errorf("from the variables: %q %q %q", c.Isolation, c.VMCPUs, c.VMMemory)
-	}
-}
-
-// The outbound proxy's settings: on by default, from the file, a variable
-// winning over it; egress_proxy = false is off, never unset.
-func TestEgressSettings(t *testing.T) {
-	home := map[string]string{"HOME": "/h"}
-	c, err := Load(envOf(home), fakeFS{}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.EgressProxy != "on" || c.EgressPorts != "22 80 443" || c.EgressAllow != "" {
-		t.Errorf("defaults: %q %q %q", c.EgressProxy, c.EgressPorts, c.EgressAllow)
-	}
-	file := "egress_proxy = \"off\"\negress_ports = \"443 8443\"\negress_allow = \"*.corp.example 10.0.0.0/8\"\n"
-	fsys := fakeFS{cfgPath: file}
-	if c, err = Load(envOf(home), fsys, ""); err != nil {
-		t.Fatal(err)
-	}
-	if c.EgressProxy != "off" || c.EgressPorts != "443 8443" || c.EgressAllow != "*.corp.example 10.0.0.0/8" {
-		t.Errorf("from the file: %q %q %q", c.EgressProxy, c.EgressPorts, c.EgressAllow)
-	}
-	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_EGRESS_PROXY": "on", "CABOOSE_EGRESS_PORTS": "22",
-		"CABOOSE_EGRESS_ALLOW": "git.corp.example"}), fsys, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.EgressProxy != "on" || c.EgressPorts != "22" || c.EgressAllow != "git.corp.example" {
-		t.Errorf("from the variables: %q %q %q", c.EgressProxy, c.EgressPorts, c.EgressAllow)
-	}
-	for v, want := range map[string]string{"false": "off", "true": "on"} {
-		c, err := Load(envOf(home), fakeFS{cfgPath: "egress_proxy = " + v + "\n"}, "")
-		if err != nil || c.EgressProxy != want {
-			t.Errorf("egress_proxy = %s: %q %v", v, c.EgressProxy, err)
-		}
-	}
-	for v, want := range map[string]bool{"on": true, "off": false} {
-		if on, err := CheckEgressProxy(v); err != nil || on != want {
-			t.Errorf("CheckEgressProxy(%q) = %v %v", v, on, err)
-		}
-	}
-	for _, bad := range []string{"", "yes", "1", "ON"} {
-		if _, err := CheckEgressProxy(bad); err == nil {
-			t.Errorf("CheckEgressProxy(%q) accepted", bad)
-		}
-	}
-}
-
-// ssh_agent names the host's agent for the sandbox: the file's, with ~
-// expanded, the variable winning, and each saying where it came from.
-func TestSSHAgentSetting(t *testing.T) {
-	home := map[string]string{"HOME": "/h"}
-	c, err := Load(envOf(home), fakeFS{}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.SSHAgent != "" || c.SSHAgentFrom != "" {
-		t.Errorf("default: %q from %q", c.SSHAgent, c.SSHAgentFrom)
-	}
-	fsys := fakeFS{cfgPath: "ssh_agent = \"~/op/agent.sock\"\n"}
-	if c, err = Load(envOf(home), fsys, ""); err != nil {
-		t.Fatal(err)
-	}
-	if c.SSHAgent != "/h/op/agent.sock" || c.SSHAgentFrom != cfgPath {
-		t.Errorf("from the file: %q from %q", c.SSHAgent, c.SSHAgentFrom)
-	}
-	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_SSH_AGENT": "none"}), fsys, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.SSHAgent != "none" || c.SSHAgentFrom != "CABOOSE_SSH_AGENT" {
-		t.Errorf("from the variable: %q from %q", c.SSHAgent, c.SSHAgentFrom)
-	}
-}
-
-// host_exec: off by default, from the file, a variable winning over it --
-// one saying "0" or "false" is off, never set-and-so-on.
-func TestHostExecSetting(t *testing.T) {
-	home := map[string]string{"HOME": "/h"}
-	c, err := Load(envOf(home), fakeFS{}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if on, err := CheckHostExec(c.HostExec); on || err != nil || c.HostExecFrom != "" {
-		t.Errorf("default: %q %v %v", c.HostExec, on, err)
-	}
-	fsys := fakeFS{cfgPath: "host_exec = true\n"}
-	if c, err = Load(envOf(home), fsys, ""); err != nil {
-		t.Fatal(err)
-	}
-	if on, _ := CheckHostExec(c.HostExec); !on || c.HostExecFrom != cfgPath {
-		t.Errorf("from the file: %q from %q", c.HostExec, c.HostExecFrom)
-	}
-	for _, v := range []string{"0", "false", "off"} {
-		c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOST_EXEC": v}), fsys, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if on, err := CheckHostExec(c.HostExec); on || err != nil || c.HostExecFrom != "CABOOSE_HOST_EXEC" {
-			t.Errorf("CABOOSE_HOST_EXEC=%s over the file's true: %q %v %v", v, c.HostExec, on, err)
-		}
-	}
-	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOST_EXEC": "1"}), fakeFS{cfgPath: "host_exec = false\n"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if on, _ := CheckHostExec(c.HostExec); !on {
-		t.Errorf("CABOOSE_HOST_EXEC=1 over the file's false: %q", c.HostExec)
-	}
-	if c, err = Load(envOf(home), fakeFS{cfgPath: "host_exec = false\n"}, ""); err != nil || c.HostExec != "off" {
-		t.Errorf("host_exec = false: %q %v", c.HostExec, err)
-	}
-	for v, want := range map[string]bool{"on": true, "true": true, "1": true, "yes": true, "TRUE": true, "": false, "off": false, "false": false, "0": false, "no": false} {
-		if on, err := CheckHostExec(v); err != nil || on != want {
-			t.Errorf("CheckHostExec(%q) = %v %v", v, on, err)
-		}
-	}
-	for _, bad := range []string{"2", "maybe", "onn"} {
-		if _, err := CheckHostExec(bad); err == nil || !strings.Contains(err.Error(), "host_exec") {
-			t.Errorf("CheckHostExec(%q): %v", bad, err)
-		}
 	}
 }
 
@@ -613,22 +232,257 @@ func TestHostPath(t *testing.T) {
 	}
 }
 
-// hostname comes from config.toml, a variable wins over it, and a value
-// that is no single lowercase DNS label is refused at load, saying where
-// it came from.
+func TestDefaults(t *testing.T) {
+	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Config{Env: "default", CabooseHome: "/h/.caboose", EnvDir: "/h/.caboose/envs/default",
+		Image: "caboose:default", Container: "caboose-default", DataDir: "/h/.caboose/envs/default/data",
+		Roots:     []Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}},
+		AutoBuild: true, Tmux: true, KeepVersions: 2, ReadyTimeout: 600, Home: "/h",
+		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: KindContainer,
+		Egress: true, EgressPorts: DefaultEgressPorts}
+	c.Getenv = nil
+	if !reflect.DeepEqual(*c, want) {
+		t.Errorf("got %+v\nwant %+v", *c, want)
+	}
+	if c.RootsOrigin() != "the default: config.toml has no [roots]" {
+		t.Errorf("origin %q", c.RootsOrigin())
+	}
+}
+
+// An environment is a whole caboose: its own dir, container and images,
+// named after it, the default one's too.
+func TestEnvironments(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, envVar         string
+		env, dir, container, image string
+	}{
+		{"default", "", "", "default", "/h/.caboose/envs/default", "caboose-default", "caboose:default"},
+		{"CABOOSE_ENV", "", "work", "work", "/h/.caboose/envs/work", "caboose-work", "caboose:work"},
+		{"--env", "play", "", "play", "/h/.caboose/envs/play", "caboose-play", "caboose:play"},
+		{"--env wins", "play", "work", "play", "/h/.caboose/envs/play", "caboose-play", "caboose:play"},
+		{"naming default", "default", "work", "default", "/h/.caboose/envs/default", "caboose-default", "caboose:default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_ENV": tc.envVar}), fakeFS{}, tc.flag)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Env != tc.env || c.EnvDir != tc.dir || c.Container != tc.container || c.Image != tc.image {
+				t.Errorf("env %q dir %q container %q image %q", c.Env, c.EnvDir, c.Container, c.Image)
+			}
+			if ref, byo := c.Base(); ref != "caboose-base:"+tc.env || byo {
+				t.Errorf("base %q %v", ref, byo)
+			}
+		})
+	}
+	for _, bad := range []string{"Work", "-x", "a/b", "..", "a b", "a.b", "a:b", strings.Repeat("a", 33)} {
+		if _, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{}, bad); err == nil {
+			t.Errorf("env %q accepted", bad)
+		}
+	}
+}
+
+// Every environment name makes a valid docker image tag and container
+// name: the tag's rule, [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}, holds the
+// environment's.
+func TestEnvNamesAreDockerNames(t *testing.T) {
+	tag := regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+	container := regexp.MustCompile(`^/?[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+	for _, env := range []string{"default", "a", "0", "a-b_c", strings.Repeat("z", 32)} {
+		if !ValidEnv(env) || !tag.MatchString(env) || !container.MatchString(ContainerFor(env)) {
+			t.Errorf("%q", env)
+		}
+	}
+	if !strings.Contains(envName.String(), "^[a-z0-9][a-z0-9_-]{0,31}$") {
+		t.Errorf("the environment's rule changed (%s): check it against docker's again", envName)
+	}
+}
+
+func TestResolveRoots(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{Roots: []Root{{Name: "dev", Host: link, Container: "/work/dev"}}}
+	if err := c.ResolveRoots(); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(real)
+	if c.Roots[0].Host != want || c.Roots[0].Container != "/work/dev" {
+		t.Errorf("Roots = %+v, want %q at /work/dev", c.Roots, want)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nope := filepath.Join(dir, "nope")
+	for _, tc := range []struct {
+		root  Root
+		from  string
+		first string
+	}{
+		// The first run of someone whose repos are not in ~/dev.
+		{Root{Name: "dev", Host: nope}, "", "root dev, " + nope + ", does not exist (the default: config.toml has no [roots])."},
+		{Root{Name: "dev", Host: file}, "/c.toml", "root dev, " + file + ", is not a directory (set by [roots] in /c.toml)."},
+	} {
+		c := &Config{Roots: []Root{tc.root}, RootsFrom: tc.from}
+		err := c.ResolveRoots()
+		if err == nil {
+			t.Errorf("%+v: no error", tc)
+			continue
+		}
+		first, rest, _ := strings.Cut(err.Error(), "\n")
+		if first != tc.first {
+			t.Errorf("first line %q\nwant       %q", first, tc.first)
+		}
+		// Every variant says what the roots are and how to change them.
+		if rest != RootsHelp {
+			t.Errorf("%+v: explanation:\n%s", tc, rest)
+		}
+	}
+	for _, want := range []string{"/work/<name>", "[roots]", "caboose setup roots", "'caboose restart'"} {
+		if !strings.Contains(RootsHelp, want) {
+			t.Errorf("RootsHelp lacks %q", want)
+		}
+	}
+}
+
+func TestEmptyHome(t *testing.T) {
+	for _, env := range []map[string]string{{}, {"HOME": ""}, {"CABOOSE_DATA_DIR": "/d"}} {
+		c, err := Load(envOf(env), fakeFS{}, "")
+		if err == nil || !strings.Contains(err.Error(), "HOME is not set") || c != nil {
+			t.Errorf("%v: c=%+v err=%v", env, c, err)
+		}
+	}
+	// Nothing left that defaults under HOME: fine without it.
+	c, err := Load(envOf(map[string]string{"CABOOSE_HOME": "/c", "CABOOSE_DATA_DIR": "/d"}),
+		fakeFS{"/c/envs/default/config.toml": "[roots]\na = \"/a\"\n"}, "")
+	if err != nil || c.DataDir != "/d" || c.Roots[0].Host != "/a" {
+		t.Errorf("c=%+v err=%v", c, err)
+	}
+}
+
+func TestDescribeRoots(t *testing.T) {
+	got := DescribeRoots([]Root{{Host: "/a", Container: "/work/a"}, {Host: "/h/t", Container: "/opt/t"}})
+	if want := "/a at /work/a, /h/t at /opt/t"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+}
+
+// [image] base may be any image but the environment's own.
+func TestCheckImages(t *testing.T) {
+	for _, tc := range []struct {
+		base string
+		ok   bool
+	}{
+		{"", true},
+		{"caboose-base:default", true},
+		{"node:22", true},
+		{"caboose:default", false},
+		{"docker.io/library/caboose:default", false},
+	} {
+		c := &Config{Env: "default", Image: ImageFor("default"), BaseImage: tc.base}
+		if err := c.CheckImages(); (err == nil) != tc.ok {
+			t.Errorf("%+v: %v", tc, err)
+		} else if err != nil && !strings.Contains(err.Error(), "is the environment's own image") {
+			t.Errorf("%+v: %v", tc, err)
+		}
+	}
+}
+
+// An environment's image/ dir is its base, found by Load; with [image]
+// base as well, which to build on would be a guess.
+func TestImageDir(t *testing.T) {
+	fs := fakeFS{"/h/.caboose/envs/work": "dir", "/h/.caboose/envs/work/image": "dir", "/h/.caboose/envs/default/image": "file"}
+	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fs, "work")
+	if err != nil || c.ImageDir != "/h/.caboose/envs/work/image" {
+		t.Fatalf("ImageDir %q, %v", c.ImageDir, err)
+	}
+	if ref, byo := c.Base(); ref != "caboose-base:work" || byo {
+		t.Errorf("Base = %q, %v", ref, byo)
+	}
+	if err := c.CheckImages(); err != nil {
+		t.Error(err)
+	}
+	c.BaseImage = "node:22"
+	if ref, byo := c.Base(); ref != "node:22" || !byo {
+		t.Errorf("Base = %q, %v", ref, byo)
+	}
+	if err := c.CheckImages(); !errors.Is(err, ErrTwoBases) || !strings.Contains(err.Error(), "remove base from /h/.caboose/envs/work/config.toml") {
+		t.Errorf("both: %v", err)
+	}
+	// Not a directory: not an image dir.
+	if c, _ := Load(envOf(map[string]string{"HOME": "/h"}), fs, "default"); c.ImageDir != "" {
+		t.Errorf("default: ImageDir %q", c.ImageDir)
+	}
+}
+
+// A variable that was a setting is refused, naming where the setting is
+// now; Machine refuses it too.
+func TestMovedVariables(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"CABOOSE_REPO_ROOT", "a [roots] table"},
+		{"CABOOSE_IMAGE", "named after the environment"},
+		{"CABOOSE_NO_TMUX", "tmux in [session]"},
+		{"CABOOSE_DOCKER_RUN_ARGS", "run_args in a [container.NAME] or [gvisor.NAME] profile"},
+		{"CABOOSE_ISOLATION", "isolation, naming a profile"},
+		{"CABOOSE_PROJECT", "run caboose in the project's directory"},
+	} {
+		env := envOf(map[string]string{"HOME": "/h", tc.name: "x"})
+		_, err := Load(env, fakeFS{}, "")
+		if err == nil || !strings.Contains(err.Error(), tc.name+" is set, and caboose no longer reads it") ||
+			!strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), ConfigDoc) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+		if _, err := Machine(env); err == nil {
+			t.Errorf("%s: Machine took it", tc.name)
+		}
+	}
+	// Every moved key has a place, and every one is refused in the file.
+	for _, m := range Moved {
+		if m.Now == "" || !strings.HasPrefix(m.Variable, "CABOOSE_") {
+			t.Errorf("%+v", m)
+		}
+	}
+}
+
+// The boolean variables take one spelling set, strictly.
+func TestEnvBool(t *testing.T) {
+	for v, want := range map[string]bool{"": false, "0": false, "false": false, "No": false, "OFF": false,
+		"1": true, "true": true, "YES": true, "on": true, "True": true} {
+		got, err := EnvBool(envOf(map[string]string{"X": v}), "X")
+		if err != nil || got != want {
+			t.Errorf("%q: %v %v", v, got, err)
+		}
+	}
+	for _, v := range []string{"2", "y", "enabled", " 1"} {
+		if _, err := EnvBool(envOf(map[string]string{"X": v}), "X"); err == nil || !strings.Contains(err.Error(), "X=") {
+			t.Errorf("%q: %v", v, err)
+		}
+	}
+	c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_FORCE": "yes", "CABOOSE_NO_AUTO_UPDATE": "1", "CABOOSE_SESSION": "two"}), fakeFS{}, "")
+	if err != nil || !c.Force || !c.NoAutoUpdate || c.Session != "two" {
+		t.Errorf("%+v %v", c, err)
+	}
+	if _, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_FORCE": "please"}), fakeFS{}, ""); err == nil || !strings.Contains(err.Error(), "CABOOSE_FORCE") {
+		t.Errorf("CABOOSE_FORCE=please: %v", err)
+	}
+	if c, err := Machine(envOf(map[string]string{"HOME": "/h", "CABOOSE_NO_AUTO_UPDATE": "on"})); err != nil || !c.NoAutoUpdate || c.CabooseHome != "/h/.caboose" {
+		t.Errorf("Machine: %+v %v", c, err)
+	}
+}
+
+// A hostname that is no single lowercase DNS label is refused at load,
+// saying where it came from.
 func TestHostnameSetting(t *testing.T) {
-	home := map[string]string{"HOME": "/h"}
-	if c, err := Load(envOf(home), fakeFS{}, ""); err != nil || c.Hostname != "" {
-		t.Fatalf("default: %q %v", c.Hostname, err)
-	}
-	fsys := fakeFS{cfgPath: "hostname = \"from-file\"\n"}
-	if c, err := Load(envOf(home), fsys, ""); err != nil || c.Hostname != "from-file" {
-		t.Errorf("from the file: %q %v", c.Hostname, err)
-	}
-	c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOSTNAME": "from-var"}), fsys, "")
-	if err != nil || c.Hostname != "from-var" {
-		t.Errorf("from the variable: %q %v", c.Hostname, err)
-	}
 	for _, good := range []string{"a", "caboose-laptop", "a1", strings.Repeat("a", 63)} {
 		if err := CheckHostname(good); err != nil {
 			t.Errorf("CheckHostname(%q): %v", good, err)
@@ -638,11 +492,9 @@ func TestHostnameSetting(t *testing.T) {
 		if CheckHostname(bad) == nil {
 			t.Errorf("CheckHostname(%q) accepted", bad)
 		}
-		if _, err := Load(envOf(home), fakeFS{cfgPath: "hostname = \"" + bad + "\"\n"}, ""); err == nil || !strings.Contains(err.Error(), "in /h/.caboose/envs/default/config.toml") {
-			t.Errorf("file hostname %q: %v", bad, err)
-		}
-		if _, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOSTNAME": bad}), fakeFS{}, ""); err == nil || !strings.Contains(err.Error(), "CABOOSE_HOSTNAME") {
-			t.Errorf("variable hostname %q: %v", bad, err)
+		_, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: "[session]\nhostname = \"" + bad + "\"\n"}, "")
+		if err == nil || !strings.Contains(err.Error(), cfgPath+": hostname in [session]") {
+			t.Errorf("hostname %q: %v", bad, err)
 		}
 	}
 }

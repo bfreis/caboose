@@ -66,7 +66,7 @@ type Builder struct {
 	// Egress, when not "", is where the builder's agent is to serve the
 	// outbound proxy (agentproto.EgressListen), and Link opens the host
 	// link that serves it, for the guest's life: under vm with
-	// egress_proxy on, the build's downloads are made from the host, as
+	// egress on, the build's downloads are made from the host, as
 	// the sandbox's are (egressArgs).
 	Egress string
 	Link   func(vm.Dir) (io.Closer, error)

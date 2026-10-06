@@ -56,7 +56,7 @@ new or changed entry takes effect at the next `caboose restart`; a launch,
 - **Never at the host's path:** what is kept lives in the data dir, never at
   the host's own `~/.cargo`: the sandbox reaches no more of the host than it
   did. For a directory shared with the host, use a
-  [root](configuration.md#the-repo-root).
+  [root](configuration.md#roots).
 
 The defaults keep `~/.claude`, `~/.claude.json`, `~/.config/caboose` (this
 file, [`start.d` and `shell.d`](startup.md)), `~/.config/git`,
@@ -150,12 +150,12 @@ The same works for ssh (`Include`), jj (its config directory) and shells
 ## Roots
 
 ```toml
-roots = ["dev", "oss"]
+roots = ["/work/dev", "/work/oss"]
 ```
 
-The names of the [roots](configuration.md#the-repo-root) the projects
+The container paths of the [roots](configuration.md#roots) the projects
 expect. Claude Code keys a project's memory by its path, `/work/<root>/...`
-in the container, so memory synced from a machine with a root `oss` is never
+in the container, so memory synced from a machine with a root at `/work/oss` is never
 read on one without it. `caboose doctor` says when this machine lacks one;
 `caboose setup roots` adds it.
 

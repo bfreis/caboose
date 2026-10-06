@@ -74,12 +74,6 @@ func TestMachineMACRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil || !reflect.DeepEqual(got, m) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	// One from before the field: no MAC, which the runner leaves random.
-	old := []byte(`{"kernel":"/k","initramfs":"/i","cpus":2,"memory_mib":512,"disks":[],"network":"nat","console":"/c"}`)
-	got = Machine{}
-	if err := json.Unmarshal(old, &got); err != nil || got.MAC != "" || got.Network != "nat" {
-		t.Fatalf("old machine.json: %+v, %v", got, err)
-	}
 	// And none written when there is none.
 	if err := d.WriteMachine(Machine{Network: "none"}); err != nil {
 		t.Fatal(err)

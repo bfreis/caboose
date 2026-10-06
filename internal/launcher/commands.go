@@ -35,7 +35,7 @@ func du(path string) (string, error) {
 
 // enterProjectDir is `cd "$dir" && pwd -P`: the physical path of dir, which
 // must be a directory. It runs before anything has side effects, so a
-// CABOOSE_PROJECT naming a file changes nothing.
+// directory that is gone changes nothing.
 func enterProjectDir(dir string) (string, error) {
 	p, err := config.Physical(dir)
 	if err != nil {
@@ -114,7 +114,7 @@ func (a *App) Status() error {
 	fmt.Fprintf(out, "%s %s (%s)\n", a.nounLabel(), c.Container, state)
 	fmt.Fprintf(out, "image     : %s\n", c.Image)
 	for _, r := range c.Roots {
-		fmt.Fprintf(out, "repo root : %s -> %s\n", r.Host, r.Container)
+		fmt.Fprintf(out, "root      : %s -> %s\n", r.Host, r.Container)
 	}
 	fmt.Fprintf(out, "data dir  : %s\n", c.DataDir)
 	switch {
@@ -130,10 +130,10 @@ func (a *App) Status() error {
 		}
 		fmt.Fprintf(out, "keeps     : %s (in %s/%s)\n", strings.Join(kept, ", "), c.DataDir, datadir.HomeDir)
 	}
-	if len(c.DockerRunArgs) > 0 {
-		fmt.Fprintf(out, "run args  : %s (%s)\n", describeRunArgs(c.DockerRunArgs), runArgsOrigin(c))
+	if len(c.RunArgs) > 0 {
+		fmt.Fprintf(out, "run args  : %s (%s)\n", describeRunArgs(c.RunArgs), runArgsOrigin(c))
 	}
-	fmt.Fprintf(out, "isolation : %s\n", isolationOf(c))
+	fmt.Fprintf(out, "isolation : %s\n", isolationSummary(c))
 	if a.isVM() {
 		fmt.Fprintf(out, "outbound  : %s\n", a.egressSummary())
 	}
@@ -198,7 +198,7 @@ func (a *App) Status() error {
 
 	// Runs outside tmux are plain docker execs: nothing above lists them.
 	if l, err := a.liveWork(); err == nil && l.others > 0 {
-		fmt.Fprintf(out, "\nClaude Code outside tmux: %d %s (CABOOSE_NO_TMUX, caboose claude -p, background agents)\n",
+		fmt.Fprintf(out, "\nClaude Code outside tmux: %d %s (tmux = false, caboose claude -p, background agents)\n",
 			l.others, plural(l.others, "process", "processes"))
 	}
 
@@ -209,12 +209,13 @@ func (a *App) Status() error {
 		fmt.Fprintf(out, "  (unavailable)\n")
 	}
 
+	keep := strconv.Itoa(c.KeepVersions)
 	liveKeep, _ := a.containerEnv("CABOOSE_KEEP_VERSIONS")
-	if liveKeep != "" && liveKeep != c.KeepVersions {
-		a.Note("%s was created with CABOOSE_KEEP_VERSIONS=%s, shell has %s.", a.noun(), liveKeep, c.KeepVersions)
-		a.Note("start-up pruning uses %s until caboose restart; caboose prune uses %s.", liveKeep, c.KeepVersions)
+	if liveKeep != "" && liveKeep != keep {
+		a.Note("%s was created with keep_versions = %s, config.toml has %s.", a.noun(), liveKeep, keep)
+		a.Note("start-up pruning uses %s until caboose restart; caboose prune uses %s.", liveKeep, keep)
 	}
-	fmt.Fprintf(out, "\ndisk used by installed claude versions (retaining %s):\n", or(liveKeep, c.KeepVersions))
+	fmt.Fprintf(out, "\ndisk used by installed claude versions (retaining %s):\n", or(liveKeep, keep))
 	usage, _ := du(localDir + "/" + datadir.PlatformShare) // best effort
 	fmt.Fprint(out, indent(usage, "  "))
 	// A glob, not ls: bash is an image requirement, ls is not.
@@ -222,7 +223,7 @@ func (a *App) Status() error {
 		`for v in ~/.local/share/claude/versions/*; do [ -e "$v" ] && printf '  %s\n' "${v##*/}"; done; true`)
 	fmt.Fprint(out, versions)
 
-	// Each platform keeps its own CABOOSE_KEEP_VERSIONS versions, so a data
+	// Each platform keeps its own keep_versions versions, so a data
 	// dir used with more than one image holds more than one set.
 	if rows := a.platformUsage(); len(rows) > 0 {
 		fmt.Fprintf(out, "\ndisk used per platform (%s/<platform>, each with its own versions):\n", datadir.LocalRoot)
@@ -271,7 +272,7 @@ func (a *App) Restart() error {
 		return Die("%v", err)
 	}
 	// Refused now, not once the container is gone.
-	if err := checkRunArgs(a.Cfg.DockerRunArgs, nil, a.Cfg.Roots); err != nil {
+	if err := checkRunArgs(a.Cfg.RunArgs, nil, a.Cfg.Roots); err != nil {
 		return a.runArgsError(err)
 	}
 	if err := a.checkRuntime(); err != nil {
@@ -294,7 +295,7 @@ func (a *App) Restart() error {
 }
 
 // Prune deletes old installed versions now, with the current
-// CABOOSE_KEEP_VERSIONS rather than the one baked in at creation. Like
+// keep_versions rather than the one baked in at creation. Like
 // Logs, it creates a missing container but does not build a missing image.
 // --docker deletes the vm sandbox's docker disk instead (pruneDocker).
 func (a *App) Prune(args []string) error {
@@ -308,7 +309,7 @@ func (a *App) Prune(args []string) error {
 		return err
 	}
 	cmd := a.box().Command(backend.ExecSpec{
-		Argv: []string{Entrypoint, "--cc-prune"}, Env: []string{"CABOOSE_KEEP_VERSIONS=" + a.Cfg.KeepVersions},
+		Argv: []string{Entrypoint, "--cc-prune"}, Env: []string{"CABOOSE_KEEP_VERSIONS=" + strconv.Itoa(a.Cfg.KeepVersions)},
 	})
 	cmd.Stdout, cmd.Stderr = a.Stdout, a.Stderr
 	if err := cmd.Run(); err != nil {
@@ -340,7 +341,7 @@ func (a *App) dockerDisk() string {
 
 // pruneDocker deletes the disk the vm sandbox's dockerd keeps everything
 // on -- images, containers, volumes, build cache -- for an empty one, after
-// saying what it frees and asking (FORCE=1 does not ask). The disk is in
+// saying what it frees and asking (CABOOSE_FORCE=1 does not ask). The disk is in
 // use while the VM runs, so a running one is stopped first, ending its
 // sessions: they are listed, and the one question covers them too. The
 // empty disk is made at once, cloned from the template a build made, and
@@ -372,13 +373,13 @@ func (a *App) pruneDocker() error {
 			fmt.Fprint(a.Stderr, indent(sessions+"\n", "  "))
 		}
 	}
-	if a.getenv("FORCE") != "" {
-		a.Note("FORCE=1 set, continuing.")
+	if a.force() {
+		a.Note("CABOOSE_FORCE=1 set, continuing.")
 	} else {
 		yes, asked := a.askYes("delete it?")
 		switch {
 		case !asked:
-			return Die("refusing to delete it non-interactively (set FORCE=1 to delete it)")
+			return Die("refusing to delete it non-interactively (set CABOOSE_FORCE=1 to delete it)")
 		case !yes:
 			return Die("aborted; nothing was changed")
 		}
@@ -512,14 +513,10 @@ func (a *App) Shell(args []string) error {
 }
 
 // Attach is the default: attach a Claude Code session for the current
-// directory (or CABOOSE_PROJECT), passing args through to claude.
+// directory, passing args through to claude.
 func (a *App) Attach(args []string) error {
 	c := a.Cfg
-	projectDir := c.Project
-	if projectDir == "" {
-		projectDir = "."
-	}
-	projectDir, err := enterProjectDir(projectDir)
+	projectDir, err := enterProjectDir(".")
 	if err != nil {
 		return err
 	}
@@ -560,7 +557,7 @@ func (a *App) Attach(args []string) error {
 	// Escape hatch: run Claude Code directly, with no tmux in the way.
 	// Rendering is then identical to the host terminal, at the cost of
 	// losing detach/reattach -- closing the terminal kills the session.
-	if c.NoTmux != "" {
+	if !c.Tmux {
 		return a.exec(a.box().Command(backend.ExecSpec{
 			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: workdir, Stdin: true, TTY: true,
 		}))

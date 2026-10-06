@@ -32,7 +32,8 @@ curl -fsSL https://github.com/bfreis/caboose/releases/latest/download/install.sh
 cd ~/dev/some-project && caboose
 ```
 
-The installer puts caboose in `~/.local/bin` without root, checks it
+The installer puts caboose in `~/.caboose/versions`, linked from
+`~/.local/bin`, without root, checks it
 against the release's checksums, and runs `caboose setup`. After that,
 caboose keeps itself up to date. The first launch builds the image, which
 takes a few minutes once, and asks you to log in to Claude. See
@@ -55,8 +56,8 @@ building from a checkout.
   plugins, kept in a data dir on the host (`~/.caboose`) and never in your
   checkouts. Claude Code updates itself in place, and the sandbox can be
   recreated at any time without losing anything.
-- **Only what you mount.** The sandbox sees your repo roots (default
-  `~/dev`, at `/work` inside) and nothing else on your disk. Your SSH agent
+- **Only what you mount.** The sandbox sees the roots you name (default
+  `~/dev`, at `/work/dev` inside) and nothing else on your disk. Your SSH agent
   (or the one you name) is forwarded, so git pushes and signs commits with
   keys that never enter the sandbox.
 - **A way back to you.** Servers listening in the sandbox are forwarded to
@@ -90,8 +91,8 @@ caboose help               # every command
 |---|---|
 | [Getting started](docs/getting-started.md) | install, first run, updates |
 | [Commands](docs/commands.md) | every command, and `caboose doctor` |
-| [Configuration](docs/configuration.md) | `config.toml`, repo roots, environments, `caboose setup`, git identity |
-| [Isolation](docs/configuration.md#isolation) | docker, gVisor or a VM of caboose's own, and what each needs |
+| [Configuration](docs/configuration.md) | `config.toml`, roots, environments, `caboose setup`, git identity |
+| [Isolation](docs/configuration.md#isolation-profiles) | container, gVisor or a VM of caboose's own, and what each needs |
 | [How it works](docs/how-it-works.md) | the sandbox, persistent state, tmux, terminal rendering |
 | [Start-up scripts and shell config](docs/startup.md) | `start.d` run at container start, `shell.d` read by every bash |
 | [Proposals](docs/proposals.md) | sessions asking for a tool, a kept directory or a root; `caboose apply` |

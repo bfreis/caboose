@@ -352,7 +352,7 @@ func InstructionsLocation(checkout string, roots []config.Root) string {
 		// mounted" would decline to edit what it can.
 		if clone := FindClone(roots); clone != "" {
 			if p, ok := config.ContainerPath(roots, clone); ok {
-				return p + "   (a clone of the source, under the repo roots; this launcher is an installed release, so a change there reaches this sandbox only through a release)"
+				return p + "   (a clone of the source, under the roots; this launcher is an installed release, so a change there reaches this sandbox only through a release)"
 			}
 		}
 		return "NOT MOUNTED — this launcher is an installed binary, not a checkout. The source is " +
@@ -361,7 +361,7 @@ func InstructionsLocation(checkout string, roots []config.Root) string {
 	if p, ok := config.ContainerPath(roots, checkout); ok {
 		return p
 	}
-	return "NOT MOUNTED — its checkout, " + checkout + ", is outside the repo root (" + config.DescribeRoots(roots) +
+	return "NOT MOUNTED — its checkout, " + checkout + ", is outside every root (" + config.DescribeRoots(roots) +
 		"), so it is edited from the host, not from in here"
 }
 

@@ -11,8 +11,8 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 )
 
-// defaultHostname is "caboose" until the machine's name is in it, which is
-// what a container from before LabelHostname was created with.
+// defaultHostname is the prefix of every default hostname, and all of it
+// when the machine has no name.
 const defaultHostname = "caboose"
 
 // maxHostname is the longest a hostname may be: one DNS label (RFC 1123).
@@ -107,19 +107,22 @@ func (a *App) syncHost() string {
 }
 
 // createdHostname is the hostname the container was created with; ok is
-// false when that cannot be told. One from before the label was always
-// "caboose".
+// false when that cannot be told, or the container records none.
 func (a *App) createdHostname() (name string, ok bool) {
 	labels, err := a.box().Labels()
 	if err != nil {
 		return "", false
 	}
-	return or(labels[assets.LabelHostname], defaultHostname), true
+	name, ok = labels[assets.LabelHostname]
+	return name, ok
 }
 
 // hostnameDrift says how the container's hostname differs from the
 // configuration's, or "" when it does not, or it cannot be told.
 func (a *App) hostnameDrift() string {
+	if d := a.missingLabel(assets.LabelHostname, "hostname"); d != "" {
+		return d
+	}
 	have, ok := a.createdHostname()
 	want := a.hostname()
 	if !ok || have == want {

@@ -56,7 +56,7 @@ func TestSandboxWords(t *testing.T) {
 				t.Fatal(err)
 			}
 			out, errs = b.said()
-			want := []string{"\n" + label + " box (running)\n", "\nisolation : " + iso + "\n"}
+			want := []string{"\n" + label + " box (running)\n", "\nisolation : " + iso + " (the default: config.toml defines no profile)\n"}
 			if iso == isolationVM {
 				want = append(want, "\ndockerd   : in the VM, its own, not this machine's (images kept in ")
 				if strings.Contains(out, "\ndocker    :") {
@@ -172,7 +172,7 @@ func TestRestartRecreates(t *testing.T) {
 			_, probed := os.Stat(b.engine + "/probe")
 			link := slices.ContainsFunc(b.spawned, func(a []string) bool { return slices.Contains(a, "link") })
 			switch iso {
-			case isolationDocker:
+			case isolationContainer:
 				if spec.Runtime != "" || spec.User != "" || probed == nil || link {
 					t.Errorf("docker: runtime %q, user %q, probed %v, link %v", spec.Runtime, spec.User, probed == nil, link)
 				}
@@ -191,7 +191,7 @@ func TestRestartRecreates(t *testing.T) {
 }
 
 // Restart and stop end the sessions a sandbox holds only when told to:
-// FORCE=1, or a yes on the terminal. With neither they refuse, and leave
+// CABOOSE_FORCE=1, or a yes on the terminal. With neither they refuse, and leave
 // the sandbox as it was.
 func TestSessionLossNeedsConsent(t *testing.T) {
 	for _, iso := range isolations {
@@ -206,7 +206,7 @@ func TestSessionLossNeedsConsent(t *testing.T) {
 			if !tty.IsTerminal(os.Stdin.Fd()) {
 				for what, run := range map[string]func() error{"stop": b.Stop, "restart": b.Restart} {
 					err := run()
-					if err == nil || !strings.Contains(err.Error(), "refusing to "+what+" non-interactively with live sessions (set FORCE=1 to override)") {
+					if err == nil || !strings.Contains(err.Error(), "refusing to "+what+" non-interactively with live sessions (set CABOOSE_FORCE=1 to override)") {
 						t.Errorf("%s: %v", what, err)
 					}
 					if _, errs := b.said(); !strings.Contains(errs, "caboose: "+what+" will kill these live session(s):\n  proj-abc123\n  proj-abc123-2\n") {
@@ -217,11 +217,11 @@ func TestSessionLossNeedsConsent(t *testing.T) {
 					t.Errorf("refused, yet: %q", b.box.Calls)
 				}
 			}
-			b.Cfg.Getenv = func(k string) string { return map[string]string{"FORCE": "1"}[k] }
+			b.Cfg.Getenv = func(k string) string { return map[string]string{"CABOOSE_FORCE": "1"}[k] }
 			if err := b.Stop(); err != nil {
 				t.Fatal(err)
 			}
-			if _, errs := b.said(); !strings.Contains(errs, "caboose: FORCE=1 set, continuing.\n") || b.box.State() != "exited" {
+			if _, errs := b.said(); !strings.Contains(errs, "caboose: CABOOSE_FORCE=1 set, continuing.\n") || b.box.State() != "exited" {
 				t.Errorf("forced stop: %s\n%s", b.box.State(), errs)
 			}
 		})
@@ -271,7 +271,7 @@ func TestRuntimeGone(t *testing.T) {
 		box.Status = "exited"
 		return box
 	}
-	b := newBoxApp(t, isolationDocker, stopped(isolationGVisor))
+	b := newBoxApp(t, isolationContainer, stopped(isolationGVisor))
 	b.write(t, "runtimes", `{"runc":{}}`)
 	if rt := b.runtimeGone(); rt != "runsc" {
 		t.Fatalf("runtimeGone = %q", rt)
@@ -289,10 +289,10 @@ func TestRuntimeGone(t *testing.T) {
 		t.Errorf("calls %q", b.box.Calls)
 	}
 	spec, _ := b.box.Spec()
-	if spec.Runtime != "" || !slices.Contains(spec.Labels, assets.LabelIsolation+"=docker") {
+	if spec.Runtime != "" || !slices.Contains(spec.Labels, assets.LabelIsolation+"=container") {
 		t.Errorf("created with: %+v", spec)
 	}
-	if !strings.Contains(b.errb.String(), "no sessions are lost: recreating it with isolation docker") {
+	if !strings.Contains(b.errb.String(), "no sessions are lost: recreating it with isolation container") {
 		t.Errorf("said:\n%s", b.errb)
 	}
 
@@ -307,7 +307,7 @@ func TestRuntimeGone(t *testing.T) {
 	}
 
 	// A container of today's runtime is not gone, nor is a VM.
-	for _, iso := range []string{isolationDocker, isolationVM} {
+	for _, iso := range []string{isolationContainer, isolationVM} {
 		b = newBoxApp(t, iso, stopped(iso))
 		b.write(t, "runtimes", `{"runc":{}}`)
 		if rt := b.runtimeGone(); rt != "" {
@@ -323,10 +323,10 @@ func TestIsolationDrift(t *testing.T) {
 		config string
 		drift  string
 	}{
-		{"no label, docker", map[string]string{}, "docker", ""},
-		{"no label, gvisor", map[string]string{}, "gvisor", "created with isolation docker; the configuration says gvisor"},
+		{"no label, container", map[string]string{}, "container", "records no isolation"},
+		{"no label, gvisor", map[string]string{}, "gvisor", "records no isolation"},
 		{"same", map[string]string{assets.LabelIsolation: "gvisor"}, "gvisor", ""},
-		{"back to docker", map[string]string{assets.LabelIsolation: "gvisor"}, "", "created with isolation gvisor; the configuration says docker"},
+		{"back to container", map[string]string{assets.LabelIsolation: "gvisor"}, "", "created with isolation gvisor; the configuration says container"},
 		{"a VM", map[string]string{assets.LabelIsolation: "vm"}, "vm", ""},
 		{"none", nil, "gvisor", ""},
 	} {
@@ -408,7 +408,7 @@ func TestCreatedFromAnOlderImage(t *testing.T) {
 // lines, and one that exits first is said to have. (A VM's agent says
 // when it is ready instead: waitVMReady.)
 func TestWaitUntilReadyFails(t *testing.T) {
-	for _, iso := range []string{isolationDocker, isolationGVisor} {
+	for _, iso := range []string{isolationContainer, isolationGVisor} {
 		t.Run(iso, func(t *testing.T) {
 			box := runningBox(iso)
 			box.Log = "line 1\nthe entrypoint's last word\n"
@@ -424,7 +424,7 @@ func TestWaitUntilReadyFails(t *testing.T) {
 			}
 			b := newBoxApp(t, iso, box)
 			err := b.waitUntilReady()
-			if err == nil || !strings.Contains(err.Error(), "giving up (raise CABOOSE_READY_TIMEOUT") {
+			if err == nil || !strings.Contains(err.Error(), "giving up (raise ready_timeout in [session]") {
 				t.Errorf("err = %v", err)
 			}
 			if _, errs := b.said(); errs != "caboose: not ready after 0s; last log lines:\nline 1\nthe entrypoint's last word\n" {

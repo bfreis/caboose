@@ -40,6 +40,12 @@ func (e *setupEnv) reload() {
 		e.t.Fatalf("config.toml does not parse: %v\n%s", err, data)
 	}
 	e.a.Cfg.File = f
+	// What the file says of the isolation, as the next command would see it.
+	cfg, err := config.Load(e.a.Cfg.Getenv, config.OSFS{}, e.a.Cfg.Env)
+	if err != nil {
+		e.t.Fatalf("config.toml does not load: %v\n%s", err, data)
+	}
+	e.a.Cfg.Isolation, e.a.Cfg.Profile, e.a.Cfg.AutoSync = cfg.Isolation, cfg.Profile, cfg.AutoSync
 }
 
 // file is the environment's config.toml, parsed.
@@ -81,9 +87,9 @@ func TestSetupRootsKeepsTheDefault(t *testing.T) {
 	if err := e.run("2\n/nonexistent\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("/work ← ~/dev\n", "? Use these roots? 1 Use these 2 Change ~/dev 3 Add another root\n",
+	e.wantOut("/work/dev ← ~/dev\n", "? Use these roots? 1 Use these 2 Change dev (~/dev) 3 Add another root\n",
 		"✗ /nonexistent does not exist\n? Directory (an absolute path, or one starting with ~/): [~/dev] ", "· Nothing changed")
-	if f := e.file(); f.Vals["REPO_ROOT"] != "" || f.Roots != nil {
+	if f := e.file(); len(f.Roots) != 0 {
 		t.Errorf("wrote roots: %+v", f)
 	}
 }
@@ -99,58 +105,61 @@ func TestSetupRootsReplacesAMissingDefault(t *testing.T) {
 	if err := e.run("\n/nonexistent\nsrc\n~/src\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("✗ ~/dev does not exist\n", "? These roots cannot be used as they are. Fix them: 1 Change ~/dev 2 Add another root\nchoose 1-2 [1]: ",
+	e.wantOut("✗ ~/dev does not exist\n", "? These roots cannot be used as they are. Fix them: 1 Change dev (~/dev) 2 Add another root\nchoose 1-2 [1]: ",
 		"✗ /nonexistent does not exist\n", "✗ src is not an absolute path (or one starting with ~/)\n",
 		"✓ Wrote them to "+e.configPath())
 	if e.said("anyway?") {
 		t.Errorf("a root nobody could use asked about moving projects:\n%s", e.errb)
 	}
-	if got := e.file().Vals["REPO_ROOT"]; got != "~/src" {
-		t.Errorf("repo_root = %q", got)
+	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"].Host != "~/src" {
+		t.Errorf("roots = %+v", f.Roots)
 	}
 }
 
-// A second root makes the first one named: its projects move, which is
-// said and confirmed. A hand-edited config.toml keeps the rest of itself.
+// A second root is named, and added beside the first, whose projects keep
+// their paths. A hand-edited config.toml keeps the rest of itself.
 func TestSetupRootsAddsASecond(t *testing.T) {
 	e := newSetupEnv(t, "default", "", true)
 	e.mkdir("work")
-	e.writeConfig("# my notes\nkeep_versions = 3\n\n#repo_root = \"~/dev\"\n")
-	// add; ~/work; name ~/dev: an invalid one, then the default; name
-	// ~/work: dev (taken), then the default; use these; confirm.
-	if err := e.run("3\n~/work\nBad Name\n\ndev\n\n\ny\n", "roots"); err != nil {
+	e.writeConfig("# my notes\n[session]\nkeep_versions = 3\n")
+	// add; ~/work; name: an invalid one, dev (taken), then the default;
+	// use these.
+	if err := e.run("3\n~/work\nBad Name\ndev\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut(
-		"? Name for ~/dev, mounted at /work/NAME: [dev] ",
-		"✗ 'Bad Name' is not a root name",
 		"? Name for ~/work, mounted at /work/NAME: [work] ",
+		"✗ 'Bad Name' is not a root name",
 		"✗ Another root is named 'dev'\n",
 		"/work/dev ← ~/dev\n /work/work ← ~/work\n",
 		"1 Use these 2 Change dev (~/dev) 3 Change work (~/work) 4 Add another root 5 Remove dev (~/dev) 6 Remove work (~/work)\n",
-		"! Projects under ~/dev move from /work/... to /work/dev/...\n",
-		"? Change the roots anyway? [y/N] ",
 		"! The container keeps the roots it was created with: caboose restart remounts them",
 	)
+	if e.said("anyway?") {
+		t.Errorf("asked about moving projects that stay put:\n%s", e.errb)
+	}
 	f := e.file()
-	if f.Vals["REPO_ROOT"] != "" || f.Roots["dev"] != "~/dev" || f.Roots["work"] != "~/work" || len(f.Roots) != 2 {
+	if f.Roots["dev"].Host != "~/dev" || f.Roots["work"].Host != "~/work" || len(f.Roots) != 2 {
 		t.Errorf("config: %+v", f)
 	}
 	b, _ := os.ReadFile(e.configPath())
-	if !strings.HasPrefix(string(b), "# my notes\nkeep_versions = 3\n") {
+	if !strings.HasPrefix(string(b), "# my notes\n[session]\nkeep_versions = 3\n") {
 		t.Errorf("config.toml:\n%s", b)
 	}
 }
 
-// An active repo_root gives way to [roots]: both would be refused.
-func TestSetupRootsFromRepoRoot(t *testing.T) {
+// A sole root in its long form, at /work itself, moves to /work/NAME when
+// a second is added: its projects' paths change, which is said and confirmed.
+func TestSetupRootsLongFormSoleRoot(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("work")
-	e.writeConfig("repo_root = \"~/dev\"\n")
-	if err := e.run("3\n~/work\n\n\n\ny\n", "roots"); err != nil {
+	e.writeConfig("[roots.dev]\nhost = \"~/dev\"\npath = \"/work\"\n")
+	if err := e.run("3\n~/work\n\n\ny\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	if f := e.file(); f.Vals["REPO_ROOT"] != "" || len(f.Roots) != 2 {
+	e.wantOut("! Projects under ~/dev move from /work/... to /work/dev/...", "? Change the roots anyway? [y/N] ")
+	f := e.file()
+	if len(f.Roots) != 2 || f.Roots["dev"].Host != "~/dev" || f.Roots["dev"].Path != "" || f.Roots["work"].Host != "~/work" {
 		t.Errorf("config: %+v", f)
 	}
 }
@@ -158,12 +167,12 @@ func TestSetupRootsFromRepoRoot(t *testing.T) {
 // An edit that changes nothing leaves the file as it is: not rewritten.
 func TestWriteConfigUnchanged(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
-	e.writeConfig("auto_sync = true\n")
+	e.writeConfig("[session]\nauto_sync = true\n")
 	before, err := os.Stat(e.configPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed, err := e.a.writeConfig(config.Edit{Set: map[string]any{"auto_sync": true}})
+	changed, err := e.a.writeConfig(config.Edit{Set: map[string]any{"session.auto_sync": true}})
 	after, _ := os.Stat(e.configPath())
 	if changed || err != nil || !os.SameFile(before, after) {
 		t.Errorf("changed %v, err %v, same file %v", changed, err, os.SameFile(before, after))
@@ -173,11 +182,12 @@ func TestWriteConfigUnchanged(t *testing.T) {
 func TestSetupRootsMoveDeclined(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("work")
-	if err := e.run("3\n~/work\n\n\n\n\n", "roots"); err != nil {
+	e.writeConfig("[roots.dev]\nhost = \"~/dev\"\npath = \"/work\"\n")
+	if err := e.run("3\n~/work\n\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("· Nothing changed")
-	if f := e.file(); f.Roots != nil || f.Vals["REPO_ROOT"] != "" {
+	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"].Path != "/work" {
 		t.Errorf("config: %+v", f)
 	}
 }
@@ -195,7 +205,7 @@ func TestSetupRootsRemovesOne(t *testing.T) {
 	if e.said("~/dev move") || e.said("restart") {
 		t.Errorf("stderr:\n%s", e.errb)
 	}
-	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"] != "~/dev" {
+	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"].Host != "~/dev" {
 		t.Errorf("config: %+v", f)
 	}
 }
@@ -216,28 +226,14 @@ func TestSetupRootsOverlap(t *testing.T) {
 	}
 }
 
-func TestSetupRootsNotesTheVariable(t *testing.T) {
-	e := newSetupEnv(t, "default", "", false)
-	e.a.Cfg.Getenv = func(k string) string {
-		if k == "CABOOSE_REPO_ROOT" {
-			return "/elsewhere"
-		}
-		return ""
-	}
-	if err := e.run("\n", "roots"); err != nil {
-		t.Fatal(err)
-	}
-	e.wantOut("! CABOOSE_REPO_ROOT is set (/elsewhere), and wins over what is chosen here while it is.\n")
-}
-
 // A config.toml the line editor cannot change safely is left alone, with
 // what to write by hand.
 func TestSetupRootsUnsafeEdit(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("src")
-	// A multi-line string whose body looks like the key: the editor would
+	// A multi-line string whose body looks like the roots table: the editor would
 	// replace a line inside it.
-	odd := "tz = \"\"\"\nrepo_root = \"~/dev\"\n\"\"\"\n"
+	odd := "[session]\ntz = \"\"\"\n[roots]\ndev = \"~/dev\"\n\"\"\"\n"
 	if err := os.MkdirAll(e.a.Cfg.EnvDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +242,7 @@ func TestSetupRootsUnsafeEdit(t *testing.T) {
 	}
 	err := e.run("2\n~/src\n\ny\n", "roots")
 	if err == nil || !strings.Contains(err.Error(), "cannot edit "+e.configPath()+" safely") ||
-		!strings.Contains(err.Error(), `repo_root = "~/src"`) {
+		!strings.Contains(err.Error(), `dev = "~/src"`) {
 		t.Fatalf("err = %v", err)
 	}
 	if b, _ := os.ReadFile(e.configPath()); string(b) != odd {
@@ -272,7 +268,7 @@ func syncSetupEnv(t *testing.T) (e *setupEnv, remote string) {
 	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	c.ReadyTimeout = "1"
+	c.ReadyTimeout = 1
 	repo := filepath.Join(c.DataDir, statesync.Dir)
 	script := `#!/bin/sh
 case "$*" in
@@ -328,13 +324,13 @@ func TestSetupSyncSetsTheRemote(t *testing.T) {
 	}
 	e.wantOut("? Sync remote, a git URL (empty for none): ",
 		"? Sync by itself, before a launch that finds nothing running? (auto_sync) [y/N] ",
-		"✓ Wrote auto_sync = true to "+e.configPath(),
+		"✓ Wrote auto_sync = true in [session] to "+e.configPath(),
 		"Setting the remote and syncing, as 'caboose sync --remote "+remote+"' does",
 		"pushed", "✓ Synced with "+remote)
 	if strings.Contains(e.errb.String(), "is not set up") || strings.Contains(e.errb.String(), "no git identity") {
 		t.Errorf("a launch's note, in setup:\n%s", e.errb)
 	}
-	if e.file().Vals["AUTO_SYNC"] != "1" {
+	if e.file().Vals["session.auto_sync"] != true {
 		t.Error("auto_sync not written")
 	}
 	got, err := exec.Command("git", "--git-dir", remote, "show", "main:home/.claude/projects/"+statesync.ProjectKey("/work/proj")+"/memory/m.md").CombinedOutput()
@@ -358,8 +354,8 @@ func TestSetupSyncSetsTheRemote(t *testing.T) {
 	if err := e.run("\nn\n", "sync"); err != nil {
 		t.Fatal(err)
 	}
-	e.wantOut("✓ Wrote auto_sync = false")
-	if e.file().Vals["AUTO_SYNC"] != "" {
+	e.wantOut("✓ Wrote auto_sync = false in [session]")
+	if e.file().Vals["session.auto_sync"] != false {
 		t.Error("auto_sync still on")
 	}
 }

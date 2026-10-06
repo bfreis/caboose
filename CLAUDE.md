@@ -64,7 +64,7 @@ image with the launcher version and a sha256 of the embedded build context
 stale image — so any change to an embedded image file is a new hash, which
 is the point. There are two contexts, hashed apart: the base (`Dockerfile`,
 the default base image) and the layer (the rest), built FROM whichever base
-is in use, after the image check passes on it. On `CABOOSE_BASE_IMAGE` the
+is in use, after the image check passes on it. On a configured `[image] base` the
 `Dockerfile`'s hash plays no part; the base's image ID does. The layer is
 also labelled with the kind of base, its name and ID, the host UID/GID and
 the platform the check found (`linux-arm64-musl`, ...), which picks the
@@ -96,7 +96,7 @@ embedded in it instead.
 | `tmux.conf` | tmux configuration baked into the image, set up to own no keys |
 | `imagecheck.sh` | the image probe, POSIX sh, run by `caboose check-image` and before every layer build; reports facts only, embedded but in no image |
 | `internal/imagecheck` | the requirements table the probe's output is judged against (the requirements table in `docs/images.md` mirrors it), and the checklist |
-| `cmd/caboose`, `internal/` | the host launcher, in Go: subcommands and their help, from one table (`cmd/caboose/args.go`; nothing reaches claude but through `caboose claude`), environments and `config.toml` (`internal/config`), container lifecycle, bind mounts, SSH agent forwarding, repo roots at fixed `/work` paths, tmux attach, `caboose build` |
+| `cmd/caboose`, `internal/` | the host launcher, in Go: subcommands and their help, from one table (`cmd/caboose/args.go`; nothing reaches claude but through `caboose claude`), environments and `config.toml` (`internal/config`), container lifecycle, bind mounts, SSH agent forwarding, roots at fixed container paths, tmux attach, `caboose build` |
 | `internal/backend` | the sandbox as the launcher sees it: `Backend` (state, create from one `Spec`, start, stop, remove, exec, labels, mounts, logs) and its docker implementation, which serves the docker and gvisor isolations; images, builds and what the engine says of itself stay `internal/docker`'s. `backendtest` is an in-memory one, which the launcher's tests of the sandbox's lifecycle run under every isolation (`launcher/box_test.go`), failing any that asks docker for the sandbox |
 | `internal/shelltest` | the POSIX shells the tests run the shell scripts with: `/bin/sh` and whichever others the machine has, but never a BusyBox that runs its own applets before `PATH` (Debian's and Ubuntu's), which would bypass the tests' stub tools |
 | `internal/proposal` | what a session proposes for `caboose apply` (`internal/launcher/apply.go`): the TOML format, its checks (an allowlist of parts, no control or bidi characters), reading through `nofollow` from the data dir's `proposals/` (mounted at `~/.caboose-proposals`), and `current/`, what the host tells sessions a proposal is made against |
@@ -107,7 +107,7 @@ embedded in it instead.
 | `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
 | `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`); `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
 | `internal/fswatch` | the host's watcher for that relay: FSEvents through purego on a Mac (the launcher has no cgo), inotify on Linux; only paths, never what happened |
-| `internal/launcher/vm*.go` | the vm isolation in the launcher: finding `caboose-vmm`, the kernel and the builder disk (`~/.caboose/vm/<arch>/`, else the checkout's `vm-dist/`), the VM's size, the initramfs from the embedded agent, the `VMHost`, `caboose build` through the builder, and the image store of root disks (`vm/images/`), behind the same `imageStore` as docker's |
+| `internal/launcher/vm*.go` | the vm isolation in the launcher: finding `caboose-vmm`, the kernel and the builder disk (`~/.caboose/vm/<tag>/<arch>/`, else the checkout's `vm-dist/`), the VM's size, the initramfs from the embedded agent, the `VMHost`, `caboose build` through the builder, and the image store of root disks (`vm/images/`), behind the same `imageStore` as docker's |
 | `internal/backend`'s `VM`, `internal/vm` | the vm isolation as the launcher sees it: a VM's dir (`vm/<name>/`: `vm.sock`, `state.json`, the launcher's record, never shared; `machine.json`, what vmm boots), the control port's client, the clock keeper (a guest's clock stops while the Mac sleeps), the exec helper `Command` runs (the launcher as a hidden `__vm-exec`), the initramfs and the scratch disk's clone; tested against a fake vmm |
 | `internal/hvsock` | Cloud Hypervisor's hybrid vsock, which `vm.sock` speaks: `CONNECT <port>`, `OK`, then the guest's bytes; both halves |
 | `cmd/caboose-vmm`, `internal/vm/vmm`, `internal/vm/vz` | `caboose-vmm`, a binary of its own beside the launcher, since it alone carries the virtualization entitlement: the detached process that owns one VM (`vmm`: the lock, `vmm.pid`, serving `vm.sock`, the clock, shutdown on SIGTERM) on a `Runner`, which on a Mac is Virtualization.framework through purego (`vz`). `make vmm` builds and signs it on a Mac; `internal/vm/e2e` boots a real VM with it, run on a Mac by hand |
@@ -120,7 +120,7 @@ embedded in it instead.
 | `.goreleaser.yaml` | release build: static darwin/linux × amd64/arm64 archives (the darwin ones with `caboose-vmm`; both darwin binaries signed by `macsign.sh` with `rcodesign`, which `release.yml` installs: with a Developer ID and notarized when the repository has the signing secrets, else `caboose-vmm` ad-hoc, CONTRIBUTING.md), `checksums.txt` and `install.sh` on the GitHub release |
 | `macsign.sh` | POSIX sh: signs a darwin binary with `rcodesign`, with a Developer ID (hardened runtime) and notarized when `MACSIGN_*` name the files, else ad-hoc with `--adhoc`; goreleaser's post-build hooks and `make vmm` run it |
 | `install.sh` | the one-line install, POSIX sh: the latest release (or `CABOOSE_VERSION`), checked against `checksums.txt`, into the layout `internal/selfupdate` keeps, then `caboose setup`; tested by `install_test.go` against a fake release host |
-| `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `versions/<tag>` and the `~/.local/bin/caboose` link, `update.json` and its lock; `releasetest` serves fake releases |
+| `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `CABOOSE_HOME/versions/<tag>` and the `~/.local/bin/caboose` link (the only thing of an install outside `CABOOSE_HOME`), `update.json` and its lock; `releasetest` serves fake releases |
 | `.github/workflows` | `ci.yml` (gofmt, vet, test, shellcheck); `release.yml` (goreleaser on a `v*` tag) |
 | `sandbox/CLAUDE.md` | the global CLAUDE.md installed into the sandbox |
 | `README.md`, `docs/`, `CONTRIBUTING.md` | a short README (logo in `docs/assets/`, badges, links); the user docs, one file per topic; building and testing caboose |
@@ -166,15 +166,20 @@ outside the repo.
   decides goes in the one `backend.Spec`, which each backend realises its
   own way; `a.Docker` is for the engine (images, builds, `docker info`, the
   isolation probe) and for `caboose logs`, which passes docker's own flags.
-- **Container paths are fixed, not mirrored.** A single repo root is
-  mounted at `/work`, each of several (`[roots]`) at `/work/<name>`, so a
-  project's container path -- and the project key Claude Code derives from
-  it, which `caboose sync` carries as it is -- is the same on every
-  machine. Never build one as `"/work" + hostPath`: go through
-  `config.ContainerPath`, with the roots the container actually mounts
-  (`mountedRoots`), which differ from the configured ones until a restart.
+- **Container paths are fixed, not mirrored.** Each `[roots]` entry is
+  mounted at `/work/<name>`, or at the `path` of its long form (a sole root
+  may take `/work` itself), so a project's container path -- and the
+  project key Claude Code derives from it, which `caboose sync` carries as
+  it is -- is the same on every machine. Container paths never nest and
+  never reach the home, caboose's mounts or a system directory
+  (`config.CheckContainerPath`), as host paths never overlap. Never build
+  one as `"/work" + hostPath`: go through `config.ContainerPath`, with the
+  roots the container actually mounts (`mountedRoots`, read from the
+  container's roots label), which differ from the configured ones until a
+  restart. The sync and the sandbox config compare container paths, not
+  root names.
 - **This repo is not mounted at a path of its own.** It is visible only
-  because it sits under the repo root like any other checkout, at its place
+  because it sits under a root like any other checkout, at its place
   under `/work`. Don't add a second mount for it.
 - **Persistent state is not in this repo.** It lives in `$CABOOSE_DATA_DIR`
   (default `~/.caboose/envs/<env>/data`). Never put it under the checkout,
@@ -266,9 +271,9 @@ outside the repo.
   `~/.ssh` holds `known_hosts` and the sandbox's own ssh config, never
   keys: doctor notes one it finds (`datadir.PrivateKeysIn`, through
   `nofollow`).
-- **`docker_run_args` is the host's, and leaves caboose's flags alone.**
-  The user's own `docker run` arguments come from `config.toml` or
-  `CABOOSE_DOCKER_RUN_ARGS`, never from the sandbox config or a proposal:
+- **`run_args` is the host's, and leaves caboose's flags alone.**
+  The user's own `docker run` arguments are `run_args` in a `container` or
+  `gvisor` profile of `config.toml`, never in the sandbox config or a proposal:
   they can hand the sandbox the host. They go in after caboose's, where
   docker takes the last of a single-value flag, so `checkRunArgs`
   (`internal/launcher/runargs.go`) refuses the flags caboose sets or
@@ -278,15 +283,15 @@ outside the repo.
   (`assets.LabelRunArgs`, set even when empty) to tell when a restart is
   due.
 - **The isolation is `config.toml`'s, and it picks the user.**
-  `isolation` (`docker`, `gvisor`) is the host's key, like
-  `docker_run_args`, never the sandbox config's. `--runtime` is in
+  `isolation` (a profile `<kind>.<name>`, the kind `container`, `gvisor` or
+  `vm`) is the host's key, like `run_args`, never the sandbox config's. `--runtime` is in
   `ownedFlags` because the runtime decides who can write the mounts:
   `createContainer` probes it (`agentCanWrite`, `launcher/isolation.go`)
   and runs as `0:0` with `IS_SANDBOX=1` only where the agent cannot, and
   only under gVisor, whose root is inside its own kernel. Never run as root
   under runc, and never pick the user by engine name. The container is
-  labelled with both (`assets.LabelIsolation`, `LabelUser`), set even
-  when empty. Under gVisor a closed terminal's tmux client lingers, so a
+  labelled with both (`assets.LabelIsolation`, which holds the kind, and
+  `LabelUser`), set even when empty. Under gVisor a closed terminal's tmux client lingers, so a
   launch records each attach by host PID in the data dir's `attached/`
   (`launcher/attach.go`) and takes back a session whose clients all
   belong to ended launches; that dir stays out of every mount, or the
@@ -315,20 +320,30 @@ outside the repo.
   labelled kind `env` with `assets.DirHash` of the whole dir, hashed before
   the build; nothing of caboose's ever rewrites it but `caboose setup
   image`, after showing the difference and asking. It is never mounted
-  into the container, and it excludes `CABOOSE_BASE_IMAGE`
+  into the container, and it excludes `[image] base`
   (`config.ErrTwoBases`).
 - **Setup edits `config.toml`, it never rewrites it.** Changes go through
-  `config.EditFile` (line by line: only the keys asked about, comments
-  kept, a top-level key always above the first table) and are read back
+  `config.EditFile` (line by line: only the keys asked about, by dotted
+  name, in their table, comments kept, a top-level key always above the
+  first table) and are read back
   with `config.CheckEdit` before `writeConfig` writes them; a result that
   does not say what was answered is not written. Never marshal the whole
   file: that would drop the user's comments and hand edits.
 - **An environment is a whole caboose.** Everything that can differ between
   two -- data dir, container, image, config -- is derived from the
   environment in `internal/config`, never from a fixed name: the default
-  one is `caboose` only through `config.ContainerFor`. A setting belongs in
-  `config.toml` (`fileKeys`) and as a `CABOOSE_` variable, the variable
-  winning; `[roots]`, a table, is the one without a variable (`CABOOSE_REPO_ROOT` overrides `[roots]` with a single root).
+  one is `caboose-default` through `config.ContainerFor` (`ImageFor`,
+  `BaseImageFor`: `caboose:<env>`, `caboose-base:<env>`). A setting belongs
+  in `config.toml`, in its table, and nowhere else: `CABOOSE_` variables
+  name where things live (`CABOOSE_ENV`, `CABOOSE_HOME`,
+  `CABOOSE_DATA_DIR`, `CABOOSE_SESSION`) or are two strict booleans
+  (`CABOOSE_FORCE`, `CABOOSE_NO_AUTO_UPDATE`), and one that was a setting
+  is refused when set, with where it went (`config.Moved`, which also
+  refuses the old flat keys). The file is read as tables: a key or table
+  it does not know is an error naming it, and each isolation kind
+  (`[container.NAME]`, `[gvisor.NAME]`, `[vm.NAME]`) has its own keys
+  (`profileKeys`), so a key a kind lacks cannot be written; there is no
+  inheritance between profiles.
 - **caboose updates itself; the container does not move with it.** An
   install made by `install.sh` (`selfupdate.Layout.Managed`) checks at
   most daily in a detached `caboose update --background`, and a checkout's
@@ -344,7 +359,8 @@ outside the repo.
   root, and `caboose-vmm` beside it in darwin's), vm's asset
   (`caboose-vm_<version>_<arch>.tar.gz`, `make vm-assets`, which a release
   build fetches: `internal/launcher/vmassets.go`), `checksums.txt`, the `releases/latest` redirect and the layout
-  under `~/.local` are read by both installers; change them together, or
+  (`CABOOSE_HOME/versions/<tag>/`, the one `~/.local/bin/caboose` link, and
+  `CABOOSE_HOME` itself) are read by both installers; change them together, or
   every existing install stops updating. Prereleases are never
   `releases/latest`, so neither installer takes one unasked.
 - **The guest kernel is a pin, and its source is a release of its own.**
@@ -387,7 +403,7 @@ outside the repo.
   every name of its own is `__caboose_`-prefixed and unset after.
 - **The host link trusts nothing the agent sends.** `caboose-agent` runs
   in the sandbox, so everything `internal/hostlink` reads is the
-  container's: which ports forward is `forward_ports` in `config.toml`,
+  container's: which ports forward is `forward_ports` in `[link]` of `config.toml`,
   never the agent's list; forwards listen on `127.0.0.1` only; a URL is
   `hostlink.CheckURL`'s (http(s), no credentials, printable) and asks
   first unless `open_urls` says otherwise; text shown goes through

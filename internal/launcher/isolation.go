@@ -14,13 +14,13 @@ import (
 	"github.com/bfreis/caboose/internal/datadir"
 )
 
-// What keeps the sandbox from the host is config.toml's isolation key
-// (config.Isolation), the host's alone: never the sandbox config's, which
-// a session writes and a sync brings. docker is runc, as caboose has always
-// run; gvisor is the same container under runsc, a kernel of its own in
-// user space between the sandbox and the host's.
+// What keeps the sandbox from the host is config.toml's isolation profile
+// (config.Isolation, its kind), the host's alone: never the sandbox
+// config's, which a session writes and a sync brings. container is runc,
+// as caboose has always run; gvisor is the same container under runsc, a
+// kernel of its own in user space between the sandbox and the host's.
 //
-// The runtime is caboose's flag, not one of docker_run_args (ownedFlags),
+// The runtime is caboose's flag, not one of run_args (ownedFlags),
 // because it decides who can write the mounts. An engine that shows
 // mounted files as owned by whoever looks (OrbStack; probably Docker
 // Desktop) shows them, under gVisor, as owned by gVisor's own process --
@@ -29,37 +29,46 @@ import (
 // writes on the mounts still land on the host as the host's user. Which
 // case an engine is, is probed, not guessed from its name.
 
-// The values of config.Isolation.
+// The isolation kinds, config.Isolation's values.
 const (
-	isolationDocker = "docker"
-	isolationGVisor = "gvisor"
+	isolationContainer = config.KindContainer
+	isolationGVisor    = config.KindGVisor
+	isolationVM        = config.KindVM
 )
 
 // isolationRuntimes are the docker runtime each isolation runs under, ""
 // for docker's default.
-var isolationRuntimes = map[string]string{isolationDocker: "", isolationGVisor: runscName}
+var isolationRuntimes = map[string]string{isolationContainer: "", isolationGVisor: runscName}
 
 // rootUser is LabelUser for a container that runs as root; "" is the
 // image's agent.
 const rootUser = "0:0"
 
-// isolationOf is c's isolation, docker when it names none.
-func isolationOf(c *config.Config) string { return or(c.Isolation, isolationDocker) }
+// isolationOf is c's isolation kind, container when it names none.
+func isolationOf(c *config.Config) string { return or(c.Isolation, isolationContainer) }
 
-// checkIsolation refuses an isolation caboose does not know.
-func checkIsolation(c *config.Config) error {
-	if _, ok := isolationRuntimes[isolationOf(c)]; !ok && isolationOf(c) != isolationVM {
-		return fmt.Errorf("isolation %q is not %q, %q or %q (%s)", c.Isolation, isolationDocker, isolationGVisor, isolationVM, isolationOrigin(c))
+// isolationSummary is c's isolation for status: the kind, and the profile
+// when one is defined.
+func isolationSummary(c *config.Config) string {
+	if c.Profile == "" {
+		return isolationOf(c) + " (the default: config.toml defines no profile)"
 	}
-	return nil
+	return isolationOf(c) + " (profile " + c.Profile + ")"
 }
 
+// otherProfile is how to move off kind: 'caboose setup isolation', which
+// writes the profile, and where the current one came from.
+func otherProfile(c *config.Config) string {
+	return fmt.Sprintf("'%s' chooses %s or %s (%s)", SetupCommand(c.Env, "isolation"), isolationContainer, isolationGVisor, isolationOrigin(c))
+}
+
+// isolationOrigin says where c's isolation came from, for messages.
 func isolationOrigin(c *config.Config) string {
-	if c.Getenv != nil && c.Getenv("CABOOSE_ISOLATION") != "" {
-		return "CABOOSE_ISOLATION"
-	}
-	if c.File != nil {
+	switch {
+	case c.File.Has("isolation"):
 		return "isolation in " + c.File.Path
+	case c.Profile != "":
+		return "[" + c.Profile + "], the only profile in " + c.File.Path
 	}
 	return "the default"
 }
@@ -101,9 +110,6 @@ func (a *App) engineRuntime(name string) (daemonRuntime, bool, error) {
 // Registering runsc is not a launch's to do: it is the engine's daemon
 // config, which only setup edits, and only after asking.
 func (a *App) checkRuntime() error {
-	if err := checkIsolation(a.Cfg); err != nil {
-		return Die("%v", err)
-	}
 	if a.isVM() {
 		return a.checkVM()
 	}
@@ -116,8 +122,8 @@ func (a *App) checkRuntime() error {
 		return dockerFailed(err)
 	}
 	if !slices.Contains(have, rt) {
-		return Die("isolation is %s, but docker has no %s runtime (it has %s): '%s' registers it where it can, or set isolation = %q (%s)",
-			isolationOf(a.Cfg), rt, strings.Join(have, ", "), SetupCommand(a.Cfg.Env, "isolation"), isolationDocker, isolationOrigin(a.Cfg))
+		return Die("isolation is %s, but docker has no %s runtime (it has %s): '%s' registers it where it can, or chooses another (%s)",
+			isolationOf(a.Cfg), rt, strings.Join(have, ", "), SetupCommand(a.Cfg.Env, "isolation"), isolationOrigin(a.Cfg))
 	}
 	return nil
 }
@@ -183,19 +189,23 @@ func (a *App) isolate(spec *backend.Spec) error {
 }
 
 // createdIsolation is the isolation the container was created with, and
-// the user it runs as; ok is false when that cannot be told. A container
-// from before the labels ran as docker, as the agent.
+// the user it runs as; ok is false when that cannot be told, or the
+// container records none.
 func (a *App) createdIsolation() (iso, user string, ok bool) {
 	labels, err := a.box().Labels()
 	if err != nil {
 		return "", "", false
 	}
-	return or(labels[assets.LabelIsolation], isolationDocker), labels[assets.LabelUser], true
+	iso, ok = labels[assets.LabelIsolation]
+	return iso, labels[assets.LabelUser], ok
 }
 
 // isolationDrift says how the container's isolation differs from the
 // configuration's, or "" when it does not, or it cannot be told.
 func (a *App) isolationDrift() string {
+	if d := a.missingLabel(assets.LabelIsolation, "isolation"); d != "" {
+		return d
+	}
 	iso, _, ok := a.createdIsolation()
 	if !ok || iso == isolationOf(a.Cfg) {
 		return ""
@@ -215,9 +225,6 @@ func (a *App) warnIfIsolationDrifted() {
 // docker as the weakest, saying when gvisor would work.
 func (a *App) doctorIsolation(c *checkup) {
 	cfg := a.Cfg
-	if checkIsolation(cfg) != nil {
-		return // the configuration's row says why
-	}
 	if a.isVM() {
 		a.doctorVM(c)
 		a.doctorEgress(c)
@@ -231,14 +238,14 @@ func (a *App) doctorIsolation(c *checkup) {
 	rt := isolationRuntimes[isolationOf(cfg)]
 	switch {
 	case rt != "" && !slices.Contains(have, rt):
-		c.problem("isolation", fmt.Sprintf("%s, or set isolation = %q (%s)", SetupCommand(cfg.Env, "isolation"), isolationDocker, isolationOrigin(cfg)),
+		c.problem("isolation", fmt.Sprintf("%s, which registers it or chooses another (%s)", SetupCommand(cfg.Env, "isolation"), isolationOrigin(cfg)),
 			"%s needs docker's %s runtime, which it does not have (it has %s)", isolationOf(cfg), rt, strings.Join(have, ", "))
 	case rt != "":
 		c.ok("isolation", "%s (%s)", isolationOf(cfg), rt)
 		a.doctorRunsc(c)
 	case slices.Contains(have, isolationRuntimes[isolationGVisor]):
-		c.note("isolation", "%s, which shares this machine's kernel; docker has runsc, so isolation = %q would give the sandbox a kernel of its own",
-			isolationOf(cfg), isolationGVisor)
+		c.note("isolation", "%s, which shares this machine's kernel; docker has runsc, so a %s profile ('%s') would give the sandbox a kernel of its own",
+			isolationOf(cfg), isolationGVisor, SetupCommand(cfg.Env, "isolation"))
 	default:
 		c.note("isolation", "%s, the weakest: the sandbox shares this machine's kernel (%s offers gVisor where it can)",
 			isolationOf(cfg), SetupCommand(cfg.Env, "isolation"))
@@ -277,7 +284,7 @@ func (a *App) doctorRunsc(c *checkup) {
 	rec, known := readRunscRelease(dir)
 	switch age := a.now().Sub(rec.Downloaded); {
 	case !known:
-		c.note("runsc", "caboose's gVisor in %s was downloaded before caboose recorded its release: %s checks it for a newer one",
+		c.note("runsc", "caboose's gVisor in %s has no readable record of its release: %s checks it for a newer one",
 			a.short(dir), setup)
 	case age > runscStale:
 		c.note("runsc", "caboose's gVisor in %s was downloaded %d days ago, and gVisor releases about weekly: %s checks it for a newer one",

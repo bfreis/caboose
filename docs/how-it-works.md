@@ -14,9 +14,10 @@ bind-mounted out of the [data dir](#persistent-state-lives-outside-the-checkout)
 `~/.caboose/envs/default/data`, which makes `caboose restart` safe at any
 time apart from killing running sessions.
 
-**Repos are mounted at fixed paths.** The repo root is `/work` inside the
-container, whatever it is on the host, and each session's cwd is the host
-cwd's place under it: `/Users/you/dev/you/project` is `/work/you/project`,
+**Repos are mounted at fixed paths.** Each root is `/work/<name>` inside the
+container (or the path the root's long form gives), whatever it is on the
+host, and each session's cwd is the host cwd's place under it: with
+`dev = "~/dev"`, `/Users/you/dev/you/project` is `/work/dev/you/project`,
 and so is `/home/you/dev/you/project` on another machine. Claude Code keys
 per-project state (memory, transcripts, trust) off the cwd, so a project
 has the same key on every machine, which is what lets
@@ -125,7 +126,7 @@ escapes.
 The layer also sets `LANG=C.UTF-8`, unless the base sets its own. Stock
 images tend to leave it unset, which puts everything in the C locale;
 `tmux -u` covered the normal path, so the gap showed up only under
-`CABOOSE_NO_TMUX=1` — the one path you reach for when rendering already
+`tmux = false` in `[session]` — the one path you reach for when rendering already
 looks wrong.
 
 Terminals that ship their own terminfo (Ghostty, Kitty, WezTerm) are in no
@@ -140,5 +141,5 @@ after a `caboose restart`.
 `tmux.conf` also declares `sync` (synchronized output), so a repaint lands
 as one frame rather than tearing, whether or not the terminfo made it in.
 
-If it still looks wrong, `CABOOSE_NO_TMUX=1 caboose` bypasses tmux
+If it still looks wrong, `tmux = false` bypasses tmux
 entirely to compare against native rendering.

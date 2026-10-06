@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/selfupdate"
 	"github.com/bfreis/caboose/internal/version"
 )
@@ -49,7 +50,9 @@ type install struct {
 	exe  string // the running executable, symlinks resolved when they can be
 }
 
-func (a *App) layout() selfupdate.Layout { return selfupdate.DefaultLayout(a.Cfg.Home) }
+func (a *App) layout() selfupdate.Layout {
+	return selfupdate.DefaultLayout(a.Cfg.Home, a.Cfg.CabooseHome)
+}
 
 func (a *App) releases() selfupdate.Source {
 	return selfupdate.Source{Base: or(a.getenv("CABOOSE_RELEASES_URL"), selfupdate.DefaultReleases)}
@@ -102,11 +105,12 @@ var describe = regexp.MustCompile(`-[0-9]+-g[0-9a-f]+(-dirty)?$|-dirty$`)
 func release(v string) bool { return selfupdate.Valid(v) && !describe.MatchString(v) }
 
 // autoUpdateOff reports whether CABOOSE_NO_AUTO_UPDATE turns automatic
-// updates off: set to anything but "" or "0". Machine-wide, not a key in an
-// environment's config.toml: the binary serves every environment.
+// updates off, read as config.EnvBool reads it (Load refused any other
+// value). Machine-wide, not a key in an environment's config.toml: the
+// binary serves every environment.
 func (a *App) autoUpdateOff() bool {
-	v := a.getenv("CABOOSE_NO_AUTO_UPDATE")
-	return v != "" && v != "0"
+	off, _ := config.EnvBool(a.getenv, "CABOOSE_NO_AUTO_UPDATE")
+	return off
 }
 
 // AutoUpdate runs before every command but update and help. It says, once,

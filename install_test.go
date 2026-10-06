@@ -39,7 +39,7 @@ func TestInstallScript(t *testing.T) {
 	s := releasetest.New(t)
 	publish(t, s, "v1.0.0", "v1.1.0")
 	home := t.TempDir()
-	l := selfupdate.DefaultLayout(home)
+	l := selfupdate.DefaultLayout(home, filepath.Join(home, ".caboose"))
 
 	out, err := runInstall(t, home, s.Base)
 	if err != nil {
@@ -87,6 +87,27 @@ func TestInstallScript(t *testing.T) {
 	}
 }
 
+// CABOOSE_HOME moves the whole install: the versions go under it, and only
+// the link stays in ~/.local/bin.
+func TestInstallScriptCabooseHome(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("no curl")
+	}
+	s := releasetest.New(t)
+	publish(t, s, "v1.0.0")
+	home, ch := t.TempDir(), filepath.Join(t.TempDir(), "elsewhere")
+	l := selfupdate.DefaultLayout(home, ch)
+	if out, err := runInstall(t, home, s.Base, "CABOOSE_HOME="+ch, "CABOOSE_NO_SETUP=1"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if l.Current() != "v1.0.0" || l.Versions != filepath.Join(ch, "versions") {
+		t.Errorf("Current = %q, versions %s", l.Current(), l.Versions)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".caboose")); err == nil {
+		t.Error("something under ~/.caboose")
+	}
+}
+
 // A download that does not match its checksum installs nothing.
 func TestInstallScriptChecksum(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
@@ -101,7 +122,7 @@ func TestInstallScriptChecksum(t *testing.T) {
 	if err == nil || !strings.Contains(out, "does not match its checksum") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if _, err := os.Lstat(selfupdate.DefaultLayout(home).Link); err == nil {
+	if _, err := os.Lstat(selfupdate.DefaultLayout(home, filepath.Join(home, ".caboose")).Link); err == nil {
 		t.Error("installed")
 	}
 }
@@ -140,7 +161,7 @@ func TestInstallScriptLatestNotCaboose(t *testing.T) {
 			t.Errorf("latest %s: %v\n%s", tag, err, out)
 		}
 	}
-	if _, err := os.Lstat(selfupdate.DefaultLayout(home).Link); err == nil {
+	if _, err := os.Lstat(selfupdate.DefaultLayout(home, filepath.Join(home, ".caboose")).Link); err == nil {
 		t.Error("installed")
 	}
 }
@@ -160,7 +181,7 @@ func TestInstallScriptVMM(t *testing.T) {
 	s.VMM = true
 	s.Publish(t, "v1.0.0", true, "darwin/arm64")
 	home := t.TempDir()
-	l := selfupdate.DefaultLayout(home)
+	l := selfupdate.DefaultLayout(home, filepath.Join(home, ".caboose"))
 	cmd := exec.Command("sh", "install.sh")
 	cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "CABOOSE_RELEASES_URL=" + s.Base, "CABOOSE_NO_SETUP=1"}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

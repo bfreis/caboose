@@ -23,11 +23,11 @@ func mkEnv(t *testing.T, home, name string) string {
 
 func TestEnvCommand(t *testing.T) {
 	fakeDocker(t)
-	home := sandboxEnv(t, "CABOOSE_REPO_ROOT", "/does/not/exist") // env needs no repo root
+	home := sandboxEnv(t) // env needs no repo root
 	mkEnv(t, home, "work")
 
 	_, out, _ := runIt("env")
-	if !strings.Contains(out, "* default          container caboose (") || !strings.Contains(out, "  work             container caboose-work (") {
+	if !strings.Contains(out, "* default          container caboose-default (") || !strings.Contains(out, "  work             container caboose-work (") {
 		t.Errorf("list:\n%s", out)
 	}
 	_, out, _ = runIt("-e", "work", "env", "list")
@@ -63,7 +63,7 @@ func noTerminal(t *testing.T) {
 // though CheckEnv would refuse it.
 func TestSetupNeedsATerminal(t *testing.T) {
 	log := fakeDocker(t)
-	home := sandboxEnv(t, "CABOOSE_REPO_ROOT", "/does/not/exist") // setup git needs no repo root
+	home := sandboxEnv(t) // setup git needs no repo root
 	noTerminal(t)
 	for _, argv := range [][]string{{"setup"}, {"-e", "work", "setup"}, {"setup", "git"}} {
 		code, _, errs := runIt(argv...)

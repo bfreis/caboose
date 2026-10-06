@@ -28,18 +28,22 @@ into the container, so nothing in the sandbox can change what it is built
 from.
 
 **An image of your own.** To run on something else entirely — your own
-toolchains, another distro, Alpine — point `CABOOSE_BASE_IMAGE` at it (an
+toolchains, another distro, Alpine — name it as `base` in `config.toml`'s `[image]` (an
 environment with an `image/` dir as well is refused: keep one):
 
+```toml
+[image]
+base = "registry.example/team/image:tag"
+```
+
 ```sh
-export CABOOSE_BASE_IMAGE=my/image:tag
 caboose restart            # builds on it, then recreates the container; kills running sessions, asks first
 ```
 
-It has to be another image than `CABOOSE_IMAGE`, the one caboose builds on
+It has to be another image than `caboose:<env>`, the one caboose builds on
 top of it — in any spelling (`img`, `img:latest`, `docker.io/library/img`):
 a build and a launch refuse the two being the same. An image built `FROM`
-a caboose one, the default base (`caboose-base`) included, is fine.
+a caboose one, the default base (`caboose-base:<env>`) included, is fine.
 
 **The image is yours.** caboose never installs anything into it — no apt,
 apk or dnf, ever — so what is in the sandbox is exactly what you put there.
@@ -99,7 +103,7 @@ These are the test bases `make test-byo` runs sessions on
 (`tests/byo/*.Dockerfile`), where the comments say what each package is for.
 
 **Docker inside the sandbox** is a fact the check reports, never a
-requirement. Under [`isolation = "vm"`](configuration.md#the-vm-isolation)
+requirement. Under a [`vm` profile](configuration.md#the-vm-isolation)
 the sandbox starts the image's own `dockerd` when it has one, so `docker`
 works inside it; that takes `dockerd`, `containerd`,
 `containerd-shim-runc-v2`, `runc`, `iptables` (dockerd will not start
@@ -107,7 +111,7 @@ without it) and the `docker` CLI on `PATH`. Docker's static release
 (`https://download.docker.com/linux/static/stable/`) has all of them but
 `iptables`, which comes from the distribution; the default Dockerfile's
 `dockerd` section installs both. An image without them is as usable: its
-sandbox just has no docker. Under docker and gvisor nothing starts an
+sandbox just has no docker. Under container and gvisor nothing starts an
 image's dockerd, so the check says nothing about it there.
 
 The layer edits `/etc/passwd`, `/etc/group` and, where they exist,
@@ -147,17 +151,17 @@ with why it is needed. It exits
 - **0** when every requirement is met,
 - **1** when one isn't,
 - **2** when it couldn't check at all: docker not answering, the pull
-  failing, or, with no `IMAGE` and no `CABOOSE_BASE_IMAGE`, a default base
+  failing, or, with no `IMAGE` and no `base` configured, a default base
   that hasn't been built yet.
 
-Under [`isolation = "vm"`](configuration.md#the-vm-isolation) there may be no
+Under a [`vm` profile](configuration.md#the-vm-isolation) there may be no
 docker engine, so the check runs where `caboose build` builds: in the
 builder VM, whose own docker keeps the bases builds made or pulled. The
 default base is the one the last `caboose build` made there; a named image
 the builder lacks is pulled into it from its registry. An image that only a
 docker engine on this Mac has cannot reach the builder, so its pull fails
 (exit 2): push it to a registry first, or check it in that engine with
-`CABOOSE_ISOLATION=docker caboose check-image IMAGE`. There the checklist
+`caboose --env NAME check-image IMAGE`, in an environment whose `config.toml` has no `vm` profile. There the checklist
 ends with a `docker inside` row: `available (dockerd VERSION)`, or what the
 image lacks for it, marked `!` and never counted as unmet, with what to add
 on stderr; `caboose build` notes it too.
@@ -168,12 +172,12 @@ on stderr; `caboose build` notes it too.
 is no image or it was built on another base):
 
 1. **Gets the base.** On the default, it builds the embedded `Dockerfile`
-   and tags it `$CABOOSE_IMAGE-base`. On `CABOOSE_BASE_IMAGE`, it never
+   and tags it `caboose-base:<env>`. On a configured `base`, it never
    builds anything: it pulls the image if it isn't local (or `--pull` asks),
    and otherwise uses it as it is.
 2. **Checks it**, as `caboose check-image` does. A base that fails stops the
    build here, before the layer, with the list of what is missing.
-3. **Builds the layer** on it, as `$CABOOSE_IMAGE`, for your UID and GID,
+3. **Builds the layer** on it, as `caboose:<env>`, for your UID and GID,
    labelled with the hashes of what it was built from, which kind of base
    and its name and ID, your UID and GID, and the platform the check found
    — which is how the launcher knows which `~/.local` to mount without
@@ -200,10 +204,10 @@ the container is gone) rebuilds a stale image first, and says so;
 that fails leaves it running. `caboose build` rebuilds it now, without
 touching the container.
 
-When `CABOOSE_BASE_IMAGE` names another base than the image was built on —
+When `base` names another base than the image was built on —
 or is set or unset since — that is a change you asked for, and the launch
 that creates the container rebuilds on the new base in the same way. With
-`CABOOSE_NO_AUTO_BUILD` set, a launch builds nothing: it refuses to create
+`auto_build = false`, a launch builds nothing: it refuses to create
 a container on another base than the configured one, naming both, and
 otherwise uses the stale image with a warning, until you run `caboose
 build`.
@@ -220,7 +224,7 @@ nothing but the rebuild the `caboose restart` runs. Everything else in the
 data dir — login, settings, memories, transcripts — is shared across
 images.
 
-Each platform in use keeps its own `CABOOSE_KEEP_VERSIONS` versions, at
+Each platform in use keeps its own `keep_versions` versions, at
 ~224MB each. `caboose status` shows the disk used per platform dir, and
 `caboose prune` only prunes the mounted one and names the others. A platform
 dir no image uses any more is never deleted for you; remove

@@ -1,43 +1,149 @@
 # Configuration
 
 Each [environment](#environments) has a `config.toml` in its dir
-(`~/.caboose/envs/default/config.toml` for the default one), and every
-setting in it can be overridden for one shell by its variable. `caboose
-setup` writes one with every setting commented out, when there is none, and
-never rewrites one that is there; `caboose status` names the file it read.
-A key the file does not know is an error, not ignored. What the sandbox
+(`~/.caboose/envs/default/config.toml` for the default one). `caboose setup`
+writes one with every setting commented out, when there is none, and never
+rewrites one that is there; `caboose status` names the file it read. Values
+are TOML's own types (booleans, integers, arrays), and a key or table the
+file does not know is an error naming the file and the key. What the sandbox
 keeps of its home, and what of that syncs, is not here: it is the
 [sandbox config](sandbox-config.md), the sandbox's own.
 
-| `config.toml` | Variable | Default | |
+A setting that an older caboose read from a variable, or from another place
+in the file, is refused where it is found, with a hint saying where it
+lives now.
+
+```toml
+format = 1
+isolation = "gvisor.default"       # which profile; needed only when several are defined
+
+[roots]
+projects = "~/dev/projects"        # /work/projects
+
+[image]
+auto_build = true
+
+[session]
+tz = "Europe/Lisbon"
+
+[link]
+open_urls = "ask"
+
+[gvisor.default]
+engine_socket = false
+```
+
+## Top level
+
+| Key | Default | |
+|---|---|---|
+| `format` | `1` | the file's structure, which `caboose setup` writes; a file of a newer format than this caboose reads is refused, saying `caboose update` |
+| `isolation` | the one profile defined, else `container` | the [isolation profile](#isolation-profiles) the sandbox runs under, `"<kind>.<name>"` |
+
+## `[roots]`
+
+The host directories the sandbox can reach; see [roots](#roots). Each entry
+is `name = "host path"`, or a table with `host` and `path`.
+
+## `[image]`
+
+| Key | Default | |
+|---|---|---|
+| `base` | unset | [your own image](images.md) to build the sandbox on; unset, the environment's `image/Dockerfile` when it has one, else the embedded Dockerfile, built and tagged `caboose-base:<env>` |
+| `auto_build` | `true` | build a missing image, or rebuild a stale one, when creating the container; `false` says to run `caboose build` |
+
+## `[session]`
+
+| Key | Default | |
+|---|---|---|
+| `tmux` | `true` | run sessions in tmux; `false` renders natively, but there is no detach or reattach |
+| `tz` | host's zone | timezone inside the container |
+| `hostname` | `caboose-<host>`, with `-<env>` after it in any environment but `default` | the sandbox's hostname: one lowercase DNS label (1 to 63 letters, digits and `-`, not starting or ending with `-`). The default's `<host>` is this machine's name, cut at the first `.`, lowercased, anything but letters, digits and `-` turned into `-`, and shortened to fit; on a Mac it is `scutil --get LocalHostName`, which unlike `hostname` does not change with the network. Fixed when the container is created, so `caboose restart` applies a change |
+| `auto_sync` | `false` | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
+| `keep_versions` | `2` | installed Claude Code versions to retain (~224MB each); at least 1 |
+| `ready_timeout` | `600` | seconds to wait for first-run install; at least 1 |
+
+## `[link]`
+
+| Key | Default | |
+|---|---|---|
+| `forward_ports` | `["3000-3999", 5173, "8000-8999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost: integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. See [the host link](host-link.md#ports) |
+| `open_urls` | `"ask"` | whether the sandbox may open URLs in your browser: `"ask"`, `"allow"` or `"off"`; see [the host link](host-link.md#urls-and-notifications) |
+| `ssh_agent` | the agent `ssh` here would use | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead. See [SSH agent](ssh.md) |
+| `host_exec` | `false` | let sessions run commands on this machine, as you, through the link (`caboose-agent host CMD`). **Sessions, and whatever steers them (a web page, a repo they work on), can then run anything on this machine as you**: meant for an environment whose point is a separate login or tools, not containment. See [the host link](host-link.md#host-commands) |
+
+## Isolation profiles
+
+`isolation` says what stands between the sandbox and this machine, as the
+profile it picks. A profile is a table `[<kind>.<name>]`, where the kind is
+one of:
+
+- `container`, the default: the container runs under docker's own runtime,
+  runc, and shares this machine's kernel (on a Mac, the engine's VM's).
+- `gvisor`: the same container under [gVisor](https://gvisor.dev)'s
+  `runsc`, a kernel of its own in user space, so a kernel bug the sandbox
+  finds is gVisor's, not the host's.
+- `vm`, on a Mac with Apple silicon: the sandbox is a VM of caboose's own,
+  on Apple's Virtualization.framework, with no Docker at all; see
+  [The vm isolation](#the-vm-isolation).
+
+Each kind has its own keys, and a key another kind has is an error, so
+`run_args` under a `vm` profile cannot be written:
+
+| Kind | Key | Default | |
 |---|---|---|---|
-| `repo_root` | `CABOOSE_REPO_ROOT` | `$HOME/dev` | host dir mounted into the container, at `/work` |
-| `[roots]` | | unset | several host dirs instead, by name, each at `/work/<name>`; see [the repo root](#the-repo-root). `CABOOSE_REPO_ROOT` still wins |
-| `format` | | `1` | the file's structure, which `caboose setup` writes; a file of a newer format than this caboose reads is refused, saying `caboose update` |
-| `keep_versions` | `CABOOSE_KEEP_VERSIONS` | `2` | installed versions to retain (~224MB each) |
-| `image`, `container` | `CABOOSE_IMAGE`, `CABOOSE_CONTAINER` | `caboose`; `caboose-<env>` for other environments | names |
-| `base_image` | `CABOOSE_BASE_IMAGE` | unset | [your own image](images.md) to build the sandbox on; unset, the environment's `image/Dockerfile` when it has one, else the embedded Dockerfile, built and tagged `$CABOOSE_IMAGE-base` |
-| `ready_timeout` | `CABOOSE_READY_TIMEOUT` | `600` | seconds to wait for first-run install |
-| `no_auto_build` | `CABOOSE_NO_AUTO_BUILD` | unset | don't build a missing image, or rebuild a stale one when creating the container; say to run `caboose build` |
-| `no_tmux` | `CABOOSE_NO_TMUX` | unset | skip tmux: native rendering, but no detach/reattach |
-| `auto_sync` | `CABOOSE_AUTO_SYNC` | unset | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
-| `tz` | `CABOOSE_TZ` | host's zone | timezone inside the container |
-| `hostname` | `CABOOSE_HOSTNAME` | `caboose-<host>`, with `-<env>` after it in any environment but `default` | the sandbox's hostname: one lowercase DNS label (1 to 63 letters, digits and `-`, not starting or ending with `-`). The default's `<host>` is this machine's name, cut at the first `.`, lowercased, anything but letters, digits and `-` turned into `-`, and shortened to fit; on a Mac it is `scutil --get LocalHostName`, which unlike `hostname` does not change with the network. Set per environment; fixed when the container is created, so `caboose restart` applies a change |
-| `isolation` | `CABOOSE_ISOLATION` | `docker` | what keeps the sandbox from this machine: `docker` (runc), `gvisor` (runsc) or `vm` (a VM of caboose's own, on a Mac); see [isolation](#isolation) |
-| `vm_cpus`, `vm_memory` | `CABOOSE_VM_CPUS`, `CABOOSE_VM_MEMORY` | half the CPUs; half the memory, at most `8G` | the `vm` isolation's size: CPUs, and memory as `"8G"` or `"4096M"` |
-| `docker_sock` | `CABOOSE_DOCKER_SOCK` | unset | mount the host docker socket — **removes the isolation**, see caveats |
-| `docker_run_args` | `CABOOSE_DOCKER_RUN_ARGS` | unset | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments). The variable is split at whitespace |
-| `forward_ports` | `CABOOSE_FORWARD_PORTS` | `3000-3999 5173 8000-8999` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, or `none`; see [the host link](host-link.md#ports) |
-| `open_urls` | `CABOOSE_OPEN_URLS` | `ask` | whether the sandbox may open URLs in your browser: `ask`, `allow` or `off`; see [the host link](host-link.md#urls-and-notifications) |
-| `egress_proxy` | `CABOOSE_EGRESS_PROXY` | `on` | under `isolation = "vm"`, whether the sandbox's outbound connections are made from this machine, so a VPN's routes and DNS apply: `on` or `off` (the VM's own NAT); ignored under `docker` and `gvisor`; see [the host link](host-link.md#outbound-connections) |
-| `egress_ports` | `CABOOSE_EGRESS_PORTS` | `22 80 443` | the ports the sandbox may reach that way, as `forward_ports` is written, or `none` |
-| `egress_allow` | `CABOOSE_EGRESS_ALLOW` | unset | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
-| `ssh_agent` | `CABOOSE_SSH_AGENT` | unset: the agent `ssh` here would use | the SSH agent socket the sandbox gets (`~` expanded), or `none`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over (1Password's: `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`). Under `vm`, and `docker` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead. See [SSH agent](ssh.md) |
-| `host_exec` | `CABOOSE_HOST_EXEC` | `false` | let sessions run commands on this machine, as you, through the link (`caboose-agent host CMD`); `true` or `false`, and the variable's `0` is false. **Sessions, and whatever steers them (a web page, a repo they work on), can then run anything on this machine as you**: meant for an environment whose point is a separate login or tools, not containment. See [the host link](host-link.md#host-commands) |
-| | `CABOOSE_ENV` | `default` | the environment; `--env` wins over it |
-| | `CABOOSE_HOME` | `~/.caboose` | where environments live |
-| | `CABOOSE_DATA_DIR` | `$CABOOSE_HOME/envs/<env>/data` | the data dir, named outright |
-| | `CABOOSE_NO_AUTO_UPDATE` | unset | don't [update caboose](getting-started.md#updates) by itself; machine-wide, so no `config.toml` key |
+| `container`, `gvisor` | `run_args` | `[]` | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments) |
+| `container`, `gvisor` | `engine_socket` | `false` | mount this machine's engine socket (`DOCKER_HOST`'s unix socket, else `/var/run/docker.sock`): **removes the isolation**, see [caveats](caveats.md) |
+| `vm` | `cpus` | half the CPUs | the VM's CPUs; at least 1 |
+| `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` |
+| `vm` | `egress` | `true` | whether the sandbox's outbound connections are made from this machine, so a VPN's routes and DNS apply; `false` is the VM's own NAT. See [the host link](host-link.md#outbound-connections) |
+| `vm` | `egress_ports` | `[22, 80, 443]` | the ports the sandbox may reach that way, written as `forward_ports` is; `[]` for none |
+| `vm` | `egress_allow` | `[]` | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
+
+A profile's name follows the rule for a root's: a lowercase label.
+Profiles do not inherit from one another; define each one in full. Which
+one runs:
+
+- `isolation = "<kind>.<name>"` names it; naming one the file does not
+  define is an error listing those it does.
+- Without `isolation`, the only profile defined is used.
+- With none defined, the sandbox is a `container` at its defaults.
+- With several and no `isolation`, caboose refuses and lists them.
+- A bare kind (`isolation = "gvisor"`) and `"docker"` are refused, with the
+  spelling to use.
+
+```toml
+isolation = "vm.big"
+
+[container.default]
+run_args = ["--cap-add=NET_ADMIN"]
+
+[vm.big]
+cpus = 8
+memory = "16G"
+```
+
+`caboose status` says which is in use and, when no profile is defined, that
+it is the default.
+
+## Other variables
+
+Most of what a variable once set is in the file now. These remain:
+
+| Variable | Default | |
+|---|---|---|
+| `CABOOSE_ENV` | `default` | the environment; `--env` wins over it |
+| `CABOOSE_HOME` | `~/.caboose` | where an install lives: `versions/`, `vm/`, `runsc/`, `update.json` and the environments; moves the whole install |
+| `CABOOSE_DATA_DIR` | `$CABOOSE_HOME/envs/<env>/data` | the data dir, named outright |
+| `CABOOSE_SESSION` | unset | the name of the tmux session to attach to or create, in place of the search `<project>`, `<project>-2`, ... |
+| `CABOOSE_NO_AUTO_UPDATE` | `false` | don't [update caboose](getting-started.md#updates) by itself; machine-wide, so no `config.toml` key |
+| `CABOOSE_FORCE` | `false` | skip the question before a command ends running sessions (`restart`, `stop`, `prune`, `sync`); see [commands](commands.md) |
+
+The two booleans take `true`, `false`, `1`, `0`, `yes`, `no`, `on` or `off`
+in any case, and anything else is an error naming the variable. A variable
+caboose no longer reads (`CABOOSE_ISOLATION`, `CABOOSE_DOCKER_RUN_ARGS`,
+`CABOOSE_REPO_ROOT`, ...) is refused when set, with the place in
+`config.toml` it moved to: unset it.
 
 A container defaults to UTC, so the launcher detects the host's zone name
 (from `$TZ`, else `/etc/localtime`) and applies it two ways: container-wide
@@ -47,24 +153,23 @@ inherits the *server's* environment, not the attaching client's, so a server
 started before the zone was known would otherwise hand every new session
 UTC. Sessions already running keep the zone they were created with.
 
-The roots and `CABOOSE_KEEP_VERSIONS` are both fixed when the
-container is created (as bind mounts and a `docker run -e`), so changing
-either needs `caboose restart`. `caboose prune` always uses the current
-value of the second, and `caboose status` warns when the two disagree.
+The roots, the isolation profile and `keep_versions` are fixed when the
+container is created (as bind mounts, labels and a `docker run -e`), so
+changing any needs `caboose restart`. `caboose prune` always uses the
+current `keep_versions`, and `caboose status` warns when the two disagree.
 
 ## docker run arguments
 
-`docker_run_args` adds arguments of your own to the `docker run` that
-creates the container: a capability, a device, a DNS server, a host entry,
-a memory limit.
+`run_args`, in a `container` or `gvisor` profile, adds arguments of your
+own to the `docker run` that creates the container: a capability, a
+device, a DNS server, a host entry, a memory limit.
 
 ```toml
-docker_run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun", "--dns=100.100.100.100"]
+[container.default]
+run_args = ["--cap-add=NET_ADMIN", "--device=/dev/net/tun", "--dns=100.100.100.100"]
 ```
 
-or, for one shell, `CABOOSE_DOCKER_RUN_ARGS="--cap-add=NET_ADMIN --device=/dev/net/tun"`,
-split at whitespace, which wins over the file. Like the roots, they are
-fixed when the container is created: `caboose restart` applies a change,
+Like the roots, they are fixed when the container is created: `caboose restart` applies a change,
 and until then a launch, `caboose status` and `caboose doctor` say the
 container was created with others.
 
@@ -73,15 +178,15 @@ boolean flags (`--privileged`, `--read-only`, ...) may stand alone, since
 docker would take the next argument as another flag's value. Refused:
 
 - short flags (`-e`): write the long one (`--env=...`);
-- the flags caboose sets or depends on: `--name`, `--hostname` (use `hostname`, above),
-  `--user`, `--runtime` (see [isolation](#isolation)), `--entrypoint`,
+- the flags caboose sets or depends on: `--name`, `--hostname` (use `hostname` in `[session]`),
+  `--user`, `--runtime` (see [isolation profiles](#isolation-profiles)), `--entrypoint`,
   `--init`, `--restart`, `--rm`, `--detach`,
   `--interactive`, `--tty`, `--attach`, `--platform`, `--pull`,
   `--cidfile`, and `--env-file` and `--label-file`, whose contents caboose
   cannot check;
 - `--env` for a variable caboose sets (`HOME`, `PATH`, `TZ`,
   `SSH_AUTH_SOCK`, `IS_SANDBOX`, anything `CABOOSE_` or `TINI_`), and `--label` for
-  caboose's own (`io.github.bfreis.caboose.*`);
+  caboose's own (`dev.bfreis.caboose.*`);
 - a `--volume`, `--mount` or `--tmpfs` at, inside or around one of
   caboose's mounts (the roots under `/work`, the kept parts of the home,
   Claude Code's install), or over the agent's home itself.
@@ -94,24 +199,9 @@ some arguments (`--privileged`, `--cap-add`, `--device`, `--volume`,
 doctor` notes. Only the host can set them: they are not in the sandbox's
 own config, and a session cannot propose them.
 
-## Isolation
+## gVisor
 
-`isolation` says what stands between the sandbox and this machine:
-
-- `docker`, the default: the container runs under docker's own runtime,
-  runc, and shares this machine's kernel (on a Mac, the engine's VM's).
-- `gvisor`: the same container under [gVisor](https://gvisor.dev)'s
-  `runsc`, a kernel of its own in user space, so a kernel bug the sandbox
-  finds is gVisor's, not the host's.
-- `vm`, on a Mac with Apple silicon: the sandbox is a VM of caboose's own,
-  on Apple's Virtualization.framework, with no Docker at all; see
-  [The vm isolation](#the-vm-isolation).
-
-```toml
-isolation = "gvisor"
-```
-
-`gvisor` needs `runsc` registered with docker (in `docker info`'s
+A `gvisor` profile needs `runsc` registered with docker (in `docker info`'s
 runtimes); a launch without it stops and says so, and `caboose doctor`
 lists it as a problem. [`caboose setup isolation`](#setup) registers it
 on OrbStack; elsewhere, install gVisor as [its guide](https://gvisor.dev/docs/user_guide/install/)
@@ -137,7 +227,7 @@ container created under `gvisor` needs `runsc` for as long as it exists:
 if docker loses it while the container is stopped, the next launch
 recreates the container with the configured isolation (no session is
 lost: it was stopped), or, when that cannot work either, says what to do. It is
-set here or by its variable only, never in the sandbox config: a session
+set here only, never in the sandbox config: a session
 cannot choose how it is isolated.
 
 Under gVisor, the container runs as the agent user where that user can
@@ -168,7 +258,7 @@ agent raise an event inside for each file that changed.
 
 ### The vm isolation
 
-Under `isolation = "vm"` the sandbox is a Linux VM: a kernel of its own,
+Under a `vm` profile the sandbox is a Linux VM: a kernel of its own,
 its image as a read-only disk, and a fresh scratch disk for what it writes,
 so nothing it writes outside the mounts outlives `caboose restart`. It
 needs no Docker engine, and runs these:
@@ -190,9 +280,8 @@ needs no Docker engine, and runs these:
   in `vm-dist/`. Beside the kernel, `kernel-arm64.SOURCE` says where its
   source and config are.
 
-The launcher looks for the last two in `~/.caboose/vm/<version>/arm64/`,
-`~/.caboose/vm/arm64/`, then the checkout's `vm-dist/`. `caboose build` then builds the same image as
-under docker, in a builder VM of its own (the first build about a minute
+The launcher looks for the last two in `~/.caboose/vm/<version>/arm64/`, then the checkout's `vm-dist/`. `caboose build` then builds the same image as
+with a docker engine, in a builder VM of its own (the first build about a minute
 and a half; one after a caboose update some fifteen seconds), and keeps
 it in the data dir's `vm/images/` as a disk. A launch boots the sandbox in
 about a second.
@@ -210,7 +299,7 @@ and asking (it stops a running VM first, listing its sessions). A start
 also makes an empty one when the file is missing. Inner containers can bind-mount `/work` paths
 as they are, and a port one publishes is forwarded to this machine like
 any other port listening in the sandbox. `caboose status` says whether
-dockerd is up, on its `dockerd` line (under docker and gvisor its `docker`
+dockerd is up, on its `dockerd` line (under container and gvisor its `docker`
 line is about this machine's engine instead, whose socket the sandbox
 may have); its log is `/var/log/caboose-dockerd.log` in the sandbox.
 
@@ -220,41 +309,62 @@ root's, so the agent user could not tell its own. Root's home is
 on the mounts are yours on the Mac. The Mac's edits under the roots reach the
 sandbox's watchers through the [host link](host-link.md#file-changes), and
 so does your [SSH agent](ssh.md) (any command that starts the VM starts
-the link too). The docker socket cannot be mounted into a VM, and `docker_run_args` mean nothing there: a launch refuses
-them, and `vm_cpus` and `vm_memory` size the VM instead. `caboose logs`
+the link too). The engine socket cannot be mounted into a VM, and `run_args` mean nothing there: a `vm` profile has no such key, and `cpus` and `memory` size the VM instead. `caboose logs`
 shows the VM's console (`--tail N`). The data dir's path must be short
 enough for the VM's socket (macOS allows 103 bytes); `caboose doctor`
 says when it is not. Where caboose would say "container" -- `caboose
 status`, `version`, `doctor`, `stop`, `restart` -- it says "VM".
 
-## The repo root
+## Roots
 
-The container mounts one directory tree from the host, the repo root, at
-`/work`: `CABOOSE_REPO_ROOT` (or `repo_root` in
-[`config.toml`](#configuration)), default `~/dev`. So `~/dev/you/project`
-is `/work/you/project` inside, and every project you run `caboose` in has
-to be under the root; running it anywhere else is an error that says so.
+The sandbox mounts the host directories you name in `[roots]`, each at
+`/work/<name>`. By default there is one, `dev = "~/dev"`, so `~/dev/you/project`
+is `/work/dev/you/project` inside, and every project you run `caboose` in
+has to be under a root; running it anywhere else is an error that says so.
 
 `caboose setup roots` asks for them and writes them into `config.toml`;
-the rest of this section is what it writes. If your projects live
-somewhere else, point it there (or, for one shell or in your profile, set
-the variable, which wins over the file):
-
-```sh
-export CABOOSE_REPO_ROOT=~/src
-```
-
-If they live in more than one place, name each in a `[roots]` table in
-`config.toml`, in place of `repo_root`; each is mounted at `/work/<name>`:
+the rest of this section is what it writes. Name each directory:
 
 ```toml
 [roots]
-dev = "~/dev"         # /work/dev
-work = "~/work"       # /work/work
+projects = "~/dev/projects"   # /work/projects
+work = "~/work"               # /work/work
 ```
 
-Roots cannot contain one another. Use the same names on every machine you
-[sync](sync.md), so a project has the same path on each.
+A root that must sit at another container path (a script expects it
+there) takes the long form, a table with `host` and `path`, or the same as
+an inline table:
+
+```toml
+[roots.tools]
+host = "~/src/tools"
+path = "/opt/tools"
+
+# or: tools = { host = "~/src/tools", path = "/opt/tools" }
+```
+
+The rules:
+
+- A name is a lowercase label; `host` is absolute, or starts with `~`.
+- Host directories cannot contain one another, and neither can container
+  paths: no root's path is at, inside or around another's.
+- `path = "/work"` puts a root at `/work` itself, and is allowed only for a
+  sole root. Adding a second root moves it to `/work/<name>`: `caboose setup
+  roots` says so, and asks first, since Claude Code keeps a project's
+  memories under its path.
+- A host path cannot hold `:` and a container path neither `:` nor `,`
+  (docker's `-v SOURCE:TARGET` would misread them), and neither can hold a
+  control character.
+- A path is absolute and clean. It cannot be, or be inside or around, `/`,
+  `/bin`, `/boot`, `/dev`, `/etc`, `/home` (the agent's home and caboose's
+  own mounts), `/lib*`, `/proc`, `/root`, `/run`, `/sbin`, `/sys`, `/tmp`,
+  `/usr` or `/var`. `/media`, `/mnt`, `/opt` and `/srv` themselves are
+  refused too, but a path inside them is fine.
+
+Use the same names and paths on every machine you [sync](sync.md), so a
+project has the same path on each. The sync's default rules match only
+projects under `/work`; for a root at a path outside it, add a rule to the
+[sandbox config](sandbox-config.md).
 
 Bind mounts are fixed when the container is created, so changing the roots
 once a container exists needs `caboose restart`, which kills running
@@ -269,7 +379,7 @@ can reach on your disk, so choose them accordingly.
 An environment is a whole caboose of its own: its own data dir — and so
 its own Claude login, memories and settings —, container, image and
 config. Use one to keep a work subscription apart from a personal one, or
-a different repo root, or a different image:
+different roots, or a different image:
 
 ```sh
 caboose -e work setup          # asks to create ~/.caboose/envs/work, then sets it up
@@ -286,8 +396,10 @@ command in an environment that was never created is refused: a mistyped
 caboose's own flag, before the command: `caboose setup --env work` is
 refused, with the spelling that works.
 
-Without `--env` or `CABOOSE_ENV` you are in `default`, whose container and
-image are named plain `caboose`.
+Without `--env` or `CABOOSE_ENV` you are in `default`. Names follow the
+environment: the container is `caboose-<env>` (`caboose-default`), the
+image `caboose:<env>`, and the base it is built on, when caboose builds
+one, `caboose-base:<env>`.
 
 ## Setup
 
@@ -311,16 +423,16 @@ it asks before creating it.
 
 `config.toml` is edited line by line, as you would: only the keys setup
 asks about change, a key's commented-out template line is uncommented with
-the new value, and comments and other settings stay where they are. The
+the new value, in its table (`[session]`, `[vm.default]`, ...), and comments and other settings stay where they are. The
 result is read back before it is written; if it would not say what you
 answered (the file uses TOML the editor cannot follow), nothing is written
 and setup shows the lines to change by hand.
 
-- **roots** shows the [repo roots](#the-repo-root) and edits them: change
-  one's directory, add another (each of several needs a name, its
-  directory under `/work`), or remove one. A change that moves projects to
-  another path in the container — going from one root to several moves
-  `/work/x` to `/work/<name>/x` — is listed and asks first: Claude Code
+- **roots** shows the [roots](#roots) and edits them: change
+  one's directory, add another (each needs a name, and a path when
+  it is not `/work/<name>`), or remove one. A change that moves projects to
+  another path in the container — going from a sole root at `/work` to
+  several moves `/work/x` to `/work/<name>/x` — is listed and asks first: Claude Code
   keeps each project's memories and history under its path, and will not
   find them under the old one (nothing is moved or deleted). Removing one
   of several keeps the other's name, and so its paths. A container that
@@ -329,15 +441,16 @@ and setup shows the lines to change by hand.
   Dockerfile embedded in caboose (the default when there is no `image/`),
   an [environment's own](images.md) `image/Dockerfile` written
   from caboose's preset or from the parts you choose, or, given up, the
-  `base_image` in `config.toml`. An `image/Dockerfile` that is there is
+  `base` in `[image]`. An `image/Dockerfile` that is there is
   kept by default; replacing it shows the difference and asks. After a
   change it offers to build; moving the container onto the new image is
   `caboose restart`, which it leaves to you.
-- **isolation** asks for the [isolation](#isolation) and writes it, even
-  when it is the default: the strongest that works, `vm` when this Mac has
+- **isolation** asks for the [isolation](#isolation-profiles) and writes
+  `isolation = "<kind>.<name>"`, the existing profile of that kind, else a
+  new empty `[<kind>.default]`, even when it is the default: the strongest that works, `vm` when this Mac has
   [what it runs](#the-vm-isolation), else `gvisor` when docker has `runsc`
   and a container runs under it (tried with the image, when there is one),
-  else `docker`.
+  else `container`.
   Where docker has no `runsc` and the engine is OrbStack, it offers to
   download gVisor's latest release (`runsc` and what it runs beside it,
   some 150MB), checked against its published sha512, into
@@ -347,13 +460,12 @@ and setup shows the lines to change by hand.
   `docker.json.before-caboose`) and restarting OrbStack's Docker engine,
   which stops every running container. OrbStack's VM sees your home at
   the same path, so nothing is installed in it. Elsewhere it says how to
-  get `runsc`, and when docker's lacks `--host-uds=open`, how to add it. When the engine runs the `runsc` it registered with flags
-  an older caboose gave it, or `docker.json` no longer lists it (so the
-  engine's next restart would drop it), it says so and offers to put it
-  right the same way. gVisor downloaded this way never updates by
+  get `runsc`, and when docker's lacks `--host-uds=open`, how to add it. When `docker.json` no longer lists the `runsc` the engine
+  runs (so the engine's next restart would drop it), it says so and offers
+  to put it right the same way. gVisor downloaded this way never updates by
   itself: each run checks it against the sha512 gVisor publishes for its
-  latest release and, when that is newer (or the download predates
-  caboose recording which release it was), offers to download it in its
+  latest release and, when that is newer (or the record of its release
+  cannot be read), offers to download it in its
   place, checked the same way and swapped in whole. The engine needs no
   restart for it, but a sandbox already running under it goes on in the
   old release until `caboose restart`. `caboose doctor` notes when the
@@ -364,7 +476,7 @@ and setup shows the lines to change by hand.
   say so (building the image first if there is none). git lists the
   forwarded agent's keys from it, and sync runs its git in it.
 - **sync** asks for the [sync](sync.md) remote and, with
-  one, for `auto_sync`. A new remote is set, and synced with right away,
+  one, for `auto_sync` in `[session]`. A new remote is set, and synced with right away,
   as `caboose sync --remote URL` does: that needs the container (it is
   started, never built) and no session running, and when it cannot run
   setup says why and what to run later, and goes on. A remote is not

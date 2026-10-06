@@ -23,7 +23,7 @@ type ContextFile struct {
 
 // The two build contexts. Every image caboose runs is a base with the layer
 // on top: the base is the embedded Dockerfile's image by default, or
-// CABOOSE_BASE_IMAGE, which caboose never builds; the layer is the same for
+// config.toml's [image] base, which caboose never builds; the layer is the same for
 // both. They replaced the checkout's deny-all-plus-allowlist .dockerignore:
 // a new COPY needs a line here and a name in the //go:embed directive in
 // embed.go, and forgetting either fails loudly (in go test, or at build time)
@@ -62,60 +62,63 @@ const LayerDockerfile = "layer.Dockerfile"
 // different files, and a new release that changed nothing in the context
 // need not force a rebuild.
 const (
-	LabelVersion = "io.github.bfreis.caboose.version"
+	LabelVersion = "dev.bfreis.caboose.version"
 	// LabelLayerHash is LayerHash, the layer's context.
-	LabelLayerHash = "io.github.bfreis.caboose.layer-hash"
+	LabelLayerHash = "dev.bfreis.caboose.layer-hash"
 	// LabelBaseHash is BaseHash when the base was the embedded Dockerfile's,
 	// DirHash of the environment's image/ dir when it was built from that,
 	// and empty on a user's base, which is identified by LabelBaseID
 	// instead. Set on the default base itself too, which is what makes it
 	// matter that the layer sets it explicitly (see LayerLabels).
-	LabelBaseHash = "io.github.bfreis.caboose.base-hash"
+	LabelBaseHash = "dev.bfreis.caboose.base-hash"
 	// LabelBaseKind is which kind of base the layer was built on:
 	// BaseKindDefault, BaseKindEnv or BaseKindBYO. Said outright rather
 	// than read off LabelBaseHash, which a label inherited through FROM
 	// could fake.
-	LabelBaseKind = "io.github.bfreis.caboose.base-kind"
+	LabelBaseKind = "dev.bfreis.caboose.base-kind"
 	// LabelBaseName is the base as it was named: the default base's tag, or
-	// CABOOSE_BASE_IMAGE as set.
-	LabelBaseName = "io.github.bfreis.caboose.base-name"
+	// [image] base as set.
+	LabelBaseName = "dev.bfreis.caboose.base-name"
 	// LabelBaseID is the image ID of the base the layer was built on, the
-	// one the image check passed. On a CABOOSE_BASE_IMAGE it is what tells
+	// one the image check passed. On an [image] base it is what tells
 	// a pull or rebuild of the base since.
-	LabelBaseID = "io.github.bfreis.caboose.base-id"
+	LabelBaseID = "dev.bfreis.caboose.base-id"
 	// LabelPlatform is the Claude Code platform (linux-x64, linux-arm64-musl,
 	// ...) the image check found the image to be, which names the data dir's
 	// dot_local/<platform> the launcher mounts.
-	LabelPlatform = "io.github.bfreis.caboose.platform"
+	LabelPlatform = "dev.bfreis.caboose.platform"
 	// LabelUID and LabelGID are the host IDs the layer's agent user was
 	// made with: an image built for another host user is not this one's.
-	LabelUID = "io.github.bfreis.caboose.uid"
-	LabelGID = "io.github.bfreis.caboose.gid"
+	LabelUID = "dev.bfreis.caboose.uid"
+	LabelGID = "dev.bfreis.caboose.gid"
 	// LabelCompat is Compat as the launcher that built the layer had it:
 	// what a launcher reads off a running container to tell whether it can
 	// still work with it.
-	LabelCompat = "io.github.bfreis.caboose.compat"
+	LabelCompat = "dev.bfreis.caboose.compat"
 	// LabelRunArgs is on the container, not the image: the user's own
-	// docker run arguments it was created with (config.DockerRunArgs), as
+	// docker run arguments it was created with (config.RunArgs), as
 	// a JSON list, "" for none. Set on every container, so one inherited
 	// from a base never reads as the container's.
-	LabelRunArgs = "io.github.bfreis.caboose.run-args"
+	LabelRunArgs = "dev.bfreis.caboose.run-args"
 	// LabelIsolation and LabelUser are on the container too: the isolation
-	// it was created with (config.Isolation) and the user it runs as, ""
+	// kind it was created with (config.Isolation) and the user it runs as, ""
 	// for the image's agent user, "0:0" where gVisor gives the agent no way
-	// to write its mounts. Set on every container, as LabelRunArgs is; a
-	// container without them is from before them, and ran as docker, as
-	// the agent.
-	LabelIsolation = "io.github.bfreis.caboose.isolation"
-	LabelUser      = "io.github.bfreis.caboose.user"
+	// to write its mounts. Set on every container, as LabelRunArgs is.
+	LabelIsolation = "dev.bfreis.caboose.isolation"
+	LabelUser      = "dev.bfreis.caboose.user"
 	// LabelEgress is on the container too: "on" for a VM created with the
-	// outbound proxy in its environment (egress_proxy), "" otherwise. Set
+	// outbound proxy in its environment (a vm profile's egress), ""
+	// otherwise. Set
 	// on every container, as LabelRunArgs is.
-	LabelEgress = "io.github.bfreis.caboose.egress"
+	LabelEgress = "dev.bfreis.caboose.egress"
 	// LabelHostname is on the container too: the hostname it was created
-	// with. Set on every container, as LabelRunArgs is; one without it is
-	// from before it, when the hostname was always "caboose".
-	LabelHostname = "io.github.bfreis.caboose.hostname"
+	// with. Set on every container, as LabelRunArgs is.
+	LabelHostname = "dev.bfreis.caboose.hostname"
+	// LabelRoots is on the container too: the container paths of the roots
+	// it was created with, as a JSON list, which tells its root mounts from
+	// the rest, since a root may be mounted anywhere. Set on every
+	// container, as LabelRunArgs is.
+	LabelRoots = "dev.bfreis.caboose.roots"
 )
 
 // Compat is the version of what the launcher expects of a container it did
@@ -128,7 +131,7 @@ const (
 // then a launch refuses the old container and says 'caboose restart' --
 // never merely because the image's files changed: the hashes already say
 // that, and a rebuild at the next restart is all it takes.
-const Compat = 2
+const Compat = 1
 
 // The values of LabelBaseKind.
 const (

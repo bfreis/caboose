@@ -112,7 +112,7 @@ func TestUsageListsEveryCommand(t *testing.T) {
 
 func TestHelp(t *testing.T) {
 	fakeDocker(t)
-	sandboxEnv(t, "CABOOSE_REPO_ROOT", "/does/not/exist")
+	sandboxEnv(t)
 	code, out, errs := runIt("help")
 	if code != 0 || errs != "" || out != Usage() {
 		t.Errorf("exit %d, stderr %q, stdout:\n%s", code, errs, out)

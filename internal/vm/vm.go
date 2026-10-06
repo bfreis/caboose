@@ -65,9 +65,8 @@ type Machine struct {
 	Shares []Share `json:"shares,omitempty"`
 	// Network is "nat", or "none" for a VM with no network of its own.
 	Network string `json:"network"`
-	// MAC is the network device's address (Dir.MAC). Empty, as in a
-	// machine.json from before it was set, the runner leaves it to
-	// Virtualization.framework, which picks one at random.
+	// MAC is the network device's address (Dir.MAC), which Dir.Boot fills
+	// in when empty. Empty only for a VM with no network.
 	MAC string `json:"mac,omitempty"`
 	// Console is the file the guest's console is written to.
 	Console string `json:"console"`

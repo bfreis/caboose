@@ -22,9 +22,9 @@ import (
 // refreshes the OS packages, the language toolchains, the CLIs and the
 // entrypoint.
 //
-// The base is built here and tagged config.DefaultBaseTag(CABOOSE_IMAGE),
+// The base is built here and tagged config.BaseImageFor(the environment),
 // from the environment's image/ dir when it has one, else from the
-// embedded Dockerfile; or it is CABOOSE_BASE_IMAGE, which is the user's and
+// embedded Dockerfile; or it is [image] base, which is the user's and
 // never built: only pulled, when it is not local or --pull asks.
 // Either way the image check runs on it next, and a base that fails it
 // stops the build with the list of what is missing, before the layer. So the
@@ -62,7 +62,7 @@ func (a *App) build(extra []string, stdout io.Writer) error {
 		return Die("%v", err)
 	}
 	if tag := tagArg(extra); tag != "" {
-		return Die("caboose build names its images itself, so it takes no %s: set CABOOSE_IMAGE to build under another name", tag)
+		return Die("caboose build names its images after the environment itself (%s), so it takes no %s", a.Cfg.Image, tag)
 	}
 	// docker gets ^C along with us, from the terminal's process group. Hold
 	// on to it here instead of dying, so the context dirs are still removed.
@@ -243,9 +243,9 @@ func (a *App) fetchBase(ref string, pull bool, platform string) error {
 	}
 	switch {
 	case !exists:
-		a.Note("base image '%s' (CABOOSE_BASE_IMAGE) is not in the local store; pulling it (docker's output follows)", ref)
+		a.Note("base image '%s' (base in [image]) is not in the local store; pulling it (docker's output follows)", ref)
 	case pull:
-		a.Note("pulling base image '%s' (CABOOSE_BASE_IMAGE), as --pull asks", ref)
+		a.Note("pulling base image '%s' (base in [image]), as --pull asks", ref)
 	default:
 		return nil
 	}
@@ -259,7 +259,7 @@ func (a *App) fetchBase(ref string, pull bool, platform string) error {
 	return nil
 }
 
-// buildLayer builds layer.Dockerfile FROM base as CABOOSE_IMAGE, labelled
+// buildLayer builds layer.Dockerfile FROM base as the environment's image, labelled
 // with what it was built from: the launcher's version, the hashes of the
 // embedded contexts it used, the kind of base and its name and ID, the
 // platform the check found, which picks the data dir's dot_local/<platform>,
@@ -325,7 +325,7 @@ func shortID(id string) string {
 
 func (a *App) buildNote() string {
 	if base, byo := a.Cfg.Base(); byo {
-		return fmt.Sprintf("building the caboose layer on '%s' (CABOOSE_BASE_IMAGE)", base)
+		return fmt.Sprintf("building the caboose layer on '%s' (base in [image])", base)
 	}
 	if a.Cfg.ImageDir != "" {
 		return "building it from " + filepath.Join(a.Cfg.ImageDir, "Dockerfile")

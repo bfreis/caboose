@@ -15,7 +15,7 @@ import (
 )
 
 // prune --docker deletes the vm sandbox's docker disk for an empty one:
-// it says the size, asks (FORCE=1 does not), and stops a running VM
+// it says the size, asks (CABOOSE_FORCE=1 does not), and stops a running VM
 // first, listing its sessions. Under docker and gvisor there is no such
 // disk, and it says what cleans up instead, touching nothing.
 func TestPruneDocker(t *testing.T) {
@@ -25,7 +25,7 @@ func TestPruneDocker(t *testing.T) {
 		}
 		return nil
 	}
-	force := func(k string) string { return map[string]string{"FORCE": "1"}[k] }
+	force := func(k string) string { return map[string]string{"CABOOSE_FORCE": "1"}[k] }
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
 			b := newBoxApp(t, iso, runningBox(iso))
@@ -69,7 +69,7 @@ func TestPruneDocker(t *testing.T) {
 			}
 			if !tty.IsTerminal(os.Stdin.Fd()) {
 				err := b.Prune([]string{"--docker"})
-				if err == nil || !strings.Contains(err.Error(), "refusing to delete it non-interactively (set FORCE=1 to delete it)") {
+				if err == nil || !strings.Contains(err.Error(), "refusing to delete it non-interactively (set CABOOSE_FORCE=1 to delete it)") {
 					t.Errorf("no terminal: %v", err)
 				}
 				kept()
@@ -89,7 +89,7 @@ func TestPruneDocker(t *testing.T) {
 			for _, want := range []string{
 				"caboose: this deletes " + disk + " (" + size + " on disk)",
 				"caboose: these live session(s) end:\n  proj-abc123\n",
-				"caboose: FORCE=1 set, continuing.\n",
+				"caboose: CABOOSE_FORCE=1 set, continuing.\n",
 				"caboose: VM stopped\n",
 				"caboose: deleted " + disk + ", freeing " + size + "\n",
 				"caboose: 'caboose' starts the VM again, its dockerd empty\n",

@@ -14,7 +14,7 @@ import (
 )
 
 // Fake docker answers, for scriptedDocker. The image and container are named
-// img and box by the tests that use them.
+// caboose:default and caboose-default by the tests that use them.
 const (
 	// imageAbsent: inspect fails as docker does for a missing image, while
 	// `docker version` shows the engine answering, which is how ImageLabels
@@ -28,15 +28,15 @@ esac`
 	// containerRunning on image sha:1, which the tag points at unless
 	// imageIDIs says otherwise.
 	containerRunning = `case "$*" in
-  "inspect --type=container -f {{.State.Status}} box") echo running; exit 0 ;;
-  "inspect --type=container -f {{.Image}} box") echo sha:1; exit 0 ;;
+  "inspect --type=container -f {{.State.Status}} caboose-default") echo running; exit 0 ;;
+  "inspect --type=container -f {{.Image}} caboose-default") echo sha:1; exit 0 ;;
 esac`
 )
 
-// builtImage makes a `docker build -t img` leave image img with the labels
+// builtImage makes a `docker build -t caboose:default` leave image caboose:default with the labels
 // json, as a real build would, for the inspect that reads them back.
 func builtImage(json string) string {
-	return `case "$*" in "build -t img "*) : > "$0.built" ;; esac
+	return `case "$*" in "build -t caboose:default "*) : > "$0.built" ;; esac
 [ "$1 $2" = "image inspect" ] && [ -e "$0.built" ] && { echo '` + json + `'; exit 0; }`
 }
 
@@ -55,7 +55,7 @@ func imageLabels(json string) string {
 }
 
 func imageIDIs(id string) string {
-	return `[ "$*" = "inspect --type=image -f {{.Id}} img" ] && { echo ` + id + `; exit 0; }`
+	return `[ "$*" = "inspect --type=image -f {{.Id}} caboose:default" ] && { echo ` + id + `; exit 0; }`
 }
 
 // imageIDOf makes `docker inspect` report ref's image ID.
@@ -75,14 +75,14 @@ func toJSON(m map[string]string) string {
 const baseID = "sha256:ba5e000000000000000000000000000000000000000000000000000000000001"
 
 // defaultLabels are what caboose build puts on an image built on the default
-// base, img-base, by this launcher, with edit applied.
+// base, caboose-base:default, by this launcher, with edit applied.
 func defaultLabels(ver string, edit ...string) string {
 	m := map[string]string{
 		assets.LabelVersion:   ver,
 		assets.LabelLayerHash: assets.LayerHash(),
 		assets.LabelBaseKind:  assets.BaseKindDefault,
 		assets.LabelBaseHash:  assets.BaseHash(),
-		assets.LabelBaseName:  "img-base",
+		assets.LabelBaseName:  "caboose-base:default",
 		assets.LabelBaseID:    baseID,
 		assets.LabelPlatform:  "linux-arm64",
 		assets.LabelUID:       strconv.Itoa(os.Getuid()),
@@ -92,7 +92,7 @@ func defaultLabels(ver string, edit ...string) string {
 	return toJSON(edited(m, edit))
 }
 
-// byoLabels are defaultLabels for an image built on CABOOSE_BASE_IMAGE base:
+// byoLabels are defaultLabels for an image built on base in [image] base:
 // every label set, the base hash to "".
 func byoLabels(ver, base string, edit ...string) string {
 	m := map[string]string{
@@ -143,7 +143,7 @@ func versionHeader(context, base string) string {
 		"built     : " + or(v.Date, "unknown") + "\n" +
 		"install   : a development build; it does not update itself\n" +
 		"context   : " + context[:12] + "\n" +
-		"image     : img\n" +
+		"image     : caboose:default\n" +
 		"base      : " + base + "\n"
 }
 
@@ -163,8 +163,7 @@ func runVersionCases(t *testing.T, header string, env []string, cases []versionC
 			log := scriptedDocker(t, strings.Join(tc.docker, "\n"))
 			// No repo root, and no data dir yet: caboose version needs neither,
 			// and creates nothing.
-			home := sandboxEnv(t, append([]string{"CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box",
-				"CABOOSE_REPO_ROOT", "/does/not/exist"}, env...)...)
+			home := sandboxEnv(t, env...)
 			code, out, errs := runIt("version")
 			if code != tc.code {
 				t.Errorf("exit %d, want %d; stderr:\n%s", code, tc.code, errs)
@@ -180,7 +179,7 @@ func runVersionCases(t *testing.T, header string, env []string, cases []versionC
 			if tc.noStderr && errs != "" {
 				t.Errorf("stderr:\n%s", errs)
 			}
-			if _, err := os.Stat(filepath.Join(home, ".caboose")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(home, ".caboose", "envs", "default", "data")); !os.IsNotExist(err) {
 				t.Error("caboose version created the data dir")
 			}
 			b, _ := os.ReadFile(log)
@@ -194,90 +193,90 @@ func runVersionCases(t *testing.T, header string, env []string, cases []versionC
 }
 
 func TestVersion(t *testing.T) {
-	header := versionHeader(assets.ContextHash(), "img-base (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")")
+	header := versionHeader(assets.ContextHash(), "caboose-base:default (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")")
 	current := imageLabels(defaultLabels("v9"))
 	runVersionCases(t, header, nil, []versionCase{
 		{"missing", []string{imageAbsent}, 0,
-			"local     : not built yet\ncontainer : box (absent)\n",
+			"local     : not built yet\ncontainer : caboose-default (absent)\n",
 			[]string{"run 'caboose build'"}, false},
 		{"matches", []string{current}, 0,
-			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 		// The default base is identified by its hash: its ID is never asked,
 		// and a different one does not matter.
-		{"matches whatever the base's ID", []string{current, imageIDOf("img-base", "sha256:other")}, 0,
-			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+		{"matches whatever the base's ID", []string{current, imageIDOf("caboose-base:default", "sha256:other")}, 0,
+			"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 		{"another Dockerfile", []string{imageLabels(defaultLabels("v8", assets.LabelBaseHash+"="+otherHash))}, 0,
 			"local     : out of date (built by v8, from a different Dockerfile than this launcher embeds (base context 0123456789ab, this launcher's " +
-				assets.BaseHash()[:12] + "))\ncontainer : box (absent)\n",
+				assets.BaseHash()[:12] + "))\ncontainer : caboose-default (absent)\n",
 			[]string{"the next launch that creates the container rebuilds it", "'caboose restart' moves a running container onto it"}, false},
 		{"another layer", []string{imageLabels(defaultLabels("v8", assets.LabelLayerHash+"="+otherHash))}, 0,
 			"local     : out of date (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
-				assets.LayerHash()[:12] + "))\ncontainer : box (absent)\n",
+				assets.LayerHash()[:12] + "))\ncontainer : caboose-default (absent)\n",
 			[]string{"'caboose build'"}, false},
 		{"built on a user's base", []string{imageLabels(byoLabels("v9", "node:22"))}, 0,
-			"local     : out of date (built by v9, on CABOOSE_BASE_IMAGE 'node:22', not on the embedded Dockerfile's base)\ncontainer : box (absent)\n",
+			"local     : out of date (built by v9, on the [image] base 'node:22', not on the embedded Dockerfile's base)\ncontainer : caboose-default (absent)\n",
 			[]string{"'caboose build'"}, false},
 		{"unlabelled", []string{imageLabels("null")}, 0,
-			"local     : unlabelled (not built by caboose build)\ncontainer : box (absent)\n",
+			"local     : unlabelled (not built by caboose build)\ncontainer : caboose-default (absent)\n",
 			[]string{"'caboose build' to build it, replacing what the name holds now"}, false},
 		// Hashes but no kind of base: not the layer caboose build makes.
 		{"no base kind", []string{imageLabels(defaultLabels("v9", assets.LabelBaseKind+"="))}, 0,
-			"local     : unlabelled (not built by caboose build)\ncontainer : box (absent)\n", nil, false},
+			"local     : unlabelled (not built by caboose build)\ncontainer : caboose-default (absent)\n", nil, false},
 		{"docker unreachable", []string{daemonDown}, 1,
 			"local     : unknown (docker did not answer)\n",
-			[]string{"caboose: cannot inspect image 'img': is the docker engine running? " +
-				"(docker image inspect img: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. " +
+			[]string{"caboose: cannot inspect image 'caboose:default': is the docker engine running? " +
+				"(docker image inspect caboose:default: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. " +
 				"Is the docker daemon running?)\n"}, false},
 		{"invalid image name", []string{invalidRef}, 1,
 			"local     : unknown (docker could not look it up)\n",
-			[]string{"caboose: cannot inspect image 'img': docker image inspect img: invalid reference format: " +
+			[]string{"caboose: cannot inspect image 'caboose:default': docker image inspect caboose:default: invalid reference format: " +
 				"repository name (library/Img) must be lowercase\n"}, false},
 		{"container on the local image",
 			[]string{current, containerRunning, imageIDIs("sha:1")}, 0,
-			"local     : matches (built by v9)\ncontainer : box (running, on the local image)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : caboose-default (running, on the local image)\n", nil, true},
 		{"container on an older image",
 			[]string{current, containerRunning, imageIDIs("sha:2")}, 0,
-			"local     : matches (built by v9)\ncontainer : box (running, on an older image than the local one)\n",
+			"local     : matches (built by v9)\ncontainer : caboose-default (running, on an older image than the local one)\n",
 			[]string{"'caboose restart' to move it onto the local image"}, false},
 		// The two lines read together: a container on the local image is as
 		// out of date as it is, rather than "current".
 		{"container on a local image out of date",
 			[]string{imageLabels(defaultLabels("v8", assets.LabelLayerHash+"="+otherHash)), containerRunning, imageIDIs("sha:1")}, 0,
 			"local     : out of date (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
-				assets.LayerHash()[:12] + "))\ncontainer : box (running, on the local image, so out of date too)\n",
+				assets.LayerHash()[:12] + "))\ncontainer : caboose-default (running, on the local image, so out of date too)\n",
 			[]string{"'caboose restart' moves a running container onto it"}, false},
 	})
 }
 
-// On CABOOSE_BASE_IMAGE the base's ID is part of the image's identity, and
+// On base in [image] the base's ID is part of the image's identity, and
 // the embedded Dockerfile is not: an image built by this launcher on it
 // carries no base hash, so none can differ.
 func TestVersionOnOwnBase(t *testing.T) {
 	env := []string{"CABOOSE_BASE_IMAGE", "node:22"}
-	header := versionHeader(assets.LayerHash(), "node:22 (CABOOSE_BASE_IMAGE, ba5e00000000)")
+	header := versionHeader(assets.LayerHash(), "node:22 (base in [image], ba5e00000000)")
 	current := imageLabels(byoLabels("v9", "node:22"))
 	here := imageIDOf("node:22", baseID)
 	runVersionCases(t, header, env, []versionCase{
 		{"matches", []string{current, here}, 0,
-			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 		{"another layer", []string{imageLabels(byoLabels("v8", "node:22", assets.LabelLayerHash+"="+otherHash)), here}, 0,
 			"local     : out of date (built by v8, with a different layer than this launcher embeds (layer context 0123456789ab, this launcher's " +
-				assets.LayerHash()[:12] + "))\ncontainer : box (absent)\n", nil, false},
+				assets.LayerHash()[:12] + "))\ncontainer : caboose-default (absent)\n", nil, false},
 		{"another base", []string{imageLabels(byoLabels("v9", "node:20")), here}, 0,
-			"local     : out of date (built by v9, on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n", nil, false},
+			"local     : out of date (built by v9, on 'node:20', not on the [image] base 'node:22')\ncontainer : caboose-default (absent)\n", nil, false},
 		{"the default base", []string{imageLabels(defaultLabels("v9")), here}, 0,
-			"local     : out of date (built by v9, on the embedded Dockerfile's base, not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n", nil, false},
+			"local     : out of date (built by v9, on the embedded Dockerfile's base, not on the [image] base 'node:22')\ncontainer : caboose-default (absent)\n", nil, false},
 	})
 	// A pull (or a rebuild) of the base since: a new ID.
-	runVersionCases(t, versionHeader(assets.LayerHash(), "node:22 (CABOOSE_BASE_IMAGE, 999900000000)"), env, []versionCase{
+	runVersionCases(t, versionHeader(assets.LayerHash(), "node:22 (base in [image], 999900000000)"), env, []versionCase{
 		{"the base has changed", []string{current, imageIDOf("node:22", "sha256:9999000000000000")}, 0,
-			"local     : out of date (built by v9, on 'node:22' as ba5e00000000, which it no longer names (now 999900000000))\ncontainer : box (absent)\n",
+			"local     : out of date (built by v9, on 'node:22' as ba5e00000000, which it no longer names (now 999900000000))\ncontainer : caboose-default (absent)\n",
 			[]string{"'caboose build'"}, false},
 	})
 	// The base gone from the local store: nothing to compare its ID with.
-	runVersionCases(t, versionHeader(assets.LayerHash(), "node:22 (CABOOSE_BASE_IMAGE, not in the local store)"), env, []versionCase{
+	runVersionCases(t, versionHeader(assets.LayerHash(), "node:22 (base in [image], not in the local store)"), env, []versionCase{
 		{"base not local", []string{current}, 0,
-			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 	})
 }
 
@@ -288,29 +287,29 @@ func TestVersionOnOwnBase(t *testing.T) {
 // matches, rather than being stale for good. (The reviewer's repro.)
 func TestVersionBaseBuiltFromCaboose(t *testing.T) {
 	env := []string{"CABOOSE_BASE_IMAGE", "mine"}
-	header := versionHeader(assets.LayerHash(), "mine (CABOOSE_BASE_IMAGE, ba5e00000000)")
+	header := versionHeader(assets.LayerHash(), "mine (base in [image], ba5e00000000)")
 	here := imageIDOf("mine", baseID)
 	runVersionCases(t, header, env, []versionCase{
 		// As a build by this launcher labels it: an empty base hash.
 		{"built now", []string{imageLabels(byoLabels("v9", "mine")), here}, 0,
-			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 		// Were an inherited hash to show through, the kind still decides.
 		{"inherited hash", []string{imageLabels(byoLabels("v9", "mine", assets.LabelBaseHash+"="+assets.BaseHash())), here}, 0,
-			"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+			"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 	})
-	// caboose's own base as CABOOSE_BASE_IMAGE: a separate image from
-	// CABOOSE_IMAGE, so allowed, and current once built on.
-	runVersionCases(t, versionHeader(assets.LayerHash(), "img-base (CABOOSE_BASE_IMAGE, ba5e00000000)"),
-		[]string{"CABOOSE_BASE_IMAGE", "img-base"}, []versionCase{
-			{"caboose's base", []string{imageLabels(byoLabels("v9", "img-base")), imageIDOf("img-base", baseID)}, 0,
-				"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+	// caboose's own base as base in [image]: a separate image from
+	// the environment's image, so allowed, and current once built on.
+	runVersionCases(t, versionHeader(assets.LayerHash(), "caboose-base:default (base in [image], ba5e00000000)"),
+		[]string{"CABOOSE_BASE_IMAGE", "caboose-base:default"}, []versionCase{
+			{"caboose's base", []string{imageLabels(byoLabels("v9", "caboose-base:default")), imageIDOf("caboose-base:default", baseID)}, 0,
+				"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 		})
 	// The default kind with no base hash is no image of this launcher's base.
-	runVersionCases(t, versionHeader(assets.ContextHash(), "img-base (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")"), nil,
+	runVersionCases(t, versionHeader(assets.ContextHash(), "caboose-base:default (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")"), nil,
 		[]versionCase{
 			{"default kind, empty hash", []string{imageLabels(defaultLabels("v8", assets.LabelBaseHash+"=="))}, 0,
 				"local     : out of date (built by v8, from a different Dockerfile than this launcher embeds (base context , this launcher's " +
-					assets.BaseHash()[:12] + "))\ncontainer : box (absent)\n", nil, false},
+					assets.BaseHash()[:12] + "))\ncontainer : caboose-default (absent)\n", nil, false},
 		})
 }
 
@@ -322,10 +321,10 @@ func TestVersionBaseNamesNormalised(t *testing.T) {
 		{"docker.io/node:22", "node:22"},
 		{"alpine", "alpine:latest"},
 	} {
-		runVersionCases(t, versionHeader(assets.LayerHash(), tc.env+" (CABOOSE_BASE_IMAGE, ba5e00000000)"),
+		runVersionCases(t, versionHeader(assets.LayerHash(), tc.env+" (base in [image], ba5e00000000)"),
 			[]string{"CABOOSE_BASE_IMAGE", tc.env}, []versionCase{
 				{tc.env, []string{imageLabels(byoLabels("v9", tc.label)), imageIDOf(tc.env, baseID)}, 0,
-					"local     : matches (built by v9)\ncontainer : box (absent)\n", nil, true},
+					"local     : matches (built by v9)\ncontainer : caboose-default (absent)\n", nil, true},
 			})
 	}
 }
@@ -333,28 +332,29 @@ func TestVersionBaseNamesNormalised(t *testing.T) {
 // The layer's agent user has the IDs of the host user it was built for: an
 // image built for another is stale, whichever of the two differs.
 func TestVersionOtherHostUser(t *testing.T) {
-	header := versionHeader(assets.ContextHash(), "img-base (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")")
+	header := versionHeader(assets.ContextHash(), "caboose-base:default (the embedded Dockerfile, context "+assets.BaseHash()[:12]+")")
 	me := strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
 	runVersionCases(t, header, nil, []versionCase{
 		{"another uid", []string{imageLabels(defaultLabels("v9", assets.LabelUID+"=4242"))}, 0,
 			"local     : out of date (built by v9, for another host user (uid 4242, gid " + strconv.Itoa(os.Getgid()) +
-				"; this one is " + me + "))\ncontainer : box (absent)\n", nil, false},
+				"; this one is " + me + "))\ncontainer : caboose-default (absent)\n", nil, false},
 		{"another gid", []string{imageLabels(defaultLabels("v9", assets.LabelGID+"=4343"))}, 0,
 			"local     : out of date (built by v9, for another host user (uid " + strconv.Itoa(os.Getuid()) +
-				", gid 4343; this one is " + me + "))\ncontainer : box (absent)\n", nil, false},
+				", gid 4343; this one is " + me + "))\ncontainer : caboose-default (absent)\n", nil, false},
 	})
 }
 
-// CABOOSE_BASE_IMAGE naming CABOOSE_IMAGE itself, in any spelling: said by
+// [image] base naming the environment's own image, in any spelling: said by
 // caboose version, which still answers. (A build and a launch refuse it: see
 // TestImageIsItsOwnBase.)
 func TestVersionImageIsItsOwnBase(t *testing.T) {
-	env := []string{"CABOOSE_BASE_IMAGE", "docker.io/library/img:latest"}
-	header := versionHeader(assets.LayerHash(), "docker.io/library/img:latest (CABOOSE_BASE_IMAGE, 1a7e00000000)")
+	const self = "docker.io/library/caboose:default"
+	env := []string{"CABOOSE_BASE_IMAGE", self}
+	header := versionHeader(assets.LayerHash(), self+" (base in [image], 1a7e00000000)")
 	runVersionCases(t, header, env, []versionCase{
-		{"self", []string{imageLabels(byoLabels("v9", "img")), imageIDOf("docker.io/library/img:latest", "sha256:1a7e000000000000")}, 0,
-			"local     : out of date (built by v9, on 'docker.io/library/img:latest' as ba5e00000000, which it no longer names (now 1a7e00000000))\ncontainer : box (absent)\n",
-			[]string{"caboose: CABOOSE_BASE_IMAGE ('docker.io/library/img:latest') names the same image as CABOOSE_IMAGE ('img')"}, false},
+		{"self", []string{imageLabels(byoLabels("v9", "caboose:default")), imageIDOf(self, "sha256:1a7e000000000000")}, 0,
+			"local     : out of date (built by v9, on '" + self + "' as ba5e00000000, which it no longer names (now 1a7e00000000))\ncontainer : caboose-default (absent)\n",
+			[]string{"caboose: base in [image] ('" + self + "') is the environment's own image"}, false},
 	})
 }
 
@@ -405,8 +405,8 @@ func dockerLog(t *testing.T, path string) []string {
 // Nothing of the build may reach stdout: that is claude's, and may be piped
 // somewhere.
 func TestFirstLaunchBuildsTheImage(t *testing.T) {
-	log := scriptedDocker(t, builtImage(defaultLabels("v9"))+"\n"+imageAbsent+"\n"+baseBuilds(t, "img-base"))
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "img")
+	log := scriptedDocker(t, builtImage(defaultLabels("v9"))+"\n"+imageAbsent+"\n"+baseBuilds(t, "caboose-base:default"))
+	home := sandboxEnv(t)
 	inProject(t, home)
 	code, out, errs := runIt("claude", "-p", "hi")
 	if code != 1 {
@@ -416,11 +416,11 @@ func TestFirstLaunchBuildsTheImage(t *testing.T) {
 		t.Errorf("stdout %q", out)
 	}
 	for _, w := range []string{
-		"caboose: no image 'img' yet — building it from the Dockerfile embedded in this launcher\n",
-		"caboose: building the base image 'img-base' from the Dockerfile embedded in this launcher\n",
-		"docker build stdout\ndocker build stderr\ncaboose: checking base image 'img-base' (ba5e00000000)",
-		"caboose: building the caboose layer on 'img-base' as 'img'\ndocker build stdout\ndocker build stderr\n",
-		"caboose: built image 'img'\n",
+		"caboose: no image 'caboose:default' yet — building it from the Dockerfile embedded in this launcher\n",
+		"caboose: building the base image 'caboose-base:default' from the Dockerfile embedded in this launcher\n",
+		"docker build stdout\ndocker build stderr\ncaboose: checking base image 'caboose-base:default' (ba5e00000000)",
+		"caboose: building the caboose layer on 'caboose-base:default' as 'caboose:default'\ndocker build stdout\ndocker build stderr\n",
+		"caboose: built image 'caboose:default'\n",
 	} {
 		if !strings.Contains(errs, w) {
 			t.Errorf("stderr lacks %q:\n%s", w, errs)
@@ -432,11 +432,11 @@ func TestFirstLaunchBuildsTheImage(t *testing.T) {
 	var order []string
 	for _, l := range dockerLog(t, log) {
 		switch {
-		case strings.HasPrefix(l, "build -t img-base "):
+		case strings.HasPrefix(l, "build -t caboose-base:default "):
 			order = append(order, "base")
 		case strings.HasPrefix(l, "run --rm "):
 			order = append(order, "check")
-		case strings.HasPrefix(l, "build -t img "):
+		case strings.HasPrefix(l, "build -t caboose:default "):
 			order = append(order, "layer")
 		case strings.HasPrefix(l, "run -d "):
 			order = append(order, "run")
@@ -451,22 +451,22 @@ func TestFirstLaunchBuildsTheImage(t *testing.T) {
 	}
 }
 
-// On CABOOSE_BASE_IMAGE the first launch says what it builds on, pulls the
+// On base in [image] the first launch says what it builds on, pulls the
 // base when it is not local -- all on stderr -- and builds no base.
 func TestFirstLaunchOnOwnBase(t *testing.T) {
 	log := scriptedDocker(t, builtImage(byoLabels("v9", "node:22"))+"\n"+imageMissingButPullable+"\n"+imageIDOf("node:22", baseID)+"\n"+
 		probePasses(t, probeComplete)+"\n"+imageAbsent)
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_BASE_IMAGE", "node:22")
+	home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22")
 	inProject(t, home)
 	code, out, errs := runIt("claude", "-p", "hi")
 	if code != 1 || out != "" {
 		t.Errorf("exit %d, stdout %q: %s", code, out, errs)
 	}
 	for _, w := range []string{
-		"caboose: no image 'img' yet — building the caboose layer on 'node:22' (CABOOSE_BASE_IMAGE)\n",
-		"caboose: base image 'node:22' (CABOOSE_BASE_IMAGE) is not in the local store; pulling it (docker's output follows)\n",
+		"caboose: no image 'caboose:default' yet — building the caboose layer on 'node:22' (base in [image])\n",
+		"caboose: base image 'node:22' (base in [image]) is not in the local store; pulling it (docker's output follows)\n",
 		"pull progress on stdout\npull progress on stderr\n",
-		"caboose: building the caboose layer on 'node:22' as 'img'\n",
+		"caboose: building the caboose layer on 'node:22' as 'caboose:default'\n",
 	} {
 		if !strings.Contains(errs, w) {
 			t.Errorf("stderr lacks %q:\n%s", w, errs)
@@ -477,7 +477,7 @@ func TestFirstLaunchOnOwnBase(t *testing.T) {
 		switch {
 		case strings.HasPrefix(l, "pull "):
 			order = append(order, l)
-		case strings.HasPrefix(l, "build -t img "):
+		case strings.HasPrefix(l, "build -t caboose:default "):
 			order = append(order, "layer")
 		case strings.HasPrefix(l, "build "):
 			order = append(order, "other build: "+l)
@@ -490,23 +490,13 @@ func TestFirstLaunchOnOwnBase(t *testing.T) {
 	}
 }
 
-func TestFirstLaunchRegistryImageNote(t *testing.T) {
-	scriptedDocker(t, imageAbsent)
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "ghcr.io/x/y")
-	inProject(t, home)
-	_, _, errs := runIt("claude", "-p", "hi")
-	if !strings.Contains(errs, "'ghcr.io/x/y' is not in the local store; to use the registry's image instead, ^C and 'docker pull' it.") {
-		t.Errorf("stderr:\n%s", errs)
-	}
-}
-
 func TestNoAutoBuild(t *testing.T) {
 	log := scriptedDocker(t, imageAbsent)
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_NO_AUTO_BUILD", "1")
+	home := sandboxEnv(t, "CABOOSE_NO_AUTO_BUILD", "1")
 	inProject(t, home)
 	code, _, errs := runIt("claude", "-p", "hi")
-	want := "caboose: image 'img' not found — run 'caboose build' first\n" +
-		"       (CABOOSE_NO_AUTO_BUILD is set, so a launch does not build it)\n"
+	want := "caboose: image 'caboose:default' not found — run 'caboose build' first\n" +
+		"       (auto_build in [image] is false, so a launch does not build it)\n"
 	if code != 1 || !strings.HasSuffix(errs, want) || strings.Contains(errs, "building") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
 	}
@@ -533,7 +523,7 @@ func TestWhichCommandsBuild(t *testing.T) {
 	} {
 		t.Run(tc.argv[0], func(t *testing.T) {
 			log := scriptedDocker(t, imageAbsent)
-			home := sandboxEnv(t, "CABOOSE_IMAGE", "img")
+			home := sandboxEnv(t)
 			inProject(t, home)
 			code, _, errs := runIt(tc.argv...)
 			if code == 0 {
@@ -549,7 +539,7 @@ func TestWhichCommandsBuild(t *testing.T) {
 			if built != tc.build {
 				t.Errorf("built %v, want %v; stderr:\n%s", built, tc.build, errs)
 			}
-			if !tc.build && !strings.Contains(errs, "caboose: no container yet, and no image 'img' to create it from — run caboose in a project\n") {
+			if !tc.build && !strings.Contains(errs, "caboose: no container yet, and no image 'caboose:default' to create it from — run caboose in a project\n") {
 				t.Errorf("stderr:\n%s", errs)
 			}
 		})
@@ -560,10 +550,10 @@ func TestWhichCommandsBuild(t *testing.T) {
 // anything, as the default launch does.
 func TestShellChecksCwdFirst(t *testing.T) {
 	log := scriptedDocker(t, imageAbsent)
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "img")
+	home := sandboxEnv(t)
 	t.Chdir(t.TempDir())
 	code, _, errs := runIt("shell")
-	if code != 1 || !strings.Contains(errs, "is outside the mounted repo root") {
+	if code != 1 || !strings.Contains(errs, "is outside the mounted root, ") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
 	}
 	for _, l := range dockerLog(t, log) {
@@ -571,7 +561,7 @@ func TestShellChecksCwdFirst(t *testing.T) {
 			t.Errorf("docker %s", l)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, ".caboose")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".caboose", "envs", "default", "data")); !os.IsNotExist(err) {
 		t.Error("the data dir was created")
 	}
 }
@@ -581,14 +571,14 @@ func TestShellChecksCwdFirst(t *testing.T) {
 // a question about the engine.
 func TestLaunchWithDockerUnreachable(t *testing.T) {
 	for _, tc := range []struct{ name, docker, want string }{
-		{"silent", "", "caboose: cannot inspect image 'img': is the docker engine running?"},
-		{"daemon down", daemonDown, "caboose: cannot inspect image 'img': is the docker engine running? " +
-			"(docker image inspect img: Cannot connect to the Docker daemon"},
-		{"invalid name", invalidRef, "caboose: cannot inspect image 'img': docker image inspect img: invalid reference format"},
+		{"silent", "", "caboose: cannot inspect image 'caboose:default': is the docker engine running?"},
+		{"daemon down", daemonDown, "caboose: cannot inspect image 'caboose:default': is the docker engine running? " +
+			"(docker image inspect caboose:default: Cannot connect to the Docker daemon"},
+		{"invalid name", invalidRef, "caboose: cannot inspect image 'caboose:default': docker image inspect caboose:default: invalid reference format"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := scriptedDocker(t, tc.docker)
-			home := sandboxEnv(t, "CABOOSE_IMAGE", "img")
+			home := sandboxEnv(t)
 			inProject(t, home)
 			code, _, errs := runIt("claude", "-p", "hi")
 			if code != 1 || !strings.Contains(errs, tc.want) {
@@ -606,13 +596,13 @@ func TestLaunchWithDockerUnreachable(t *testing.T) {
 	}
 }
 
-const staleWarning = "caboose: image 'img' is out of date: built by "
+const staleWarning = "caboose: image 'caboose:default' is out of date: built by "
 
 // A launch warns about a stale image, whether it creates the container or
 // finds one, and stays quiet for a current one, an unlabelled one, or when
 // docker does not answer. The running case gets no further than readiness
-// (CABOOSE_READY_TIMEOUT=0, and every exec fails), which is after the check.
-// It costs one image inspect, plus, on CABOOSE_BASE_IMAGE, one of the base's
+// (ready_timeout = 1, and every exec fails), which is after the check.
+// It costs one image inspect, plus, on base in [image], one of the base's
 // ID -- and that only when nothing else already says stale.
 func TestLaunchWarnsAboutStaleImage(t *testing.T) {
 	current := imageLabels(defaultLabels("v9"))
@@ -643,9 +633,9 @@ func TestLaunchWarnsAboutStaleImage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			log := scriptedDocker(t, strings.Join(tc.docker, "\n"))
-			// CABOOSE_NO_AUTO_BUILD: the warning, not the rebuild a
+			// auto_build = false: the warning, not the rebuild a
 			// creation makes otherwise (TestLaunchRebuildsForDrift).
-			env := []string{"CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box", "CABOOSE_READY_TIMEOUT", "0",
+			env := []string{"CABOOSE_READY_TIMEOUT", "1",
 				"CABOOSE_NO_AUTO_BUILD", "1"}
 			if tc.byo {
 				env = append(env, "CABOOSE_BASE_IMAGE", "node:22")
@@ -690,7 +680,7 @@ func or(v, def string) string {
 }
 
 // A launch that creates the container on an image built on another base
-// than the configured one rebuilds it: CABOOSE_BASE_IMAGE set, changed or
+// than the configured one rebuilds it: base in [image] set, changed or
 // unset since is a change the user made, not drift. The same build as a
 // first launch's, with a note naming both bases, then the container.
 func TestLaunchRebuildsForAnotherBase(t *testing.T) {
@@ -698,21 +688,21 @@ func TestLaunchRebuildsForAnotherBase(t *testing.T) {
 		name, base, labels, why string
 	}{
 		{"back to the default base", "", byoLabels("v9", "node:22"),
-			"image 'img' was built on 'node:22'; CABOOSE_BASE_IMAGE is unset now, which means the embedded Dockerfile's base — rebuilding\n" +
+			"image 'caboose:default' was built on 'node:22'; [image] has no base now, which means the embedded Dockerfile's base — rebuilding\n" +
 				"caboose: building it from the Dockerfile embedded in this launcher; a few minutes"},
 		{"onto a user's base", "node:22", defaultLabels("v9"),
-			"image 'img' was built on the embedded Dockerfile's base; CABOOSE_BASE_IMAGE now names 'node:22' — rebuilding\n" +
-				"caboose: building the caboose layer on 'node:22' (CABOOSE_BASE_IMAGE); a few minutes"},
+			"image 'caboose:default' was built on the embedded Dockerfile's base; base in [image] now names 'node:22' — rebuilding\n" +
+				"caboose: building the caboose layer on 'node:22' (base in [image]); a few minutes"},
 		{"onto another user's base", "node:22", byoLabels("v9", "node:20"),
-			"image 'img' was built on 'node:20'; CABOOSE_BASE_IMAGE now names 'node:22' — rebuilding\n"},
+			"image 'caboose:default' was built on 'node:20'; base in [image] now names 'node:22' — rebuilding\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			build := baseBuilds(t, "img-base")
+			build := baseBuilds(t, "caboose-base:default")
 			if tc.base != "" {
 				build = imageIDOf(tc.base, baseID) + "\n" + probePasses(t, probeComplete)
 			}
 			log := scriptedDocker(t, imageLabels(tc.labels)+"\n"+build)
-			env := []string{"CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box"}
+			var env []string
 			if tc.base != "" {
 				env = append(env, "CABOOSE_BASE_IMAGE", tc.base)
 			}
@@ -722,7 +712,7 @@ func TestLaunchRebuildsForAnotherBase(t *testing.T) {
 			if code != 1 || out != "" {
 				t.Errorf("exit %d, stdout %q", code, out)
 			}
-			if !strings.Contains(errs, "caboose: "+tc.why) || !strings.Contains(errs, "caboose: built image 'img'\n") {
+			if !strings.Contains(errs, "caboose: "+tc.why) || !strings.Contains(errs, "caboose: built image 'caboose:default'\n") {
 				t.Errorf("stderr lacks %q:\n%s", tc.why, errs)
 			}
 			if strings.Contains(errs, staleWarning) {
@@ -731,10 +721,10 @@ func TestLaunchRebuildsForAnotherBase(t *testing.T) {
 			var order []string
 			for _, l := range dockerLog(t, log) {
 				switch {
-				case strings.HasPrefix(l, "build -t img-base "):
+				case strings.HasPrefix(l, "build -t caboose-base:default "):
 					order = append(order, "base")
-				case strings.HasPrefix(l, "build -t img -f "):
-					if want := " --build-arg BASE=" + or(tc.base, "img-base") + " "; !strings.Contains(l, want) {
+				case strings.HasPrefix(l, "build -t caboose:default -f "):
+					if want := " --build-arg BASE=" + or(tc.base, "caboose-base:default") + " "; !strings.Contains(l, want) {
 						t.Errorf("layer build lacks %q: %s", want, l)
 					}
 					order = append(order, "layer")
@@ -755,7 +745,7 @@ func TestLaunchRebuildsForAnotherBase(t *testing.T) {
 
 // Every staleness a rebuild cures is rebuilt for when the container is
 // created -- a launcher that updated itself leaves the image it built
-// before stale -- unless CABOOSE_NO_AUTO_BUILD says a launch builds
+// before stale -- unless auto_build = false says a launch builds
 // nothing, when it stays a warning with the advice to build. With a
 // container to keep, it is a warning either way: the running one is never
 // moved off its image, and the advice is that a caboose restart alone
@@ -779,16 +769,16 @@ func TestLaunchRebuildsForDrift(t *testing.T) {
 		{"running, another layer", "", []string{containerRunning, imageLabels(defaultLabels("v8", assets.LabelLayerHash+"="+otherHash))},
 			"with a different layer"},
 		{"running, another base", "node:22", []string{containerRunning, imageLabels(byoLabels("v9", "node:20"))},
-			"on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22'"},
+			"on 'node:20', not on the [image] base 'node:22'"},
 	} {
 		for _, noBuild := range []bool{false, true} {
 			name := tc.name
 			if noBuild {
-				name += ", CABOOSE_NO_AUTO_BUILD"
+				name += ", auto_build false"
 			}
 			t.Run(name, func(t *testing.T) {
 				log := scriptedDocker(t, strings.Join(tc.docker, "\n"))
-				env := []string{"CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box", "CABOOSE_READY_TIMEOUT", "0"}
+				env := []string{"CABOOSE_READY_TIMEOUT", "1"}
 				if tc.base != "" {
 					env = append(env, "CABOOSE_BASE_IMAGE", tc.base)
 				}
@@ -838,28 +828,27 @@ func TestLaunchRebuildsForDrift(t *testing.T) {
 	}
 }
 
-// With CABOOSE_NO_AUTO_BUILD, or for a command that does not build, a
+// With auto_build = false, or for a command that does not build, a
 // changed base refuses to create the container instead, naming both bases:
 // creating it on the old one is the mistake the rebuild is for.
 func TestChangedBaseWithoutBuilding(t *testing.T) {
-	why := "caboose: image 'img' was built on 'node:20'; CABOOSE_BASE_IMAGE now names 'node:22'"
+	why := "caboose: image 'caboose:default' was built on 'node:20'; base in [image] now names 'node:22'"
 	for _, tc := range []struct {
 		name  string
 		env   []string
 		argv  []string
 		wants string
 	}{
-		{"CABOOSE_NO_AUTO_BUILD", []string{"CABOOSE_NO_AUTO_BUILD", "1"}, []string{"claude", "-p", "hi"},
+		{"auto_build false", []string{"CABOOSE_NO_AUTO_BUILD", "1"}, []string{"claude", "-p", "hi"},
 			why + " —\n       run 'caboose build' to rebuild it on that base first\n" +
-				"       (CABOOSE_NO_AUTO_BUILD is set, so a launch does not rebuild it)\n"},
+				"       (auto_build in [image] is false, so a launch does not rebuild it)\n"},
 		{"logs", nil, []string{"logs"},
 			why + ",\n       and there is no container yet — run caboose in a project (it rebuilds the image first)\n" +
 				"       or 'caboose build'\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := scriptedDocker(t, imageLabels(byoLabels("v9", "node:20")))
-			home := sandboxEnv(t, append([]string{"CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box",
-				"CABOOSE_BASE_IMAGE", "node:22"}, tc.env...)...)
+			home := sandboxEnv(t, append([]string{"CABOOSE_BASE_IMAGE", "node:22"}, tc.env...)...)
 			inProject(t, home)
 			code, _, errs := runIt(tc.argv...)
 			if code != 1 || !strings.HasSuffix(errs, tc.wants) {
@@ -875,11 +864,11 @@ func TestChangedBaseWithoutBuilding(t *testing.T) {
 }
 
 // caboose version's advice for an image on another base: a caboose restart
-// rebuilds it, unless CABOOSE_NO_AUTO_BUILD says a launch builds nothing.
+// rebuilds it, unless auto_build = false says a launch builds nothing.
 func TestVersionChangedBaseAdvice(t *testing.T) {
-	header := versionHeader(assets.LayerHash(), "node:22 (CABOOSE_BASE_IMAGE, ba5e00000000)")
+	header := versionHeader(assets.LayerHash(), "node:22 (base in [image], ba5e00000000)")
 	docker := []string{imageLabels(byoLabels("v9", "node:20")), imageIDOf("node:22", baseID)}
-	tail := "local     : out of date (built by v9, on 'node:20', not on CABOOSE_BASE_IMAGE 'node:22')\ncontainer : box (absent)\n"
+	tail := "local     : out of date (built by v9, on 'node:20', not on the [image] base 'node:22')\ncontainer : caboose-default (absent)\n"
 	runVersionCases(t, header, []string{"CABOOSE_BASE_IMAGE", "node:22"}, []versionCase{
 		{"rebuilt by a launch", docker, 0, tail, []string{
 			"caboose: the next launch that creates the container rebuilds it on the configured base, so\n" +
@@ -887,7 +876,7 @@ func TestVersionChangedBaseAdvice(t *testing.T) {
 				"caboose: 'caboose build' rebuilds it now, without touching the container.\n"}, false},
 	})
 	runVersionCases(t, header, []string{"CABOOSE_BASE_IMAGE", "node:22", "CABOOSE_NO_AUTO_BUILD", "1"}, []versionCase{
-		{"CABOOSE_NO_AUTO_BUILD", docker, 0, tail, []string{"caboose: run 'caboose build' to rebuild it from this launcher,\n"}, false},
+		{"auto_build false", docker, 0, tail, []string{"caboose: run 'caboose build' to rebuild it from this launcher,\n"}, false},
 	})
 }
 
@@ -905,11 +894,11 @@ func TestRestartRebuildsBeforeRemoving(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			log := scriptedDocker(t, containerRunning+"\n"+imageLabels(byoLabels("v9", "node:20"))+"\n"+
 				imageIDOf("node:22", baseID)+"\n"+probePasses(t, tc.probe))
-			home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box", "CABOOSE_BASE_IMAGE", "node:22",
-				"CABOOSE_READY_TIMEOUT", "0")
+			home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22",
+				"CABOOSE_READY_TIMEOUT", "1")
 			inProject(t, home)
 			_, _, errs := runIt("restart")
-			if !strings.Contains(errs, "caboose: image 'img' was built on 'node:20'; CABOOSE_BASE_IMAGE now names 'node:22' — rebuilding\n") {
+			if !strings.Contains(errs, "caboose: image 'caboose:default' was built on 'node:20'; base in [image] now names 'node:22' — rebuilding\n") {
 				t.Errorf("stderr:\n%s", errs)
 			}
 			var order []string
@@ -917,7 +906,7 @@ func TestRestartRebuildsBeforeRemoving(t *testing.T) {
 				switch {
 				case strings.HasPrefix(l, "build "):
 					order = append(order, "layer")
-				case l == "rm -f box":
+				case l == "rm -f caboose-default":
 					order = append(order, "rm")
 				}
 			}
@@ -935,7 +924,7 @@ func TestRestartRebuildsBeforeRemoving(t *testing.T) {
 // its hash.
 func TestVersionOnImageDir(t *testing.T) {
 	scriptedDocker(t, imageAbsent)
-	home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_REPO_ROOT", "/does/not/exist")
+	home := sandboxEnv(t)
 	dir := filepath.Join(home, ".caboose", "envs", "default", "image")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -945,20 +934,20 @@ func TestVersionOnImageDir(t *testing.T) {
 	}
 	hash, _ := assets.DirHash(dir)
 	_, out, _ := runIt("version")
-	if !strings.Contains(out, "\nbase      : img-base (built from "+dir+", "+hash[:12]+")\n") ||
+	if !strings.Contains(out, "\nbase      : caboose-base:default (built from "+dir+", "+hash[:12]+")\n") ||
 		!strings.Contains(out, "\ncontext   : "+assets.LayerHash()[:12]+"\n") {
 		t.Errorf("stdout:\n%s", out)
 	}
 }
 
-// containerCompat makes the running box's labels carry compat n ("" for
+// containerCompat makes the running caboose-default's labels carry compat n ("" for
 // none, as on an image caboose build did not make, which is not judged).
 func containerCompat(n string) string {
 	labels := "{}"
 	if n != "" {
 		labels = `{"` + assets.LabelCompat + `":"` + n + `"}`
 	}
-	return `[ "$*" = "inspect --type=container -f {{json .Config.Labels}} box" ] && { echo '` + labels + `'; exit 0; }`
+	return `[ "$*" = "inspect --type=container -f {{json .Config.Labels}} caboose-default" ] && { echo '` + labels + `'; exit 0; }`
 }
 
 // A launcher that updated itself works on with a container an older one
@@ -969,15 +958,15 @@ func TestLaunchChecksCompat(t *testing.T) {
 		compat string
 		refuse string
 	}{
-		{"", ""},
+		{"", "caboose-default was created by an older caboose, which this one cannot work with"}, // no compat label at all
 		{strconv.Itoa(assets.Compat), ""},
-		{strconv.Itoa(assets.Compat + 1), "box was created by a newer caboose, which this one cannot work with"},
-		{"0", "box was created by an older caboose, which this one cannot work with"},
+		{strconv.Itoa(assets.Compat + 1), "caboose-default was created by a newer caboose, which this one cannot work with"},
+		{"0", "caboose-default was created by an older caboose, which this one cannot work with"},
 	} {
 		t.Run("compat "+or(tc.compat, "none"), func(t *testing.T) {
 			log := scriptedDocker(t, strings.Join([]string{`[ "$1" = version ] && exit 0`, containerRunning, containerCompat(tc.compat),
 				imageLabels(defaultLabels("v9"))}, "\n"))
-			home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box", "CABOOSE_READY_TIMEOUT", "0")
+			home := sandboxEnv(t, "CABOOSE_READY_TIMEOUT", "1")
 			inProject(t, home)
 			code, _, errs := runIt("claude", "-p", "hi")
 			refused := strings.Contains(errs, "cannot work with")

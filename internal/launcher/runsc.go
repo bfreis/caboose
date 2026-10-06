@@ -221,7 +221,7 @@ type runscRelease struct {
 }
 
 // readRunscRelease is the record of the release in dir; ok is false when
-// none reads, as for one downloaded before caboose kept a record. dir is
+// none reads. dir is
 // under CABOOSE_HOME, which no container can write.
 func readRunscRelease(dir string) (rec runscRelease, ok bool) {
 	b, err := os.ReadFile(filepath.Join(dir, runscRecord))

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring-your-own-image integration tests: CABOOSE_BASE_IMAGE on a glibc and
+# Bring-your-own-image integration tests: an [image] base on a glibc and
 # a musl base, one after the other against the SAME data dir, and stock
 # images the image check has to refuse.
 #
@@ -8,18 +8,22 @@
 #                         test another launcher build (relative to the repo)
 #   BYO_DEBIAN=debian:13.7-slim BYO_ALPINE=alpine:3.24 tests/byo/run.sh
 #                         other stock tags (the test bases are built on them)
+#   BYO_READY_TIMEOUT=1200 tests/byo/run.sh
+#                         seconds a launch waits for Claude Code's first install
 #
 # Run it through `make test-byo`, which rebuilds ./caboose first. It needs a
 # real docker on the host, so like tests/run.sh it cannot run in the sandbox.
 #
 # Unlike tests/run.sh it never touches the real setup: every launcher call
-# gets a throwaway CABOOSE_DATA_DIR and CABOOSE_REPO_ROOT (one mktemp -d),
-# and its own CABOOSE_IMAGE and CABOOSE_CONTAINER, all named caboose-byo-test*.
-# A trap removes them, the test bases, every layer image it built and any
-# stock image it had to pull. So it is safe beside live sessions: no FORCE.
+# gets a throwaway CABOOSE_HOME, CABOOSE_DATA_DIR and root (one mktemp -d),
+# and runs in an environment of its own, byo-test (and byo-test-refused), so
+# the container and images are caboose-byo-test, caboose:byo-test and so on.
+# Each call writes that environment's config.toml first (cc), which is where
+# the base, the root and the timeout are set. A trap removes them, the test bases, every layer image it built and any
+# stock image it had to pull. So it is safe beside live sessions: no CABOOSE_FORCE.
 #
 # The launcher is driven exactly as a user would, with no tty: `caboose
-# claude --version` in a project under the repo root builds the layer when
+# claude --version` in a project under the root builds the layer when
 # there is none, creates the container, waits for the entrypoint to install
 # Claude Code and passes --version to claude. Everything is read back through
 # status, version, check-image, docker inspect/exec/logs and
@@ -48,12 +52,15 @@ ALPINE="${BYO_ALPINE:-alpine:3.24}"
 # Everything this suite creates is named from here, so a leftover from an
 # aborted run is recognisably ours -- and is removed below, before starting.
 PREFIX=caboose-byo-test
-IMAGE="$PREFIX"                    # CABOOSE_IMAGE: the layer the launcher builds
-CONTAINER="$PREFIX"                # CABOOSE_CONTAINER
+TEST_ENV=byo-test                  # the environment the suite runs in
+REFUSED_ENV=byo-test-refused       # the one a refused build must not create anything for
+IMAGE="caboose:$TEST_ENV"          # the layer the launcher builds
+CONTAINER="caboose-$TEST_ENV"
 DEB_BASE="$PREFIX-debian-base"     # tests/byo/debian.Dockerfile
 ALP_BASE="$PREFIX-alpine-base"     # tests/byo/alpine.Dockerfile
-REFUSED="$PREFIX-refused"          # image and container a refused build must not create
-DIR_BASE="$PREFIX-base"            # the base built from an environment's image/ dir
+REFUSED_IMAGE="caboose:$REFUSED_ENV"
+REFUSED_CONTAINER="caboose-$REFUSED_ENV"
+DIR_BASE="caboose-base:$TEST_ENV"  # the base built from an environment's image/ dir
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -67,8 +74,8 @@ exists() { if [ -e "$1" ]; then echo 0; else echo 1; fi; }
 
 # --- the throwaway setup --------------------------------------------------
 
-# Physical paths (pwd -P): the launcher resolves the repo root with
-# EvalSymlinks before mounting it at /work, and the cwd guard compares
+# Physical paths (pwd -P): the launcher resolves the root with
+# EvalSymlinks before mounting it, and the cwd guard compares
 # physical paths too -- on macOS $TMPDIR is under /var, a symlink
 # to /private/var. The data dir is mounted as given, so it is made physical
 # as well, for the paths status prints to compare equal to it.
@@ -76,21 +83,21 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/caboose-byo.XXXXXX")" || die "mktemp failed"
 WORK="$(cd "$WORK" && pwd -P)"
 DATA="$WORK/data"
 REPO_ROOT="$WORK/root"
-PROJ="$REPO_ROOT/proj"
+PROJ="$REPO_ROOT/proj"     # /work/root/proj in the container
 OUT="$WORK/out"; ERR="$WORK/err"
 mkdir -p "$DATA" "$PROJ"
 
 # Only these settings, and nothing from the caller's own caboose: no
 # CABOOSE_* of theirs, and a CABOOSE_HOME of the suite's own, so no
 # config.toml of theirs is read either.
-unset CABOOSE_DOCKER_SOCK CABOOSE_SESSION CABOOSE_PROJECT CABOOSE_NO_TMUX \
-      CABOOSE_NO_AUTO_BUILD CABOOSE_BASE_IMAGE CABOOSE_ENV FORCE
+for v in $(compgen -e); do
+    case "$v" in CABOOSE_*) unset "$v" ;; esac
+done
 export CABOOSE_HOME="$WORK/caboose-home"
-export CABOOSE_DATA_DIR="$DATA" CABOOSE_REPO_ROOT="$REPO_ROOT" \
-       CABOOSE_IMAGE="$IMAGE" CABOOSE_CONTAINER="$CONTAINER"
+export CABOOSE_DATA_DIR="$DATA" CABOOSE_ENV="$TEST_ENV"
 # The first launch on each platform waits for a ~224MB download; the
-# launcher's default of 600s is tight on a slow line.
-export CABOOSE_READY_TIMEOUT="${CABOOSE_READY_TIMEOUT:-1200}"
+# default of 600s is tight on a slow line.
+READY_TIMEOUT="${BYO_READY_TIMEOUT:-1200}"
 
 # Stock images are removed at the end only if this run pulled them.
 pulled=()
@@ -109,9 +116,9 @@ record_image() {
 
 remove_ours() {
     docker rm -f "$CONTAINER" >/dev/null 2>&1
-    docker rm -f "$REFUSED" >/dev/null 2>&1
+    docker rm -f "$REFUSED_CONTAINER" >/dev/null 2>&1
     docker image rm -f "$IMAGE" >/dev/null 2>&1
-    docker image rm -f "$REFUSED" >/dev/null 2>&1
+    docker image rm -f "$REFUSED_IMAGE" >/dev/null 2>&1
     return 0
 }
 cleanup() {
@@ -143,38 +150,48 @@ docker image rm -f "$DEB_BASE" "$ALP_BASE" "$DIR_BASE" >/dev/null 2>&1
 
 # --- driving the launcher -------------------------------------------------
 
-# cc [VAR=value...] [launcher args...]: run the launcher the way a script
-# would, from a project under the repo root with no tty -- stdin from
+# cc [NAME=value...] [launcher args...]: run the launcher the way a script
+# would, from a project under the root with no tty -- stdin from
 # /dev/null, stdout and stderr to $OUT and $ERR -- and leave its exit status
-# in $rc. The VAR=value words are extra environment for this call only
-# (CABOOSE_BASE_IMAGE, FORCE, ...); launcher args never look like VAR=value,
-# so they cannot be mistaken for one.
+# in $rc. The NAME=value words are for this call only: BYO_BASE is the
+# environment's [image] base (none when absent), BYO_ENV the environment
+# (byo-test), which cc writes a config.toml for first -- the root, the boot
+# timeout and the base -- and CABOOSE_FORCE and the like are variables of the
+# launcher's. Launcher args never look like NAME=value, so they cannot be
+# mistaken for one.
 #
 # With no tty on stdin or stdout, `caboose claude --version` goes through
 # launcher.Attach: enterProjectDir,
-# the repo-root guard, ensureRunning(true) -- which on an absent container
+# the root guard, ensureRunning(true) -- which on an absent container
 # runs createContainer, whose ensureImage builds a missing image -- or
-# rebuilds one built on another base than CABOOSE_BASE_IMAGE names -- with
+# rebuilds one built on another base than [image] base names -- with
 # the same build as build ("TTY or not", its log on stderr), then
 # waitUntilReady, polling `docker exec CONTAINER test -f /tmp/.caboose-ready`
-# for up to CABOOSE_READY_TIMEOUT seconds while the entrypoint installs
+# for up to ready_timeout seconds while the entrypoint installs
 # Claude Code -- and finally, because !tty.IsTerminal(stdin/stdout),
 # syscall.Exec of `docker exec -i ... CONTAINER caboose-entrypoint --version`,
 # which execs ~/.local/bin/claude --version. Its exit status is claude's.
 rc=0
 cc() {
-    local envs=()
+    local envs=() base="" benv="$TEST_ENV"
     while [ $# -gt 0 ]; do
         case "$1" in
+            BYO_BASE=*) base="${1#*=}"; shift ;;
+            BYO_ENV=*) benv="${1#*=}"; shift ;;
             [A-Z]*=*) envs+=("$1"); shift ;;
             *) break ;;
         esac
     done
-    (cd "$PROJ" && env ${envs[@]+"${envs[@]}"} "$CC" "$@") </dev/null >"$OUT" 2>"$ERR"
+    mkdir -p "$CABOOSE_HOME/envs/$benv"
+    {
+        printf 'format = 1\n\n[roots]\nroot = "%s"\n\n[session]\nready_timeout = %s\n' "$REPO_ROOT" "$READY_TIMEOUT"
+        [ -z "$base" ] || printf '\n[image]\nbase = "%s"\n' "$base"
+    } > "$CABOOSE_HOME/envs/$benv/config.toml"
+    (cd "$PROJ" && env CABOOSE_ENV="$benv" ${envs[@]+"${envs[@]}"} "$CC" "$@") </dev/null >"$OUT" 2>"$ERR"
     rc=$?
 }
-DEB="CABOOSE_BASE_IMAGE=$DEB_BASE"
-ALP="CABOOSE_BASE_IMAGE=$ALP_BASE"
+DEB="BYO_BASE=$DEB_BASE"
+ALP="BYO_BASE=$ALP_BASE"
 
 # check_rc <description> <expected>: check $rc, and on a mismatch show the
 # end of the launcher's stderr, which is where a build or boot says why.
@@ -340,10 +357,10 @@ cc "$DEB" claude --version
 check_rc 'a no-tty launch builds, starts and reaches claude' 0
 check 'claude --version answers through the pass-through' 1 "$(has "$OUT" '(Claude Code)')"
 DEB_VERSION="$(tr -d '\r' <"$OUT")"
-# ensureImage: "no image '%s' yet — %s", buildNote naming CABOOSE_BASE_IMAGE;
+# ensureImage: "no image '%s' yet — %s", buildNote naming base in [image];
 # build: "checking base image '%s' (%s) ..." before buildLayer.
 check 'the launch built the missing image itself' 1 "$(has "$ERR" "no image '$IMAGE' yet")"
-check 'on CABOOSE_BASE_IMAGE' 1 "$(has "$ERR" "building the caboose layer on '$DEB_BASE'")"
+check 'on the [image] base' 1 "$(has "$ERR" "building the caboose layer on '$DEB_BASE'")"
 check 'after checking that base' 1 "$(has "$ERR" "checking base image '$DEB_BASE'")"
 # noteInstall found no bin/claude in the platform dir before the container
 # started, so waitUntilReady says, on its first poll, that it installs.
@@ -352,12 +369,12 @@ check "it said it installs into local/$GLIBC" 1 \
 record_image "$IMAGE"
 check 'the container is running' running \
     "$(docker inspect --type=container -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
-check "the image's platform label is $GLIBC" "$GLIBC" "$(label "$IMAGE" io.github.bfreis.caboose.platform)"
-check "its base-name label is the Debian base" "$DEB_BASE" "$(label "$IMAGE" io.github.bfreis.caboose.base-name)"
+check "the image's platform label is $GLIBC" "$GLIBC" "$(label "$IMAGE" dev.bfreis.caboose.platform)"
+check "its base-name label is the Debian base" "$DEB_BASE" "$(label "$IMAGE" dev.bfreis.caboose.base-name)"
 check "its base-id label is that base's ID" \
-    "$(docker image inspect -f '{{.Id}}' "$DEB_BASE" 2>/dev/null)" "$(label "$IMAGE" io.github.bfreis.caboose.base-id)"
+    "$(docker image inspect -f '{{.Id}}' "$DEB_BASE" 2>/dev/null)" "$(label "$IMAGE" dev.bfreis.caboose.base-id)"
 check 'no base-hash label: the embedded Dockerfile played no part' '' \
-    "$(label "$IMAGE" io.github.bfreis.caboose.base-hash)"
+    "$(label "$IMAGE" dev.bfreis.caboose.base-hash)"
 check 'claude --version works by docker exec too' "$DEB_VERSION" "$(cexec claude --version)"
 check "local/$GLIBC/bin/claude is the installer's symlink" 0 \
     "$(if [ -L "$DATA/local/$GLIBC/bin/claude" ]; then echo 0; else echo 1; fi)"
@@ -372,7 +389,7 @@ check "status: local dir is local/$GLIBC" "$DATA/local/$GLIBC" "$(field 'local d
 cc "$DEB" version
 check 'version: the image matches' matches "$(field local | first)"
 check 'version: the container is on it' "$CONTAINER (running, on the local image)" "$(field container)"
-check 'version: the base is CABOOSE_BASE_IMAGE' "$DEB_BASE (CABOOSE_BASE_IMAGE," "$(field base | cut -d' ' -f1-2)"
+check 'version: the base is the [image] base' "$DEB_BASE (base in [image]," "$(field base | cut -d' ' -f1-4)"
 check 'the container runs as the host UID' "$(id -u)" "$(cexec id -u)"
 check 'with the host GID' "$(id -g)" "$(cexec id -g)"
 check 'as agent' agent "$(cexec id -un)"
@@ -384,19 +401,19 @@ glibc_before="$(snapshot "$GLIBC")"
 group "the same data dir on the Alpine base"
 # The explicit way to switch: build first, while the container runs on,
 # then restart, which finds the image current and builds nothing. (Step
-# 5 switches back with restart alone.) restart needs FORCE=1 only
+# 5 switches back with restart alone.) restart needs CABOOSE_FORCE=1 only
 # when tmux sessions are live (confirmSessionLoss), and there are none; it
 # is passed anyway, as the suite must never stop at a prompt.
 cc "$ALP" build
 check_rc 'build builds the layer on the Alpine base' 0
 record_image "$IMAGE"
-check "the image's platform label is $MUSL" "$MUSL" "$(label "$IMAGE" io.github.bfreis.caboose.platform)"
+check "the image's platform label is $MUSL" "$MUSL" "$(label "$IMAGE" dev.bfreis.caboose.platform)"
 cc "$ALP" version
 check 'version: the image matches the new base' matches "$(field local | first)"
 check 'version: the container is still on the old image' \
     "$CONTAINER (running, on an older image than the local one)" "$(field container)"
 note "restart: recreates the container, installs Claude Code ($MUSL)"
-cc "$ALP" FORCE=1 restart
+cc "$ALP" CABOOSE_FORCE=1 restart
 check_rc 'restart moves the container onto it' 0
 check 'without building again' 0 "$(has "$ERR" "building the caboose layer")"
 check "saying it installs into local/$MUSL" 1 \
@@ -430,25 +447,25 @@ group "back on the Debian base, the glibc install is reused"
 cc "$DEB" version
 # classifyImage: a BYO image built on another base name is stale, for a
 # changed base (builtOn), which the next container creation rebuilds.
-check 'version: the image differs (built on Alpine)' differs "$(field local | first)"
-check 'and says which base it was built on' 1 "$(has "$OUT" "on '$ALP_BASE', not on CABOOSE_BASE_IMAGE '$DEB_BASE'")"
+check 'version: the image is out of date (built on Alpine)' 'out of date' "$(field local | cut -c1-11)"
+check 'and says which base it was built on' 1 "$(has "$OUT" "on '$ALP_BASE', not on the [image] base '$DEB_BASE'")"
 check 'and that a restart rebuilds it' 1 \
     "$(has "$ERR" "the next launch that creates the container rebuilds it on the configured base")"
 # No build this time: Restart's ensureImage sees an image built on
-# another base than CABOOSE_BASE_IMAGE names, says so, and runs the build
+# another base than [image] base names, says so, and runs the build
 # (check, then buildLayer, log on stderr) before it removes the container.
 note "restart alone: rebuilds the layer on Debian, then recreates the container"
-cc "$DEB" FORCE=1 restart
+cc "$DEB" CABOOSE_FORCE=1 restart
 check_rc 'restart rebuilds and moves the container back' 0
 record_image "$IMAGE"
 check 'saying why it rebuilds' 1 \
-    "$(has "$ERR" "image '$IMAGE' was built on '$ALP_BASE'; CABOOSE_BASE_IMAGE now names '$DEB_BASE' — rebuilding")"
+    "$(has "$ERR" "image '$IMAGE' was built on '$ALP_BASE'; base in [image] now names '$DEB_BASE' — rebuilding")"
 check 'on the Debian base' 1 "$(has "$ERR" "building the caboose layer on '$DEB_BASE' as '$IMAGE'")"
 check 'and that it built it' 1 "$(has "$ERR" "built image '$IMAGE'")"
 check 'with no stale-image warning' 0 "$(has "$ERR" "is out of date")"
 check "the image's base-name label is the Debian base again" "$DEB_BASE" \
-    "$(label "$IMAGE" io.github.bfreis.caboose.base-name)"
-check "and its platform label $GLIBC" "$GLIBC" "$(label "$IMAGE" io.github.bfreis.caboose.platform)"
+    "$(label "$IMAGE" dev.bfreis.caboose.base-name)"
+check "and its platform label $GLIBC" "$GLIBC" "$(label "$IMAGE" dev.bfreis.caboose.platform)"
 check 'the new container runs that image' "$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" \
     "$(docker inspect --type=container -f '{{.Image}}' "$CONTAINER" 2>/dev/null)"
 check 'the container really is Debian' 0 \
@@ -471,10 +488,10 @@ check 'USE_BUILTIN_RIPGREP is gone again' '' "$(cexec printenv USE_BUILTIN_RIPGR
 # --- 6. a base that fails the check -----------------------------------------
 
 group "a base that fails the check is refused before the layer"
-# Its own CABOOSE_IMAGE (and, below, CABOOSE_CONTAINER): the one above
-# exists, and a launch on an existing image builds nothing.
+# An environment of its own: the image above exists, and a launch on an
+# existing image builds nothing.
 container_id="$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER" 2>/dev/null)"
-cc CABOOSE_IMAGE="$REFUSED" CABOOSE_BASE_IMAGE="$ALPINE" build
+cc BYO_ENV="$REFUSED_ENV" BYO_BASE="$ALPINE" build
 # build: the check's Problems as notes, then Die (exit 1) before buildLayer.
 check_rc "build on stock $ALPINE fails" 1
 check 'saying the base does not meet the requirements' 1 \
@@ -484,18 +501,18 @@ check 'listing what is missing' '1 1 1' \
 check 'and that the layer was not built' 1 "$(has "$ERR" "not building the caboose layer on '$ALPINE'")"
 # buildLayer's own note, "building the caboose layer on '%s' as '%s'" (the
 # refusal's "not building the caboose layer on" contains the first half).
-check 'no layer build ran' 0 "$(has "$ERR" "building the caboose layer on '$ALPINE' as '$REFUSED'")"
-check "no image $REFUSED was created" 1 \
-    "$(docker image inspect "$REFUSED" >/dev/null 2>&1; echo $?)"
+check 'no layer build ran' 0 "$(has "$ERR" "building the caboose layer on '$ALPINE' as '$REFUSED_IMAGE'")"
+check "no image $REFUSED_IMAGE was created" 1 \
+    "$(docker image inspect "$REFUSED_IMAGE" >/dev/null 2>&1; echo $?)"
 
 # The first-run path: the same build, from ensureImage, whose error ends the
 # launch before any container exists.
-cc CABOOSE_IMAGE="$REFUSED" CABOOSE_CONTAINER="$REFUSED" CABOOSE_BASE_IMAGE="$ALPINE" claude --version
+cc BYO_ENV="$REFUSED_ENV" BYO_BASE="$ALPINE" claude --version
 check_rc "a launch on stock $ALPINE fails" 1
 check 'with the same refusal' 1 "$(has "$ERR" "not building the caboose layer on '$ALPINE'")"
 check 'and claude never ran' '' "$(cat "$OUT")"
-check "no image $REFUSED" 1 "$(docker image inspect "$REFUSED" >/dev/null 2>&1; echo $?)"
-check "no container $REFUSED" 1 "$(docker inspect --type=container "$REFUSED" >/dev/null 2>&1; echo $?)"
+check "no image $REFUSED_IMAGE" 1 "$(docker image inspect "$REFUSED_IMAGE" >/dev/null 2>&1; echo $?)"
+check "no container $REFUSED_CONTAINER" 1 "$(docker inspect --type=container "$REFUSED_CONTAINER" >/dev/null 2>&1; echo $?)"
 check 'the other container was left alone' "$container_id" \
     "$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER" 2>/dev/null)"
 
@@ -505,7 +522,7 @@ group "an environment's own image dir"
 # opt-in Rust section, commented out in the embedded Dockerfile and
 # uncommented here. The Dockerfile comes from the same code setup uses
 # (tests/byo/preset), since there is no terminal here to answer setup.
-IMG_DIR="$CABOOSE_HOME/envs/default/image"
+IMG_DIR="$CABOOSE_HOME/envs/$TEST_ENV/image"
 mkdir -p "$IMG_DIR"
 if (cd "$ROOT" && go run ./tests/byo/preset rust) > "$IMG_DIR/Dockerfile"; then
     ok 'the preset for core + rust is written'
@@ -514,12 +531,16 @@ else
 fi
 container_id="$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER" 2>/dev/null)"
 record_image "$IMAGE"
+# Both a dir and an [image] base is a guess about what to build on: refused.
+cc "$DEB" build
+check_rc 'an image dir and an [image] base together are refused' 1
+check 'saying to keep one' 1 "$(has "$ERR" 'Keep one')"
 cc build
 check_rc 'build from the image dir' 0
 record_image "$IMAGE"
 check 'the base is built from the dir' 1 "$(has "$ERR" "building the base image '$DIR_BASE' from $IMG_DIR/Dockerfile")"
 check 'the layer says so' 'env' \
-    "$(docker image inspect -f '{{index .Config.Labels "io.github.bfreis.caboose.base-kind"}}' "$IMAGE" 2>/dev/null)"
+    "$(docker image inspect -f '{{index .Config.Labels "dev.bfreis.caboose.base-kind"}}' "$IMAGE" 2>/dev/null)"
 check 'rust runs in it' 1 \
     "$(docker run --rm --entrypoint sh "$IMAGE" -c 'rustc --version' 2>/dev/null | grep -c '^rustc ')"
 check 'and the agent user can write CARGO_HOME' 0 \

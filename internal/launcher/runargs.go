@@ -11,21 +11,22 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 )
 
-// The user's own `docker run` arguments (config.DockerRunArgs) go in after
+// The user's own `docker run` arguments (config.RunArgs) go in after
 // caboose's, where most of docker's single-value flags take the last one
 // given -- so one of them could quietly undo what the launcher counts on:
 // the container's name, its user, its entrypoint, its labels, a mount of
-// its own. They are the host's to set (config.toml and a variable, never
-// the sandbox config, which a session writes), and loosening the sandbox
-// is theirs to choose; what is checked here is only that they leave
+// its own. They are the host's to set (a container or gvisor profile's
+// run_args in config.toml, never the sandbox config, which a session
+// writes), and loosening the sandbox is theirs to choose; what is checked
+// here is only that they leave
 // caboose's own flags alone. Each is written --flag or --flag=value:
 // docker's parser takes a flag's value from the next argument too, and
 // checking that would mean knowing which of its flags take one.
 
 // ownedFlags are the docker run flags caboose sets or depends on, and why.
 var ownedFlags = map[string]string{
-	"name":        "caboose names the container (CABOOSE_CONTAINER)",
-	"hostname":    "caboose sets the hostname (hostname in config.toml)",
+	"name":        "caboose names the container after the environment",
+	"hostname":    "caboose sets the hostname (hostname in [session])",
 	"restart":     "caboose sets the restart policy",
 	"init":        "caboose runs the container under tini",
 	"detach":      "caboose runs the container detached",
@@ -64,7 +65,7 @@ var (
 )
 
 // labelPrefix is the prefix of every label caboose sets (assets.Label*).
-const labelPrefix = "io.github.bfreis.caboose."
+const labelPrefix = "dev.bfreis.caboose."
 
 // checkRunArgs refuses the first of args, the user's docker run arguments,
 // that is not written --flag[=value] or would override what caboose sets.
@@ -204,14 +205,18 @@ func runArgsLabel(args []string) string {
 }
 
 // createdRunArgs are the user's docker run arguments the container was
-// created with; ok is false when that cannot be told. A container from
-// before there were any has no label, which is none.
+// created with; ok is false when that cannot be told, or the container
+// records none (an empty label is none).
 func (a *App) createdRunArgs() (args []string, ok bool) {
 	labels, err := a.box().Labels()
 	if err != nil {
 		return nil, false
 	}
-	if v := labels[assets.LabelRunArgs]; v != "" {
+	v, has := labels[assets.LabelRunArgs]
+	if !has {
+		return nil, false
+	}
+	if v != "" {
 		if json.Unmarshal([]byte(v), &args) != nil {
 			return nil, false
 		}
@@ -222,12 +227,15 @@ func (a *App) createdRunArgs() (args []string, ok bool) {
 // runArgsDrift says how the container's docker run arguments differ from
 // the configuration's, or "" when they do not, or it cannot be told.
 func (a *App) runArgsDrift() string {
+	if d := a.missingLabel(assets.LabelRunArgs, "docker run arguments"); d != "" {
+		return d
+	}
 	created, ok := a.createdRunArgs()
-	if !ok || slices.Equal(created, a.Cfg.DockerRunArgs) {
+	if !ok || slices.Equal(created, a.Cfg.RunArgs) {
 		return ""
 	}
 	return fmt.Sprintf("the container was created with docker run arguments %s; the configuration says %s",
-		describeRunArgs(created), describeRunArgs(a.Cfg.DockerRunArgs))
+		describeRunArgs(created), describeRunArgs(a.Cfg.RunArgs))
 }
 
 func describeRunArgs(args []string) string {
@@ -250,9 +258,4 @@ func (a *App) runArgsError(err error) error {
 	return Die("docker run argument %v (%s)", err, runArgsOrigin(a.Cfg))
 }
 
-func runArgsOrigin(c *config.Config) string {
-	if c.File != nil && c.DockerRunArgsFrom == c.File.Path {
-		return "docker_run_args in " + c.File.Path
-	}
-	return c.DockerRunArgsFrom
-}
+func runArgsOrigin(c *config.Config) string { return c.Origin(c.Profile + ".run_args") }

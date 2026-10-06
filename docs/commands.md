@@ -17,7 +17,7 @@
 | `caboose detach` | detach this project's session, leaving it running |
 | `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; every launch starts one in the background, and `--restart` replaces it; see [The host link](host-link.md) |
 | `caboose prune` | delete old Claude Code versions now |
-| `caboose prune --docker` | under `vm`, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
+| `caboose prune --docker` | under a `vm` profile, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `CABOOSE_FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |
 | `caboose sync add PATH`, `caboose sync rm PATH` | make a path of the sandbox's home sync, or stop it, in the sandbox config |
@@ -44,15 +44,15 @@ or `caboose COMMAND --help`, says what one command does and takes; for
 
 `caboose build` passes extra args (`--no-cache`, `--progress=plain`, `-q`) to
 both `docker build`s, the base's and the layer's, with one exception:
-`--pull` goes to the default base's build only, and on `CABOOSE_BASE_IMAGE`
+`--pull` goes to the default base's build only, and on a `base` in `[image]`
 means `docker pull` it first. `--platform` also goes to that pull and to the
 image check, so the variant checked is the one built on. `-t`/`--tag` is
-refused: the images' names come from `CABOOSE_IMAGE`. Only the layer's
+refused: the images' names (`caboose:<env>`, `caboose-base:<env>`) come from the environment. Only the layer's
 build writes to stdout, so `caboose build -q` prints just the final
 image's ID.
 
 `caboose restart` and `caboose stop` destroy every running session, so they list
-the sessions they are about to kill and ask first. `FORCE=1` skips the
+the sessions they are about to kill and ask first. `CABOOSE_FORCE=1` (or `true`) skips the
 prompt; without a tty they refuse rather than assume. `caboose prune
 --docker` asks the same way, with or without sessions, since what it
 deletes cannot come back, and lists those stopping a running VM ends.

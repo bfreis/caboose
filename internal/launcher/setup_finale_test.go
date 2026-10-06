@@ -23,7 +23,7 @@ func TestSetupStart(t *testing.T) {
 		if err := e.finale(e.a.setupStart, ""); err != nil {
 			t.Fatal(err)
 		}
-		e.wantOut("Container", "Where sessions run: caboose.", "✓ Running")
+		e.wantOut("Container", "Where sessions run: caboose-default.", "✓ Running")
 		if strings.Contains(e.errb.String(), "? ") {
 			t.Errorf("asked:\n%s", e.errb)
 		}
@@ -41,7 +41,7 @@ func TestSetupStart(t *testing.T) {
 		if err := e.finale(e.a.setupStart, "\n"); err != nil {
 			t.Fatal(err)
 		}
-		e.wantOut("✗ Not started: cannot inspect image 'caboose'")
+		e.wantOut("✗ Not started: cannot inspect image 'caboose:default'")
 	})
 	t.Run("roots that do not exist: not started", func(t *testing.T) {
 		e := newSetupEnv(t, "default", "", false)
@@ -51,14 +51,14 @@ func TestSetupStart(t *testing.T) {
 		if err := e.finale(e.a.setupStart, ""); err != nil {
 			t.Fatal(err)
 		}
-		e.wantOut("✗ Not started: repo root " + filepath.Join(e.a.Cfg.Home, "dev") + " does not exist")
+		e.wantOut("✗ Not started: root dev, " + filepath.Join(e.a.Cfg.Home, "dev") + ", does not exist")
 	})
 	// The roots are read back first: the roots section may have changed
 	// them in this very run.
 	t.Run("the roots are read back", func(t *testing.T) {
 		e := newSetupEnv(t, "default", "", true)
 		e.mkdir("src")
-		e.writeConfig("repo_root = \"~/src\"\n")
+		e.writeConfig("[roots]\nsrc = \"~/src\"\n")
 		if err := e.finale(e.a.setupStart, ""); err != nil {
 			t.Fatal(err)
 		}

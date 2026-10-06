@@ -11,32 +11,19 @@ import (
 // rereading the file when it changes.
 
 // hostExecOrigin is what set host_exec, for a message.
-func hostExecOrigin(c *config.Config) string {
-	if c.File != nil && c.HostExecFrom == c.File.Path {
-		return "host_exec in " + c.File.Path
-	}
-	return or(c.HostExecFrom, "CABOOSE_HOST_EXEC")
-}
+func hostExecOrigin(c *config.Config) string { return c.Origin("link.host_exec") }
 
 // doctorHostExec is doctor's row on host exec: a note when it is on,
 // since it opens the wall; nothing when it is off, the default.
 func (a *App) doctorHostExec(c *checkup) {
-	on, err := config.CheckHostExec(a.Cfg.HostExec)
-	switch {
-	case err != nil:
-		c.problem("host exec", "set host_exec = true or false ("+hostExecOrigin(a.Cfg)+")", "%v", err)
-	case on:
+	if a.Cfg.HostExec {
 		c.note("host exec", "on: sessions in this environment can run commands on this machine as you (%s)", hostExecOrigin(a.Cfg))
 	}
 }
 
 // hostExecSummary is status's line on host exec, "" when it is off.
 func (a *App) hostExecSummary() string {
-	on, err := config.CheckHostExec(a.Cfg.HostExec)
-	switch {
-	case err != nil:
-		return err.Error()
-	case on:
+	if a.Cfg.HostExec {
 		return "on: sessions can run commands on this machine as you (" + hostExecOrigin(a.Cfg) + ")"
 	}
 	return ""

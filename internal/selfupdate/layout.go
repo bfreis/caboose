@@ -25,15 +25,17 @@ const VMM = "caboose-vmm"
 // command on PATH, a symlink to the current one. Switching versions is
 // replacing Link, one rename; the one before stays, for going back.
 type Layout struct {
-	Link     string // ~/.local/bin/caboose
-	Versions string // ~/.local/share/caboose/versions
+	Link     string // ~/.local/bin/caboose, the one thing outside CABOOSE_HOME
+	Versions string // CABOOSE_HOME/versions
 }
 
-// DefaultLayout is the layout under home. install.sh must agree with it.
-func DefaultLayout(home string) Layout {
+// DefaultLayout is the layout of an install under cabooseHome (CABOOSE_HOME,
+// ~/.caboose by default), its command linked from home's ~/.local/bin.
+// install.sh must agree with it.
+func DefaultLayout(home, cabooseHome string) Layout {
 	return Layout{
 		Link:     filepath.Join(home, ".local", "bin", Binary),
-		Versions: filepath.Join(home, ".local", "share", "caboose", "versions"),
+		Versions: filepath.Join(cabooseHome, "versions"),
 	}
 }
 

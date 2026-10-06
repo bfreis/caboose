@@ -1,8 +1,8 @@
 # Isolated Claude Code sandbox: the default base image.
 #
 # This is only the base: OS packages and toolchains. The launcher builds it,
-# tags it <CABOOSE_IMAGE>-base, runs the image check against it like any
-# CABOOSE_BASE_IMAGE, and then builds layer.Dockerfile FROM it -- the agent
+# tags it caboose-base:<env>, runs the image check against it like any
+# configured base, and then builds layer.Dockerfile FROM it -- the agent
 # user, its home, the entrypoint and tmux.conf all live there, so that a
 # user's own image goes through exactly the same path. Nothing in here may
 # assume the agent user exists, and nothing here takes the host's UID/GID.
@@ -59,7 +59,7 @@ RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https
 
 # caboose:section node Node.js, npm and corepack (for npx-launched MCP servers)
 # Node. Not for Claude Code — that is a self-contained native binary — but for
-# npx-launched MCP servers and for JS checkouts under the repo root, some of
+# npx-launched MCP servers and for JS checkouts under a root, some of
 # which build node-pty, hence build-essential and python3 above staying put.
 # Bumping to the Node 24 line is a one-word ARG change; 22 is what the
 # node:22-bookworm base provided, so this keeps JS behaviour identical.
@@ -87,7 +87,7 @@ RUN set -eux; \
 
 # caboose:section bun Bun
 # Bun, alongside Node rather than instead of it. It is not a drop-in: JS
-# checkouts under the repo root pin pnpm via corepack, call node/tsx/vitest
+# checkouts under a root pin pnpm via corepack, call node/tsx/vitest
 # directly, and build native N-API addons, which is where bun compatibility is
 # thinnest. It is here because some of them pin bun as their packageManager.
 ARG BUN_VERSION=latest
@@ -202,7 +202,7 @@ RUN set -eux; \
 
 # caboose:section docker the Docker CLI (inert unless the host's socket is mounted)
 # Docker CLI only -- no daemon, no containerd, just the client. It is inert
-# unless CABOOSE_DOCKER_SOCK mounts a socket for it to talk to, which is off
+# unless `engine_socket` mounts a socket for it to talk to, which is off
 # by default and deliberately so (see the launcher). Shipping the client
 # regardless means turning the socket on later needs no image rebuild.
 ARG DOCKER_CLI_VERSION=latest

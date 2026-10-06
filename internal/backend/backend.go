@@ -75,7 +75,7 @@ type Spec struct {
 	Groups []string
 	// Labels are KEY=VALUE, recorded with the sandbox for Labels.
 	Labels []string
-	// RunArgs are the user's own docker run arguments (docker_run_args),
+	// RunArgs are the user's own docker run arguments (a profile's run_args),
 	// after all of caboose's.
 	RunArgs []string
 	// Egress is where a VM's agent is to serve the outbound proxy

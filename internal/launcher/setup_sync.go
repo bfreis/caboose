@@ -7,7 +7,7 @@ import (
 )
 
 // setupSync asks for the sync remote and whether a launch syncs by itself
-// (auto_sync). auto_sync is config.toml's; the remote lives in the sync
+// (auto_sync in [session]). auto_sync is config.toml's; the remote lives in the sync
 // repo, whose git runs in the container, so a new one is set by running
 // what `caboose sync --remote URL` runs: the container brought up (never
 // built), no session running, a first sync. That failing is said, with
@@ -27,7 +27,7 @@ func (a *App) setupSync(p *prompter) error {
 	if err != nil {
 		return err
 	}
-	curAuto := c.File != nil && c.File.Vals["AUTO_SYNC"] != ""
+	curAuto := c.AutoSync
 	auto := curAuto
 	if url != "" || curAuto {
 		if auto, err = p.yesNo("Sync by itself, before a launch that finds nothing running? (auto_sync)", curAuto); err != nil {
@@ -35,13 +35,10 @@ func (a *App) setupSync(p *prompter) error {
 		}
 	}
 	if auto != curAuto {
-		if _, err := a.writeConfig(config.Edit{Set: map[string]any{"auto_sync": auto}}); err != nil {
+		if _, err := a.writeConfig(config.Edit{Set: map[string]any{"session.auto_sync": auto}}); err != nil {
 			return err
 		}
-		p.ok("Wrote auto_sync = %v to %s", auto, a.short(filepath.Join(c.EnvDir, config.FileName)))
-	}
-	if v := c.Getenv("CABOOSE_AUTO_SYNC"); v != "" {
-		p.warn("CABOOSE_AUTO_SYNC is set (%s), and wins over auto_sync while it is.", v)
+		p.ok("Wrote auto_sync = %v in [session] to %s", auto, a.short(filepath.Join(c.EnvDir, config.FileName)))
 	}
 	switch {
 	case url == cur:

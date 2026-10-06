@@ -22,25 +22,24 @@ import (
 
 // Under vm the sandbox is created with the outbound proxy in every
 // process's environment, the agent told to point ssh at it, and a label
-// saying so; with egress_proxy off, and under docker and gvisor, with none
+// saying so; with egress off, and under docker and gvisor, with none
 // of it. Under vm the link starts before the wait for the ready file, for
 // the entrypoint's own downloads.
 func TestCreateWithEgress(t *testing.T) {
 	for _, tc := range []struct {
-		name, iso, proxy string
-		on               bool
+		name, iso  string
+		egress, on bool
 	}{
-		{"docker", isolationDocker, "", false},
-		{"gvisor", isolationGVisor, "", false},
-		{"vm", isolationVM, "", true},
-		{"vm, on", isolationVM, "on", true},
-		{"vm, off", isolationVM, "off", false},
-		{"docker, on", isolationDocker, "on", false},
+		{"docker", isolationContainer, true, false},
+		{"gvisor", isolationGVisor, true, false},
+		{"vm", isolationVM, true, true},
+		{"vm, off", isolationVM, false, false},
+		{"docker, off", isolationContainer, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := runningBox(tc.iso)
 			b := newBoxApp(t, tc.iso, box)
-			b.Cfg.EgressProxy = tc.proxy
+			b.Cfg.Egress = tc.egress
 			linkedAt := -1
 			b.App.Spawn = func(exe string, args ...string) error {
 				if slices.Contains(args, "link") && linkedAt < 0 {
@@ -75,38 +74,26 @@ func TestCreateWithEgress(t *testing.T) {
 	}
 }
 
-// A bad egress_proxy is said before anything is created, under vm.
-func TestCreateRefusesBadEgress(t *testing.T) {
-	b := newBoxApp(t, isolationVM, &backendtest.Fake{Status: "absent"})
-	b.Cfg.EgressProxy = "maybe"
-	if err := b.createContainer(false); err == nil || !strings.Contains(err.Error(), "egress_proxy") {
-		t.Errorf("err = %v", err)
-	}
-	if _, ok := b.box.Spec(); ok {
-		t.Error("created")
-	}
-}
-
 func TestEgressDrift(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		labels map[string]string
 		iso    string
-		proxy  string
+		egress bool
 		drift  string
 	}{
-		{"same, on", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: "on"}, "vm", "on", ""},
-		{"same, off", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: ""}, "vm", "off", ""},
-		{"turned off", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: "on"}, "vm", "off",
-			"created with egress_proxy on; the configuration says off"},
-		{"turned on", map[string]string{assets.LabelIsolation: "vm"}, "vm", "", "created with egress_proxy off; the configuration says on"},
-		{"a container", map[string]string{assets.LabelIsolation: "docker"}, "docker", "on", ""},
-		{"was a container", map[string]string{assets.LabelIsolation: "docker"}, "vm", "on", ""},
-		{"bad value", map[string]string{assets.LabelIsolation: "vm"}, "vm", "maybe", ""},
+		{"same, on", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: "on"}, "vm", true, ""},
+		{"same, off", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: ""}, "vm", false, ""},
+		{"turned off", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: "on"}, "vm", false,
+			"created with egress on; the configuration says off"},
+		{"turned on", map[string]string{assets.LabelIsolation: "vm", assets.LabelEgress: ""}, "vm", true, "created with egress off; the configuration says on"},
+		{"no egress label", map[string]string{assets.LabelIsolation: "vm"}, "vm", true, "records no outbound proxy setting"},
+		{"a container", map[string]string{assets.LabelIsolation: "docker"}, "docker", true, ""},
+		{"was a container", map[string]string{assets.LabelIsolation: "docker"}, "vm", true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := &backendtest.Fake{Status: "running", SandboxLabels: tc.labels}
-			a := &App{Cfg: &config.Config{Container: "box", Isolation: tc.iso, EgressProxy: tc.proxy}, Backend: box}
+			a := &App{Cfg: &config.Config{Container: "box", Isolation: tc.iso, Egress: tc.egress}, Backend: box}
 			if got := a.egressDrift(); !strings.Contains(got, tc.drift) || (tc.drift == "") != (got == "") {
 				t.Errorf("drift = %q, want %q", got, tc.drift)
 			}
@@ -151,7 +138,7 @@ func TestBuilderLink(t *testing.T) {
 	}()
 	var stderr bytes.Buffer
 	a := &App{Cfg: &config.Config{}, Stderr: &stderr}
-	lc, err := settingsOf(&config.Config{ForwardPorts: "3000", OpenURLs: "ask"}).check()
+	lc, err := settingsOf(&config.Config{ForwardPorts: "3000", OpenURLs: "ask", Egress: true}).check()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,17 +176,17 @@ func TestBuilderActions(t *testing.T) {
 
 // A launch that runs something in the sandbox waits for the VM's outbound
 // proxy once the sandbox is ready, and before it runs anything there:
-// under vm with egress_proxy on, never otherwise. A proxy still down at
-// the bound is said, with what to do, and the launch goes on; an agent
-// from before wait-proxy answers with its usage, which is no wait and
-// nothing to say. A link that stops for good -- before the wait, or
-// during it -- ends the wait, and the launch says the stop's own words.
+// under vm with egress on, never otherwise. A proxy still down at
+// the bound is said, with what to do, and the launch goes on. A link that
+// stops for good -- before the wait, or during it -- ends the wait, and
+// the launch says the stop's own words.
 func TestLaunchWaitsForTheProxy(t *testing.T) {
 	waitProxy := []string{AgentPath, "wait-proxy", "15"}
 	const stopMsg = "the sandbox's caboose-agent speaks another protocol version: 1, this caboose 2 ('caboose restart' rebuilds the image)"
 	for _, tc := range []struct {
-		name, iso, proxy string
-		reply            func() *exec.Cmd
+		name, iso string
+		egressOff bool
+		reply     func() *exec.Cmd
 		// stop is when the link stops for good: "before" the launch (a
 		// helper that stopped and is not started again), "spawn" (the
 		// helper the launch starts stops at once), "during" the wait.
@@ -211,22 +198,19 @@ func TestLaunchWaitsForTheProxy(t *testing.T) {
 		{name: "vm, proxy down", iso: isolationVM, reply: func() *exec.Cmd {
 			return backendtest.Reply("", "caboose-agent: no outbound proxy (waited 15s)\n", 1)
 		}, waits: true, said: "outbound proxy is not up after 15s"},
-		{name: "vm, older agent", iso: isolationVM, reply: func() *exec.Cmd {
-			return backendtest.Reply("", "usage: caboose-agent COMMAND\n", 2)
-		}, waits: true},
 		// The launch starts a helper, which forgets the last one's stop.
 		{name: "vm, an earlier link stopped", iso: isolationVM, stop: "before", waits: true},
 		{name: "vm, link stopped", iso: isolationVM, stop: "spawn", said: stopMsg},
 		{name: "vm, link stops during the wait", iso: isolationVM, stop: "during", reply: func() *exec.Cmd {
 			return exec.Command("sh", "-c", "exec sleep 20")
 		}, waits: true, said: stopMsg},
-		{name: "vm, proxy off", iso: isolationVM, proxy: "off", stop: "before"},
-		{name: "docker", iso: isolationDocker, stop: "before"},
+		{name: "vm, proxy off", iso: isolationVM, egressOff: true, stop: "before"},
+		{name: "docker", iso: isolationContainer, stop: "before"},
 		{name: "gvisor", iso: isolationGVisor, stop: "before"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := runningBox(tc.iso)
-			if tc.proxy == "off" {
+			if tc.egressOff {
 				box.SandboxLabels[assets.LabelEgress] = ""
 			}
 			b := newBoxApp(t, tc.iso, box)
@@ -247,7 +231,7 @@ func TestLaunchWaitsForTheProxy(t *testing.T) {
 				}
 				return nil
 			}
-			b.Cfg.EgressProxy = tc.proxy
+			b.Cfg.Egress = !tc.egressOff
 			b.mountLocal("local/linux-arm64")
 			if err := os.MkdirAll(b.data, 0o700); err != nil {
 				t.Fatal(err)

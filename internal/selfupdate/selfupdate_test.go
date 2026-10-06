@@ -70,7 +70,7 @@ func TestInstall(t *testing.T) {
 	for _, tag := range []string{"v1.0.0", "v1.1.0", "v1.2.0"} {
 		s.Publish(t, tag, true, plat, "darwin/arm64")
 	}
-	l := selfupdate.DefaultLayout(t.TempDir())
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
 
 	// A fresh install: the version's dir, and the link to it.
 	if err := install(t, l, s, "v1.0.0", "/usr/bin/true"); err != nil {
@@ -109,7 +109,7 @@ func TestInstallKeepsTheRunningOne(t *testing.T) {
 	for _, tag := range []string{"v1.0.0", "v1.1.0", "v1.2.0"} {
 		s.Publish(t, tag, true, plat)
 	}
-	l := selfupdate.DefaultLayout(t.TempDir())
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
 	for _, tag := range []string{"v1.0.0", "v1.1.0"} {
 		if err := install(t, l, s, tag, ""); err != nil {
 			t.Fatal(err)
@@ -128,7 +128,7 @@ func TestInstallChecksumMismatch(t *testing.T) {
 	s := releasetest.New(t)
 	s.Publish(t, "v1.0.0", true, plat)
 	s.Publish(t, "v1.1.0", true, plat)
-	l := selfupdate.DefaultLayout(t.TempDir())
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
 	if err := install(t, l, s, "v1.0.0", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestInstallChecksumMismatch(t *testing.T) {
 func TestInstallNoAssetForThePlatform(t *testing.T) {
 	s := releasetest.New(t)
 	s.Publish(t, "v1.0.0", true, "darwin/amd64")
-	l := selfupdate.DefaultLayout(t.TempDir())
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
 	if err := install(t, l, s, "v1.0.0", ""); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("err = %v", err)
 	}
@@ -158,7 +158,7 @@ func TestInstallNoAssetForThePlatform(t *testing.T) {
 func TestManaged(t *testing.T) {
 	s := releasetest.New(t)
 	s.Publish(t, "v1.0.0", true, plat)
-	l := selfupdate.DefaultLayout(t.TempDir())
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
 	if err := install(t, l, s, "v1.0.0", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestInstallVMM(t *testing.T) {
 		goos, goarch string
 		vmm          bool
 	}{{"darwin", "arm64", true}, {"linux", "arm64", false}} {
-		l := selfupdate.DefaultLayout(t.TempDir())
+		l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
 		if err := l.Install(context.Background(), selfupdate.Source{Base: s.Base}, "v1.0.0", c.goos, c.goarch, "/usr/bin/true"); err != nil {
 			t.Fatal(err)
 		}

@@ -204,7 +204,7 @@ func TestInstructionsLocation(t *testing.T) {
 		t.Errorf("under a named root: %q", got)
 	}
 	if got, want := InstructionsLocation("/h/devx/caboose", one),
-		"NOT MOUNTED — its checkout, /h/devx/caboose, is outside the repo root (/h/dev), "+
+		"NOT MOUNTED — its checkout, /h/devx/caboose, is outside every root (/h/dev at /work), "+
 			"so it is edited from the host, not from in here"; got != want {
 		t.Errorf("outside: %q", got)
 	}

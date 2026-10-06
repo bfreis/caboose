@@ -26,7 +26,7 @@ const (
 // follows "built by VERSION, ", such as "for another host user".
 //
 // builtOn is set when the image is stale because it was built on another
-// kind of base, or another base, than CABOOSE_BASE_IMAGE now asks for: a
+// kind of base, or another base, than [image] base now asks for: a
 // phrase naming the base it was built on ("'node:20'", "the embedded
 // Dockerfile's base"). That is a change to the configuration, which the
 // user made, rather than drift nobody asked for, and a launch that creates
@@ -52,7 +52,7 @@ func (st imageStatus) switched() bool { return st.builtOn != "" }
 //
 // On the default base, the image is current when both the base's hash and
 // the layer's match this launcher's: the base is built from the embedded
-// Dockerfile, so its hash is its identity. On CABOOSE_BASE_IMAGE, the
+// Dockerfile, so its hash is its identity. On an [image] base, the
 // embedded Dockerfile plays no part, and what counts is the layer's hash
 // and the base itself: its name, and its ID now, baseID, against the one
 // the layer was built on -- a pull or rebuild of the base is a new image.
@@ -62,8 +62,8 @@ func (st imageStatus) switched() bool { return st.builtOn != "" }
 // Every label is read as unset when empty: the layer sets them all, to ""
 // where one does not apply, since a base built FROM a caboose image passes
 // its labels on (assets.LayerLabels). An image without the layer's hash or
-// its kind of base was not built by caboose build -- CABOOSE_IMAGE naming
-// an image of the user's, say -- and is not judged at all, let alone
+// its kind of base was not built by caboose build -- one of the user's
+// tagged with the environment's name, say -- and is not judged at all, let alone
 // rebuilt over. Base names are compared as docker resolves them
 // (config.SameImage), so alpine and docker.io/library/alpine:latest are one
 // base.
@@ -111,10 +111,10 @@ func (a *App) classifyImage(labels map[string]string, exists bool, baseID string
 		if kind == assets.BaseKindBYO {
 			was = "'" + builtOn + "'"
 		}
-		return switched(was, "on %s, not on CABOOSE_BASE_IMAGE '%s'", was, base)
+		return switched(was, "on %s, not on the [image] base '%s'", was, base)
 	case want == assets.BaseKindDefault && kind != assets.BaseKindDefault:
 		if kind == assets.BaseKindBYO {
-			return switched(was, "on CABOOSE_BASE_IMAGE %s, not on the embedded Dockerfile's base", was)
+			return switched(was, "on the [image] base %s, not on the embedded Dockerfile's base", was)
 		}
 		return switched(was, "on %s, not on the embedded Dockerfile's base", was)
 	case want == assets.BaseKindEnv && kind != assets.BaseKindEnv:
@@ -160,16 +160,16 @@ const (
 // note about an image built on another base: the other half of builtOn.
 func (a *App) baseNow() string {
 	if base, byo := a.Cfg.Base(); byo {
-		return fmt.Sprintf("CABOOSE_BASE_IMAGE now names '%s'", base)
+		return fmt.Sprintf("base in [image] now names '%s'", base)
 	}
 	if a.Cfg.ImageDir != "" {
 		return "it is built from " + filepath.Join(a.Cfg.ImageDir, "Dockerfile") + " as it is now"
 	}
-	return "CABOOSE_BASE_IMAGE is unset now, which means " + defaultBasePhrase
+	return "[image] has no base now, which means " + defaultBasePhrase
 }
 
 // imageStatus classifies the image whose labels a launch has just read. On
-// CABOOSE_BASE_IMAGE, an image that is otherwise current costs one more
+// an [image] base, an image that is otherwise current costs one more
 // inspect, of the base's ID; the default base is identified by its hash
 // alone, which the labels already hold, so it costs nothing.
 func (a *App) imageStatus(labels map[string]string, exists bool) imageStatus {
@@ -198,7 +198,7 @@ func short(hash string) string {
 // kills sessions. Quiet for an image caboose build did not make, which is
 // not known to differ from anything.
 //
-// Unless CABOOSE_NO_AUTO_BUILD is set, the launch that creates the
+// Unless auto_build in [image] is false, the launch that creates the
 // container rebuilds a stale image (ensureImage), so what it advises is a
 // caboose restart alone.
 func (a *App) warnIfImageStale(labels map[string]string, exists bool) {
@@ -225,13 +225,13 @@ func (a *App) warnIfStale(labels map[string]string, st imageStatus) {
 // rebuildsAtCreation reports whether the next launch that creates the
 // container will rebuild the image by itself: any stale image a rebuild
 // cures, since a launcher that updated itself leaves the image it built
-// before stale, unless CABOOSE_NO_AUTO_BUILD says a launch builds nothing.
+// before stale, unless auto_build = false says a launch builds nothing.
 func (a *App) rebuildsAtCreation(st imageStatus) bool {
-	return st.state == imageStale && !st.keep && a.Cfg.NoAutoBuild == ""
+	return st.state == imageStale && !st.keep && a.Cfg.AutoBuild
 }
 
 // Version prints which launcher this is, the base it builds on, and whether
-// the local image was built from it, on that base. It needs neither a repo root nor a container, and creates
+// the local image was built from it, on that base. It needs neither a root nor a container, and creates
 // or starts nothing: it is what to run when something seems out of date,
 // which is exactly when the rest of the setup may not be in order.
 //
@@ -256,9 +256,9 @@ func (a *App) Version() error {
 	baseID := ""
 	if byo {
 		if baseID = a.images().ImageID(base); baseID != "" {
-			fmt.Fprintf(out, "base      : %s (CABOOSE_BASE_IMAGE, %s)\n", base, shortID(baseID))
+			fmt.Fprintf(out, "base      : %s (base in [image], %s)\n", base, shortID(baseID))
 		} else {
-			fmt.Fprintf(out, "base      : %s (CABOOSE_BASE_IMAGE, not in the local store)\n", base)
+			fmt.Fprintf(out, "base      : %s (base in [image], not in the local store)\n", base)
 		}
 	} else if c.ImageDir != "" {
 		h, err := assets.DirHash(c.ImageDir)
@@ -288,7 +288,7 @@ func (a *App) Version() error {
 	switch st.state {
 	case imageMissing:
 		fmt.Fprintf(out, "local     : not built yet\n")
-		a.Note("run 'caboose build' to build it (a first launch does too, unless CABOOSE_NO_AUTO_BUILD is set).")
+		a.Note("run 'caboose build' to build it (a first launch does too, unless auto_build in [image] is false).")
 	case imageCurrent:
 		fmt.Fprintf(out, "local     : matches (built by %s)\n", or(labels[assets.LabelVersion], "unknown"))
 	case imageStale:

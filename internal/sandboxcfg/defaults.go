@@ -30,9 +30,10 @@ const defaultText = `# The sandbox config: what the sandbox keeps across contain
 format = 1      # this file's structure
 defaults = 1    # the caboose defaults it was written from
 
-# The repo roots (the host's [roots]) the projects here expect, by name: a
-# machine without one never reads the synced memory of its projects, and
-# 'caboose doctor' says so.
+# The roots (the host's [roots]) the projects here expect, by their path in
+# the sandbox: Claude Code keys a project's state by its path, so a machine
+# that mounts no root there never reads the synced memory of its projects,
+# and 'caboose doctor' says so.
 roots = []
 
 # Claude Code's state. Only some of it syncs: project memory, settings,

@@ -159,7 +159,7 @@ func TestList(t *testing.T) {
 func TestWriteCurrent(t *testing.T) {
 	data := t.TempDir()
 	df := []byte("FROM x\n")
-	s := State{Source: SourceImageDir, Dockerfile: df, Roots: map[string]string{"dev": "~/dev"}}
+	s := State{Source: SourceImageDir, Dockerfile: df, Roots: map[string]StateRoot{"dev": {Host: "~/dev", Path: "/work/dev"}}}
 	if err := WriteCurrent(data, s); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestWriteCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`dockerfile = "image/Dockerfile"`, `dockerfile_sha256 = "` + Hash(df) + `"`, "[roots]", `dev = "~/dev"`} {
+	for _, want := range []string{`dockerfile = "image/Dockerfile"`, `dockerfile_sha256 = "` + Hash(df) + `"`, "[roots.dev]", `host = "~/dev"`, `path = "/work/dev"`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, b)
 		}

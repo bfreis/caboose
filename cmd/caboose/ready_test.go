@@ -19,9 +19,9 @@ func createdThenRunning(t *testing.T, exited bool, bin string) string {
 		before = "echo exited; exit 0"
 	}
 	return `case "$*" in
-  "run -d "*|"start box") touch "` + flag + `"; exit 0 ;;
-  "inspect --type=container -f {{.State.Status}} box") if [ -f "` + flag + `" ]; then echo running; exit 0; fi; ` + before + ` ;;
-  "inspect --type=container box --format "*) printf '/home/agent/.local/bin\t%s\n' "` + bin + `"; exit 0 ;;
+  "run -d "*|"start caboose-default") touch "` + flag + `"; exit 0 ;;
+  "inspect --type=container -f {{.State.Status}} caboose-default") if [ -f "` + flag + `" ]; then echo running; exit 0; fi; ` + before + ` ;;
+  "inspect --type=container caboose-default --format "*) printf '/home/agent/.local/bin\t%s\n' "` + bin + `"; exit 0 ;;
 esac`
 }
 
@@ -43,7 +43,7 @@ func TestReadyWaitSaysWhatItWaitsFor(t *testing.T) {
 		{"started, installed", true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := sandboxEnv(t, "CABOOSE_IMAGE", "img", "CABOOSE_CONTAINER", "box", "CABOOSE_READY_TIMEOUT", "1")
+			home := sandboxEnv(t, "CABOOSE_READY_TIMEOUT", "1")
 			local := filepath.Join(home, ".caboose", "envs", "default", "data", "local", "linux-arm64")
 			// Another platform's dir, from a data dir used with another image.
 			if err := os.MkdirAll(filepath.Join(home, ".caboose", "envs", "default", "data", "local", "linux-arm64-musl", "bin"), 0o755); err != nil {

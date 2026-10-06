@@ -144,6 +144,9 @@ func Run(sess *agentproto.Session, cfg Config) error {
 		hello.SSHAgent = cfg.SSHAgent
 	}
 	hello.HostExec = cfg.HostExec != nil
+	for _, r := range cfg.Relay {
+		hello.Roots = append(hello.Roots, r.Container)
+	}
 	if cfg.Egress != nil {
 		hello.Egress = cfg.Egress.listen()
 		go h.countEgressEvery()

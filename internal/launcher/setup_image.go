@@ -15,8 +15,8 @@ import (
 
 // setupImage asks what the sandbox is built on: the Dockerfile embedded in
 // caboose (which changes with caboose), the environment's own
-// image/Dockerfile (written from a preset, then the user's), or
-// CABOOSE_BASE_IMAGE. The default is always what is there now.
+// image/Dockerfile (written from a preset, then the user's), or an image
+// of the user's own ([image] base). The default is always what is there now.
 //
 // A Dockerfile written here is never rewritten unasked: replacing one
 // shows how it differs from the fresh preset and asks first, and the other
@@ -33,14 +33,8 @@ func (a *App) setupImage(p *prompter) error {
 	var unsetBase bool
 	switch {
 	case c.BaseImage != "":
-		fromFile := c.File != nil && c.File.Vals["BASE_IMAGE"] != ""
-		p.say("Now: your own image, '%s' (CABOOSE_BASE_IMAGE).", c.BaseImage)
+		p.say("Now: your own image, '%s' (base in [image]).", c.BaseImage)
 		p.blank()
-		if !fromFile || c.Getenv("CABOOSE_BASE_IMAGE") != "" {
-			p.warn("CABOOSE_BASE_IMAGE is set in this shell; unset it to build on anything else.")
-			p.same("Nothing changed")
-			return nil
-		}
 		keep, err := p.yesNo(fmt.Sprintf("Keep building on '%s'?", c.BaseImage), true)
 		if err != nil {
 			return err
@@ -88,10 +82,10 @@ func (a *App) setupImage(p *prompter) error {
 			return err
 		}
 		if unsetBase {
-			if _, err := a.writeConfig(config.Edit{Unset: []string{"base_image"}}); err != nil {
+			if _, err := a.writeConfig(config.Edit{Unset: []string{"image.base"}}); err != nil {
 				return err
 			}
-			p.ok("Removed base_image from %s", a.short(filepath.Join(c.EnvDir, config.FileName)))
+			p.ok("Removed base from [image] in %s", a.short(filepath.Join(c.EnvDir, config.FileName)))
 			c.BaseImage = ""
 		}
 		if data != nil {

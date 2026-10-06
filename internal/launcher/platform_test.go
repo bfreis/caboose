@@ -255,7 +255,7 @@ func TestStatusNeedsOnlyBash(t *testing.T) {
 					t.Errorf("status lacks %q:\n%s", w, s)
 				}
 			}
-			if !strings.Contains(errs, b.noun()+" was created with CABOOSE_KEEP_VERSIONS=3, shell has 2.") {
+			if !strings.Contains(errs, b.noun()+" was created with keep_versions = 3, config.toml has 2.") {
 				t.Errorf("stderr:\n%s", errs)
 			}
 			for _, e := range box.Execs {

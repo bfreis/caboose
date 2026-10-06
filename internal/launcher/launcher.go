@@ -34,8 +34,7 @@
 //	    (<platform> is the image's Claude Code build: linux-x64, linux-arm64-musl, ...)
 //	$CABOOSE_DATA_DIR/sync            -> ~/.caboose-sync (caboose sync's repo; git runs it in here)
 //	$CABOOSE_DATA_DIR/proposals       -> ~/.caboose-proposals (sessions' proposals for caboose apply)
-//	$CABOOSE_REPO_ROOT                -> /work
-//	    (or, with a [roots] table in config.toml, each root -> /work/<name>)
+//	each root in config.toml's [roots] -> /work/<name>, or its long form's path
 //
 // The caboose checkout is NOT mounted separately. It lives under the repo
 // root like any other checkout, so it is already visible under /work; a
@@ -51,11 +50,11 @@
 //
 // tmux here has no prefix key (it must not intercept keystrokes from the
 // TUI), so detaching is either closing the terminal or caboose detach from
-// another one. CABOOSE_NO_TMUX=1 skips tmux entirely (native rendering, but
+// another one. tmux = false in [session] skips tmux entirely (native rendering, but
 // closing the terminal kills the session instead of detaching).
 //
 // Old versions are also pruned automatically at container start, retaining
-// $CABOOSE_KEEP_VERSIONS (default 2) plus whatever the launcher symlink
+// keep_versions in [session] (default 2) plus whatever the launcher symlink
 // points at. Start-up pruning uses the value baked in when the container was
 // created, so changing it needs a caboose restart to take effect; caboose prune
 // always uses the current value.
@@ -216,6 +215,14 @@ func (a *App) Note(format string, args ...any) {
 
 func (a *App) getenv(k string) string { return a.Cfg.Getenv(k) }
 
+// force reports whether CABOOSE_FORCE skips the questions before ending
+// sessions or deleting, read as config.EnvBool reads it (Load refused any
+// other value).
+func (a *App) force() bool {
+	on, _ := config.EnvBool(a.getenv, "CABOOSE_FORCE")
+	return on
+}
+
 // indent prefixes every line of s, including a final unterminated one, as
 // `sed 's/^/prefix/'` does.
 func indent(s, prefix string) string {
@@ -236,7 +243,7 @@ func indent(s, prefix string) string {
 // Code renders -- and every date a tool inside writes into a file -- is off
 // by the host's UTC offset.
 //
-// CABOOSE_TZ wins, then $TZ. Otherwise read /etc/localtime: a symlink into
+// tz in [session] wins, then $TZ. Otherwise read /etc/localtime: a symlink into
 // the zoneinfo tree on both macOS (/var/db/timezone/zoneinfo/<Zone>) and
 // Linux (/usr/share/zoneinfo/<Zone>, sometimes relative), so everything after
 // the last 'zoneinfo/' is the name. Debian's /etc/timezone covers the distros
@@ -270,8 +277,8 @@ func (a *App) hostTimezone() string {
 	return HostTimezone(a.Cfg.TZ, a.getenv("TZ"), os.Readlink, os.ReadFile)
 }
 
-// DockerSockPath is the host socket CABOOSE_DOCKER_SOCK asks to mount, or ""
-// for none.
+// DockerSockPath is the host socket engine_socket asks to mount, or ""
+// for none: DOCKER_HOST's, when it is a unix:// one, else the default.
 //
 // OFF BY DEFAULT, and the default is the point: /var/run/docker.sock is
 // root-equivalent access to the HOST. Anything that reaches it can run
@@ -285,20 +292,15 @@ func (a *App) hostTimezone() string {
 // restarts the container on its third line, so it would destroy the session
 // running it. What it buys is inspect/logs/exec, not self-testing.
 //
-// CABOOSE_DOCKER_SOCK=1 uses the host's default socket; set it to a path to
-// point at something else -- a proxy exposing only read-only endpoints, say.
 // Baked in at creation, so changing it takes a caboose restart.
-func DockerSockPath(setting, dockerHost string) string {
-	switch setting {
-	case "", "0", "no", "false":
+func DockerSockPath(on bool, dockerHost string) string {
+	if !on {
 		return ""
-	case "1", "yes", "true":
-		if strings.HasPrefix(dockerHost, "unix://") {
-			return strings.TrimPrefix(dockerHost, "unix://")
-		}
-		return "/var/run/docker.sock"
 	}
-	return setting
+	if strings.HasPrefix(dockerHost, "unix://") {
+		return strings.TrimPrefix(dockerHost, "unix://")
+	}
+	return "/var/run/docker.sock"
 }
 
 func isSocket(p string) bool {
