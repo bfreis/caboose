@@ -63,6 +63,10 @@ jobs:
   goreleaser:
     needs: vm-assets
     runs-on: ubuntu-latest
+    # The four darwin binaries are notarized in parallel, each waiting up to
+    # macsign.sh's deadline (MACSIGN_NOTARY_TIMEOUT, 7200 s by default) on a
+    # slow Apple notary, plus the build around it.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
         with:

@@ -104,7 +104,9 @@ release runs in:
 With `MACOS_P12_BASE64` set, both binaries are signed with the Developer ID,
 with the hardened runtime and Apple's timestamp (`caboose-vmm` with its
 virtualization entitlement, the launcher with none), and each is notarized
-(zipped and submitted, waiting for Apple's verdict); the other four must
+(zipped and submitted once, then polled for Apple's verdict: a poll that
+fails is retried, and only a verdict or `MACSIGN_NOTARY_TIMEOUT` seconds,
+7200 by default, ends it, naming the submission to look up later); the other four must
 then be set too, and a signature or notarization that fails fails the
 release, never falling back. A bare binary cannot be stapled: Gatekeeper
 fetches the ticket online. Without it (a fork, or a repository not yet set
