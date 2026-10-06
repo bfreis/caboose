@@ -137,6 +137,9 @@ func (a *App) Status() error {
 	if a.isVM() {
 		fmt.Fprintf(out, "outbound  : %s\n", a.egressSummary())
 	}
+	if h := a.hostExecSummary(); h != "" {
+		fmt.Fprintf(out, "host exec : %s\n", h)
+	}
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	if state != "running" {
 		fmt.Fprintf(out, "\nnot running — start it by running caboose in a repo.\n")

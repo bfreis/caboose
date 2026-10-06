@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // The exec port runs one command per connection, in a vm guest, where
@@ -14,6 +15,10 @@ import (
 // named StreamTTY with a terminal, else StreamStdout, StreamStderr and,
 // when the request has Stdin, StreamStdin. The agent sends one TypeExit
 // once the command's output is all sent, and the session ends.
+//
+// The same protocol runs the other way for a host exec (OpHostExec): the
+// sandbox's caboose-agent is the client, Exec, and the host serves it, on
+// a stream of the link.
 const (
 	StreamTTY    = "tty"
 	StreamStdin  = "stdin"
@@ -165,4 +170,69 @@ func Exec(conn io.ReadWriteCloser, req ExecRequest, stdio ExecIO) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("agentproto: the command's connection ended with no exit status (%v)", s.Err())
+}
+
+// ExecStreams is how many streams an exec's client opens at most: stdin,
+// stdout and stderr. A server takes no more (Limits.Streams).
+const ExecStreams = 3
+
+// ReadExec reads an exec's hello and request, the server's first step,
+// within timeout.
+func ReadExec(s *Session, timeout time.Duration) (ExecRequest, error) {
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	hello := false
+	for {
+		select {
+		case b, ok := <-s.Control():
+			if !ok {
+				return ExecRequest{}, s.Err()
+			}
+			m, err := Decode(b)
+			if err != nil {
+				return ExecRequest{}, err
+			}
+			switch {
+			case m.Type == TypeHello:
+				if m.Version != Version {
+					return ExecRequest{}, fmt.Errorf("the other side speaks version %d, not %d", m.Version, Version)
+				}
+				hello = true
+			case m.Type == TypeExec && hello && m.Exec != nil && len(m.Exec.Argv) > 0:
+				return *m.Exec, nil
+			default:
+				return ExecRequest{}, fmt.Errorf("unexpected %q before an exec", m.Type)
+			}
+		case <-t.C:
+			return ExecRequest{}, errors.New("no exec request")
+		}
+	}
+}
+
+// AcceptExecStreams takes the streams req has the client open, by name,
+// and ends the session when they have not all come within timeout.
+func AcceptExecStreams(s *Session, req ExecRequest, timeout time.Duration) (map[string]*Stream, error) {
+	want := map[string]bool{StreamStdout: true, StreamStderr: true}
+	if req.Stdin {
+		want[StreamStdin] = true
+	}
+	if req.TTY {
+		want = map[string]bool{StreamTTY: true}
+	}
+	got := map[string]*Stream{}
+	deadline := time.AfterFunc(timeout, func() { s.Close() })
+	defer deadline.Stop()
+	for len(got) < len(want) {
+		st, err := s.Accept()
+		if err != nil {
+			return nil, err
+		}
+		var h StreamHeader
+		if json.Unmarshal(st.Header(), &h) != nil || !want[h.Name] || got[h.Name] != nil {
+			st.Close()
+			return nil, fmt.Errorf("unexpected stream %q", st.Header())
+		}
+		got[h.Name] = st
+	}
+	return got, nil
 }

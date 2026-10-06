@@ -1,10 +1,11 @@
-# The host link: ports, URLs, notifications, file changes, outbound connections
+# The host link: ports, URLs, notifications, file changes, outbound connections, host commands
 
 A server the agent starts in the sandbox is reachable from your browser, at
 the same port on `localhost`; `caboose-agent open URL` in the sandbox opens
 a page in your browser; `caboose-agent notify TEXT` shows a notification;
 and under gVisor, a file you save here is seen by the watchers in the
-sandbox. All of it goes through the host link: `caboose-agent` in the
+sandbox; and, where you turn it on, `caboose-agent host CMD` runs CMD on
+your machine. All of it goes through the host link: `caboose-agent` in the
 container, and `caboose link` on your machine.
 
 ## How it runs
@@ -23,8 +24,8 @@ machine is mounted into it for this: the exec is the whole channel, so it
 works the same on OrbStack, Docker Desktop and Docker on Linux.
 
 It rereads `config.toml` by itself within a couple of seconds of a change:
-new `forward_ports`, `open_urls` or `egress_*` settings reconnect the link with them (forwarded
-connections open at that moment are cut), and an edit it cannot read is
+new `forward_ports`, `open_urls`, `egress_*` or `host_exec` settings reconnect the link with them (forwarded
+connections open at that moment are cut, and host commands running are ended), and an edit it cannot read is
 logged and leaves the running settings in place. A `CABOOSE_` variable it
 was started with still wins over the file. A launch whose settings differ
 from the running helper's, a variable set differently in that shell for
@@ -211,6 +212,44 @@ The environment is fixed when the VM is created: a change to
 and `caboose doctor` say. `egress_ports` and `egress_allow` apply as the
 link rereads them.
 
+## Host commands
+
+Off by default. With `host_exec = true` in `config.toml` (or
+`CABOOSE_HOST_EXEC=1`), a session can run a command on this machine:
+
+```sh
+caboose-agent host make release           # in the host directory of the current one
+caboose-agent host -C /work/site ls       # in another
+caboose-agent host sh -c 'cd .. && ls'    # shell syntax takes a shell
+```
+
+The command runs as you, the user who ran `caboose`, with the environment
+the link has: it was started from your terminal, so `PATH`,
+`SSH_AUTH_SOCK` and the rest are yours. It runs in the host directory of
+the sandbox's current one (or `-C DIR`'s), which must be under a root the
+sandbox mounts: `/work/site` is wherever that root is here. Its stdin,
+stdout and stderr are the sandbox command's, and its exit status is
+`caboose-agent host`'s; 127 is a command not found in your `PATH`, 126 one
+that could not run, or a refusal (said on stderr). There is no shell, so
+no `*`, `|` or `&&` unless you run one, and no terminal: an interactive
+program that needs one does not work. Interrupting `caboose-agent host`, or
+anything that ends it (a tool's timeout), ends the command on this machine
+and whatever it started (its process group, sent `SIGTERM`, then `SIGKILL`
+three seconds later), as does the link's own end. At most 16 run at once.
+Each one is a line in `link.log`: the command, where, its exit status and
+how long it took.
+
+**This is a hole in the wall, on purpose.** With it on, sessions in the
+environment, and whatever steers them -- a web page they read, a repo they
+work on, a dependency's install script -- can run anything on this machine
+as you: read your files, use your SSH agent and your logins, change what
+they like. It is meant for an environment whose point is a separate Claude
+login, tools or network, not containment. `caboose doctor` and `caboose
+status` say when it is on. Sessions read whether it is on in their
+`CLAUDE.md`, which a launch rewrites, so a session started before a change
+still describes it as it was; the link itself follows `config.toml` within
+seconds, as above.
+
 ## What the sandbox can and cannot do with it
 
 Everything the agent sends is treated as untrusted, as everything from the
@@ -233,3 +272,8 @@ sandbox is:
 - an outbound connection reaches only `egress_ports`, and only public
   addresses as your Mac resolves them, unless `egress_allow` says
   otherwise.
+- a host command runs only when `host_exec`, in the host's `config.toml`,
+  says so: the agent asking is not enough. It runs the request's own
+  command line, through no shell, in a directory under a mounted root,
+  with no terminal, as no other user, and with no variables of the
+  sandbox's; and once it runs, it can do anything you can.

@@ -293,6 +293,7 @@ func (a *App) doctorConfig(c *checkup) bool {
 			"CABOOSE_BASE_IMAGE names the same image as CABOOSE_IMAGE ('%s'): the build would build over its own base", cfg.Image)
 	}
 	a.doctorRunArgs(c)
+	a.doctorHostExec(c)
 	if err := checkIsolation(cfg); err != nil {
 		c.problem("isolation", "fix "+isolationOrigin(cfg), "%v", err)
 	}

@@ -52,7 +52,7 @@ func TestInstallInstructionsNeverFollowsLinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			target := plant(t, dir, filepath.Join(dir, ClaudeDir, "CLAUDE.md"))
-			changed, err := InstallInstructions([]byte("instructions\n"), "", roots, dir)
+			changed, err := InstallInstructions([]byte("instructions\n"), "", roots, false, dir)
 			if changed || !errors.Is(err, nofollow.ErrNotPlain) {
 				t.Errorf("InstallInstructions = %v, %v; want ErrNotPlain", changed, err)
 			}

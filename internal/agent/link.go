@@ -2,13 +2,14 @@
 //
 // `caboose-agent link` is run by the host's link helper through `docker exec
 // -i`, and speaks agentproto on its stdin and stdout. While it runs it
-// serves the in-container commands (`caboose-agent open`, `notify`, `ports`)
-// on a Unix socket, reports the ports listening in the container, and
-// connects the streams the host opens to them.
+// serves the in-container commands (`caboose-agent open`, `notify`, `ports`,
+// `host`) on a Unix socket, reports the ports listening in the container,
+// and connects the streams the host opens to them.
 package agent
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,12 @@ type Link struct {
 	sshServing    bool
 	egressServing bool
 	egressPort    int
+
+	// hostExec is whether the host's hello offered OpHostExec, and
+	// helloed is closed once that hello came.
+	hostExec  bool
+	helloed   chan struct{}
+	helloOnce sync.Once
 }
 
 // Config is what a Link needs beyond its stdio.
@@ -80,6 +87,7 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 		changed:  make(chan []string, changedQueue),
 
 		waiting: map[uint64]chan *agentproto.Stream{},
+		helloed: make(chan struct{}),
 	}
 	l.sess.OnRefused(l.refused)
 	defer l.sess.Close()
@@ -146,6 +154,10 @@ func (l *Link) readControl() {
 			if m.Egress != "" {
 				l.serveEgress(m.Egress)
 			}
+			l.mu.Lock()
+			l.hostExec = m.HostExec
+			l.mu.Unlock()
+			l.helloOnce.Do(func() { close(l.helloed) })
 		case agentproto.TypeResponse:
 			l.mu.Lock()
 			ch := l.pending[m.ID]
@@ -210,14 +222,23 @@ func (l *Link) serveClients(ln net.Listener) {
 func (l *Link) serveClient(c net.Conn) {
 	defer c.Close()
 	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	line, err := bufio.NewReader(io.LimitReader(c, agentproto.MaxPayload)).ReadBytes('\n')
+	br := bufio.NewReader(io.LimitReader(c, agentproto.MaxPayload))
+	line, err := br.ReadBytes('\n')
 	if err != nil {
 		return
 	}
 	_ = c.SetReadDeadline(time.Time{})
 	var m agentproto.Message
 	var resp agentproto.Message
-	if err := json.Unmarshal(line, &m); err != nil {
+	err = json.Unmarshal(line, &m)
+	if err == nil && m.Op == agentproto.OpHostExec {
+		// The rest of the connection is the command's: what the reader
+		// took past the line goes first.
+		pre, _ := br.Peek(br.Buffered())
+		l.hostExecClient(c, pre)
+		return
+	}
+	if err != nil {
 		resp = agentproto.Message{Type: agentproto.TypeResponse, Error: "bad request"}
 	} else if m.Op == OpStatus {
 		l.mu.Lock()
@@ -454,3 +475,66 @@ func (l *Link) openStream(m agentproto.Message, wait time.Duration) (*agentproto
 		return fail("the host said yes, but opened no connection")
 	}
 }
+
+// hostExecWait bounds the host's answer to a host exec, and then its
+// stream.
+const hostExecWait = 10 * time.Second
+
+// helloWait is how long a host exec asked before the host's hello waits
+// for it: the socket serves before the hello, which says whether the host
+// offers it.
+const helloWait = 5 * time.Second
+
+// hostExecClient answers a client of `caboose-agent host` with a line, as
+// every request is answered, and then, when the host took it, splices the
+// rest of c to the host's stream, where the client speaks the exec
+// protocol to the host. pre is what was read of c past the request line.
+func (l *Link) hostExecClient(c net.Conn, pre []byte) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return
+	}
+	answer := func(m agentproto.Message) error {
+		m.Type = agentproto.TypeResponse
+		b, _ := json.Marshal(m)
+		_, err := c.Write(append(b, '\n'))
+		return err
+	}
+	select {
+	case <-l.helloed:
+	case <-l.sess.Done():
+	case <-time.After(helloWait):
+	}
+	l.mu.Lock()
+	on := l.hostExec
+	l.mu.Unlock()
+	if !on {
+		_ = answer(agentproto.Message{Error: agentproto.HostExecOff})
+		return
+	}
+	st, r := l.openStream(agentproto.Message{Op: agentproto.OpHostExec}, hostExecWait)
+	if st == nil {
+		_ = answer(agentproto.Message{Error: r.Error})
+		return
+	}
+	if answer(agentproto.Message{OK: true}) != nil {
+		st.Close()
+		return
+	}
+	var conn agentproto.HalfCloser = uc
+	if len(pre) > 0 {
+		conn = &prefixed{c: uc, r: io.MultiReader(bytes.NewReader(pre), uc)}
+	}
+	agentproto.Splice(st, conn)
+}
+
+// prefixed is a connection whose first bytes were already read, into pre.
+type prefixed struct {
+	c *net.UnixConn
+	r io.Reader
+}
+
+func (p *prefixed) Read(b []byte) (int, error)  { return p.r.Read(b) }
+func (p *prefixed) Write(b []byte) (int, error) { return p.c.Write(b) }
+func (p *prefixed) Close() error                { return p.c.Close() }
+func (p *prefixed) CloseWrite() error           { return p.c.CloseWrite() }

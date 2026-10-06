@@ -260,13 +260,16 @@ func (a *App) syncSandboxInstructions() error {
 	// describes what is visible from inside, which a root changed since
 	// creation does not alter.
 	roots := a.visibleRoots()
+	// As the link offers it, which rereads config.toml: a value that does
+	// not parse is off there too, until it is fixed.
+	hostExec, _ := config.CheckHostExec(a.Cfg.HostExec)
 	// The checkout's copy wins so that an edit needs no rebuild -- but the
 	// placeholders are this binary's to fill, and a pull can bring a copy
 	// with one it predates. Installing @@SOMETHING@@ literally would mislead
 	// every session, so this binary's own copy, which it can fill, goes in
 	// instead until the launcher is rebuilt.
 	if a.Checkout != "" {
-		if unknown := datadir.UnknownPlaceholders(datadir.ExpandInstructions(src, a.Checkout, roots)); len(unknown) > 0 {
+		if unknown := datadir.UnknownPlaceholders(datadir.ExpandInstructions(src, a.Checkout, roots, hostExec)); len(unknown) > 0 {
 			if embedded, err := assets.SandboxInstructions(); err == nil {
 				a.Note("%s in the checkout uses placeholders this launcher doesn't know (%s);",
 					assets.SandboxInstructionsPath, strings.Join(unknown, ", "))
@@ -275,7 +278,7 @@ func (a *App) syncSandboxInstructions() error {
 			}
 		}
 	}
-	changed, err := datadir.InstallInstructions(src, a.Checkout, roots, a.Cfg.DataDir)
+	changed, err := datadir.InstallInstructions(src, a.Checkout, roots, hostExec, a.Cfg.DataDir)
 	if errors.Is(err, nofollow.ErrNotPlain) {
 		a.Note("not installing sandbox CLAUDE.md: %v; delete it and relaunch", err)
 		return nil

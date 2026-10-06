@@ -313,6 +313,27 @@ const Placeholder = "@@CABOOSE_DIR@@"
 // installed for everyone, so it cannot name one person's layout.
 const RootsPlaceholder = "@@CABOOSE_ROOTS@@"
 
+// HostExecPlaceholder is what InstallInstructions replaces in
+// sandbox/CLAUDE.md with whether, and how, a session runs commands on the
+// host (HostExecInstructions).
+const HostExecPlaceholder = "@@CABOOSE_HOST_EXEC@@"
+
+// HostExecInstructions is what replaces @@CABOOSE_HOST_EXEC@@: with
+// host_exec on, how to run a command on the host; off, that it is off and
+// whose it is to turn on.
+func HostExecInstructions(on bool) string {
+	if !on {
+		return "Running commands on the host is off in this environment: it is `host_exec` in the host's\n" +
+			"`config.toml`, which is the user's to change."
+	}
+	return "This environment runs commands on the host: `caboose-agent host CMD ARGS` runs CMD there, as\n" +
+		"the user, in the host directory matching the current one, which must be under `/work`\n" +
+		"(`-C DIR` names another). There is no shell (`caboose-agent host sh -c '...'` for shell\n" +
+		"syntax) and no terminal; stdin, stdout, stderr and the exit status come back. So what has to\n" +
+		"run on the host -- its docker, a build only it can do, a look at its files -- can be run from\n" +
+		"here, rather than asking the user to run it."
+}
+
 // UpstreamURL is where the sandbox is edited when no checkout can be found.
 const UpstreamURL = "https://github.com/bfreis/caboose"
 
@@ -432,11 +453,13 @@ func DescribeMounts(roots []config.Root) string {
 	return strings.Join(parts, ", ")
 }
 
-// ExpandInstructions fills in sandbox/CLAUDE.md's placeholders.
-func ExpandInstructions(src []byte, checkout string, roots []config.Root) []byte {
+// ExpandInstructions fills in sandbox/CLAUDE.md's placeholders. hostExec
+// is host_exec, as the launch that installs it reads it.
+func ExpandInstructions(src []byte, checkout string, roots []config.Root, hostExec bool) []byte {
 	return []byte(strings.NewReplacer(
 		Placeholder, InstructionsLocation(checkout, roots),
 		RootsPlaceholder, DescribeMounts(roots),
+		HostExecPlaceholder, HostExecInstructions(hostExec),
 	).Replace(string(src)))
 }
 
@@ -479,7 +502,7 @@ func UnknownPlaceholders(expanded []byte) []string {
 // internal/nofollow: were it a symlink (or a hard link), a plain write would
 // put the instructions over whatever host file it names. Such a file is
 // nofollow.ErrNotPlain, and left alone.
-func InstallInstructions(src []byte, checkout string, roots []config.Root, dataDir string) (bool, error) {
+func InstallInstructions(src []byte, checkout string, roots []config.Root, hostExec bool, dataDir string) (bool, error) {
 	// .claude itself is the container's mount point, in the host's own
 	// data dir: nothing inside can replace it.
 	if err := os.MkdirAll(filepath.Join(dataDir, ClaudeDir), 0o700); err != nil {
@@ -487,7 +510,7 @@ func InstallInstructions(src []byte, checkout string, roots []config.Root, dataD
 	}
 	const dst = ClaudeDir + "/CLAUDE.md"
 	d := nofollow.Dir(dataDir)
-	want := ExpandInstructions(src, checkout, roots)
+	want := ExpandInstructions(src, checkout, roots, hostExec)
 	have, _, err := d.ReadFile(dst)
 	switch {
 	case err == nil && bytes.Equal(have, want):

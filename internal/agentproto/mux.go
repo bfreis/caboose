@@ -92,6 +92,8 @@ type Session struct {
 	// hello announces. sawHello is the readLoop's alone.
 	recvWindow int
 	sawHello   bool
+	// maxStreams is how many streams may be open at once (Limits).
+	maxStreams int
 
 	mu      sync.Mutex
 	streams map[uint32]*Stream
@@ -113,6 +115,24 @@ type Session struct {
 // NewSession starts a session over r and w. The host passes opener true,
 // and is the only side that may open streams.
 func NewSession(r io.Reader, w io.WriteCloser, opener bool) *Session {
+	return NewSessionLimited(r, w, opener, Limits{})
+}
+
+// Limits bound what the peer can have this side hold: a side that serves
+// an untrusted opener (the host's end of a host exec) takes fewer streams,
+// and less in flight on each, than a link's own. Zero is the default.
+type Limits struct {
+	// Window is what this side's streams receive in flight, within
+	// DefaultWindow and MaxWindow.
+	Window int
+	// Streams is the most streams the peer may have open at once; one
+	// more is reset unaccepted. At most MaxStreams.
+	Streams int
+}
+
+// NewSessionLimited is NewSession with lim, set before the first frame is
+// read.
+func NewSessionLimited(r io.Reader, w io.WriteCloser, opener bool, lim Limits) *Session {
 	s := &Session{
 		r:          r,
 		w:          w,
@@ -130,6 +150,13 @@ func NewSession(r io.Reader, w io.WriteCloser, opener bool) *Session {
 	}
 	if k := linkdebug.Get(); k.Window > 0 {
 		s.recvWindow = min(max(k.Window, DefaultWindow), MaxWindow)
+	}
+	if lim.Window > 0 {
+		s.recvWindow = min(max(lim.Window, DefaultWindow), MaxWindow)
+	}
+	s.maxStreams = MaxStreams
+	if lim.Streams > 0 {
+		s.maxStreams = min(lim.Streams, MaxStreams)
 	}
 	s.split = linkdebug.Get().SplitFrames
 	s.lastRead.Store(time.Now().UnixNano())
@@ -387,7 +414,7 @@ func (s *Session) accepted(id uint32, header []byte) error {
 		return fmt.Errorf("agentproto: stream %d opened twice", id)
 	}
 	refused := s.refused
-	if len(s.streams) >= MaxStreams {
+	if len(s.streams) >= s.maxStreams {
 		s.mu.Unlock()
 		return s.refuse(id, header, refused)
 	}

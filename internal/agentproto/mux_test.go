@@ -447,3 +447,40 @@ func TestOnRefused(t *testing.T) {
 		t.Fatal("the stream over MaxStreams was not reported")
 	}
 }
+
+// A side with Limits takes no more streams at once than they say, resetting
+// the next unaccepted, and announces their window.
+func TestLimits(t *testing.T) {
+	hr, aw := io.Pipe()
+	ar, hw := io.Pipe()
+	opener := NewSession(hr, hw, true)
+	server := NewSessionLimited(ar, aw, false, Limits{Window: DefaultWindow, Streams: 2})
+	t.Cleanup(func() { opener.Close(); server.Close() })
+	refused := make(chan string, 4)
+	server.OnRefused(func(h []byte) { refused <- string(h) })
+	if err := server.Send(Message{Type: TypeHello, Version: Version}); err != nil {
+		t.Fatal(err)
+	}
+	if m := recvControl(t, opener); m.Window != DefaultWindow {
+		t.Fatalf("the limited side announced %d", m.Window)
+	}
+	for _, h := range []string{"a", "b", "c"} {
+		if _, err := opener.Open([]byte(h)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case h := <-refused:
+		if h != "c" {
+			t.Fatalf("refused %q, want the third", h)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stream over the limit was not refused")
+	}
+	for _, want := range []string{"a", "b"} {
+		st, err := server.Accept()
+		if err != nil || string(st.Header()) != want {
+			t.Fatalf("accepted %v %v, want %q", st, err, want)
+		}
+	}
+}

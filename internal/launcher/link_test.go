@@ -144,6 +144,9 @@ func TestStartLinkReplacesAHelperWithOtherSettings(t *testing.T) {
 		{"from before the isolation was recorded", settingsFor("3000", "ask").withIsolation(""), true},
 		// ssh_agent set since: the VM is to get another agent.
 		{"other ssh_agent", func() linkSettings { s := settingsFor("3000", "ask"); s.SSHAgent = "/op.sock"; return s }(), true},
+		// host_exec turned off by a variable the helper does not read: the
+		// launch replaces it, so it stops offering it.
+		{"other host_exec", func() linkSettings { s := settingsFor("3000", "ask"); s.HostExec = "on"; return s }(), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -519,5 +522,117 @@ func TestLinkRecordsItsStop(t *testing.T) {
 	}
 	if _, ok := readLinkStop(dir); ok {
 		t.Fatal("caboose link --restart kept link.stop")
+	}
+}
+
+// host_exec is a link setting: turned on in config.toml, the running
+// helper reconnects offering it; a value it does not take keeps the old.
+func TestReloadHostExec(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(k string) string { return map[string]string{"HOME": home, "CABOOSE_HOME": home}[k] }
+	cfg, err := config.Load(getenv, config.OSFS{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(cfg.EnvDir, 0o755)
+	os.MkdirAll(cfg.DataDir, 0o755)
+	r := &linkRunner{a: &App{Cfg: cfg}, log: log.New(io.Discard, "", 0), settings: settingsOf(cfg)}
+	if r.settings.HostExec != "" || r.cfg.HostExec != nil {
+		t.Fatalf("on by default: %+v", r.settings)
+	}
+	sess := agentproto.NewSession(bytes.NewReader(nil), nopCloser{io.Discard}, true)
+	r.sess = sess
+	write := func(s string) {
+		if err := os.WriteFile(filepath.Join(cfg.EnvDir, config.FileName), []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("host_exec = true\n")
+	r.reload()
+	if r.settings.HostExec != "on" || r.cfg.HostExec == nil {
+		t.Fatalf("settings %+v, offer %v after turning it on", r.settings, r.cfg.HostExec)
+	}
+	select {
+	case <-sess.Done():
+	default:
+		t.Fatal("the session goes on without it")
+	}
+	write("host_exec = \"maybe\"\n")
+	r.reload()
+	if r.settings.HostExec != "on" || r.cfg.HostExec == nil {
+		t.Fatalf("a value it does not take replaced it: %+v", r.settings)
+	}
+	if _, err := (linkSettings{ForwardPorts: "3000", OpenURLs: "ask", EgressProxy: "on", EgressPorts: "22", HostExec: "maybe"}).check(); err == nil ||
+		!strings.Contains(err.Error(), "host_exec") {
+		t.Errorf("check took host_exec maybe: %v", err)
+	}
+}
+
+// mountsBox is a linkerBox that has roots mounted.
+type mountsBox struct {
+	linkerBox
+	mounts []backend.Mount
+}
+
+func (b mountsBox) Mounts() ([]backend.Mount, error) { return b.mounts, nil }
+
+// With host_exec on, the hello offers host exec, and a command runs in the
+// host directory of the root the sandbox mounts, not a configured one.
+func TestLinkOffersHostExec(t *testing.T) {
+	mounted := t.TempDir()
+	for _, on := range []bool{true, false} {
+		lc, err := func() (linkConfig, error) {
+			s := settingsFor("3000", "ask")
+			if on {
+				s.HostExec = "on"
+			}
+			return s.check()
+		}()
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, agentEnd := net.Pipe()
+		got := make(chan string, 1)
+		go func() {
+			s := agentproto.NewSession(agentEnd, agentEnd, false)
+			defer s.Close()
+			b := <-s.Control()
+			m, _ := agentproto.Decode(b)
+			if !m.HostExec {
+				got <- "not offered"
+				return
+			}
+			_ = s.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version})
+			_ = s.Send(agentproto.Message{Type: agentproto.TypeRequest, ID: 1, Op: agentproto.OpHostExec})
+			st, err := s.Accept()
+			if err != nil {
+				got <- err.Error()
+				return
+			}
+			var out, errs bytes.Buffer
+			code, err := agentproto.Exec(st, agentproto.ExecRequest{Argv: []string{"pwd", "-P"}, Dir: "/work"}, agentproto.ExecIO{Stdout: &out, Stderr: &errs})
+			got <- fmt.Sprintf("%d %v %s%s", code, err, strings.TrimSpace(out.String()), errs.String())
+		}()
+		box := mountsBox{linkerBox{t: t, dial: func() (io.ReadWriteCloser, error) { return host, nil }},
+			[]backend.Mount{{Source: mounted, Target: "/work"}}}
+		cfg := &config.Config{Container: "box", DataDir: t.TempDir(), Getenv: func(string) string { return "" },
+			Roots: []config.Root{{Host: "/configured/elsewhere", Container: "/work"}}}
+		r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0),
+			cfg: hostlink.Config{Ports: lc.ports, HostExec: hostExecOffer(lc.hostExec)}}
+		go func() { _ = r.once() }()
+		phys, _ := filepath.EvalSymlinks(mounted)
+		want := "not offered"
+		if on {
+			want = "0 <nil> " + phys
+		}
+		select {
+		case g := <-got:
+			if g != want {
+				t.Errorf("host_exec %v: %q, want %q", on, g, want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("host_exec %v: nothing came of it", on)
+		}
+		host.Close()
 	}
 }

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bufio"
+	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +11,12 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
@@ -159,6 +165,141 @@ func WaitProxy(proxy string, wait time.Duration) error {
 	}
 }
 
+// hostAnswerWait bounds the link's answer to a host exec: above its own
+// waits for the host's hello, answer and stream.
+const hostAnswerWait = 30 * time.Second
+
+// HostExec runs argv on the host, through the link on socket, in the host
+// directory of dir (a path in the sandbox, under a root), with stdio, and
+// returns its exit status. A command that never ran is ExitCannotRun and
+// why: the host refused it, or nothing answered. Done, ctx closes the
+// connection, which ends the command on the host.
+func HostExec(ctx context.Context, socket string, argv []string, dir string, stdio agentproto.ExecIO) (int, error) {
+	c, err := net.DialTimeout("unix", socket, 5*time.Second)
+	if err != nil {
+		return agentproto.ExitCannotRun, ErrNoLink
+	}
+	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	b, _ := json.Marshal(agentproto.Message{Op: agentproto.OpHostExec})
+	if _, err := c.Write(append(b, '\n')); err != nil {
+		return agentproto.ExitCannotRun, err
+	}
+	_ = c.SetReadDeadline(time.Now().Add(hostAnswerWait))
+	line, err := readLine(c, agentproto.MaxPayload)
+	if err != nil {
+		if ctx.Err() != nil {
+			return agentproto.ExitCannotRun, ctx.Err()
+		}
+		return agentproto.ExitCannotRun, fmt.Errorf("the link gave no answer: %w", err)
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	var r agentproto.Message
+	if err := json.Unmarshal(line, &r); err != nil {
+		return agentproto.ExitCannotRun, err
+	}
+	if !r.OK {
+		return agentproto.ExitCannotRun, errors.New(cmp.Or(r.Error, "refused"))
+	}
+	req := agentproto.ExecRequest{Argv: argv, Dir: dir, Stdin: true}
+	code, err := agentproto.Exec(c, req, stdio)
+	if err != nil {
+		if ctx.Err() != nil {
+			return agentproto.ExitCannotRun, ctx.Err()
+		}
+		return agentproto.ExitCannotRun, fmt.Errorf("the connection to the host broke: %w", err)
+	}
+	return code, nil
+}
+
+// readLine reads up to a newline a byte at a time, so nothing past it is
+// taken from r: what follows is another protocol's.
+func readLine(r io.Reader, max int) ([]byte, error) {
+	var line []byte
+	var b [1]byte
+	for len(line) < max {
+		n, err := r.Read(b[:])
+		if n == 1 {
+			if b[0] == '\n' {
+				return line, nil
+			}
+			line = append(line, b[0])
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("an answer over %d bytes", max)
+}
+
+// hostCommand is `caboose-agent host`: the command's exit status, or 126
+// when it never ran, 130 or 143 when this was interrupted or terminated.
+func hostCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, usage func() int) int {
+	dir := ""
+flags:
+	for len(args) > 0 {
+		switch {
+		case args[0] == "--":
+			args = args[1:]
+			break flags
+		case args[0] == "-C" && len(args) >= 2:
+			dir, args = args[1], args[2:]
+		case strings.HasPrefix(args[0], "-"):
+			return usage()
+		default:
+			break flags
+		}
+	}
+	if len(args) == 0 {
+		return usage()
+	}
+	cwd, err := os.Getwd()
+	if err != nil && (dir == "" || !filepath.IsAbs(dir)) {
+		fmt.Fprintf(stderr, "caboose-agent: host: no current directory to run in (%v): pass -C DIR\n", err)
+		return agentproto.ExitCannotRun
+	}
+	switch {
+	case dir == "":
+		dir = cwd
+	case !filepath.IsAbs(dir):
+		dir = filepath.Join(cwd, dir)
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, err := HostExec(ctx, SocketPath, args, filepath.Clean(dir),
+			agentproto.ExecIO{Stdin: stdin, Stdout: stdout, Stderr: stderr})
+		done <- result{code, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			fmt.Fprintf(stderr, "caboose-agent: host: %v\n", r.err)
+		}
+		return r.code
+	case sig := <-sigs:
+		// Closing the connection ends the command on the host.
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		if sig == syscall.SIGTERM {
+			return 128 + int(syscall.SIGTERM)
+		}
+		return 128 + int(syscall.SIGINT)
+	}
+}
+
 // maxProxyWait bounds wait-proxy's SECONDS.
 const maxProxyWait = 600
 
@@ -173,6 +314,12 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
   ports               what listens in the sandbox, and what the host forwards
   connect HOST PORT   a TCP connection made by the host, on stdin and stdout:
                       ssh's ProxyCommand (caboose-agent connect %h %p), under vm
+  host [-C DIR] [--] CMD [ARG...]
+                      run CMD on the host, as the user who runs caboose, in
+                      the host's directory for DIR (by default the current
+                      one, which must be under a root); no shell and no
+                      terminal: stdin, stdout, stderr and the exit status
+                      pass through. Only when host_exec is on, on the host
   wait-proxy [SECONDS]
                       wait until the outbound proxy serves (30 seconds at most
                       by default), under vm
@@ -215,6 +362,8 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 			return 2
 		}
 		err = Connect(agentproto.EgressListen, rest[0], port, stdin, stdout)
+	case "host":
+		return hostCommand(rest, stdin, stdout, stderr, usage)
 	case "wait-proxy":
 		secs := 30
 		if len(rest) > 1 {

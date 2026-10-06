@@ -39,6 +39,7 @@ var fileKeys = map[string]string{
 	"egress_ports":    "EGRESS_PORTS",
 	"egress_allow":    "EGRESS_ALLOW",
 	"ssh_agent":       "SSH_AGENT",
+	"host_exec":       "HOST_EXEC",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -135,7 +136,9 @@ func ParseFile(path string, data []byte) (*File, error) {
 		case bool:
 			// egress_proxy is "on" or "off", and false must not read as
 			// unset, which is on.
-			if name == "EGRESS_PROXY" {
+			// Nor host_exec, whose false must say off over a variable's
+			// absence as plainly as its true says on.
+			if name == "EGRESS_PROXY" || name == "HOST_EXEC" {
 				f.Vals[name] = map[bool]string{true: "on", false: "off"}[v]
 				continue
 			}
@@ -280,4 +283,11 @@ format = 1    # this file's structure
 # Docker Desktop forward the agent they were started with instead.
 # [CABOOSE_SSH_AGENT]
 #ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+
+# Let sessions run commands on this machine, as you, through the link
+# (caboose-agent host CMD): a hole in the wall, on purpose. Sessions, and
+# whatever steers them (a web page, a repo they work in), can then run
+# anything here. For an environment whose point is a separate login and
+# tools, not containment. Off by default. [CABOOSE_HOST_EXEC]
+#host_exec = true
 `

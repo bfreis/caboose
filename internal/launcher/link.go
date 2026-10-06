@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -75,12 +76,15 @@ type linkSettings struct {
 	// on this machine would use (agentFrom).
 	SSHAgent     string `json:"ssh_agent,omitempty"`
 	SSHAgentFrom string `json:"ssh_agent_from,omitempty"`
+	// HostExec is host_exec, as written: whether sessions run commands
+	// on this machine through the link.
+	HostExec string `json:"host_exec,omitempty"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
 		EgressProxy: c.EgressProxy, EgressPorts: c.EgressPorts, EgressAllow: c.EgressAllow,
-		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c)}
+		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c), HostExec: c.HostExec}
 	if c.SSHAgent != "" {
 		s.SSHAgent, s.SSHAgentFrom = c.SSHAgent, sshAgentOrigin(c)
 	}
@@ -99,6 +103,8 @@ type linkConfig struct {
 	ports hostlink.PortSet
 	// egress is nil when egress_proxy is off.
 	egress *hostlink.Egress
+	// hostExec is host_exec.
+	hostExec bool
 }
 
 // check parses the settings, as the helper needs them. The outbound
@@ -126,7 +132,11 @@ func (s linkSettings) check() (linkConfig, error) {
 	if err != nil {
 		return linkConfig{}, err
 	}
-	lc := linkConfig{ports: ports}
+	hostExec, err := config.CheckHostExec(s.HostExec)
+	if err != nil {
+		return linkConfig{}, err
+	}
+	lc := linkConfig{ports: ports, hostExec: hostExec}
 	if on {
 		lc.egress = &hostlink.Egress{Ports: eports, Allow: allow}
 	}
@@ -322,14 +332,38 @@ func (a *App) Link(args []string) error {
 		out = c
 	}
 	r := &linkRunner{a: a, log: log.New(out, "caboose link: ", log.LstdFlags), settings: settings,
-		cfg: hostlink.Config{Ports: lc.ports, OpenURL: settings.OpenURLs, Actions: hostlink.System{}, Egress: lc.egress, Diagnose: true}}
+		cfg: hostlink.Config{Ports: lc.ports, OpenURL: settings.OpenURLs, Actions: hostlink.System{}, Egress: lc.egress,
+			HostExec: hostExecOffer(lc.hostExec), Diagnose: true}}
 	r.cfg.Log = r.log
 	r.writeState()
 	stop := make(chan struct{})
 	defer close(stop)
+	go killHostExecsAtSignal(stop)
 	go r.watchConfig(stop)
 	go r.watchProposals(stop)
 	return r.run(background)
+}
+
+// killHostExecsAtSignal has the commands run on this machine for the
+// sandbox go with the link, until stop: a session's end kills its own,
+// and so must the link's, which a signal would otherwise end with no word
+// to them. The signal then ends the link as it would have.
+func killHostExecsAtSignal(stop <-chan struct{}) {
+	sigs := make(chan os.Signal, 1)
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
+		// One the link was started ignoring stays ignored.
+		if !signal.Ignored(sig) {
+			signal.Notify(sigs, sig)
+		}
+	}
+	defer signal.Stop(sigs)
+	select {
+	case <-stop:
+	case sig := <-sigs:
+		hostlink.KillHostExecs()
+		signal.Reset(sig)
+		_ = syscall.Kill(os.Getpid(), sig.(syscall.Signal))
+	}
 }
 
 // restartLink is `caboose link --restart`.
@@ -512,12 +546,13 @@ func (r *linkRunner) reload() {
 	}
 	r.settings = next
 	r.cfg.Ports, r.cfg.OpenURL, r.cfg.Egress = lc.ports, next.OpenURLs, lc.egress
+	r.cfg.HostExec = hostExecOffer(lc.hostExec)
 	sess := r.sess
 	r.reloaded = sess != nil
 	r.mu.Unlock()
 	r.writeState()
-	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress_proxy %q, egress_ports %q, egress_allow %q; reconnecting",
-		next.ForwardPorts, next.OpenURLs, next.EgressProxy, next.EgressPorts, next.EgressAllow)
+	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress_proxy %q, egress_ports %q, egress_allow %q, host_exec %s; reconnecting",
+		next.ForwardPorts, next.OpenURLs, next.EgressProxy, next.EgressPorts, next.EgressAllow, onOff(lc.hostExec))
 	if sess != nil {
 		sess.Close()
 	}
@@ -556,6 +591,7 @@ func (r *linkRunner) once() error {
 	cfg := r.cfg
 	r.mu.Unlock()
 	cfg.Relay = r.relayRoots()
+	cfg.HostExec = r.hostExec(cfg.HostExec)
 	// The engine dials a container's connections from the host already:
 	// the outbound proxy is a vm guest's alone.
 	cfg.Egress = nil
@@ -593,6 +629,7 @@ func (r *linkRunner) serveDialed(l backend.Linker) error {
 	cfg := r.cfg
 	r.mu.Unlock()
 	cfg.Relay = r.relayRoots()
+	cfg.HostExec = r.hostExec(cfg.HostExec)
 	// No socket of this machine's can reach a VM: the link carries its SSH
 	// agent, ssh_agent's or else the one ssh here would use, as the launch
 	// that started this link saw it (its SSH_AUTH_SOCK, its ~/.ssh/config).
@@ -637,6 +674,27 @@ func (r *linkRunner) relayRoots() []hostlink.Root {
 		roots = append(roots, hostlink.Root{Host: m.Host, Container: m.Container})
 	}
 	return roots
+}
+
+// hostExecOffer is host_exec as the runner keeps it: an offer whose roots
+// each session fills in (hostExec), nil when it is off.
+func hostExecOffer(on bool) *hostlink.HostExec {
+	if !on {
+		return nil
+	}
+	return &hostlink.HostExec{}
+}
+
+// hostExec is offer for one session: the roots the sandbox has mounted,
+// which a command's directory is translated through, and not the
+// configured ones, which differ from them until a restart.
+func (r *linkRunner) hostExec(offer *hostlink.HostExec) *hostlink.HostExec {
+	if offer == nil {
+		return nil
+	}
+	roots := r.a.mountedRoots()
+	r.log.Printf("running commands on this machine for the sandbox (host_exec), in %s", mountList(roots))
+	return &hostlink.HostExec{Roots: roots}
 }
 
 // limitedWriter keeps the first n bytes written to it.

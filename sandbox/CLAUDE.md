@@ -79,7 +79,7 @@ also rewrites it. A new `[[keep]]` entry takes effect at the next
 `caboose restart` on the host, and starts empty: say so, and configure the
 tool only after it. Never sync anything that holds a token.
 
-## Reaching the host: ports, URLs, notifications
+## Reaching the host: ports, URLs, notifications, commands
 
 A server listening in here is forwarded to the same port on the host's
 `localhost` while it runs, if the host's `forward_ports` allows the port
@@ -100,6 +100,10 @@ an HTTP 403 saying why, unless the host's `egress_allow` names them. ssh
 goes the same way, through `caboose-agent connect %h %p` as its
 `ProxyCommand`. Containers run by the sandbox's own dockerd do not: they
 stay on the VM's NAT.
+
+### Running commands on the host
+
+@@CABOOSE_HOST_EXEC@@
 
 ## Start-up scripts and shell config: ~/.config/caboose
 

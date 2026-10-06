@@ -1,7 +1,8 @@
 // Package hostlink is the host's end of the link to caboose-agent: it
 // forwards the sandbox's listening ports to this machine's localhost,
-// opens URLs and shows notifications when the sandbox asks, and, under vm,
-// dials the sandbox's outbound connections from this machine (egress.go).
+// opens URLs and shows notifications when the sandbox asks, under vm dials
+// the sandbox's outbound connections from this machine (egress.go), and,
+// where the user turned it on, runs its commands here (hostexec.go).
 //
 // Everything the agent sends is untrusted, as everything from the sandbox
 // is. The host decides: which ports forward is config.toml's forward_ports,
@@ -9,7 +10,8 @@
 // when it is http(s) and, by default, only after a dialog says yes; and
 // every text the sandbox wrote is made printable and cut short before
 // anything shows it; the outbound proxy reaches only egress_ports, and
-// only public addresses unless egress_allow says otherwise.
+// only public addresses unless egress_allow says otherwise. Commands run
+// on this machine only with host_exec on (hostexec.go).
 package hostlink
 
 import (
@@ -83,6 +85,9 @@ type Config struct {
 	// under vm, whose NAT reaches none of this machine's VPN routes. nil
 	// offers none.
 	Egress *Egress
+	// HostExec runs commands on this machine for the sandbox
+	// (OpHostExec): host_exec, in config.toml. nil offers none.
+	HostExec *HostExec
 	// Diagnose logs the windows the hellos settled on, and any stream or
 	// write that stalls (agentproto's WatchStalls).
 	Diagnose bool
@@ -101,6 +106,7 @@ type Host struct {
 	dialog   sync.Mutex // one dialog at a time
 	ssh      int        // SSH agent connections open
 	egress   egressState
+	execs    hostExecState
 }
 
 // stallAfter is how long a stream waits for credit, or a write to the
@@ -137,6 +143,7 @@ func Run(sess *agentproto.Session, cfg Config) error {
 	if cfg.SSHAgent != "" && cfg.SSHAuthSock != "" {
 		hello.SSHAgent = cfg.SSHAgent
 	}
+	hello.HostExec = cfg.HostExec != nil
 	if cfg.Egress != nil {
 		hello.Egress = cfg.Egress.listen()
 		go h.countEgressEvery()
@@ -324,6 +331,10 @@ func (h *Host) answer(m agentproto.Message) {
 		// Its own bucket and limits (egress.go): a page load opens
 		// several at once.
 		err = h.connect(m.ID, m.Host, m.Port)
+	} else if m.Op == agentproto.OpHostExec {
+		// Bounded by how many run at once, not the bucket: a session
+		// runs one after another.
+		err = h.hostExec(m.ID)
 	} else if !h.allow() {
 		err = errors.New("too many requests; try again shortly")
 	} else {

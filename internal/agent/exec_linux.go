@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -44,14 +43,14 @@ const setupTimeout = 10 * time.Second
 func (e *ExecServer) ServeConn(conn io.ReadWriteCloser) error {
 	s := agentproto.NewSession(conn, conn, false)
 	defer s.Close()
-	req, err := e.request(s)
+	req, err := agentproto.ReadExec(s, setupTimeout)
 	if err != nil {
 		return err
 	}
 	if err := s.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}); err != nil {
 		return err
 	}
-	streams, err := acceptStreams(s, req)
+	streams, err := agentproto.AcceptExecStreams(s, req, setupTimeout)
 	if err != nil {
 		return err
 	}
@@ -70,64 +69,6 @@ func (e *ExecServer) ServeConn(conn io.ReadWriteCloser) error {
 	case <-time.After(setupTimeout):
 	}
 	return nil
-}
-
-// request reads the hello and the command.
-func (e *ExecServer) request(s *agentproto.Session) (agentproto.ExecRequest, error) {
-	timeout := time.After(setupTimeout)
-	hello := false
-	for {
-		select {
-		case b, ok := <-s.Control():
-			if !ok {
-				return agentproto.ExecRequest{}, s.Err()
-			}
-			m, err := agentproto.Decode(b)
-			if err != nil {
-				return agentproto.ExecRequest{}, err
-			}
-			switch {
-			case m.Type == agentproto.TypeHello:
-				if m.Version != agentproto.Version {
-					return agentproto.ExecRequest{}, fmt.Errorf("the host speaks version %d, not %d", m.Version, agentproto.Version)
-				}
-				hello = true
-			case m.Type == agentproto.TypeExec && hello && m.Exec != nil && len(m.Exec.Argv) > 0:
-				return *m.Exec, nil
-			default:
-				return agentproto.ExecRequest{}, fmt.Errorf("unexpected %q before an exec", m.Type)
-			}
-		case <-timeout:
-			return agentproto.ExecRequest{}, errors.New("no exec request")
-		}
-	}
-}
-
-// acceptStreams takes the streams the request needs, by name.
-func acceptStreams(s *agentproto.Session, req agentproto.ExecRequest) (map[string]*agentproto.Stream, error) {
-	want := map[string]bool{agentproto.StreamStdout: true, agentproto.StreamStderr: true}
-	if req.Stdin {
-		want[agentproto.StreamStdin] = true
-	}
-	if req.TTY {
-		want = map[string]bool{agentproto.StreamTTY: true}
-	}
-	got := map[string]*agentproto.Stream{}
-	deadline := time.AfterFunc(setupTimeout, func() { s.Close() })
-	defer deadline.Stop()
-	for len(got) < len(want) {
-		st, err := s.Accept()
-		if err != nil {
-			return nil, err
-		}
-		var h agentproto.StreamHeader
-		if json.Unmarshal(st.Header(), &h) != nil || !want[h.Name] || got[h.Name] != nil {
-			st.Close()
-			return nil, fmt.Errorf("unexpected stream %q", st.Header())
-		}
-		got[h.Name] = st
-	}
-	return got, nil
 }
 
 // run starts the command and waits for it; err is why it could not start.

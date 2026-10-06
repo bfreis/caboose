@@ -65,7 +65,19 @@ const (
 	// whose Reason is one of the Egress* codes. Offered in the host's hello
 	// (Egress), so it needs no new Version either.
 	OpConnect = "connect"
+	// OpHostExec is a client of `caboose-agent host`: a command to run on
+	// the host. The host answers as for OpSSHAgent, with a stream whose
+	// header names the request, on which the client speaks the exec port's
+	// protocol (exec.go) as the host does to a guest's, roles reversed.
+	// Offered in the host's hello (HostExec), so it needs no new Version.
+	OpHostExec = "host-exec"
 )
+
+// HostExecOff is the refusal of an OpHostExec on a host that offers none:
+// what turns it on, and what makes a running link see that.
+const HostExecOff = "running commands on the host is off for this environment: host_exec = true in its config.toml, " +
+	"on the host, turns it on, and the running link rereads that file within seconds " +
+	"(set by CABOOSE_HOST_EXEC instead, it takes the next launch, or 'caboose link --restart' on the host)"
 
 // The Reason of a refused OpConnect, for the agent to choose what it
 // answers its client with; Error says the rest, written for a person.
@@ -161,6 +173,9 @@ type Message struct {
 	// under vm, whose NAT reaches none of the host's VPN routes. "" offers
 	// none.
 	Egress string `json:"egress,omitempty"`
+	// HostExec, in the host's hello, offers OpHostExec: host_exec, in the
+	// host's config.toml.
+	HostExec bool `json:"host_exec,omitempty"`
 
 	// Window, in a hello, is how many bytes each of the sender's streams
 	// takes in flight, unread (HostWindow, AgentWindow); the session reads
@@ -189,8 +204,8 @@ type StreamHeader struct {
 	// Name is which of an exec's streams this is (Stream*), on the exec
 	// port, where there is no Port.
 	Name string `json:"name,omitempty"`
-	// Request is the request (OpSSHAgent, OpConnect) this stream answers, where there
-	// is no Port.
+	// Request is the request (OpSSHAgent, OpConnect, OpHostExec) this
+	// stream answers, where there is no Port.
 	Request uint64 `json:"request,omitempty"`
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -23,6 +24,7 @@ var Settings = []string{
 	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC", "DOCKER_RUN_ARGS",
 	"FORWARD_PORTS", "OPEN_URLS", "ISOLATION", "VM_CPUS", "VM_MEMORY",
 	"EGRESS_PROXY", "EGRESS_PORTS", "EGRESS_ALLOW", "SSH_AGENT",
+	"HOST_EXEC",
 }
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -147,6 +149,11 @@ type Config struct {
 	// (launcher/link.go, CheckEgressProxy); the host's keys, never the
 	// sandbox config's.
 	EgressProxy, EgressPorts, EgressAllow string
+	// HostExec is CABOOSE_HOST_EXEC: whether sessions may run commands on
+	// this machine, as the user, through the link ("on", "off", or ""
+	// for off; CheckHostExec reads it), and HostExecFrom what set it. The
+	// host's key, never the sandbox config's: it is the hole in the wall.
+	HostExec, HostExecFrom string
 
 	// Home is $HOME, as the rest of the launcher sees it.
 	Home string
@@ -354,6 +361,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 	c.DataDir = c.resolveDataDir(vals["DATA_DIR"])
 	c.DockerRunArgs, c.DockerRunArgsFrom = strings.Fields(vals["DOCKER_RUN_ARGS"]), from["DOCKER_RUN_ARGS"]
 	c.SSHAgent, c.SSHAgentFrom = vals["SSH_AGENT"], from["SSH_AGENT"]
+	c.HostExec, c.HostExecFrom = vals["HOST_EXEC"], from["HOST_EXEC"]
 	if file != nil && file.RunArgs != nil && c.DockerRunArgsFrom == "" {
 		c.DockerRunArgs, c.DockerRunArgsFrom = file.RunArgs, file.Path
 	}
@@ -390,6 +398,19 @@ func CheckEgressProxy(v string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf(`egress_proxy: %q is not "on" or "off"`, v)
+}
+
+// CheckHostExec reads host_exec: whether it is on, or why the value is
+// none it takes. "" is off, the default. A variable's "0" or "false" is
+// off too, never set-and-so-on as some of the others read.
+func CheckHostExec(v string) (bool, error) {
+	switch strings.ToLower(v) {
+	case "on", "true", "1", "yes":
+		return true, nil
+	case "", "off", "false", "0", "no":
+		return false, nil
+	}
+	return false, fmt.Errorf(`host_exec: %q is not true or false ("on" or "off")`, v)
 }
 
 // ImageDirName is an environment's own image's build context, in its EnvDir.
@@ -497,6 +518,30 @@ func ContainerPath(roots []Root, p string) (string, bool) {
 		return r.Container + rel, true
 	}
 	return "", false
+}
+
+// HostPath is ContainerPath the other way: where this machine has
+// container path p, under whichever of roots the container mounts it
+// from (the deepest, were one inside another); false when p is relative
+// or under none. p is cleaned first, so a ".." cannot climb out of a
+// root; symlinks are not looked at, here or on the host.
+func HostPath(roots []Root, p string) (string, bool) {
+	if !path.IsAbs(p) {
+		return "", false
+	}
+	p = path.Clean(p)
+	best, found := -1, ""
+	for _, r := range roots {
+		if r.Container == "" || !Within(p, r.Container) || len(r.Container) <= best {
+			continue
+		}
+		rest := p
+		if r.Container != "/" {
+			rest = strings.TrimPrefix(p, r.Container)
+		}
+		best, found = len(r.Container), path.Join(r.Host, rest)
+	}
+	return found, best >= 0
 }
 
 // SameRoots reports whether a and b mount the same host paths at the same

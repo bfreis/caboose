@@ -384,3 +384,36 @@ func TestDoctorIdentity(t *testing.T) {
 		})
 	}
 }
+
+// host_exec on is a note, since it opens the wall, naming what set it; off
+// says nothing; a value it does not take is a problem.
+func TestDoctorHostExec(t *testing.T) {
+	file := &config.File{Path: "/e/config.toml"}
+	for _, tc := range []struct {
+		cfg  config.Config
+		want string
+	}{
+		{config.Config{}, ""},
+		{config.Config{HostExec: "off", HostExecFrom: file.Path, File: file}, ""},
+		{config.Config{HostExec: "on", HostExecFrom: file.Path, File: file},
+			"  ! host exec  on: sessions in this environment can run commands on this machine as you (host_exec in /e/config.toml)\n"},
+		{config.Config{HostExec: "1", HostExecFrom: "CABOOSE_HOST_EXEC"},
+			"  ! host exec  on: sessions in this environment can run commands on this machine as you (CABOOSE_HOST_EXEC)\n"},
+		{config.Config{HostExec: "maybe", HostExecFrom: "CABOOSE_HOST_EXEC"},
+			"  ✗ host exec  host_exec: \"maybe\" is not true or false (\"on\" or \"off\")\n"},
+	} {
+		c := &checkup{}
+		a := &App{Cfg: &tc.cfg}
+		a.doctorHostExec(c)
+		if tc.want == "" {
+			if len(c.rows) != 0 {
+				t.Errorf("%q: %v", tc.cfg.HostExec, c.rows)
+			}
+		} else if got := c.String(); strings.TrimSpace(got) != strings.TrimSpace(tc.want) {
+			t.Errorf("%+v:\n%q\nwant\n%q", tc.cfg.HostExec, got, tc.want)
+		}
+		if s := a.hostExecSummary(); (s != "") != (tc.want != "") {
+			t.Errorf("%q: status says %q", tc.cfg.HostExec, s)
+		}
+	}
+}

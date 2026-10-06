@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -518,5 +519,96 @@ func TestSSHAgentSetting(t *testing.T) {
 	}
 	if c.SSHAgent != "none" || c.SSHAgentFrom != "CABOOSE_SSH_AGENT" {
 		t.Errorf("from the variable: %q from %q", c.SSHAgent, c.SSHAgentFrom)
+	}
+}
+
+// host_exec: off by default, from the file, a variable winning over it --
+// one saying "0" or "false" is off, never set-and-so-on.
+func TestHostExecSetting(t *testing.T) {
+	home := map[string]string{"HOME": "/h"}
+	c, err := Load(envOf(home), fakeFS{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on, err := CheckHostExec(c.HostExec); on || err != nil || c.HostExecFrom != "" {
+		t.Errorf("default: %q %v %v", c.HostExec, on, err)
+	}
+	fsys := fakeFS{cfgPath: "host_exec = true\n"}
+	if c, err = Load(envOf(home), fsys, ""); err != nil {
+		t.Fatal(err)
+	}
+	if on, _ := CheckHostExec(c.HostExec); !on || c.HostExecFrom != cfgPath {
+		t.Errorf("from the file: %q from %q", c.HostExec, c.HostExecFrom)
+	}
+	for _, v := range []string{"0", "false", "off"} {
+		c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOST_EXEC": v}), fsys, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if on, err := CheckHostExec(c.HostExec); on || err != nil || c.HostExecFrom != "CABOOSE_HOST_EXEC" {
+			t.Errorf("CABOOSE_HOST_EXEC=%s over the file's true: %q %v %v", v, c.HostExec, on, err)
+		}
+	}
+	c, err = Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOST_EXEC": "1"}), fakeFS{cfgPath: "host_exec = false\n"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on, _ := CheckHostExec(c.HostExec); !on {
+		t.Errorf("CABOOSE_HOST_EXEC=1 over the file's false: %q", c.HostExec)
+	}
+	if c, err = Load(envOf(home), fakeFS{cfgPath: "host_exec = false\n"}, ""); err != nil || c.HostExec != "off" {
+		t.Errorf("host_exec = false: %q %v", c.HostExec, err)
+	}
+	for v, want := range map[string]bool{"on": true, "true": true, "1": true, "yes": true, "TRUE": true, "": false, "off": false, "false": false, "0": false, "no": false} {
+		if on, err := CheckHostExec(v); err != nil || on != want {
+			t.Errorf("CheckHostExec(%q) = %v %v", v, on, err)
+		}
+	}
+	for _, bad := range []string{"2", "maybe", "onn"} {
+		if _, err := CheckHostExec(bad); err == nil || !strings.Contains(err.Error(), "host_exec") {
+			t.Errorf("CheckHostExec(%q): %v", bad, err)
+		}
+	}
+}
+
+func TestHostPath(t *testing.T) {
+	one := []Root{{Host: "/h/dev", Container: "/work"}}
+	slash := []Root{{Host: "/", Container: "/work"}}
+	several := []Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}, {Name: "w", Host: "/h/w", Container: "/work/w"}}
+	for _, tc := range []struct {
+		roots []Root
+		in    string
+		want  string
+		ok    bool
+	}{
+		{one, "/work", "/h/dev", true},
+		{one, "/work/", "/h/dev", true},
+		{one, "/work/you/caboose", "/h/dev/you/caboose", true},
+		{one, "/work/a/../b", "/h/dev/b", true},
+		{one, "/workx", "", false},
+		{one, "/workx/a", "", false},
+		{one, "/work/../etc", "", false},
+		{one, "/work/../work/x", "/h/dev/x", true},
+		{one, "/", "", false},
+		{one, "work/x", "", false},
+		{one, "", "", false},
+		{slash, "/work/h/c", "/h/c", true},
+		{slash, "/work", "/", true},
+		{several, "/work/dev/x", "/h/dev/x", true},
+		{several, "/work/w", "/h/w", true},
+		{several, "/work", "", false},
+		{several, "/work/other", "", false},
+		{nil, "/work", "", false},
+	} {
+		got, ok := HostPath(tc.roots, tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("HostPath(%+v, %q) = %q, %v; want %q, %v", tc.roots, tc.in, got, ok, tc.want, tc.ok)
+		}
+		if ok {
+			// And back again.
+			if back, ok := ContainerPath(tc.roots, got); !ok || back != path.Clean(tc.in) {
+				t.Errorf("ContainerPath(%q) = %q, %v; want %q", got, back, ok, path.Clean(tc.in))
+			}
+		}
 	}
 }

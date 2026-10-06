@@ -248,7 +248,7 @@ func TestInstallWithoutCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := t.TempDir()
-	if _, err := datadir.InstallInstructions(src, "", []config.Root{{Host: "/home/u/src", Container: "/work"}}, data); err != nil {
+	if _, err := datadir.InstallInstructions(src, "", []config.Root{{Host: "/home/u/src", Container: "/work"}}, false, data); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(data, datadir.ClaudeDir, "CLAUDE.md"))
@@ -484,7 +484,7 @@ func TestSyncFallsBackOnUnknownPlaceholder(t *testing.T) {
 			if tc.embedded {
 				src, _ = assets.SandboxInstructions()
 			}
-			if want := datadir.ExpandInstructions(src, checkout, []config.Root{{Host: "/r", Container: "/work"}}); !bytes.Equal(got, want) {
+			if want := datadir.ExpandInstructions(src, checkout, []config.Root{{Host: "/r", Container: "/work"}}, false); !bytes.Equal(got, want) {
 				t.Errorf("installed:\n%s\nwant:\n%s", got, want)
 			}
 			if strings.Contains(string(got), "@@") {

@@ -220,7 +220,7 @@ func TestInstallInstructions(t *testing.T) {
 	dir := t.TempDir()
 	src := []byte("see @@CABOOSE_DIR@@ and @@CABOOSE_DIR@@/x | & \\1 in @@CABOOSE_ROOTS@@\n")
 	r := []config.Root{{Host: "/r", Container: "/work"}}
-	changed, err := InstallInstructions(src, "/r/a|b&c", r, dir)
+	changed, err := InstallInstructions(src, "/r/a|b&c", r, false, dir)
 	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
@@ -235,7 +235,7 @@ func TestInstallInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	ino := inode(t, dst)
-	changed, err = InstallInstructions(src, "/r/a|b&c", r, dir)
+	changed, err = InstallInstructions(src, "/r/a|b&c", r, false, dir)
 	if err != nil || changed {
 		t.Fatalf("second install: changed=%v err=%v", changed, err)
 	}
@@ -244,7 +244,7 @@ func TestInstallInstructions(t *testing.T) {
 	}
 
 	// Changed: rewritten in place.
-	changed, err = InstallInstructions([]byte("new @@CABOOSE_DIR@@\n"), "/p/q", []config.Root{{Host: "/p", Container: "/work"}}, dir)
+	changed, err = InstallInstructions([]byte("new @@CABOOSE_DIR@@\n"), "/p/q", []config.Root{{Host: "/p", Container: "/work"}}, false, dir)
 	if err != nil || !changed {
 		t.Fatalf("edit: changed=%v err=%v", changed, err)
 	}
@@ -513,7 +513,7 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 	if err := WriteSandboxGit(dir, &fakeGit{}, []Change{{Key: "user.name", Value: "Me"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallInstructions([]byte("x"), "", []config.Root{{Host: "/r", Container: "/work"}}, dir); err != nil {
+	if _, err := InstallInstructions([]byte("x"), "", []config.Root{{Host: "/r", Container: "/work"}}, false, dir); err != nil {
 		t.Fatal(err)
 	}
 	for _, d := range append([]string{"."}, Machinery...) {
@@ -542,7 +542,7 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 }
 
 func TestUnknownPlaceholders(t *testing.T) {
-	if got := UnknownPlaceholders(ExpandInstructions([]byte("@@CABOOSE_DIR@@ @@CABOOSE_ROOTS@@ a@@b @@x@@\n"), "/p", []config.Root{{Host: "/p", Container: "/work"}})); got != nil {
+	if got := UnknownPlaceholders(ExpandInstructions([]byte("@@CABOOSE_DIR@@ @@CABOOSE_ROOTS@@ a@@b @@x@@\n"), "/p", []config.Root{{Host: "/p", Container: "/work"}}, false)); got != nil {
 		t.Errorf("known placeholders reported: %q", got)
 	}
 	got := UnknownPlaceholders([]byte("@@CABOOSE_NEW@@ and @@CABOOSE_NEW@@, @@OTHER_2@@"))
@@ -560,9 +560,43 @@ func TestExpandInstructionsRoots(t *testing.T) {
 		"mounted: `/a` at `/work/a`, `/h/dev` at `/work/dev`.\n": {
 			{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "dev", Host: "/h/dev", Container: "/work/dev"}},
 	} {
-		if got := string(ExpandInstructions(src, "", roots)); got != want {
+		if got := string(ExpandInstructions(src, "", roots, false)); got != want {
 			t.Errorf("%+v: %q, want %q", roots, got, want)
 		}
+	}
+}
+
+// host_exec on says how to run a command on the host; off, that it is off
+// and the user's to turn on. Either way the placeholder is gone, and a
+// change of it rewrites the installed file.
+func TestExpandInstructionsHostExec(t *testing.T) {
+	src := []byte("before\n\n@@CABOOSE_HOST_EXEC@@\n")
+	roots := []config.Root{{Host: "/h/dev", Container: "/work"}}
+	on := string(ExpandInstructions(src, "", roots, true))
+	for _, want := range []string{"caboose-agent host CMD ARGS", "under `/work`", "sh -c", "no terminal", "exit status"} {
+		if !strings.Contains(on, want) {
+			t.Errorf("on: no %q in\n%s", want, on)
+		}
+	}
+	off := string(ExpandInstructions(src, "", roots, false))
+	if !strings.Contains(off, "is off in this environment") || !strings.Contains(off, "`host_exec`") || strings.Contains(off, "caboose-agent host") {
+		t.Errorf("off:\n%s", off)
+	}
+	for _, got := range []string{on, off} {
+		if u := UnknownPlaceholders([]byte(got)); u != nil || strings.Contains(got, HostExecPlaceholder) {
+			t.Errorf("left %q in\n%s", u, got)
+		}
+	}
+	dir := t.TempDir()
+	if changed, err := InstallInstructions(src, "", roots, false, dir); !changed || err != nil {
+		t.Fatalf("first install: %v %v", changed, err)
+	}
+	if changed, err := InstallInstructions(src, "", roots, true, dir); !changed || err != nil {
+		t.Fatalf("turning it on: %v %v", changed, err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ClaudeDir, "CLAUDE.md"))
+	if err != nil || string(b) != on {
+		t.Fatalf("installed %q %v, want the on text", b, err)
 	}
 }
 
