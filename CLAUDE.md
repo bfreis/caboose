@@ -293,8 +293,10 @@ outside the repo.
   and runs as `0:0` with `IS_SANDBOX=1` only where the agent cannot, and
   only under gVisor, whose root is inside its own kernel. Never run as root
   under runc, and never pick the user by engine name. The container is
-  labelled with both (`assets.LabelIsolation`, which holds the kind, and
-  `LabelUser`), set even when empty. Under gVisor a closed terminal's tmux client lingers, so a
+  labelled with the kind (`assets.LabelIsolation`), the profile
+  (`LabelProfile`, `<kind>.<name>`, or the bare kind when config.toml
+  defines none: a switch between two profiles of a kind is drift too) and
+  `LabelUser`, set even when empty. Under gVisor a closed terminal's tmux client lingers, so a
   launch records each attach by host PID in the data dir's `attached/`
   (`launcher/attach.go`) and takes back a session whose clients all
   belong to ended launches; that dir stays out of every mount, or the

@@ -233,7 +233,7 @@ func TestCreateContainerIsolation(t *testing.T) {
 			if got := spec.User == "0:0" && slices.Contains(spec.Env, "IS_SANDBOX=1"); got != tc.user {
 				t.Errorf("root: %v, want %v\n%+v", got, tc.user, spec)
 			}
-			if !hasSeq(spec.Labels, assets.LabelIsolation+"="+tc.iso, assets.LabelUser+"="+tc.userLabel) {
+			if !hasSeq(spec.Labels, assets.LabelIsolation+"="+tc.iso, assets.LabelUser+"="+tc.userLabel, assets.LabelProfile+"="+tc.iso) {
 				t.Errorf("labels missing: %q", spec.Labels)
 			}
 			probe, err := os.ReadFile(filepath.Join(b.engine, "probe"))

@@ -47,6 +47,10 @@ const rootUser = "0:0"
 // isolationOf is c's isolation kind, container when it names none.
 func isolationOf(c *config.Config) string { return or(c.Isolation, isolationContainer) }
 
+// profileOf is c's isolation profile as LabelProfile has it: "<kind>.<name>",
+// or the bare kind when config.toml defines no profile.
+func profileLabel(c *config.Config) string { return or(c.Profile, isolationOf(c)) }
+
 // isolationSummary is c's isolation for status: the kind, and the profile
 // when one is defined.
 func isolationSummary(c *config.Config) string {
@@ -184,7 +188,8 @@ func (a *App) isolate(spec *backend.Spec) error {
 			a.Note("sandbox runs as root inside gVisor (files it writes are still yours here)")
 		}
 	}
-	spec.Labels = append(spec.Labels, assets.LabelIsolation+"="+iso, assets.LabelUser+"="+user)
+	spec.Labels = append(spec.Labels, assets.LabelIsolation+"="+iso, assets.LabelUser+"="+user,
+		assets.LabelProfile+"="+profileLabel(a.Cfg))
 	return nil
 }
 
@@ -207,10 +212,20 @@ func (a *App) isolationDrift() string {
 		return d
 	}
 	iso, _, ok := a.createdIsolation()
-	if !ok || iso == isolationOf(a.Cfg) {
+	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("the container was created with isolation %s; the configuration says %s", iso, isolationOf(a.Cfg))
+	if iso != isolationOf(a.Cfg) {
+		return fmt.Sprintf("the container was created with isolation %s; the configuration says %s", iso, isolationOf(a.Cfg))
+	}
+	if d := a.missingLabel(assets.LabelProfile, "isolation profile"); d != "" {
+		return d
+	}
+	labels, err := a.box().Labels()
+	if err != nil || labels[assets.LabelProfile] == profileLabel(a.Cfg) {
+		return ""
+	}
+	return fmt.Sprintf("the container was created with profile %s; the configuration says %s", labels[assets.LabelProfile], profileLabel(a.Cfg))
 }
 
 // warnIfIsolationDrifted is warnIfRunArgsDrifted for the isolation.

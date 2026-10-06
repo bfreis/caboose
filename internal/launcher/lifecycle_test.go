@@ -318,24 +318,32 @@ func TestRuntimeGone(t *testing.T) {
 
 func TestIsolationDrift(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		labels map[string]string
-		config string
-		drift  string
+		name    string
+		labels  map[string]string
+		config  string
+		profile string
+		drift   string
 	}{
-		{"no label, container", map[string]string{}, "container", "records no isolation"},
-		{"no label, gvisor", map[string]string{}, "gvisor", "records no isolation"},
-		{"same", map[string]string{assets.LabelIsolation: "gvisor"}, "gvisor", ""},
-		{"back to container", map[string]string{assets.LabelIsolation: "gvisor"}, "", "created with isolation gvisor; the configuration says container"},
-		{"a VM", map[string]string{assets.LabelIsolation: "vm"}, "vm", ""},
-		{"none", nil, "gvisor", ""},
+		{"no label, container", map[string]string{}, "container", "", "records no isolation"},
+		{"no label, gvisor", map[string]string{}, "gvisor", "", "records no isolation"},
+		{"same", map[string]string{assets.LabelIsolation: "gvisor", assets.LabelProfile: "gvisor"}, "gvisor", "", ""},
+		{"back to container", map[string]string{assets.LabelIsolation: "gvisor", assets.LabelProfile: "gvisor.default"}, "", "", "created with isolation gvisor; the configuration says container"},
+		{"a VM", map[string]string{assets.LabelIsolation: "vm", assets.LabelProfile: "vm.default"}, "vm", "vm.default", ""},
+		{"same kind, other profile", map[string]string{assets.LabelIsolation: "vm", assets.LabelProfile: "vm.default"}, "vm", "vm.big",
+			"created with profile vm.default; the configuration says vm.big"},
+		{"profile added to the default", map[string]string{assets.LabelIsolation: "gvisor", assets.LabelProfile: "gvisor"}, "gvisor", "gvisor.default",
+			"created with profile gvisor; the configuration says gvisor.default"},
+		{"kind and profile differ", map[string]string{assets.LabelIsolation: "vm", assets.LabelProfile: "vm.big"}, "gvisor", "gvisor.a",
+			"created with isolation vm; the configuration says gvisor"},
+		{"no profile label", map[string]string{assets.LabelIsolation: "vm"}, "vm", "vm.default", "records no isolation profile"},
+		{"none", nil, "gvisor", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			box := &backendtest.Fake{SandboxLabels: tc.labels}
 			if tc.labels != nil {
 				box.Status = "running"
 			}
-			a := &App{Cfg: &config.Config{Container: "box", Isolation: tc.config}, Backend: box}
+			a := &App{Cfg: &config.Config{Container: "box", Isolation: tc.config, Profile: tc.profile}, Backend: box}
 			if got := a.isolationDrift(); !strings.Contains(got, tc.drift) || (tc.drift == "") != (got == "") {
 				t.Errorf("drift = %q, want %q", got, tc.drift)
 			}

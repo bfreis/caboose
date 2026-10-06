@@ -222,7 +222,9 @@ agent, and how to add the flag (to runsc's `runtimeArgs` in
 `/etc/docker/daemon.json`; a running sandbox gets it at
 `caboose restart`). Like the roots, the isolation is fixed when the container is
 created: `caboose restart` applies a change, and until then a launch,
-`caboose status` and `caboose doctor` say the container has another. A
+`caboose status` and `caboose doctor` say the container has another. That
+holds for a switch between two profiles of one kind too (say `vm.default`
+to `vm.big`): the container records the profile it was created with. A
 container created under `gvisor` needs `runsc` for as long as it exists:
 if docker loses it while the container is stopped, the next launch
 recreates the container with the configured isolation (no session is

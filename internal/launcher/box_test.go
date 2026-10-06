@@ -162,7 +162,7 @@ func (b *boxApp) said() (out, errs string) {
 // /work -- which boxApp's root is, once it has one.
 func runningBox(iso string) *backendtest.Fake {
 	return &backendtest.Fake{Status: "running", ImageID: boxImageID,
-		SandboxLabels: map[string]string{assets.LabelIsolation: iso, assets.LabelUser: "", assets.LabelRunArgs: "", assets.LabelHostname: hostnameOf(config.DefaultEnv, "laptop"),
+		SandboxLabels: map[string]string{assets.LabelIsolation: iso, assets.LabelProfile: iso, assets.LabelUser: "", assets.LabelRunArgs: "", assets.LabelHostname: hostnameOf(config.DefaultEnv, "laptop"),
 			assets.LabelCompat: strconv.Itoa(assets.Compat), assets.LabelEgress: egressLabel(iso == isolationVM)}}
 }
 

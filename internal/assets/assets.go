@@ -106,6 +106,11 @@ const (
 	// to write its mounts. Set on every container, as LabelRunArgs is.
 	LabelIsolation = "dev.bfreis.caboose.isolation"
 	LabelUser      = "dev.bfreis.caboose.user"
+	// LabelProfile is on the container too: the isolation profile it was
+	// created with, "<kind>.<name>" as config.toml names it, or just the
+	// kind (say "container") when config.toml defines no profile. Set on
+	// every container, as LabelRunArgs is.
+	LabelProfile = "dev.bfreis.caboose.profile"
 	// LabelEgress is on the container too: "on" for a VM created with the
 	// outbound proxy in its environment (a vm profile's egress), ""
 	// otherwise. Set
