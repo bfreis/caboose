@@ -909,6 +909,15 @@ func (a *App) execEnv() []string {
 	if ct := a.getenv("COLORTERM"); ct != "" {
 		env = append(env, "COLORTERM="+ct)
 	}
+	// Which terminal this is, for what a program decides by it rather than
+	// by TERM: Claude Code picks how to send a notification by it, and sends
+	// none for a terminal it does not know. Inside tmux it would see tmux's
+	// own; tmuxSessionArgv passes these again past it.
+	for _, k := range []string{"TERM_PROGRAM", "TERM_PROGRAM_VERSION"} {
+		if v := a.getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
 	// A zone name the container's tzdata does not have degrades silently
 	// back to UTC -- precisely the bug this exists to fix -- so check, and
 	// say so rather than pretending it worked.

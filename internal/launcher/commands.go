@@ -587,24 +587,7 @@ func (a *App) Attach(args []string) error {
 		a.Note("reattaching to existing session '%s' — arguments ignored", name)
 	}
 
-	// A tmux session inherits the SERVER's environment, not the attaching
-	// client's: a TZ on this docker exec does not reach the pane (verified --
-	// a session made by a TZ-carrying client still sees TZ unset).
-	// `new-session -e` sets it per session, so a session started now is right
-	// even against a server started under another zone.
-	// Sessions that already exist keep whatever they were created with; -e is
-	// ignored on the attach path, harmlessly.
-	var tmuxEnv []string
-	for _, e := range env {
-		if strings.HasPrefix(e, "TZ=") {
-			tmuxEnv = append(tmuxEnv, "-e", e)
-		}
-	}
-
-	// -u forces UTF-8 regardless of the container's locale, which is
-	// otherwise POSIX/C and turns box-drawing characters into mojibake.
-	argv := append([]string{"tmux", "-u", "new-session", "-A", "-s", name, "-c", workdir}, tmuxEnv...)
-	argv = append(append(argv, Entrypoint), args...)
+	argv := tmuxSessionArgv(name, workdir, env, args)
 	// This process becomes the docker exec, and ends with the terminal
 	// (attach.go).
 	a.recordAttach(name)
@@ -650,4 +633,40 @@ func or(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// tmuxSessionArgv is the tmux command that attaches the session name, or
+// creates it in workdir running claude with args, given execEnv's env.
+func tmuxSessionArgv(name, workdir string, env, args []string) []string {
+	// A tmux session inherits the SERVER's environment, not the attaching
+	// client's: a TZ on this exec does not reach the pane (verified -- a
+	// session made by a TZ-carrying client still sees TZ unset).
+	// `new-session -e` sets it per session, so a session started now is right
+	// even against a server started under another zone.
+	//
+	// The terminal's name is the exception: tmux sets TERM_PROGRAM and
+	// TERM_PROGRAM_VERSION to its own in every pane, over -e. Only the
+	// command can set them back, so claude starts under env with the
+	// host's -- what lets it tell which terminal it draws on, past tmux, and
+	// so how to notify there.
+	//
+	// Sessions that already exist keep whatever they were created with; -e
+	// and the command are ignored on the attach path, harmlessly.
+	var tmuxEnv, cmdEnv []string
+	for _, e := range env {
+		switch k, _, _ := strings.Cut(e, "="); k {
+		case "TZ":
+			tmuxEnv = append(tmuxEnv, "-e", e)
+		case "TERM_PROGRAM", "TERM_PROGRAM_VERSION":
+			cmdEnv = append(cmdEnv, e)
+		}
+	}
+	cmd := []string{Entrypoint}
+	if len(cmdEnv) > 0 {
+		cmd = append(append([]string{"/usr/bin/env"}, cmdEnv...), Entrypoint)
+	}
+	// -u forces UTF-8 regardless of the container's locale, which is
+	// otherwise POSIX/C and turns box-drawing characters into mojibake.
+	argv := append([]string{"tmux", "-u", "new-session", "-A", "-s", name, "-c", workdir}, tmuxEnv...)
+	return append(append(argv, cmd...), args...)
 }

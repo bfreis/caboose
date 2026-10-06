@@ -889,6 +889,16 @@ check 'tmux new-session -e reaches the pane' "+0530" \
     "$(docker exec "$CONTAINER" cat /tmp/tz-canary 2>/dev/null | tr -d '\r')"
 docker exec "$CONTAINER" tmux kill-session -t tz-canary 2>/dev/null
 docker exec "$CONTAINER" rm -f /tmp/tz-canary 2>/dev/null
+# TERM_PROGRAM is the exception: tmux sets its own over -e, which is why the
+# launcher passes the host's in the session's command, under env.
+docker exec "$CONTAINER" tmux kill-session -t term-canary 2>/dev/null
+docker exec "$CONTAINER" tmux new-session -d -e TERM_PROGRAM=canary -s term-canary \
+    /usr/bin/env TERM_PROGRAM=caboose-test sh -c 'echo "$TERM_PROGRAM" > /tmp/term-canary; sleep 30' 2>/dev/null
+sleep 1
+check "the session's command sets TERM_PROGRAM past tmux" "caboose-test" \
+    "$(docker exec "$CONTAINER" cat /tmp/term-canary 2>/dev/null | tr -d '\r')"
+docker exec "$CONTAINER" tmux kill-session -t term-canary 2>/dev/null
+docker exec "$CONTAINER" rm -f /tmp/term-canary 2>/dev/null
 
 group 'docker client'
 check 'docker CLI is present in the image' 0 \
