@@ -28,7 +28,9 @@ GO_LDFLAGS ?=
 # they are linux binaries everywhere, and gitignored.
 AGENT_ARCHS := amd64 arm64
 AGENT_BINS  := $(foreach a,$(AGENT_ARCHS),agent-bin/caboose-agent-linux-$(a))
-AGENT_SRC   := go.mod $(shell find cmd/caboose-agent internal/agent internal/agentproto -name '*.go' -not -name '*_test.go')
+# Every package of this module the agent imports, as go list says, so a new
+# dependency cannot be missed (internal/linkdebug once was), and go.sum.
+AGENT_SRC   := go.mod $(wildcard go.sum) $(shell go list -deps -f '{{if not .Standard}}{{$$d := .Dir}}{{range .GoFiles}}{{$$d}}/{{.}} {{end}}{{end}}' ./cmd/caboose-agent 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
@@ -94,8 +96,13 @@ $(VERSION_STAMP): FORCE
 # so an -X in it overrides the stamped value. The stamp may end early (no
 # commit, no date): a read past its end fails and leaves the variable empty, and an empty -X is what version.resolve expects
 # of an unknown commit or date.
+#
+# -buildvcs=false: the agent's bytes are its source's alone. Go would stamp
+# the commit, its date and whether the tree was dirty into its buildinfo,
+# so a checkout's agent never matched a release's, and the image's context
+# hash, which covers it, made every switch between the two a rebuild.
 agent-bin/caboose-agent-linux-%: $(AGENT_SRC)
-	@CGO_ENABLED=0 GOOS=linux GOARCH=$* go build -trimpath -ldflags '-s -w' -o $@ ./cmd/caboose-agent \
+	@CGO_ENABLED=0 GOOS=linux GOARCH=$* go build -trimpath -buildvcs=false -ldflags '-s -w' -o $@ ./cmd/caboose-agent \
 	  && echo "  built $@"
 
 ## agent: build caboose-agent for each architecture (the launcher embeds them)
