@@ -43,7 +43,7 @@ func newRemote(t *testing.T) string {
 
 func newMachine(t *testing.T, host, remote string) *machine {
 	t.Helper()
-	m := &machine{t: t, s: &Syncer{DataDir: t.TempDir(), Host: host}}
+	m := &machine{t: t, s: &Syncer{DataDir: t.TempDir(), Host: host, Roots: testRoots}}
 	m.write(".claude.json", `{"oauthAccount":{"id":"`+host+`"},"numStartups":1}`)
 	if err := m.s.Init(); err != nil {
 		t.Fatal(err)
@@ -53,6 +53,9 @@ func newMachine(t *testing.T, host, remote string) *machine {
 	}
 	return m
 }
+
+// testRoots are the machines' roots: a sole root at /work.
+var testRoots = []string{"/work"}
 
 // mem is the data dir path of a project's memory file, rel being the
 // project's path under /work -- the same on every machine.
@@ -558,7 +561,7 @@ func TestSyncWithGitElsewhere(t *testing.T) {
 	needGit(t)
 	remote := newRemote(t)
 	a := newMachine(t, "alpha", remote)
-	b := &machine{t: t, s: &Syncer{DataDir: t.TempDir(), Host: "beta"}}
+	b := &machine{t: t, s: &Syncer{DataDir: t.TempDir(), Host: "beta", Roots: testRoots}}
 	elsewhere(t, b.s, remote)
 	if err := b.s.Init(); err != nil {
 		t.Fatal(err)
@@ -838,7 +841,7 @@ func TestMaybeRemote(t *testing.T) {
 // appended.
 func (m *machine) config(extra string) {
 	m.t.Helper()
-	m.write(sandboxcfg.Rel, string(sandboxcfg.Default(nil))+extra)
+	m.write(sandboxcfg.Rel, string(sandboxcfg.Default(m.s.Roots))+extra)
 }
 
 // A rule added on one machine reaches the others through the sandbox
@@ -947,5 +950,64 @@ func TestSyncReportsShadowedRules(t *testing.T) {
 	r := a.sync()
 	if !reflect.DeepEqual(r.Shadowed, []string{"~/.tool/state.json"}) {
 		t.Errorf("Shadowed = %q", r.Shadowed)
+	}
+}
+
+// Project memory follows the sandbox config's roots wherever they are: a
+// root with a path of its own syncs its projects' memory, a key that only
+// starts like a root's does not, and a machine takes a root's memory once
+// its sandbox config lists the root.
+func TestSyncFollowsTheRoots(t *testing.T) {
+	needGit(t)
+	remote := newRemote(t)
+	a := newMachine(t, "alpha", remote)
+	b := newMachine(t, "beta", remote)
+	a.s.Roots, a.s.Sandbox = []string{"/opt/x", "/work/dev"}, nil
+	b.s.Roots, b.s.Sandbox = []string{"/work/dev"}, nil
+	memory := func(project string) string { return ".claude/projects/" + ProjectKey(project) + "/memory/m.md" }
+	synced := []string{memory("/opt/x"), memory("/opt/x/app"), memory("/work/dev/p")}
+	left := []string{memory("/opt/xy/app"), memory("/workspace/p"), memory("/work/other"), memory("/work")}
+	for _, p := range append(slices.Clone(synced), left...) {
+		a.write(p, p+"\n")
+	}
+	exported := a.exported()
+	for _, p := range synced {
+		if _, ok := exported[RepoHome+p]; !ok {
+			t.Errorf("alpha does not export %s", p)
+		}
+	}
+	for _, p := range left {
+		if _, ok := exported[RepoHome+p]; ok {
+			t.Errorf("alpha exports %s, under none of its roots", p)
+		}
+	}
+	a.sync()
+
+	// Beta has no root at /opt/x: that memory stays in the repo.
+	r := b.sync()
+	if b.read(memory("/work/dev/p")) != memory("/work/dev/p")+"\n" {
+		t.Errorf("beta lacks %s", memory("/work/dev/p"))
+	}
+	if b.exists(memory("/opt/x/app")) || !slices.Contains(r.Ignored, RepoHome+memory("/opt/x/app")) {
+		t.Errorf("beta took memory under a root it does not list (ignored %q)", r.Ignored)
+	}
+
+	// Once its sandbox config lists the root, the memory comes over.
+	b.s.Roots = a.s.Roots
+	b.config("")
+	b.sync()
+	for _, p := range synced {
+		if got := b.read(p); got != p+"\n" {
+			t.Errorf("beta's %s = %q", p, got)
+		}
+	}
+	for _, p := range left {
+		if b.exists(p) {
+			t.Errorf("beta has %s", p)
+		}
+	}
+	a.sync()
+	if !a.exists(memory("/opt/x/app")) {
+		t.Error("alpha lost memory beta adopted")
 	}
 }

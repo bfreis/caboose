@@ -377,6 +377,18 @@ func (a *App) doctorSandbox(c *checkup) {
 				"the sandbox config expects a root at %s, which none of this machine's configured roots is at: the synced memory of its projects is never read here", r)
 		}
 	}
+	// The sync rules' {roots} are the file's roots: a root added here
+	// after the file was written syncs nothing until it is listed. Only
+	// worth saying where something syncs.
+	if sb.Absent || !a.newSyncer(nil).MaybeRemote() {
+		return
+	}
+	for _, r := range have {
+		if !slices.Contains(sb.Roots, r) {
+			c.note("roots", "this machine's root at %s is not in the sandbox config's roots, so the memory of its projects does not sync; "+
+				"add it there to sync it (%s)", r, edit)
+		}
+	}
 }
 
 // sandboxWrites are the files in the data dir every launch writes, which

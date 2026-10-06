@@ -84,10 +84,10 @@ sync = { merge = "json", keys = ["mcpServers"] }   # all of it, with options
 [[keep]]
 path = "~/.claude"
   [[keep.sync]]                   # only what these match
-  path = "~/.claude/projects/-work*/memory/MEMORY.md"
+  path = "~/.claude/projects/{roots}/memory/MEMORY.md"
   merge = "union"
   [[keep.sync]]
-  path = "~/.claude/projects/-work*/memory"
+  path = "~/.claude/projects/{roots}/memory"
   [[keep.sync]]
   path = "~/.claude/skills"
   exclude = ["~/.claude/skills/synced", "*.tmp"]
@@ -109,6 +109,15 @@ or a directory and everything under it. **The first rule of an entry that
 matches a file decides** how it merges: list a special case before the
 general one. `caboose doctor` notes a rule that never decides anything
 because earlier ones take all it matches.
+
+**`{roots}`**, as a whole path component, matches the directory Claude Code
+keeps a project's state in, for any project under one of the file's
+[`roots`](#roots). Claude Code names it after the project's path with every
+character but an ASCII letter or digit turned into `-`, so for the root
+`/work/dev` it matches `-work-dev` (the root itself) and `-work-dev-*`
+(anything below it), never `-work-devtools`. The name is lossy:
+`/work/dev.old` is `-work-dev-old` too. With no roots listed it matches
+nothing.
 
 Adding a merge driver is a change to caboose; adding a path is a line here.
 `caboose sync add PATH` and `caboose sync rm PATH` edit the file for you,
@@ -154,10 +163,13 @@ roots = ["/work/dev", "/work/oss"]
 ```
 
 The container paths of the [roots](configuration.md#roots) the projects
-expect. Claude Code keys a project's memory by its path, `/work/<root>/...`
-in the container, so memory synced from a machine with a root at `/work/oss` is never
-read on one without it. `caboose doctor` says when this machine lacks one;
-`caboose setup roots` adds it.
+expect, and what `{roots}` in a sync rule stands for: only the memory of
+projects under these syncs. Claude Code keys a project's memory by its path
+in the container, so memory synced from a machine with a root at `/work/oss`
+is never read on one without it. The first write of the file lists this
+machine's roots; a root added later is listed by hand. `caboose doctor` says
+when this machine lacks one of them (`caboose setup roots` adds it), and,
+with a sync remote set, when it has a root the list lacks.
 
 ## Versions
 

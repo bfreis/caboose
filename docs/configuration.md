@@ -362,9 +362,10 @@ The rules:
   refused too, but a path inside them is fine.
 
 Use the same names and paths on every machine you [sync](sync.md), so a
-project has the same path on each. The sync's default rules match only
-projects under `/work`; for a root at a path outside it, add a rule to the
-[sandbox config](sandbox-config.md).
+project has the same path on each. The sync's default rules match the
+projects under the roots the [sandbox config](sandbox-config.md) lists,
+wherever their paths are; a root added after it was written is added to its
+`roots` too, and `caboose doctor` says when one is missing.
 
 Bind mounts are fixed when the container is created, so changing the roots
 once a container exists needs `caboose restart`, which kills running

@@ -16,7 +16,7 @@ func TestProjectKeyMatchesClaudeCode(t *testing.T) {
 }
 
 func TestLiveTarget(t *testing.T) {
-	c, err := sandboxcfg.Parse(sandboxcfg.Default(nil))
+	c, err := sandboxcfg.Parse(sandboxcfg.Default([]string{"/work", "/opt/x"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +28,7 @@ func TestLiveTarget(t *testing.T) {
 		"home/.claude/settings.json":                   {"home/.claude/settings.json", "home/.claude", "json", false, false},
 		"home/.claude/projects/-work-a-b/memory/x.md":  {"home/.claude/projects/-work-a-b/memory/x.md", "home/.claude/projects", "text", false, false},
 		"home/.claude/projects/-work/memory/MEMORY.md": {"home/.claude/projects/-work/memory/MEMORY.md", "home/.claude/projects", "union", false, false},
+		"home/.claude/projects/-opt-x-a/memory/x.md":   {"home/.claude/projects/-opt-x-a/memory/x.md", "home/.claude/projects", "text", false, false},
 		"home/.claude/skills/s/SKILL.md":               {"home/.claude/skills/s/SKILL.md", "home/.claude/skills", "text", false, false},
 		"home/.config/caboose/start.d/10-x":            {"home/.config/caboose/start.d/10-x", "home/.config/caboose", "text", false, false},
 	} {
@@ -43,6 +44,9 @@ func TestLiveTarget(t *testing.T) {
 		"home/.claude/CLAUDE.md",
 		"home/.claude/projects/-work-a/x.jsonl",
 		"home/.claude/projects/-home-agent/memory/x.md",
+		"home/.claude/projects/-workspace-a/memory/x.md",
+		"home/.claude/projects/-opt-xy/memory/x.md",
+		"home/.claude/projects/-opt-y/memory/x.md",
 		"home/.claude/projects/-work-a/memory/../../../../.credentials.json",
 		"home/.claude/skills/",
 		"home/.claude/skills/.git/config",

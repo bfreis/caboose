@@ -163,6 +163,9 @@ type Syncer struct {
 	// Sandbox is the sandbox config whose rules say what syncs; nil reads
 	// the data dir's (datadir.LoadSandboxConfig).
 	Sandbox *datadir.Sandbox
+	// Roots are the container paths of this machine's roots: the roots
+	// of the defaults in effect while there is no sandbox config yet.
+	Roots []string
 	// Defaults, when set, is written as the sandbox config when a sync
 	// that took what the remote has still leaves none: no machine had one
 	// to bring. It goes out in the same sync.
@@ -174,7 +177,7 @@ type Syncer struct {
 // sandbox is the sandbox config in effect, read once.
 func (s *Syncer) sandbox() (*datadir.Sandbox, error) {
 	if s.Sandbox == nil {
-		sb, err := datadir.LoadSandboxConfig(s.DataDir, nil)
+		sb, err := datadir.LoadSandboxConfig(s.DataDir, s.Roots)
 		if err != nil {
 			return nil, err
 		}
@@ -596,7 +599,7 @@ func (s *Syncer) applyAll(old string, r *Report) error {
 		return nil
 	}
 	r.SandboxConfig = true
-	sb, err := datadir.LoadSandboxConfig(s.DataDir, nil)
+	sb, err := datadir.LoadSandboxConfig(s.DataDir, s.Roots)
 	if err != nil || sb.Err != nil {
 		// Kept by the old rules: doctor and the next launch say why.
 		return nil

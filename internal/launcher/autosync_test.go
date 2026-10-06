@@ -101,7 +101,8 @@ exec "$@"
 		t.Fatal(err)
 	}
 	e.a = &App{
-		Cfg:    &config.Config{Container: "box", DataDir: e.data, AutoSync: true},
+		Cfg: &config.Config{Container: "box", DataDir: e.data, AutoSync: true,
+			Roots: []config.Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}}},
 		Docker: &docker.CLI{Path: fake},
 		Stdout: e.stdout, Stderr: e.stderr,
 	}
@@ -173,9 +174,10 @@ func newBare(t *testing.T) string {
 	return dir
 }
 
-// memRel is a memory file's data dir path, for a project under /work.
+// memRel is a memory file's data dir path, for a project under the root
+// /work/dev.
 func memRel(project, file string) string {
-	return "home/.claude/projects/" + statesync.ProjectKey("/work/"+project) + "/memory/" + file
+	return "home/.claude/projects/" + statesync.ProjectKey("/work/dev/"+project) + "/memory/" + file
 }
 
 // pair is two machines on one remote, the other one's first sync done.

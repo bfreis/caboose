@@ -77,6 +77,29 @@ type Rule struct {
 	pattern  []string   // Path's components, relative to the home
 	excludes [][]string // each exclude's components; one component for a bare name
 	names    []bool     // whether each exclude is a bare name, matched at any depth
+	roots    []string   // the project keys of the config's roots, for RootsComponent
+}
+
+// RootsComponent, as a whole component of a rule's path or exclude, stands
+// for the directory Claude Code keeps the state of a project under one of
+// the config's roots in: the root's ProjectKey, or that key, a '-', and
+// more (a project below the root). It is resolved from the roots the file
+// lists, never from this machine's, so a rule means the same on every
+// machine the file syncs to, and a sync records it with the file.
+const RootsComponent = "{roots}"
+
+// ProjectKey is the name Claude Code gives the directory it keeps a
+// project's state in, under ~/.claude/projects, for the project's path:
+// every character other than an ASCII letter or digit becomes '-'. It is
+// lossy: /work/a.b and /work/a/b are both -work-a-b.
+func ProjectKey(p string) string {
+	b := []byte(p)
+	for i, c := range b {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9') {
+			b[i] = '-'
+		}
+	}
+	return string(b)
 }
 
 // Keep is one [[keep]] entry: a directory (or a file) of the home kept in
@@ -203,6 +226,17 @@ func Parse(data []byte) (*Config, error) {
 		if c.find(r.Rel) < 0 {
 			c.problem("%s is not listed, but caboose needs it: kept anyway, not synced", r.Path)
 			c.add(r)
+		}
+	}
+	// Keys come before roots in the file's order: the rules learn the
+	// roots once both are read.
+	var keys []string
+	for _, r := range c.Roots {
+		keys = append(keys, ProjectKey(r))
+	}
+	for i := range c.Keep {
+		for j := range c.Keep[i].Rules {
+			c.Keep[i].Rules[j].roots = keys
 		}
 	}
 	return c, nil
@@ -467,11 +501,14 @@ func strings_(v any) ([]string, bool) {
 // component of its own.
 func checkPattern(comps []string) error {
 	for _, p := range comps {
-		if p == "**" {
+		if p == "**" || p == RootsComponent {
 			continue
 		}
 		if strings.Contains(p, "**") {
 			return errors.New("** has to be a path component of its own")
+		}
+		if strings.Contains(p, RootsComponent) {
+			return errors.New(RootsComponent + " has to be a path component of its own")
 		}
 		if _, err := path.Match(p, ""); err != nil {
 			return fmt.Errorf("%q is not a valid pattern", p)
@@ -504,7 +541,7 @@ func (c *Config) Match(rel string) (*Rule, bool) {
 	name := split(rel)
 	for i := range k.Rules {
 		r := &k.Rules[i]
-		if !matchPrefix(r.pattern, name) {
+		if !matchPrefix(r.pattern, name, r.roots) {
 			continue
 		}
 		if r.excluded(k.Rel, name) {
@@ -528,7 +565,7 @@ func (c *Config) Reaches(rel string) bool {
 	}
 	name := split(rel)
 	for _, r := range k.Rules {
-		if reach(r.pattern, name) {
+		if reach(r.pattern, name, r.roots) {
 			return true
 		}
 	}
@@ -537,22 +574,50 @@ func (c *Config) Reaches(rel string) bool {
 
 // reach reports whether pat matches name, one of its ancestors, or
 // something under it.
-func reach(pat, name []string) bool {
+func reach(pat, name, roots []string) bool {
 	if len(name) == 0 || len(pat) == 0 || pat[0] == "**" {
 		return true
 	}
-	if ok, _ := path.Match(pat[0], name[0]); !ok {
+	if !matchComp(pat[0], name[0], roots) {
 		return false
 	}
-	return reach(pat[1:], name[1:])
+	return reach(pat[1:], name[1:], roots)
 }
+
+// matchComp reports whether pattern component p matches name component n:
+// as path.Match, or, for RootsComponent, as the directory of a project
+// under one of the roots whose project keys are roots.
+func matchComp(p, n string, roots []string) bool {
+	if p == RootsComponent {
+		for _, k := range roots {
+			if n == k || strings.HasPrefix(n, belowKey(k)) {
+				return true
+			}
+		}
+		return false
+	}
+	ok, _ := path.Match(p, n)
+	return ok
+}
+
+// belowKey is what the key of a project below the root with key k starts
+// with: k and the '-' its next '/' becomes, already there for the root /.
+func belowKey(k string) string {
+	if strings.HasSuffix(k, "-") {
+		return k
+	}
+	return k + "-"
+}
+
+// isGlob reports whether pattern component c is more than a literal name.
+func isGlob(c string) bool { return c == RootsComponent || strings.ContainsAny(c, `*?[\`) }
 
 // Base is the part of r's path before its first glob, relative to the
 // home: the directory (or file) it syncs, when it has no glob.
 func (r *Rule) Base() string {
 	var lit []string
 	for _, c := range r.pattern {
-		if strings.ContainsAny(c, `*?[\`) {
+		if isGlob(c) {
 			break
 		}
 		lit = append(lit, c)
@@ -562,7 +627,7 @@ func (r *Rule) Base() string {
 
 // Matches reports whether r matches home-relative path rel, excludes
 // aside: the file, or a directory holding it.
-func (r *Rule) Matches(rel string) bool { return matchPrefix(r.pattern, split(rel)) }
+func (r *Rule) Matches(rel string) bool { return matchPrefix(r.pattern, split(rel), r.roots) }
 
 // excluded reports whether one of r's excludes matches name, a path in the
 // entry at keepRel.
@@ -577,7 +642,7 @@ func (r *Rule) excluded(keepRel string, name []string) bool {
 			}
 			continue
 		}
-		if matchPrefix(x, name) {
+		if matchPrefix(x, name, r.roots) {
 			return true
 		}
 	}
@@ -586,9 +651,9 @@ func (r *Rule) excluded(keepRel string, name []string) bool {
 
 // matchPrefix reports whether pat matches name or one of its ancestors: a
 // pattern naming a directory matches everything in it.
-func matchPrefix(pat, name []string) bool {
+func matchPrefix(pat, name, roots []string) bool {
 	for n := len(name); n >= 1; n-- {
-		if match(pat, name[:n]) {
+		if match(pat, name[:n], roots) {
 			return true
 		}
 	}
@@ -596,14 +661,14 @@ func matchPrefix(pat, name []string) bool {
 }
 
 // match reports whether pat matches name exactly, component by component:
-// ** matches any number of components, anything else one, as path.Match.
-func match(pat, name []string) bool {
+// ** matches any number of components, anything else one (matchComp).
+func match(pat, name, roots []string) bool {
 	if len(pat) == 0 {
 		return len(name) == 0
 	}
 	if pat[0] == "**" {
 		for i := 0; i <= len(name); i++ {
-			if match(pat[1:], name[i:]) {
+			if match(pat[1:], name[i:], roots) {
 				return true
 			}
 		}
@@ -612,17 +677,17 @@ func match(pat, name []string) bool {
 	if len(name) == 0 {
 		return false
 	}
-	if ok, _ := path.Match(pat[0], name[0]); !ok {
+	if !matchComp(pat[0], name[0], roots) {
 		return false
 	}
-	return match(pat[1:], name[1:])
+	return match(pat[1:], name[1:], roots)
 }
 
 // GitAttributes are the sync repo's merge attributes for c's rules, under
 // prefix (the repo's directory for the home): merge=binary for the files
 // statesync merges as JSON itself, merge=union for MergeUnion. A rule git
 // cannot spell as a pattern (whitespace, quotes) is left out: it then
-// merges as text.
+// merges as text. RootsComponent is spelled out, a pattern for each root.
 func (c *Config) GitAttributes(prefix string) string {
 	var b strings.Builder
 	for _, k := range c.Keep {
@@ -636,14 +701,34 @@ func (c *Config) GitAttributes(prefix string) string {
 			default:
 				continue
 			}
-			p := prefix + strings.Join(r.pattern, "/")
-			if strings.ContainsAny(p, " \t\"\\#!") {
-				continue
+			for _, pat := range expandRoots(r.pattern, r.roots) {
+				p := prefix + strings.Join(pat, "/")
+				if strings.ContainsAny(p, " \t\"\\#!") {
+					continue
+				}
+				fmt.Fprintf(&b, "%s %s\n%s/** %s\n", p, attr, p, attr)
 			}
-			fmt.Fprintf(&b, "%s %s\n%s/** %s\n", p, attr, p, attr)
 		}
 	}
 	return b.String()
+}
+
+// expandRoots is pat with each RootsComponent spelled out as plain globs:
+// one pattern for each root's key, and one for the keys below it. None for
+// a pattern with RootsComponent and no roots, which matches nothing.
+func expandRoots(pat, roots []string) [][]string {
+	i := slices.Index(pat, RootsComponent)
+	if i < 0 {
+		return [][]string{pat}
+	}
+	var out [][]string
+	for _, k := range roots {
+		for _, c := range []string{k, belowKey(k) + "*"} {
+			p := slices.Concat(pat[:i], []string{c}, pat[i+1:])
+			out = append(out, expandRoots(p, roots)...)
+		}
+	}
+	return out
 }
 
 // cleanRel reports whether rel is a plain relative path: not empty, no

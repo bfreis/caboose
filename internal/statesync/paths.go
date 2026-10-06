@@ -21,7 +21,6 @@ package statesync
 import (
 	"fmt"
 	"path"
-	"regexp"
 	"strings"
 
 	"github.com/bfreis/caboose/internal/datadir"
@@ -32,14 +31,9 @@ import (
 // ~/<rel> is RepoHome+<rel> there, the same on every machine.
 const RepoHome = "home/"
 
-var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
-
 // ProjectKey is the directory name Claude Code keeps a project's state
-// under, for a cwd: every character other than an ASCII letter or digit
-// becomes '-'.
-func ProjectKey(cwd string) string {
-	return nonAlnum.ReplaceAllString(cwd, "-")
-}
+// under, for a cwd (sandboxcfg.ProjectKey).
+func ProjectKey(cwd string) string { return sandboxcfg.ProjectKey(cwd) }
 
 // Target is where a repo path lives on this machine, and how it syncs.
 type Target struct {

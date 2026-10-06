@@ -136,6 +136,7 @@ func (a *App) newSyncer(g *syncGit) *statesync.Syncer {
 	return &statesync.Syncer{
 		DataDir:  a.Cfg.DataDir,
 		Host:     host,
+		Roots:    a.rootPaths(),
 		Defaults: sandboxcfg.Default(a.rootPaths()),
 		Git:      g.command, // on a nil g, a call panics rather than run host git
 		GitDir:   statesync.ContainerDir,

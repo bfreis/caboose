@@ -43,18 +43,19 @@ func TestDefault(t *testing.T) {
 	}
 
 	for rel, merge := range map[string]string{
-		".claude/projects/-work-a-b/memory/MEMORY.md": MergeUnion,
-		".claude/projects/-work-a-b/memory/one.md":    MergeText,
-		".claude/projects/-work/memory/deep/x.md":     MergeText,
-		".claude/settings.json":                       MergeJSON,
-		".claude/skills/hello/SKILL.md":               MergeText,
-		".claude/skills/synced-by-me/SKILL.md":        MergeText,
-		".claude/agents/a.md":                         MergeText,
-		".claude/commands/deep/c.md":                  MergeText,
-		".claude.json":                                MergeJSON,
-		".config/caboose/start.d/10-foo":              MergeText,
-		".config/caboose/shell.d/aliases.sh":          MergeText,
-		".config/caboose/sandbox.toml":                MergeText,
+		".claude/projects/-work-dev-b/memory/MEMORY.md": MergeUnion,
+		".claude/projects/-work-dev-b/memory/one.md":    MergeText,
+		".claude/projects/-work-dev/memory/deep/x.md":   MergeText,
+		".claude/projects/-opt-oss-a-b/memory/x.md":     MergeText,
+		".claude/settings.json":                         MergeJSON,
+		".claude/skills/hello/SKILL.md":                 MergeText,
+		".claude/skills/synced-by-me/SKILL.md":          MergeText,
+		".claude/agents/a.md":                           MergeText,
+		".claude/commands/deep/c.md":                    MergeText,
+		".claude.json":                                  MergeJSON,
+		".config/caboose/start.d/10-foo":                MergeText,
+		".config/caboose/shell.d/aliases.sh":            MergeText,
+		".config/caboose/sandbox.toml":                  MergeText,
 	} {
 		r, ok := c.Match(rel)
 		if !ok || r.Merge != merge {
@@ -68,8 +69,13 @@ func TestDefault(t *testing.T) {
 		".claude/.credentials.json",
 		".claude/history.jsonl",
 		".claude/CLAUDE.md",
-		".claude/projects/-work-a/s.jsonl",
+		".claude/projects/-work-dev-a/s.jsonl",
 		".claude/projects/-home-agent/memory/x.md",
+		".claude/projects/-work/memory/x.md",
+		".claude/projects/-work-a/memory/x.md",
+		".claude/projects/-work-devx/memory/x.md",
+		".claude/projects/-opt-ossy/memory/x.md",
+		".claude/projects/{roots}/memory/x.md",
 		".claude/skills/synced/acct/docx/SKILL.md",
 		".claude/skills/synced",
 		".config/git/config",
@@ -106,6 +112,7 @@ func TestProblems(t *testing.T) {
 		{"bad merge", "[[keep]]\npath = \"~/.foo\"\nsync = { merge = \"ours\" }", []string{".foo"}, "merge must be"},
 		{"bad exclude", "[[keep]]\npath = \"~/.foo\"\nsync = { exclude = [\"a/b\"] }", []string{".foo"}, "a path is written ~/"},
 		{"bad pattern", "[[keep]]\npath = \"~/.foo\"\n[[keep.sync]]\npath = \"~/.foo/a**\"", []string{".foo"}, "own"},
+		{"roots in a name", "[[keep]]\npath = \"~/.foo\"\n[[keep.sync]]\npath = \"~/.foo/x{roots}\"", []string{".foo"}, "{roots} has to be"},
 		{"file type of a required", "[[keep]]\npath = \"~/.claude.json\"", nil, "as a file"},
 		{"bad root", `roots = ["dev"]`, nil, "not an absolute, clean path"},
 		{"unclean root", `roots = ["/work/../x"]`, nil, "not an absolute, clean path"},
@@ -187,14 +194,80 @@ path = "~/.foo"
 	}
 }
 
+// {roots} is a project under one of the file's roots, by the key Claude
+// Code gives it: the root's own, or one below it -- never a sibling whose
+// name only starts the same.
+func TestRootsComponent(t *testing.T) {
+	rule := "[[keep]]\npath = \"~/.claude\"\n[[keep.sync]]\npath = \"~/.claude/projects/{roots}/memory\"\n"
+	for _, tc := range []struct {
+		roots       string
+		synced, not []string
+	}{
+		{`["/work"]`, []string{"-work", "-work-a", "-work-a-b"}, []string{"-workspace", "-workx-a", "-opt-x", "-home-agent", "work"}},
+		{`["/opt/x", "/work/dev"]`, []string{"-opt-x", "-opt-x-app", "-work-dev-p"}, []string{"-opt", "-opt-xy", "-work", "-work-devx", "-work-d"}},
+		{`["/srv/my.app"]`, []string{"-srv-my-app", "-srv-my-app-sub"}, []string{"-srv-my", "-srv-myxapp"}},
+		{`["/"]`, []string{"-", "-work-a"}, nil},
+		{`[]`, nil, []string{"-work", "-work-a", "{roots}"}},
+	} {
+		c := mustParse(t, "roots = "+tc.roots+"\n"+rule)
+		for _, key := range tc.synced {
+			if _, ok := c.Match(".claude/projects/" + key + "/memory/m.md"); !ok {
+				t.Errorf("roots %s: %s not synced", tc.roots, key)
+			}
+			if !c.Reaches(".claude/projects/" + key) {
+				t.Errorf("roots %s: %s not reached", tc.roots, key)
+			}
+		}
+		for _, key := range tc.not {
+			if r, ok := c.Match(".claude/projects/" + key + "/memory/m.md"); ok {
+				t.Errorf("roots %s: %s synced by %s", tc.roots, key, r.Path)
+			}
+			if c.Reaches(".claude/projects/" + key) {
+				t.Errorf("roots %s: %s reached", tc.roots, key)
+			}
+		}
+	}
+
+	// An exclude may use it too.
+	c := mustParse(t, `roots = ["/work/a"]
+[[keep]]
+path = "~/.claude"
+  [[keep.sync]]
+  path = "~/.claude/projects"
+  exclude = ["~/.claude/projects/{roots}/scratch"]
+`)
+	if _, ok := c.Match(".claude/projects/-work-a-b/scratch/x"); ok {
+		t.Error("the exclude did not apply")
+	}
+	if _, ok := c.Match(".claude/projects/-work-c/scratch/x"); !ok {
+		t.Error("the exclude applied outside the roots")
+	}
+}
+
+func TestProjectKey(t *testing.T) {
+	// As Claude Code names them: every character other than an ASCII
+	// letter or digit becomes '-', one for one.
+	for in, want := range map[string]string{
+		"/work/you.me/caboose": "-work-you-me-caboose",
+		"/work/a_b c/D9":       "-work-a-b-c-D9",
+		"/opt/x":               "-opt-x",
+		"/":                    "-",
+	} {
+		if got := ProjectKey(in); got != want {
+			t.Errorf("ProjectKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestReaches(t *testing.T) {
-	c := mustParse(t, string(Default(nil)))
+	c := mustParse(t, string(Default([]string{"/work"})))
 	for rel, want := range map[string]bool{
 		".claude":                          true,
 		".claude/projects":                 true,
 		".claude/projects/-work-a":         true,
 		".claude/projects/-work-a/memory":  true,
 		".claude/projects/-home-agent":     false,
+		".claude/projects/-workspace":      false,
 		".claude/projects/-work-a/x.jsonl": false,
 		".claude/todos":                    false,
 		".claude/skills/a/b":               true,
@@ -210,10 +283,13 @@ func TestReaches(t *testing.T) {
 }
 
 func TestGitAttributes(t *testing.T) {
-	c := mustParse(t, string(Default(nil)))
+	c := mustParse(t, string(Default([]string{"/work/dev", "/opt/x"})))
 	got := c.GitAttributes("home/")
 	for _, want := range []string{
-		"home/.claude/projects/-work*/memory/MEMORY.md merge=union\n",
+		"home/.claude/projects/-work-dev/memory/MEMORY.md merge=union\n",
+		"home/.claude/projects/-work-dev-*/memory/MEMORY.md merge=union\n",
+		"home/.claude/projects/-opt-x/memory/MEMORY.md merge=union\n",
+		"home/.claude/projects/-opt-x-*/memory/MEMORY.md/** merge=union\n",
 		"home/.claude/settings.json merge=binary\n",
 		"home/.claude/settings.json/** merge=binary\n",
 		"home/.claude.json merge=binary\n",
@@ -222,13 +298,13 @@ func TestGitAttributes(t *testing.T) {
 			t.Errorf("attributes lack %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "skills") {
+	if strings.Contains(got, "{roots}") || strings.Contains(got, "skills") {
 		t.Errorf("a text rule has an attribute:\n%s", got)
 	}
 }
 
 func TestAddAndRemoveSync(t *testing.T) {
-	base := Default(nil)
+	base := Default([]string{"/work"})
 	step := func(data []byte, f func([]byte, string) ([]byte, string, error), p string) []byte {
 		t.Helper()
 		out, msg, err := f(data, p)

@@ -18,7 +18,7 @@ and nothing else. By default:
 
 | in the sandbox | merged |
 |---|---|
-| `~/.claude/projects/-work*/memory/` | as text; lines each side added to a `MEMORY.md` index are both kept |
+| `~/.claude/projects/{roots}/memory/`: the memory of each project under the roots | as text; lines each side added to a `MEMORY.md` index are both kept |
 | `~/.claude/settings.json` | key by key |
 | `~/.claude/skills/`, `agents/`, `commands/` | as text, file by file — not `skills/synced/`, Claude Code's own cache of the skills your account provides |
 | the `mcpServers` key of `~/.claude.json` | key by key; the rest of that file never leaves the machine |
@@ -52,9 +52,17 @@ a remote committed.
 memory under a key made from its path, and the sandbox's paths are the same
 on every machine (`/work/...`, [How it works](how-it-works.md)), so `you/project`
 under the root `dev` is `-work-dev-you-project` on each, and the sync stores it
-as it is. With `[roots]`, name them, and give them paths, alike everywhere; the sandbox config's
-`roots` lists the container paths, and `caboose doctor` says when a machine lacks one.
-Projects outside `/work` (a session started elsewhere, or a root with a path of its own) do not sync, unless a rule of the sandbox config says so.
+as it is. With `[roots]`, name them, and give them paths, alike everywhere. The
+sandbox config's `roots` lists their container paths, and the memory rules
+follow them: `{roots}` in a rule is the directory of any project under one of
+those roots, so a root at `/opt/tools` syncs `-opt-tools` and `-opt-tools-*`,
+and never `-opt-toolsmith`. The list is the file's, which syncs, so every
+machine reads a rule the same way. `caboose doctor` says when a machine
+lacks one of those roots, and, once a remote is set, when it has a root the
+list does not name: add it there, and its projects' memory syncs from the
+next sync on, what the remote already has of it included. Projects under no
+listed root (a session started elsewhere) do not sync, unless a rule of the
+sandbox config says so.
 
 **Conflicts.** Settings merge key by key, and text files with git's merge,
 so edits to different keys or different lines just combine. When both

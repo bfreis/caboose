@@ -26,6 +26,9 @@ const defaultText = `# The sandbox config: what the sandbox keeps across contain
 #                             "union" (a list of lines: both sides kept)
 #                    keys     with "json": only these keys sync
 #                    exclude  paths (~/...) or names (*.tmp) left out
+#                  {roots}, as a whole path component, is the directory
+#                  Claude Code keeps a project's state in, for any project
+#                  under the roots below
 
 format = 1      # this file's structure
 defaults = 1    # the caboose defaults it was written from
@@ -33,7 +36,8 @@ defaults = 1    # the caboose defaults it was written from
 # The roots (the host's [roots]) the projects here expect, by their path in
 # the sandbox: Claude Code keys a project's state by its path, so a machine
 # that mounts no root there never reads the synced memory of its projects,
-# and 'caboose doctor' says so.
+# and 'caboose doctor' says so. Only the projects under these sync: a root
+# added to the host later syncs once it is listed here too.
 roots = []
 
 # Claude Code's state. Only some of it syncs: project memory, settings,
@@ -41,10 +45,10 @@ roots = []
 [[keep]]
 path = "~/.claude"
   [[keep.sync]]
-  path = "~/.claude/projects/-work*/memory/MEMORY.md"
+  path = "~/.claude/projects/{roots}/memory/MEMORY.md"
   merge = "union"    # an index of one-line pointers
   [[keep.sync]]
-  path = "~/.claude/projects/-work*/memory"
+  path = "~/.claude/projects/{roots}/memory"
   [[keep.sync]]
   path = "~/.claude/settings.json"
   merge = "json"

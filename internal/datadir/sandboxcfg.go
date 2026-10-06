@@ -35,7 +35,7 @@ type Sandbox struct {
 // in the data dir itself, which no container mounts; one that does not is
 // replaced by that copy (or by the defaults, when there is none), with
 // Err saying why. With no file at all, the defaults are in effect; roots
-// are what they name (the host config's root names).
+// are the roots they list (the container paths of the host config's).
 func LoadSandboxConfig(dir string, roots []string) (*Sandbox, error) {
 	data, _, err := nofollow.Dir(dir).ReadFile(SandboxConfig)
 	switch {

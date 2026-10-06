@@ -269,6 +269,7 @@ func syncSetupEnv(t *testing.T) (e *setupEnv, remote string) {
 		t.Fatal(err)
 	}
 	c.ReadyTimeout = 1
+	c.Roots = []config.Root{{Name: config.DefaultRootName, Host: filepath.Join(t.TempDir(), "dev"), Container: config.WorkDir + "/" + config.DefaultRootName}}
 	repo := filepath.Join(c.DataDir, statesync.Dir)
 	script := `#!/bin/sh
 case "$*" in
@@ -312,7 +313,7 @@ exec "$@"
 func TestSetupSyncSetsTheRemote(t *testing.T) {
 	e, remote := syncSetupEnv(t)
 	e.writeConfig("")
-	mem := filepath.Join(e.a.Cfg.DataDir, datadir.ClaudeDir, "projects", statesync.ProjectKey("/work/proj"), "memory")
+	mem := filepath.Join(e.a.Cfg.DataDir, datadir.ClaudeDir, "projects", statesync.ProjectKey("/work/dev/proj"), "memory")
 	if err := os.MkdirAll(mem, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +334,7 @@ func TestSetupSyncSetsTheRemote(t *testing.T) {
 	if e.file().Vals["session.auto_sync"] != true {
 		t.Error("auto_sync not written")
 	}
-	got, err := exec.Command("git", "--git-dir", remote, "show", "main:home/.claude/projects/"+statesync.ProjectKey("/work/proj")+"/memory/m.md").CombinedOutput()
+	got, err := exec.Command("git", "--git-dir", remote, "show", "main:home/.claude/projects/"+statesync.ProjectKey("/work/dev/proj")+"/memory/m.md").CombinedOutput()
 	if err != nil || string(got) != "a fact\n" {
 		t.Errorf("the remote holds %q (%v)", got, err)
 	}

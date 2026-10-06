@@ -11,6 +11,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 )
 
@@ -87,7 +88,7 @@ func TestDoctorSyncBothWays(t *testing.T) {
 	}
 	head := here.git("rev-parse", "HEAD")
 	c := here.doctorSync("")
-	key := statesync.ProjectKey("/work/p")
+	key := statesync.ProjectKey("/work/dev/p")
 	wantLines(t, c,
 		"  ! sync  2 changes here not sent yet (home/.claude/projects/"+key+"/memory/mine.md, home/.claude/projects/"+key+
 			"/memory/more.md); 'caboose sync' syncs",
@@ -125,9 +126,9 @@ func TestDoctorSyncManyChanges(t *testing.T) {
 		here.write(filepath.Join(here.data, memRel("p", f)), f)
 	}
 	wantLines(t, here.doctorSync("--offline"),
-		"  ! sync  5 changes here not sent yet (home/.claude/projects/"+statesync.ProjectKey("/work/p")+
-			"/memory/a.md, home/.claude/projects/"+statesync.ProjectKey("/work/p")+"/memory/b.md, home/.claude/projects/"+
-			statesync.ProjectKey("/work/p")+"/memory/c.md, and 2 more); the next launch with nothing running syncs, or 'caboose sync'",
+		"  ! sync  5 changes here not sent yet (home/.claude/projects/"+statesync.ProjectKey("/work/dev/p")+
+			"/memory/a.md, home/.claude/projects/"+statesync.ProjectKey("/work/dev/p")+"/memory/b.md, home/.claude/projects/"+
+			statesync.ProjectKey("/work/dev/p")+"/memory/c.md, and 2 more); the next launch with nothing running syncs, or 'caboose sync'",
 		"  – sync  not checked: the remote: --offline")
 	if here.ranGit() {
 		t.Error("ran git offline")
@@ -209,9 +210,9 @@ func TestDoctorSyncSecretsAndLinks(t *testing.T) {
 	c := here.doctorSync("--offline")
 	wantLines(t, c,
 		"  ✗ sync  refusing to sync; these look like they hold a credential: home/.claude/projects/"+
-			statesync.ProjectKey("/work/p")+"/memory/leak.md (remove it and sync again; nothing was committed)",
+			statesync.ProjectKey("/work/dev/p")+"/memory/leak.md (remove it and sync again; nothing was committed)",
 		"  ! sync  not synced, being symlinks or hard links (never followed): home/.claude/projects/"+
-			statesync.ProjectKey("/work/q")+"/memory")
+			statesync.ProjectKey("/work/dev/q")+"/memory")
 }
 
 func TestDoctorSyncWhileSyncing(t *testing.T) {
@@ -411,5 +412,32 @@ func TestDoctorHostExec(t *testing.T) {
 		if s := a.hostExecSummary(); (s != "") != (tc.want != "") {
 			t.Errorf("%v: status says %q", tc.cfg.HostExec, s)
 		}
+	}
+}
+
+// A root this machine has and the sandbox config does not list syncs no
+// memory: said once something syncs, not before.
+func TestDoctorRootNotInTheSandboxConfig(t *testing.T) {
+	e := newAutoEnv(t, newBare(t))
+	e.a.Cfg.Roots = append(e.a.Cfg.Roots, config.Root{Name: "x", Host: "/h/x", Container: "/opt/x"})
+	e.write(filepath.Join(e.data, datadir.SandboxConfig), string(sandboxcfg.Default([]string{"/work/dev"})))
+	const note = "this machine's root at /opt/x is not in the sandbox config's roots"
+	doctor := func() string {
+		t.Helper()
+		c := &checkup{}
+		e.a.sb = nil
+		e.a.doctorSandbox(c)
+		return c.String()
+	}
+	if got := doctor(); strings.Contains(got, note) {
+		t.Errorf("said with no remote:\n%s", got)
+	}
+	e.setRemote()
+	if got := doctor(); !strings.Contains(got, note) || strings.Contains(got, "/work/dev is not") {
+		t.Errorf("want the note for /opt/x alone:\n%s", got)
+	}
+	e.write(filepath.Join(e.data, datadir.SandboxConfig), string(sandboxcfg.Default([]string{"/work/dev", "/opt/x"})))
+	if got := doctor(); strings.Contains(got, note) {
+		t.Errorf("said with the root listed:\n%s", got)
 	}
 }

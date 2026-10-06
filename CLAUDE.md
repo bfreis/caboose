@@ -213,7 +213,10 @@ outside the repo.
   another machine's rules, or a newer caboose, may sync it. A path this
   machine has only just started syncing (named by its rules, not by the
   last sync's, kept in the repo's `.git/caboose-rules.toml`) is adopted from
-  the repo, never read as deleted. The sync's own git never reads the
+  the repo, never read as deleted. So a rule is read from the file alone:
+  `{roots}` (project memory, by default) is the file's own `roots`, never
+  this machine's mounts, which would make a rule mean something different
+  on each machine and change it unrecorded. The sync's own git never reads the
   sandbox's git config (`GIT_CONFIG_GLOBAL=/dev/null`): it can arrive by
   sync, and must not redirect the push. It still sits in the sync repo, where git obeys a `.gitattributes`
   and runs no hooks only because every git call passes
