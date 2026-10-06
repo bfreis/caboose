@@ -99,6 +99,30 @@ clear_stale_runtime_state() {
     fi
 }
 
+# Under vm, and under gVisor where the agent cannot write its mounts, the
+# sandbox runs as root with HOME at the agent's home, where everything kept
+# is. What takes its home from passwd rather than HOME -- ssh, for its
+# config and known_hosts -- would look in root's own, /root, and find none
+# of it, so root's entry is pointed at HOME. Only the first uid 0 entry
+# changes, the one getpwuid finds. Bash builtins alone, so the image needs
+# no more tools; the file is rewritten in place, as the layer's user setup
+# does, keeping its mode and owner, and left alone when it already says so.
+point_root_home() {
+    local passwd=$1 home=$2 line out="" found=""
+    local re='^([^:]*:[^:]*:0:[^:]*:[^:]*:)([^:]*)(:.*)$'
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$found" ] && [[ $line != [#+-]* && $line =~ $re ]]; then
+            found=1
+            [ "${BASH_REMATCH[2]}" = "$home" ] && return 0
+            line="${BASH_REMATCH[1]}$home${BASH_REMATCH[3]}"
+        fi
+        out+="$line"$'\n'
+    done < "$passwd"
+    [ -n "$found" ] || return 0
+    printf '%s' "$out" > "$passwd" || return 1
+    log "root's home in $passwd is now $home"
+}
+
 # version_newer A B: whether A is the later version, as `sort -V` orders the
 # dotted versions the installer names its files by (2.1.9 < 2.1.10 < 2.2.0).
 # Field by field: by the fields' leading digits, numerically (10#, so a
@@ -272,6 +296,9 @@ case "${1:-}" in
         run_start_scripts
         ;;
     --cc-supervise)
+        if [ "$EUID" -eq 0 ]; then
+            point_root_home /etc/passwd "$HOME" || log "could not point root's home at $HOME"
+        fi
         ensure_claude_installed
         clear_stale_runtime_state
         prune_old_versions

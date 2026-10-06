@@ -227,3 +227,82 @@ func TestEntrypointStartNone(t *testing.T) {
 		t.Errorf("--cc-start: %v\n%s", err, out)
 	}
 }
+
+// entrypointFunc is the function name from entrypoint.sh, lifted out of
+// it as versionOrder does: sourcing the whole script would run its
+// dispatch.
+func entrypointFunc(t *testing.T, name string) string {
+	t.Helper()
+	src, err := os.ReadFile("entrypoint.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	start := strings.Index(s, "\n"+name+"() {")
+	if start < 0 {
+		t.Fatalf("no %s function in entrypoint.sh", name)
+	}
+	end := strings.Index(s[start+1:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("%s has no closing brace", name)
+	}
+	return s[start+1:start+1+end+2] + "\n"
+}
+
+// Run as root with HOME elsewhere (vm, and gVisor where the agent cannot
+// write its mounts), the entrypoint points root's passwd entry at HOME, so
+// that ssh, which reads its home from passwd, finds the kept ~/.ssh.
+func TestEntrypointRootHome(t *testing.T) {
+	needBash(t)
+	script := "set -euo pipefail\nlog() { printf 'caboose: %s\\n' \"$*\" >&2; }\n" +
+		entrypointFunc(t, "point_root_home") + `point_root_home "$1" "$2"` + "\n"
+	for _, tc := range []struct{ name, in, want, said string }{
+		{"moved",
+			"root:x:0:0:root:/root:/bin/bash\nagent:x:501:20::/home/agent:/bin/bash\n",
+			"root:x:0:0:root:/home/agent:/bin/bash\nagent:x:501:20::/home/agent:/bin/bash\n",
+			"caboose: root's home in PASSWD is now /home/agent\n"},
+		{"already", "root:x:0:0:root:/home/agent:/bin/bash\n", "", ""},
+		// getpwuid(0) answers with the first entry; a second is not root's
+		// home, and comments and NIS lines are no entry at all.
+		{"first only",
+			"# x:x:0:0::/c:/bin/sh\n+::0:0::/n:\ntoor:x:0:0::/root:\nroot:x:0:0:root:/root:/bin/sh\n",
+			"# x:x:0:0::/c:/bin/sh\n+::0:0::/n:\ntoor:x:0:0::/home/agent:\nroot:x:0:0:root:/root:/bin/sh\n",
+			"caboose: root's home in PASSWD is now /home/agent\n"},
+		{"no newline at the end", "root:x:0:0:root:/root:/bin/sh", "root:x:0:0:root:/home/agent:/bin/sh\n",
+			"caboose: root's home in PASSWD is now /home/agent\n"},
+		{"no root", "agent:x:501:20::/home/agent:/bin/bash\n", "", ""},
+		{"uid 0 only", "r:x:00:0::/root:/bin/sh\nn:x:10:0::/root:/bin/sh\n", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			passwd := filepath.Join(t.TempDir(), "passwd")
+			if err := os.WriteFile(passwd, []byte(tc.in), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			old, _ := os.Stat(passwd)
+			var stderr strings.Builder
+			cmd := exec.Command("bash", "-c", script, "root-home", passwd, "/home/agent")
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("point_root_home: %v\n%s", err, stderr.String())
+			}
+			want := tc.want
+			if want == "" {
+				want = tc.in
+			}
+			got, _ := os.ReadFile(passwd)
+			if string(got) != want {
+				t.Errorf("passwd:\n%s\nwant:\n%s", got, want)
+			}
+			if said := strings.ReplaceAll(tc.said, "PASSWD", passwd); stderr.String() != said {
+				t.Errorf("said %q, want %q", stderr.String(), said)
+			}
+			st, _ := os.Stat(passwd)
+			if !os.SameFile(old, st) || st.Mode().Perm() != 0o640 {
+				t.Errorf("passwd was replaced or its mode changed: %v", st.Mode())
+			}
+			if tc.want == "" && !st.ModTime().Equal(old.ModTime()) {
+				t.Errorf("passwd was written though nothing changed")
+			}
+		})
+	}
+}

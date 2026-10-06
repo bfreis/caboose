@@ -146,7 +146,8 @@ process, so the agent could not write its own home. There the container
 runs as root instead, a root that exists only inside gVisor's kernel; files
 it writes on the mounts still belong to you on this machine. caboose finds
 out which by trying, as it creates the container, and `caboose doctor`
-says when it runs as root.
+says when it runs as root. Root's home is the agent's, `/home/agent`, there as
+everywhere, so ssh and whatever else looks it up find what is kept.
 
 OrbStack's file sharing answers a directory read again from the start,
 through the same open handle, with what it said the first time, and
@@ -213,8 +214,9 @@ line is about this machine's engine instead, whose socket the sandbox
 may have); its log is `/var/log/caboose-dockerd.log` in the sandbox.
 
 The sandbox runs as root inside the VM: its shares show every file as
-root's, so the agent user could not tell its own. Files it writes on the
-mounts are yours on the Mac. The Mac's edits under the roots reach the
+root's, so the agent user could not tell its own. Root's home is
+`/home/agent`, so ssh and the rest find what is kept there. Files it writes
+on the mounts are yours on the Mac. The Mac's edits under the roots reach the
 sandbox's watchers through the [host link](host-link.md#file-changes), and
 so does your [SSH agent](ssh.md) (any command that starts the VM starts
 the link too). The docker socket cannot be mounted into a VM, and `docker_run_args` mean nothing there: a launch refuses

@@ -91,7 +91,7 @@ embedded in it instead.
 | `Dockerfile` | the default base image: OS packages and toolchains, nothing agent-specific; its optional parts are marked sections, which `caboose setup image` cuts it down to (`internal/assets/preset.go`) |
 | `layer.Dockerfile` | the layer built on every base: the agent user, its home, the entrypoint, `tmux.conf`, `HOME`/`PATH`/`LANG` |
 | `layer-user.sh` | the layer's user setup, POSIX sh editing /etc/passwd, group, shadow directly; tested by `layeruser_test.go` |
-| `entrypoint.sh` | container entrypoint; bootstraps Claude Code, clears stale session state, prunes versions, runs the user's `start.d` in the background, idles under tini |
+| `entrypoint.sh` | container entrypoint; points root's home at `HOME` when it runs as root (vm, some gVisor), bootstraps Claude Code, clears stale session state, prunes versions, runs the user's `start.d` in the background, idles under tini |
 | `shellrc.bash` | the `shell.d` loader every interactive bash sources, through the line `layer-user.sh` adds to `~/.bashrc`; tested by `shellrc_test.go` |
 | `tmux.conf` | tmux configuration baked into the image, set up to own no keys |
 | `imagecheck.sh` | the image probe, POSIX sh, run by `caboose check-image` and before every layer build; reports facts only, embedded but in no image |

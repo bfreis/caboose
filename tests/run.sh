@@ -235,6 +235,9 @@ vm_group() {
     # In the VM: who runs, where, and the files the host shares with it.
     check 'it is a Linux guest' Linux "$(vsh 'uname -s')"
     check "it runs as root in the guest, whose shares show every file as root's" 0 "$(vsh 'id -u')"
+    check "root's home is the kept one, for what reads it from passwd" /home/agent "$(vsh 'getent passwd 0 | cut -d: -f6')"
+    check 'so ssh reads the kept known_hosts' /home/agent/.ssh/known_hosts \
+        "$(vsh "ssh -G github.com 2>/dev/null | sed -n 's/^userknownhostsfile \([^ ]*\).*/\1/p'")"
     check 'a shell starts in the project, at its path under /work' /work/proj "$(vsh pwd)"
     check 'that user writes a 600 file in ~/.claude' ok \
         "$(vsh 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
