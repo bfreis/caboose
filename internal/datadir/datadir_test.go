@@ -706,3 +706,54 @@ func TestStartScripts(t *testing.T) {
 		t.Errorf("skipped = %v, want %v", skipped, want)
 	}
 }
+
+// An installed launcher finds a clone of the source under the roots, and
+// names it where the container has it, rather than "not mounted".
+func TestFindClone(t *testing.T) {
+	root := t.TempDir()
+	repo := func(rel, module string) string {
+		t.Helper()
+		d := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Join(d, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if module != "" {
+			if err := os.WriteFile(filepath.Join(d, "go.mod"), []byte("// x\nmodule "+module+"\n\ngo 1.27\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return d
+	}
+	roots := []config.Root{{Host: root, Container: "/work"}}
+	repo("other", "example.com/other")
+	repo("plain", "")
+	if got := FindClone(roots); got != "" {
+		t.Fatalf("found %q among decoys", got)
+	}
+	// One inside another repository is not looked for: repositories are
+	// checked, never descended into.
+	repo("other/vendor/caboose", Module)
+	// A symlink to a clone is never followed.
+	elsewhere := t.TempDir()
+	os.MkdirAll(filepath.Join(elsewhere, "c", ".git"), 0o755)
+	os.WriteFile(filepath.Join(elsewhere, "c", "go.mod"), []byte("module "+Module+"\n"), 0o644)
+	os.Symlink(filepath.Join(elsewhere, "c"), filepath.Join(root, "link"))
+	// Deeper than cloneDepth below the root is not looked at.
+	repo("a/b/c/d/caboose", Module)
+	if got := FindClone(roots); got != "" {
+		t.Fatalf("found %q", got)
+	}
+	want := repo("me/caboose", Module)
+	if got := FindClone(roots); got != want {
+		t.Fatalf("FindClone %q, want %q", got, want)
+	}
+	if got := InstructionsLocation("", roots); !strings.HasPrefix(got, "/work/me/caboose   (a clone of the source") {
+		t.Errorf("InstructionsLocation %q", got)
+	}
+	// A budget spent before the clone is reached gives up.
+	defer func(n int) { cloneDirs = n }(cloneDirs)
+	cloneDirs = 2
+	if got := FindClone(roots); got != "" {
+		t.Errorf("found %q past the budget", got)
+	}
+}

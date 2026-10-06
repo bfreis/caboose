@@ -326,6 +326,14 @@ const UpstreamURL = "https://github.com/bfreis/caboose"
 // the physical host paths mounted into the container, and where.
 func InstructionsLocation(checkout string, roots []config.Root) string {
 	if checkout == "" {
+		// An installed launcher has no checkout of its own, but a clone of
+		// the source can still sit under a root, and an agent told "not
+		// mounted" would decline to edit what it can.
+		if clone := FindClone(roots); clone != "" {
+			if p, ok := config.ContainerPath(roots, clone); ok {
+				return p + "   (a clone of the source, under the repo roots; this launcher is an installed release, so a change there reaches this sandbox only through a release)"
+			}
+		}
 		return "NOT MOUNTED — this launcher is an installed binary, not a checkout. The source is " +
 			UpstreamURL + ": changes are made there (or in a clone of it on the host), not from in here"
 	}
@@ -334,6 +342,84 @@ func InstructionsLocation(checkout string, roots []config.Root) string {
 	}
 	return "NOT MOUNTED — its checkout, " + checkout + ", is outside the repo root (" + config.DescribeRoots(roots) +
 		"), so it is edited from the host, not from in here"
+}
+
+// Module is caboose's module path, which a clone's go.mod names.
+const Module = "github.com/bfreis/caboose"
+
+// Limits on FindClone, which runs at every launch: how deep below a root it
+// looks, and how many directories it reads in all.
+var (
+	cloneDepth = 3
+	cloneDirs  = 4000
+)
+
+// FindClone is the host path of a clone of caboose's source under the
+// roots, or "": a repository (a directory with .git or .jj) whose go.mod
+// declares Module, at most cloneDepth below a root. A repository is
+// checked and never descended into, hidden directories and symlinks are
+// skipped, and the search gives up after cloneDirs directories, so a large
+// root costs a bounded read. The roots are the sandbox's to write, so a
+// symlink there is never followed.
+func FindClone(roots []config.Root) string {
+	budget := cloneDirs
+	type dir struct {
+		path  string
+		depth int
+	}
+	var queue []dir
+	for _, r := range roots {
+		queue = append(queue, dir{r.Host, 0})
+	}
+	for len(queue) > 0 && budget > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		budget--
+		ents, err := os.ReadDir(d.path)
+		if err != nil {
+			continue
+		}
+		repo := false
+		for _, e := range ents {
+			if (e.Name() == ".git" || e.Name() == ".jj") && e.Type()&fs.ModeSymlink == 0 {
+				repo = true
+			}
+		}
+		if repo {
+			if declaresModule(filepath.Join(d.path, "go.mod")) {
+				return d.path
+			}
+			continue
+		}
+		if d.depth == cloneDepth {
+			continue
+		}
+		for _, e := range ents {
+			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+				queue = append(queue, dir{filepath.Join(d.path, e.Name()), d.depth + 1})
+			}
+		}
+	}
+	return ""
+}
+
+// declaresModule is whether path is a regular file, not a symlink, whose
+// module line names Module.
+func declaresModule(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > 1<<20 {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "module" {
+			return strings.Trim(f[1], `"`) == Module
+		}
+	}
+	return false
 }
 
 // DescribeMounts is what replaces @@CABOOSE_ROOTS@@: each root's host path
