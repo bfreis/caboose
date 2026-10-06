@@ -153,6 +153,7 @@ func (a *App) Status() error {
 	a.warnIfRunArgsDrifted()
 	a.warnIfIsolationDrifted()
 	a.warnIfEgressDrifted()
+	a.warnIfHostnameDrifted()
 
 	claude, err := backend.RawOutput(a.box(), "claude", "--version")
 	if err != nil {

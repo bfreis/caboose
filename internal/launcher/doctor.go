@@ -515,6 +515,9 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	if d := a.runArgsDrift(); d != "" {
 		c.problem("run args", "caboose restart"+endsSessions, "%s", d)
 	}
+	if d := a.hostnameDrift(); d != "" {
+		c.problem("hostname", "caboose restart"+endsSessions, "%s", d)
+	}
 	if d := a.egressDrift(); d != "" {
 		c.problem("egress", "caboose restart"+endsSessions, "%s", d)
 	}

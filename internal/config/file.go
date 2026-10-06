@@ -40,6 +40,7 @@ var fileKeys = map[string]string{
 	"egress_allow":    "EGRESS_ALLOW",
 	"ssh_agent":       "SSH_AGENT",
 	"host_exec":       "HOST_EXEC",
+	"hostname":        "HOSTNAME",
 }
 
 // rootsKey is the one table config.toml accepts: several repo roots by
@@ -232,6 +233,12 @@ format = 1    # this file's structure
 # [CABOOSE_VM_CPUS, CABOOSE_VM_MEMORY]
 #vm_cpus = 4
 #vm_memory = "8G"
+
+# The sandbox's hostname: one lowercase DNS label. By default
+# caboose-<this machine's name>, with -<env> after it in any environment but
+# the default one. Takes effect at the next 'caboose restart'.
+# [CABOOSE_HOSTNAME]
+#hostname = "caboose-laptop"
 
 # Mount the host's docker socket: root-equivalent access to the host.
 # [CABOOSE_DOCKER_SOCK]

@@ -25,7 +25,7 @@ import (
 // ownedFlags are the docker run flags caboose sets or depends on, and why.
 var ownedFlags = map[string]string{
 	"name":        "caboose names the container (CABOOSE_CONTAINER)",
-	"hostname":    "caboose sets the hostname",
+	"hostname":    "caboose sets the hostname (hostname in config.toml)",
 	"restart":     "caboose sets the restart policy",
 	"init":        "caboose runs the container under tini",
 	"detach":      "caboose runs the container detached",

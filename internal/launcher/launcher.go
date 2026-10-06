@@ -163,6 +163,9 @@ type App struct {
 	Suffix string
 	Stdout io.Writer
 	Stderr io.Writer
+	// HostPart, when set, stands in for the machine's name as hostname.go
+	// finds it: the tests'.
+	HostPart func() string
 
 	// install is what the container being brought up installs before it is
 	// ready (noteInstall), for waitUntilReady to say.

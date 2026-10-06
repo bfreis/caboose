@@ -132,7 +132,7 @@ func (a *App) Sync(args []string) error {
 // for a Syncer that only locks, or that is given its git later: never the
 // host's git, which statesync would otherwise default to.
 func (a *App) newSyncer(g *syncGit) *statesync.Syncer {
-	host, _ := os.Hostname()
+	host := a.syncHost()
 	return &statesync.Syncer{
 		DataDir:  a.Cfg.DataDir,
 		Host:     host,

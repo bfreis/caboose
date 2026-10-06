@@ -22,6 +22,7 @@ keeps of its home, and what of that syncs, is not here: it is the
 | `no_tmux` | `CABOOSE_NO_TMUX` | unset | skip tmux: native rendering, but no detach/reattach |
 | `auto_sync` | `CABOOSE_AUTO_SYNC` | unset | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
 | `tz` | `CABOOSE_TZ` | host's zone | timezone inside the container |
+| `hostname` | `CABOOSE_HOSTNAME` | `caboose-<host>`, with `-<env>` after it in any environment but `default` | the sandbox's hostname: one lowercase DNS label (1 to 63 letters, digits and `-`, not starting or ending with `-`). The default's `<host>` is this machine's name, cut at the first `.`, lowercased, anything but letters, digits and `-` turned into `-`, and shortened to fit; on a Mac it is `scutil --get LocalHostName`, which unlike `hostname` does not change with the network. Set per environment; fixed when the container is created, so `caboose restart` applies a change |
 | `isolation` | `CABOOSE_ISOLATION` | `docker` | what keeps the sandbox from this machine: `docker` (runc), `gvisor` (runsc) or `vm` (a VM of caboose's own, on a Mac); see [isolation](#isolation) |
 | `vm_cpus`, `vm_memory` | `CABOOSE_VM_CPUS`, `CABOOSE_VM_MEMORY` | half the CPUs; half the memory, at most `8G` | the `vm` isolation's size: CPUs, and memory as `"8G"` or `"4096M"` |
 | `docker_sock` | `CABOOSE_DOCKER_SOCK` | unset | mount the host docker socket — **removes the isolation**, see caveats |
@@ -72,7 +73,7 @@ boolean flags (`--privileged`, `--read-only`, ...) may stand alone, since
 docker would take the next argument as another flag's value. Refused:
 
 - short flags (`-e`): write the long one (`--env=...`);
-- the flags caboose sets or depends on: `--name`, `--hostname`,
+- the flags caboose sets or depends on: `--name`, `--hostname` (use `hostname`, above),
   `--user`, `--runtime` (see [isolation](#isolation)), `--entrypoint`,
   `--init`, `--restart`, `--rm`, `--detach`,
   `--interactive`, `--tty`, `--attach`, `--platform`, `--pull`,

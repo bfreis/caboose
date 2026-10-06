@@ -24,7 +24,7 @@ var Settings = []string{
 	"NO_AUTO_BUILD", "BASE_IMAGE", "AUTO_SYNC", "DOCKER_RUN_ARGS",
 	"FORWARD_PORTS", "OPEN_URLS", "ISOLATION", "VM_CPUS", "VM_MEMORY",
 	"EGRESS_PROXY", "EGRESS_PORTS", "EGRESS_ALLOW", "SSH_AGENT",
-	"HOST_EXEC",
+	"HOST_EXEC", "HOSTNAME",
 }
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -138,6 +138,10 @@ type Config struct {
 	// "4096M", or MiB), "" for the launcher's defaults (launcher/vm.go).
 	// The host's keys, as the isolation is.
 	VMCPUs, VMMemory string
+	// Hostname is CABOOSE_HOSTNAME: the sandbox's hostname, "" for the
+	// default the launcher derives from this machine's name
+	// (launcher/hostname.go). Checked at load (CheckHostname).
+	Hostname string
 	// EgressProxy is CABOOSE_EGRESS_PROXY: "on" (the default) or "off",
 	// whether under vm the sandbox's outbound connections are dialled
 	// from this machine, through the link, so that its VPN routes and
@@ -352,11 +356,19 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		Isolation:    or(vals["ISOLATION"], "docker"),
 		VMCPUs:       vals["VM_CPUS"],
 		VMMemory:     vals["VM_MEMORY"],
+		Hostname:     vals["HOSTNAME"],
 		EgressProxy:  or(vals["EGRESS_PROXY"], "on"),
 		EgressPorts:  or(vals["EGRESS_PORTS"], DefaultEgressPorts),
 		EgressAllow:  vals["EGRESS_ALLOW"],
 		Home:         home,
 		Getenv:       getenv,
+	}
+	if err := CheckHostname(c.Hostname); err != nil {
+		if f := from["HOSTNAME"]; f == "CABOOSE_HOSTNAME" {
+			return nil, fmt.Errorf("%v (CABOOSE_HOSTNAME)", err)
+		} else if f != "" {
+			return nil, fmt.Errorf("%v (in %s)", err, f)
+		}
 	}
 	c.DataDir = c.resolveDataDir(vals["DATA_DIR"])
 	c.DockerRunArgs, c.DockerRunArgsFrom = strings.Fields(vals["DOCKER_RUN_ARGS"]), from["DOCKER_RUN_ARGS"]
@@ -387,6 +399,20 @@ const DefaultForwardPorts = "3000-3999 5173 8000-8999"
 // DefaultEgressPorts are the ports the outbound proxy reaches when
 // egress_ports is not set: ssh (git), http and https.
 const DefaultEgressPorts = "22 80 443"
+
+// CheckHostname reads hostname: "" is unset, anything else must be one
+// DNS label, which is what a hostname is to docker and to the guest.
+func CheckHostname(v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > 63 || !hostnameLabel.MatchString(v) {
+		return fmt.Errorf("hostname: %q is not a hostname: 1 to 63 lowercase letters, digits and -, not starting or ending with -", v)
+	}
+	return nil
+}
+
+var hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // CheckEgressProxy reads egress_proxy: whether it is on, or why the value
 // is neither "on" nor "off".

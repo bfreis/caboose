@@ -75,9 +75,10 @@ exit 99
 	b.App = &App{
 		Cfg: &config.Config{Env: "default", Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
 			DataDir: b.data, KeepVersions: "2", ReadyTimeout: "0", Isolation: iso, Getenv: func(string) string { return "" }},
-		Docker:  &docker.CLI{Path: fake},
-		Backend: box,
-		Stdout:  b.out, Stderr: b.errb,
+		Docker:   &docker.CLI{Path: fake},
+		HostPart: func() string { return "laptop" },
+		Backend:  box,
+		Stdout:   b.out, Stderr: b.errb,
 		// Where startLink would spawn caboose link, and findVMFiles look
 		// beside the launcher: neither is this test binary's.
 		Executable: func() (string, error) { return filepath.Join(tmp, "caboose"), nil },
@@ -161,7 +162,7 @@ func (b *boxApp) said() (out, errs string) {
 // /work -- which boxApp's root is, once it has one.
 func runningBox(iso string) *backendtest.Fake {
 	return &backendtest.Fake{Status: "running", ImageID: boxImageID,
-		SandboxLabels: map[string]string{assets.LabelIsolation: iso, assets.LabelUser: "", assets.LabelRunArgs: "",
+		SandboxLabels: map[string]string{assets.LabelIsolation: iso, assets.LabelUser: "", assets.LabelRunArgs: "", assets.LabelHostname: hostnameOf(config.DefaultEnv, "laptop"),
 			assets.LabelCompat: strconv.Itoa(assets.Compat), assets.LabelEgress: egressLabel(iso == isolationVM)}}
 }
 

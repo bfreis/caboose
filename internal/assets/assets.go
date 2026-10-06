@@ -112,6 +112,10 @@ const (
 	// outbound proxy in its environment (egress_proxy), "" otherwise. Set
 	// on every container, as LabelRunArgs is.
 	LabelEgress = "io.github.bfreis.caboose.egress"
+	// LabelHostname is on the container too: the hostname it was created
+	// with. Set on every container, as LabelRunArgs is; one without it is
+	// from before it, when the hostname was always "caboose".
+	LabelHostname = "io.github.bfreis.caboose.hostname"
 )
 
 // Compat is the version of what the launcher expects of a container it did

@@ -612,3 +612,37 @@ func TestHostPath(t *testing.T) {
 		}
 	}
 }
+
+// hostname comes from config.toml, a variable wins over it, and a value
+// that is no single lowercase DNS label is refused at load, saying where
+// it came from.
+func TestHostnameSetting(t *testing.T) {
+	home := map[string]string{"HOME": "/h"}
+	if c, err := Load(envOf(home), fakeFS{}, ""); err != nil || c.Hostname != "" {
+		t.Fatalf("default: %q %v", c.Hostname, err)
+	}
+	fsys := fakeFS{cfgPath: "hostname = \"from-file\"\n"}
+	if c, err := Load(envOf(home), fsys, ""); err != nil || c.Hostname != "from-file" {
+		t.Errorf("from the file: %q %v", c.Hostname, err)
+	}
+	c, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOSTNAME": "from-var"}), fsys, "")
+	if err != nil || c.Hostname != "from-var" {
+		t.Errorf("from the variable: %q %v", c.Hostname, err)
+	}
+	for _, good := range []string{"a", "caboose-laptop", "a1", strings.Repeat("a", 63)} {
+		if err := CheckHostname(good); err != nil {
+			t.Errorf("CheckHostname(%q): %v", good, err)
+		}
+	}
+	for _, bad := range []string{"Laptop", "-a", "a-", "a.b", "a_b", "a b", strings.Repeat("a", 64)} {
+		if CheckHostname(bad) == nil {
+			t.Errorf("CheckHostname(%q) accepted", bad)
+		}
+		if _, err := Load(envOf(home), fakeFS{cfgPath: "hostname = \"" + bad + "\"\n"}, ""); err == nil || !strings.Contains(err.Error(), "in /h/.caboose/envs/default/config.toml") {
+			t.Errorf("file hostname %q: %v", bad, err)
+		}
+		if _, err := Load(envOf(map[string]string{"HOME": "/h", "CABOOSE_HOSTNAME": bad}), fakeFS{}, ""); err == nil || !strings.Contains(err.Error(), "CABOOSE_HOSTNAME") {
+			t.Errorf("variable hostname %q: %v", bad, err)
+		}
+	}
+}

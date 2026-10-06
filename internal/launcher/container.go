@@ -326,7 +326,7 @@ func (a *App) createContainer(mayBuild bool) error {
 	spec := backend.Spec{
 		Image:    c.Image,
 		Cmd:      []string{"--cc-supervise"},
-		Hostname: "caboose",
+		Hostname: a.hostname(),
 		Env: []string{
 			"CABOOSE_KEEP_VERSIONS=" + c.KeepVersions,
 			// On a stop, tini (the docker backend's --init, which reaps
@@ -437,6 +437,7 @@ func (a *App) createContainer(mayBuild bool) error {
 			spec.RunArgs = c.DockerRunArgs
 		}
 	}
+	spec.Labels = append(spec.Labels, assets.LabelHostname+"="+spec.Hostname)
 	spec.Labels = append(spec.Labels, assets.LabelRunArgs+"="+runArgsLabel(c.DockerRunArgs))
 	if a.isVM() {
 		// Level 3: dockerd in the guest, which the entrypoint starts when
@@ -727,6 +728,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		a.warnIfRunArgsDrifted()
 		a.warnIfIsolationDrifted()
 		a.warnIfEgressDrifted()
+		a.warnIfHostnameDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {
 			return err
