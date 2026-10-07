@@ -29,8 +29,9 @@ caboose can run the sandbox in a VM of its own.
 
 ```sh
 curl -fsSL https://github.com/bfreis/caboose/releases/latest/download/install.sh | sh
-cd ~/dev/some-project && caboose
 ```
+
+Then run `caboose` in any project's directory.
 
 The installer puts caboose in `~/.caboose/versions`, linked from
 `~/.local/bin`, without root, checks it

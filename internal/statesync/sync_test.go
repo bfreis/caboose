@@ -30,6 +30,11 @@ func needGit(t *testing.T) {
 	// The user's own git config must not reach the test repos.
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Nor auto maintenance, which fetch and commit start detached: it can
+	// still be writing objects/ when the test's TempDir is removed.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "maintenance.auto")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
 }
 
 func newRemote(t *testing.T) string {
@@ -37,6 +42,13 @@ func newRemote(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), "remote.git")
 	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", Branch, dir).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	// receive-pack starts its own detached maintenance after a push, and
+	// a local push clears the environment's config: say it in the repo's.
+	for _, kv := range [][2]string{{"maintenance.auto", "false"}, {"receive.autogc", "false"}} {
+		if out, err := exec.Command("git", "-C", dir, "config", kv[0], kv[1]).CombinedOutput(); err != nil {
+			t.Fatalf("git config %s: %v\n%s", kv[0], err, out)
+		}
 	}
 	return dir
 }
