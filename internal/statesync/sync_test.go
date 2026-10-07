@@ -1,15 +1,20 @@
 package statesync
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
@@ -53,9 +58,15 @@ func newRemote(t *testing.T) string {
 	return dir
 }
 
+// newSyncer is a Syncer on a home and a sync repo of its own.
+func newSyncer(t *testing.T, host string) *Syncer {
+	d := t.TempDir()
+	return &Syncer{Home: filepath.Join(d, "home"), Repo: filepath.Join(d, "sync"), Host: host, Roots: testRoots}
+}
+
 func newMachine(t *testing.T, host, remote string) *machine {
 	t.Helper()
-	m := &machine{t: t, s: &Syncer{DataDir: t.TempDir(), Host: host, Roots: testRoots}}
+	m := &machine{t: t, s: newSyncer(t, host)}
 	m.write(".claude.json", `{"oauthAccount":{"id":"`+host+`"},"numStartups":1}`)
 	if err := m.s.Init(); err != nil {
 		t.Fatal(err)
@@ -104,7 +115,7 @@ func (m *machine) exists(rel string) bool {
 
 // path is home-relative rel's place on the host.
 func (m *machine) path(rel string) string {
-	return filepath.Join(m.s.DataDir, "home", filepath.FromSlash(rel))
+	return filepath.Join(m.s.Home, filepath.FromSlash(rel))
 }
 
 func (m *machine) sync() *Report {
@@ -124,7 +135,7 @@ func (m *machine) exported() map[string]string {
 	if err != nil {
 		m.t.Fatal(err)
 	}
-	e, err := ExportLive(m.s.DataDir, c)
+	e, err := ExportLive(m.s.Home, c)
 	if err != nil {
 		m.t.Fatal(err)
 	}
@@ -153,7 +164,7 @@ func TestSyncAcrossMachines(t *testing.T) {
 	a.write(".claude/settings.json", `{"theme":"dark"}`)
 	a.write(".claude/skills/hello/SKILL.md", "say hello\n")
 	a.write(".claude/skills/hello/run.sh", "#!/bin/sh\n")
-	if err := os.Chmod(filepath.Join(a.s.DataDir, "home/.claude/skills/hello/run.sh"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(a.s.Home, ".claude/skills/hello/run.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	a.write(".claude.json", `{"oauthAccount":{"id":"alpha"},"mcpServers":{"x":{"command":"x"}}}`)
@@ -189,7 +200,7 @@ func TestSyncAcrossMachines(t *testing.T) {
 	if got := b.read(".claude/skills/hello/SKILL.md"); got != "say hello\n" {
 		t.Errorf("skill = %q", got)
 	}
-	if fi, err := os.Stat(filepath.Join(b.s.DataDir, "home/.claude/skills/hello/run.sh")); err != nil || fi.Mode()&0o100 == 0 {
+	if fi, err := os.Stat(filepath.Join(b.s.Home, ".claude/skills/hello/run.sh")); err != nil || fi.Mode()&0o100 == 0 {
 		t.Errorf("run.sh lost its exec bit: %v %v", fi, err)
 	}
 	cj := b.read(".claude.json")
@@ -356,7 +367,7 @@ func TestSyncRefusesSecrets(t *testing.T) {
 	if !errors.As(err, &se) || !reflect.DeepEqual(se.Paths, []string{"home/.claude/projects/-work-p/memory/oops.md"}) {
 		t.Fatalf("err = %v", err)
 	}
-	g := &git{dir: a.s.RepoDir()}
+	g := &git{dir: a.s.Repo}
 	if n, _ := g.str("rev-list", "--count", "HEAD"); n != "1" {
 		t.Errorf("something was committed: %s commits", n)
 	}
@@ -379,7 +390,7 @@ func TestSyncIgnoresUnknownPaths(t *testing.T) {
 		// A key outside /work, as the repo-relative keys of old were.
 		"home/.claude/projects/p/memory/x.md": "x",
 	} {
-		dst := filepath.Join(a.s.RepoDir(), filepath.FromSlash(p))
+		dst := filepath.Join(a.s.Repo, filepath.FromSlash(p))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o777); err != nil {
 			t.Fatal(err)
 		}
@@ -387,7 +398,7 @@ func TestSyncIgnoresUnknownPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g := &git{dir: a.s.RepoDir()}
+	g := &git{dir: a.s.Repo}
 	if err := g.run("add", "-A"); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +420,7 @@ func TestSyncIgnoresUnknownPaths(t *testing.T) {
 	}
 	b.write(mem("p", "x.md"), "change\n")
 	b.sync()
-	gb := &git{dir: b.s.RepoDir()}
+	gb := &git{dir: b.s.Repo}
 	for _, p := range want {
 		if ok, _ := gb.ok("cat-file", "-e", "HEAD:"+p); !ok {
 			t.Errorf("%s was dropped from the repo", p)
@@ -428,7 +439,7 @@ func TestSyncKeepsClaudeJSONThatDoesNotParse(t *testing.T) {
 	a.write(".claude.json", `{"mcpServ`)
 	a.write(mem("p", "x.md"), "x\n")
 	a.sync()
-	g := &git{dir: a.s.RepoDir()}
+	g := &git{dir: a.s.Repo}
 	if ok, _ := g.ok("cat-file", "-e", "HEAD:home/.claude.json"); !ok {
 		t.Error("claude.json was deleted from the repo")
 	}
@@ -436,23 +447,23 @@ func TestSyncKeepsClaudeJSONThatDoesNotParse(t *testing.T) {
 
 func TestSyncNoRemote(t *testing.T) {
 	needGit(t)
-	s := &Syncer{DataDir: t.TempDir(), Host: "h"}
+	s := newSyncer(t, "h")
 	if _, err := s.Sync(); !errors.Is(err, ErrNoRemote) {
 		t.Errorf("err = %v, want ErrNoRemote", err)
 	}
 }
 
 func TestLockIsExclusive(t *testing.T) {
-	s := &Syncer{DataDir: t.TempDir()}
-	unlock, err := s.Lock()
+	dir := t.TempDir()
+	unlock, err := Lock(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Lock(); !errors.Is(err, ErrLocked) {
+	if _, err := Lock(dir); !errors.Is(err, ErrLocked) {
 		t.Errorf("second lock: %v, want ErrLocked", err)
 	}
 	unlock()
-	unlock2, err := s.Lock()
+	unlock2, err := Lock(dir)
 	if err != nil {
 		t.Fatalf("lock after unlock: %v", err)
 	}
@@ -476,10 +487,10 @@ func TestSyncIgnoresRemoteGitattributes(t *testing.T) {
 	b.sync()
 	a.sync() // takes beta's merge, so the push below is a fast-forward
 
-	g := &git{dir: a.s.RepoDir()}
+	g := &git{dir: a.s.Repo}
 	hostile := "* filter=evil merge=evil diff=evil text eol=crlf\n" +
 		"home/.claude/projects/*/memory/MEMORY.md merge=binary\n"
-	if err := os.WriteFile(filepath.Join(a.s.RepoDir(), ".gitattributes"), []byte(hostile), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(a.s.Repo, ".gitattributes"), []byte(hostile), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
@@ -546,62 +557,6 @@ func TestSyncIgnoresRemoteGitattributes(t *testing.T) {
 	converged(t, a, b)
 }
 
-// In the container git sees the sync repo at another path than this
-// process does. elsewhere runs git as if from there: it maps GitDir to the
-// real repo, and fails the test on any other absolute path in an argument,
-// which a container's git could not open (a host temp dir, say). remote is
-// the one allowed: the test's stand-in for a URL.
-func elsewhere(t *testing.T, s *Syncer, remote string) {
-	t.Helper()
-	const at = "/home/agent/.caboose-sync"
-	s.GitDir = at
-	s.Git = func(_, _ bool, args ...string) *exec.Cmd {
-		for i, a := range args {
-			switch {
-			case a == at:
-				args[i] = s.RepoDir()
-			case a == remote:
-			case strings.HasPrefix(a, "/") || strings.Contains(a, s.DataDir):
-				t.Errorf("git was handed a host path: %q", a)
-			}
-		}
-		return exec.Command("git", args...)
-	}
-}
-
-func TestSyncWithGitElsewhere(t *testing.T) {
-	needGit(t)
-	remote := newRemote(t)
-	a := newMachine(t, "alpha", remote)
-	b := &machine{t: t, s: &Syncer{DataDir: t.TempDir(), Host: "beta", Roots: testRoots}}
-	elsewhere(t, b.s, remote)
-	if err := b.s.Init(); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.s.SetRemote(remote); err != nil {
-		t.Fatal(err)
-	}
-	a.write(mem("p", "f.md"), "base\n")
-	a.sync()
-	b.sync()
-	a.write(mem("p", "f.md"), "alpha\n")
-	a.sync()
-	b.write(mem("p", "f.md"), "beta\n")
-	b.s.Resolve = func(c Conflict) (Resolution, error) {
-		m, err := c.Markers()
-		if err != nil || !HasMarkers(m) {
-			t.Errorf("markers %q, %v", m, err)
-		}
-		return Resolution{Content: []byte("both\n")}, nil
-	}
-	b.sync()
-	a.sync()
-	if a.read(mem("p", "f.md")) != "both\n" {
-		t.Errorf("alpha has %q", a.read(mem("p", "f.md")))
-	}
-	converged(t, a, b)
-}
-
 // The container writes .claude, and could plant links there to the data
 // dir's own secrets or to anything on the host: none is read, and what the
 // repo had of a path that became one is kept, not deleted everywhere.
@@ -641,11 +596,11 @@ func TestSyncRefusesLinksInTheDataDir(t *testing.T) {
 	link("../"+ProjectKey("/work/p")+"/memory", ".claude/projects/"+ProjectKey("/work/q")+"/memory")
 	r := a.sync()
 	want := []string{
-		"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/hard.md",
-		"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/kept.md",
-		"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/outside.md",
-		"home/.claude/projects/" + ProjectKey("/work/q") + "/memory",
-		"home/.claude/skills/linked",
+		".claude/projects/" + ProjectKey("/work/p") + "/memory/hard.md",
+		".claude/projects/" + ProjectKey("/work/p") + "/memory/kept.md",
+		".claude/projects/" + ProjectKey("/work/p") + "/memory/outside.md",
+		".claude/projects/" + ProjectKey("/work/q") + "/memory",
+		".claude/skills/linked",
 	}
 	if !reflect.DeepEqual(r.Refused, want) {
 		t.Errorf("refused\n  %q\nwant\n  %q", r.Refused, want)
@@ -693,7 +648,7 @@ func TestSyncApplyNeverFollowsLinks(t *testing.T) {
 	if err := os.Symlink(outside, memDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(secret, filepath.Join(b.s.DataDir, "home", ".claude", "settings.json")); err != nil {
+	if err := os.Symlink(secret, filepath.Join(b.s.Home, ".claude", "settings.json")); err != nil {
 		t.Fatal(err)
 	}
 	a.write(mem("p", "f.md"), "from alpha\n")
@@ -704,10 +659,10 @@ func TestSyncApplyNeverFollowsLinks(t *testing.T) {
 		t.Errorf("the host file is now %q", got)
 	}
 	// A link someone made is theirs: left as it is, not replaced.
-	if fi, err := os.Lstat(filepath.Join(b.s.DataDir, "home", ".claude", "settings.json")); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+	if fi, err := os.Lstat(filepath.Join(b.s.Home, ".claude", "settings.json")); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
 		t.Errorf("beta's settings.json link was replaced (err %v)", err)
 	}
-	for _, want := range []string{"home/" + mem("p", "f.md"), "home/.claude/settings.json"} {
+	for _, want := range []string{mem("p", "f.md"), ".claude/settings.json"} {
 		if !slices.Contains(r.Refused, want) {
 			t.Errorf("refused %q, want %s among them", r.Refused, want)
 		}
@@ -768,7 +723,7 @@ func TestSyncIgnoresRemoteSymlinks(t *testing.T) {
 	if len(r.Ignored) != 2 {
 		t.Errorf("ignored %q, want both links", r.Ignored)
 	}
-	err := filepath.WalkDir(b.s.RepoDir(), func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(b.s.Repo, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.Type()&fs.ModeSymlink != 0 {
 			t.Errorf("a symlink in beta's work tree: %s", p)
 		}
@@ -794,57 +749,22 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-// Exactly the commands that reach the remote are marked so: the caller
-// bounds those in time, and only those may prompt.
-func TestRemoteCommandsAreMarked(t *testing.T) {
-	needGit(t)
-	remote := newRemote(t)
-	a := newMachine(t, "alpha", remote)
-	b := newMachine(t, "beta", remote)
-	a.write(mem("p", "f.md"), "alpha\n")
-	a.sync()
-	seen := map[string]bool{}
-	b.s.Git = func(isRemote, _ bool, args ...string) *exec.Cmd {
-		verb := ""
-		for i := 0; i < len(args); i++ {
-			switch {
-			case args[i] == "-C" || args[i] == "-c":
-				i++
-			default:
-				verb = args[i]
-				i = len(args)
-			}
-		}
-		if talks := verb == "fetch" || verb == "push"; talks != isRemote {
-			t.Errorf("git %s: remote=%v", verb, isRemote)
-		}
-		seen[verb] = true
-		return exec.Command("git", args...)
-	}
-	b.s.g = nil
-	b.write(mem("p", "g.md"), "beta\n")
-	b.sync()
-	if !seen["fetch"] || !seen["push"] {
-		t.Errorf("saw %v; want a fetch and a push", seen)
-	}
-}
-
 func TestMaybeRemote(t *testing.T) {
 	needGit(t)
-	s := &Syncer{DataDir: t.TempDir(), Host: "h"}
-	if s.MaybeRemote() {
+	s := newSyncer(t, "h")
+	if MaybeRemote(s.Repo) {
 		t.Error("no repo, yet a remote")
 	}
 	if err := s.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if s.MaybeRemote() {
+	if MaybeRemote(s.Repo) {
 		t.Error("no remote set, yet a remote")
 	}
 	if err := s.SetRemote(newRemote(t)); err != nil {
 		t.Fatal(err)
 	}
-	if !s.MaybeRemote() {
+	if !MaybeRemote(s.Repo) {
 		t.Error("the remote set is not seen")
 	}
 }
@@ -946,7 +866,7 @@ func TestSyncRefusesABrokenSandboxConfig(t *testing.T) {
 			t.Errorf("%q: %v", bad, err)
 		}
 	}
-	g := &git{dir: a.s.RepoDir()}
+	g := &git{dir: a.s.Repo}
 	if n, _ := g.str("rev-list", "--count", "HEAD"); n != "1" {
 		t.Errorf("something was committed: %s commits", n)
 	}
@@ -1021,5 +941,189 @@ func TestSyncFollowsTheRoots(t *testing.T) {
 	a.sync()
 	if !a.exists(memory("/opt/x/app")) {
 		t.Error("alpha lost memory beta adopted")
+	}
+}
+
+// A keep entry the sandbox does not mount yet -- added since it was
+// created -- syncs nothing: what were written there would be lost with the
+// sandbox. Once a restart mounts it, its files come from the repo, and are
+// not read as deleted by the machine that had never had them.
+func TestSyncSkipsUnmountedEntries(t *testing.T) {
+	needGit(t)
+	remote := newRemote(t)
+	a := newMachine(t, "alpha", remote)
+	b := newMachine(t, "beta", remote)
+	extra := "\n[[keep]]\npath = \"~/.tool\"\nsync = true\n"
+	a.config(extra)
+	a.write(".tool/settings", "from alpha\n")
+	a.sync()
+
+	// Beta's sandbox config comes over in this sync, with the new entry
+	// in it, which beta's sandbox does not mount.
+	b.s.Mounted = []string{".claude", ".claude.json", ".config/caboose"}
+	r := b.sync()
+	if !r.SandboxConfig {
+		t.Error("the sandbox config was not taken")
+	}
+	if b.exists(".tool/settings") {
+		t.Error("written into an entry the sandbox does not mount")
+	}
+	if !slices.Equal(r.Unmounted, []string{".tool"}) {
+		t.Errorf("unmounted %q, want .tool", r.Unmounted)
+	}
+	if slices.Contains(r.Ignored, "home/.tool/settings") {
+		t.Errorf("an unmounted entry's file reported as not synced here: %q", r.Ignored)
+	}
+	// What lands there meanwhile is not sent either.
+	b.write(".tool/other", "beta's, unmounted\n")
+	if r := b.sync(); r.Committed || !slices.Equal(r.Unmounted, []string{".tool"}) {
+		t.Errorf("committed %v, unmounted %q", r.Committed, r.Unmounted)
+	}
+	if err := os.RemoveAll(b.path(".tool")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The restart mounts it, empty.
+	b.s.Mounted = append(b.s.Mounted, ".tool")
+	r = b.sync()
+	if got := b.read(".tool/settings"); got != "from alpha\n" {
+		t.Errorf("after the restart beta's .tool/settings = %q", got)
+	}
+	if len(r.Unmounted) > 0 {
+		t.Errorf("unmounted %q after the restart", r.Unmounted)
+	}
+	a.sync()
+	if got := a.read(".tool/settings"); got != "from alpha\n" {
+		t.Errorf("alpha's .tool/settings = %q", got)
+	}
+	converged(t, a, b)
+}
+
+// A remote that never answers is given up on when the budget is spent,
+// and whatever git started for it is killed with it.
+func TestSyncBudgetStopsAHungRemote(t *testing.T) {
+	needGit(t)
+	a := newMachine(t, "alpha", "ssh://git.example.invalid/state.git")
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	a.s.Env = []string{"GIT_SSH_COMMAND=echo $$ > '" + pidfile + "'; exec sleep 30;"}
+	a.s.Budget = time.Second
+	a.s.g = nil // made with the settings above
+	start := time.Now()
+	_, err := a.s.Sync()
+	if !errors.Is(err, ErrNoAnswer) || err.Error() != "no answer from the remote in 1s" {
+		t.Errorf("err = %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %v", d)
+	}
+	data, rerr := os.ReadFile(pidfile)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	// Gone, or a zombie nobody reaps for a moment: not sleeping on.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil || strings.Contains(string(stat), ") Z ") {
+			break
+		}
+		if runtime.GOOS != "linux" || time.Now().After(deadline) {
+			t.Errorf("the remote's ssh (pid %d) still runs", pid)
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A sync stopped after taking the remote's changes and before all were in
+// the home has the next sync finish them before it exports: the files not
+// written yet would otherwise read as this machine's, and undo the remote's
+// everywhere.
+func TestSyncFinishesAnInterruptedApply(t *testing.T) {
+	needGit(t)
+	remote := newRemote(t)
+	a := newMachine(t, "alpha", remote)
+	b := newMachine(t, "beta", remote)
+	a.write(mem("p", "f.md"), "old\n")
+	a.sync()
+	b.sync()
+	a.write(mem("p", "f.md"), "new\n")
+	a.write(mem("q", "g.md"), "added\n")
+	a.sync()
+
+	// Beta's sync stopped right after it took them, before writing any:
+	// HEAD moved, the marker written, the home as it was.
+	g := &git{dir: b.s.Repo}
+	old, err := g.str("rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.run("fetch", "-q", "origin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.run("merge", "-q", "--ff-only", "refs/remotes/origin/"+Branch); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b.s.Repo, applyingFile), []byte(old+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b.s.g = nil
+	r := b.sync()
+	if got := b.read(mem("q", "g.md")); got != "added\n" {
+		t.Errorf("beta's g.md = %q", got)
+	}
+	if got := b.read(mem("p", "f.md")); got != "new\n" {
+		t.Errorf("beta's f.md = %q", got)
+	}
+	if !r.Merged {
+		t.Error("the finished apply is not reported")
+	}
+	a.sync()
+	if got := a.read(mem("q", "g.md")); got != "added\n" {
+		t.Errorf("alpha's g.md = %q: beta's unfinished apply was sent as a deletion", got)
+	}
+	if got := a.read(mem("p", "f.md")); got != "new\n" {
+		t.Errorf("alpha's f.md = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(b.s.Repo, applyingFile)); err == nil {
+		t.Error("the apply marker was left")
+	}
+}
+
+// A sync whose Ctx is done stops: a command waiting on the remote is
+// killed, with what it started, and nothing more is begun.
+func TestSyncStopsWithItsContext(t *testing.T) {
+	needGit(t)
+	a := newMachine(t, "alpha", "ssh://git.example.invalid/state.git")
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	a.s.Env = []string{"GIT_SSH_COMMAND=echo $$ > '" + pidfile + "'; exec sleep 30;"}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.s.Ctx = ctx
+	a.s.g = nil
+	time.AfterFunc(500*time.Millisecond, cancel)
+	start := time.Now()
+	if _, err := a.s.Sync(); !errors.Is(err, ErrStopped) {
+		t.Errorf("err = %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %v", d)
+	}
+	data, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil || strings.Contains(string(stat), ") Z ") {
+			break
+		}
+		if runtime.GOOS != "linux" || time.Now().After(deadline) {
+			t.Errorf("the remote's ssh (pid %d) still runs", pid)
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

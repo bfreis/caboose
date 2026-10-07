@@ -3,17 +3,19 @@ package launcher
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
 	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
+	"github.com/bfreis/caboose/internal/syncagent"
 	"github.com/bfreis/caboose/internal/tty"
 )
 
@@ -81,19 +83,18 @@ func (a *App) SyncEdit(op string, args []string) error {
 }
 
 // SyncStatus is caboose sync status: what this machine would send, and, if
-// the container runs (the sync's git runs there), what the remote has for
-// it to take. It changes nothing but what a fetch writes into the sync repo
+// the sandbox runs (the sync runs there), what the remote has for it to
+// take. It changes nothing but what a fetch writes into the sync repo
 // (and, from a terminal, a host key accepted when ssh asks, as caboose sync
 // would).
 func (a *App) SyncStatus(args []string) error {
 	if len(args) > 0 {
 		return Die("usage: caboose sync status")
 	}
-	s := a.newSyncer(nil)
-	if !s.MaybeRemote() {
+	if !statesync.MaybeRemote(a.syncRepo()) {
 		return Die("no sync remote yet; set one once with\n  caboose sync --remote URL")
 	}
-	unlock, err := s.Lock()
+	unlock, err := statesync.Lock(a.Cfg.DataDir)
 	if errors.Is(err, statesync.ErrLocked) {
 		return Die("%v; try again when it is done", err)
 	}
@@ -102,35 +103,40 @@ func (a *App) SyncStatus(args []string) error {
 	}
 	defer unlock()
 	out := a.Stdout
-	fmt.Fprintf(out, "remote  : %s\n", proposal.Printable(or(s.RemoteHint(), "set")))
-
-	p, err := s.Pending()
-	if err != nil {
-		return Die("%v", err)
-	}
+	fmt.Fprintf(out, "remote  : %s\n", proposal.Printable(or(statesync.RemoteHint(a.syncRepo()), "set")))
 	list := func(title string, paths []string, mark string) {
 		fmt.Fprintf(out, "%-8s: %s\n", title, plural(len(paths), "1 file", fmt.Sprintf("%d files", len(paths))))
 		for _, x := range paths {
 			fmt.Fprintf(out, "  %s %s\n", mark, proposal.Printable(x))
 		}
 	}
-	list("to send", p.Changed, "M")
-	for _, x := range p.Deleted {
-		fmt.Fprintf(out, "  D %s\n", proposal.Printable(x))
-	}
-	if len(p.Export.Refused) > 0 {
-		fmt.Fprintf(out, "refused : %s (symlinks or hard links: never followed)\n", strings.Join(p.Export.Refused, ", "))
-	}
-	var se *statesync.SecretsError
-	if err := p.Export.ScanSecrets(); errors.As(err, &se) {
-		fmt.Fprintf(out, "secrets : %s (every sync refuses until they are gone)\n", strings.Join(se.Paths, ", "))
+	pending := func(st *syncagent.Status) {
+		list("to send", st.Changed, "M")
+		for _, x := range st.Deleted {
+			fmt.Fprintf(out, "  D %s\n", proposal.Printable(x))
+		}
+		if len(st.Refused) > 0 {
+			fmt.Fprintf(out, "refused : %s (symlinks or hard links: never followed)\n", homeList(st.Refused))
+		}
+		if len(st.Secrets) > 0 {
+			fmt.Fprintf(out, "secrets : %s (every sync refuses until they are gone)\n", strings.Join(shownAll(st.Secrets), ", "))
+		}
+		if len(st.Unmounted) > 0 {
+			fmt.Fprintf(out, "later   : %s (not mounted until 'caboose restart', and not synced until then)\n", homeList(st.Unmounted))
+		}
 	}
 
 	if a.state() != "running" {
-		fmt.Fprintf(out, "to take : not checked: the %s is not running, and the sync's git runs there\n", a.noun())
+		st, err := a.localPending()
+		if err != nil {
+			return Die("%v", err)
+		}
+		pending(st)
+		fmt.Fprintf(out, "to take : not checked: the %s is not running, and the sync runs there\n", a.noun())
 		return nil
 	}
-	if err := a.checkSyncMount(); err != nil {
+	mounts, err := a.checkSyncMount()
+	if err != nil {
 		return err
 	}
 	// Under vm the fetch's ssh goes through the outbound proxy, which the
@@ -140,44 +146,75 @@ func (a *App) SyncStatus(args []string) error {
 		a.startLink()
 		a.awaitProxy()
 	}
+	req, err := a.syncRequest(mounts)
+	if err != nil {
+		return Die("%v", err)
+	}
 	// From a terminal the fetch is caboose sync's: it may ask to accept the
 	// remote's host key, or for credentials, and is not cut short. Only a
 	// status nobody can answer (a script, a pipe) fails instead of asking.
 	interactive := tty.IsTerminal(os.Stdin.Fd()) && tty.IsTerminal(os.Stderr.Fd())
-	g := a.newSyncGit(!interactive)
+	var h syncagent.Handler
+	var show io.Writer
 	if interactive {
-		s.Stderr = os.Stderr
+		req.Interactive, req.ShowGit = true, true
+		h.Ask, show = a.askPrompt, os.Stderr
+		h.Interrupted = a.interrupted
 	} else {
-		g.deadline = time.Now().Add(doctorBudget)
+		req.Auto, req.Budget = true, budgetSecs(doctorBudget)
+		h.Timeout = doctorBudget + syncMargin
 	}
-	s.Git = g.command
+	res, err := a.runSync(syncagent.OpStatus, req, h, show)
+	if err != nil {
+		return err
+	}
+	if res.Err != nil {
+		if res.Err.Kind == syncagent.KindNoRemote {
+			return Die("no sync remote yet; set one once with\n  caboose sync --remote URL")
+		}
+		return Die("%s", shown(res.Err.Message))
+	}
+	st := res.Status
+	if st == nil {
+		return Die("the sync in the %s said nothing of its state", a.noun())
+	}
+	pending(st)
 	// What a sync committed here and never pushed is no change of the
-	// files any more, so "to send" does not count it: say it apart, before
-	// the fetch, which a push that failed may fail just the same.
-	if u, err := s.Unsent(); err == nil && len(u.Paths) > 0 {
+	// files any more, so "to send" does not count it: say it apart.
+	if u := st.Unsent; len(u.Paths) > 0 {
 		list(fmt.Sprintf("unsent (%s never pushed)", plural(u.Commits, "1 commit", fmt.Sprintf("%d commits", u.Commits))), u.Paths, "M")
 		fmt.Fprintf(out, "          'caboose sync' sends %s\n", plural(len(u.Paths), "it", "them"))
 	}
-	if err := s.Fetch(); err != nil {
+	if st.FetchErr != "" {
 		if interactive {
 			// git said why on the terminal, above.
 			fmt.Fprintf(out, "to take : not checked: the fetch failed, as git says above\n")
 			return nil
 		}
-		what, fix := fetchFailure(err)
-		fmt.Fprintf(out, "to take : not checked: %s; %s\n", proposal.Printable(what), fix)
+		what, fix := fetchFailure(errors.New(st.FetchErr))
+		fmt.Fprintf(out, "to take : not checked: %s; %s\n", shown(what), fix)
 		return nil
 	}
-	taken, others, err := s.Incoming()
-	if err != nil {
-		return Die("%v", err)
-	}
-	list("to take", taken, "<")
-	if len(others) > 0 {
+	list("to take", st.Taken, "<")
+	if len(st.Others) > 0 {
 		fmt.Fprintf(out, "left    : %s the remote has that this machine's rules do not sync (left in the repo)\n",
-			plural(len(others), "1 file", fmt.Sprintf("%d files", len(others))))
+			plural(len(st.Others), "1 file", fmt.Sprintf("%d files", len(st.Others))))
 	}
 	return nil
+}
+
+// localPending is what this machine has not sent, read on the host, from
+// the data dir: for when the sandbox is not up to ask. It only reads.
+func (a *App) localPending() (*syncagent.Status, error) {
+	sb, err := a.sandboxConfig()
+	if err != nil {
+		return nil, err
+	}
+	s := &statesync.Syncer{
+		Home: filepath.Join(a.Cfg.DataDir, datadir.HomeDir), Repo: a.syncRepo(),
+		Sandbox: sb, Roots: a.rootPaths(),
+	}
+	return syncagent.PendingStatus(s)
 }
 
 // SandboxConfig is caboose sandbox-config update: the sandbox config brought

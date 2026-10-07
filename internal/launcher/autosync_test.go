@@ -11,14 +11,18 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
+	"github.com/bfreis/caboose/internal/syncagent"
 )
 
 // autoEnv is a machine for sync on launch: a data dir, and a fake docker
-// for a running container "box" that mounts its sync repo and runs its git
-// with the host's git -- through the watchdog, with the host's bash, when
-// asked to. Files in ctl steer it:
+// for a running container "box" that mounts its sync repo, whose
+// caboose-agent sync is this test binary's (TestMain) on the data dir's
+// home and sync repo, running the host's git -- through a wrapper that
+// fails or hangs a fetch when told to. Files in ctl steer it:
 //
 //	procs  processes listed after PID 1, as "PID PPID ARGV0" lines
 //	slow   makes every fetch hang
@@ -46,11 +50,17 @@ func newAutoEnv(t *testing.T, remote string) *autoEnv {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "maintenance.auto")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
 	e := &autoEnv{t: t, data: t.TempDir(), ctl: t.TempDir(), remote: remote,
 		stderr: &bytes.Buffer{}, stdout: &bytes.Buffer{}}
 	repo := filepath.Join(e.data, statesync.Dir)
-	if err := os.MkdirAll(repo, 0o700); err != nil {
-		t.Fatal(err)
+	home := filepath.Join(e.data, datadir.HomeDir)
+	for _, d := range []string{repo, home} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// git as the container runs it, hanging on a fetch when told to.
 	wrap := filepath.Join(e.ctl, "git")
@@ -71,6 +81,8 @@ case "$*" in
   "exec box bash -c for d in /proc/"*) echo "1 0 sleep"
              [ -e '`+e.ctl+`/procs' ] && cat '`+e.ctl+`/procs'; exit 0 ;;
   "inspect --type=container box --format "*)
+             printf '/home/agent/.claude\t%s\n/home/agent/.claude.json\t%s\n/home/agent/.config/caboose\t%s\n' \
+               '`+home+`/.claude' '`+home+`/.claude.json' '`+home+`/.config/caboose'
              [ -e '`+e.ctl+`/nomount' ] || printf '`+statesync.ContainerDir+`\t%s\n' '`+repo+`'; exit 0 ;;
 esac
 [ "$1" = exec ] || exit 1
@@ -84,18 +96,13 @@ while :; do
 done
 [ "$1" = box ] || exit 1
 shift
-case "$1" in git|bash) ;; *) exit 1 ;; esac
-[ "$1" = bash ] && [ "$4" != watchdog ] && exit 1   # only the watchdog runs in bash
-n=$#
-for a; do
-  case "$a" in
-    `+statesync.ContainerDir+`) a='`+repo+`' ;;
-    git) a='`+wrap+`' ;;
-  esac
-  set -- "$@" "$a"
-done
-shift $n
-exec "$@"
+export PATH='`+e.ctl+`':"$PATH"
+case "$1" in
+  git) exec "$@" ;;
+  `+AgentPath+`) shift
+    exec env `+testSyncHome+`='`+home+`' `+testSyncRepo+`='`+repo+`' '`+os.Args[0]+`' "$@" ;;
+esac
+exit 1
 `)
 	if err := os.Chmod(fake, 0o755); err != nil {
 		t.Fatal(err)
@@ -127,13 +134,40 @@ func (e *autoEnv) read(rel string) string {
 	return string(b)
 }
 
-// syncer is this machine's sync, run by hand (as `caboose sync` would).
+// syncer is e's sync run here, on its data dir: the other machine's, which
+// need not go through a container, and the test's way to set things up.
 func (e *autoEnv) syncer() *statesync.Syncer {
-	s := e.a.newSyncer(e.a.newSyncGit(false))
-	return s
+	return &statesync.Syncer{
+		Home: filepath.Join(e.data, datadir.HomeDir), Repo: filepath.Join(e.data, statesync.Dir),
+		Host: e.a.syncHost(), Roots: e.a.rootPaths(), Defaults: sandboxcfg.Default(e.a.rootPaths()),
+	}
 }
 
-// setRemote sets this machine's remote, as `caboose sync --remote` does.
+// sync is caboose sync on e, through the container, with nobody at a
+// terminal; it fails the test unless the sync goes through.
+func (e *autoEnv) sync() *statesync.Report {
+	e.t.Helper()
+	mounts, err := e.a.checkSyncMount()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req, err := e.a.syncRequest(mounts)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.a.sb = nil // read afresh next time, as each caboose does
+	res, err := e.a.runSync(syncagent.OpRun, req, syncagent.Handler{}, nil)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if res.Err != nil {
+		e.t.Fatalf("sync: %s", res.Err.Message)
+	}
+	return res.Report
+}
+
+// setRemote sets this machine's remote, as `caboose sync --remote` does
+// before its first sync.
 func (e *autoEnv) setRemote() {
 	e.t.Helper()
 	s := e.syncer()
@@ -158,11 +192,12 @@ func (e *autoEnv) launch() string {
 	return e.stderr.String()
 }
 
-// ranGit reports whether the fake docker has run git since last asked.
+// ranGit reports whether the fake docker has run git, or the sync that
+// runs it, since last asked.
 func (e *autoEnv) ranGit() bool {
 	log, _ := os.ReadFile(filepath.Join(e.ctl, "log"))
 	_ = os.Remove(filepath.Join(e.ctl, "log"))
-	return bytes.Contains(log, []byte(" git "))
+	return bytes.Contains(log, []byte(" git ")) || bytes.Contains(log, []byte("caboose-agent sync"))
 }
 
 func newBare(t *testing.T) string {
@@ -305,7 +340,7 @@ func TestAutoSyncSlowRemote(t *testing.T) {
 	locked := make(chan error, 1)
 	go func() {
 		time.Sleep(time.Second)
-		unlock, err := here.syncer().Lock()
+		unlock, err := statesync.Lock(here.data)
 		if err == nil {
 			unlock()
 		}
@@ -320,7 +355,7 @@ func TestAutoSyncSlowRemote(t *testing.T) {
 		t.Errorf("took %v", took)
 	}
 	want := "caboose: syncing with the remote\n" +
-		"caboose: not synced: git fetch -q origin: no answer from the remote in 2s; run 'caboose sync' to see to it\n"
+		"caboose: not synced: no answer from the remote in 2s; run 'caboose sync' to see to it\n"
 	if got != want {
 		t.Errorf("said\n%s\nwant\n%s", got, want)
 	}
@@ -332,7 +367,7 @@ func TestAutoSyncWaitsForARunningSync(t *testing.T) {
 	for _, auto := range []bool{true, false} {
 		here, _ := pair(t)
 		here.a.Cfg.AutoSync = auto
-		unlock, err := here.syncer().Lock()
+		unlock, err := statesync.Lock(here.data)
 		if err != nil {
 			t.Fatal(err)
 		}

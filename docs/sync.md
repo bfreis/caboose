@@ -30,6 +30,14 @@ it syncs too, so a rule added on one machine reaches the others with the
 files it names. `caboose sync status` shows what a sync would send and
 take, and changes nothing.
 
+A keep entry added since the container was created — by hand, by `caboose
+sync add` of a path no entry keeps yet, or by a sync bringing another
+machine's sandbox config — is not mounted until `caboose restart`, so
+nothing of it syncs before then: what were written there would be lost with
+the container. The sync says so (`which the container does not mount yet:
+they sync after 'caboose restart'`), and after the restart the first sync
+takes what the remote has of it, as for any path just started syncing.
+
 Everything else stays put: the credential, transcripts, prompt history, the
 Claude Code binaries, gh's token, and anything new that appears in
 `~/.claude`. `~/.claude/.credentials.json` never syncs whatever a rule
@@ -40,9 +48,8 @@ written, and stays in the sync repo for the machines that sync it; one this
 machine has only just started syncing is taken from the repo, not read as
 deleted.
 
-**Links are never followed.** The sandbox can write `.claude`, so the
-launcher, which does the file work on the host, takes nothing there at its
-name: a symlink or a hard link, or a directory on the way that is one, is
+**Links are never followed.** Anything in the sandbox can write `.claude`,
+so the sync takes nothing there at its name: a symlink or a hard link, or a directory on the way that is one, is
 neither read nor written through, and the sync names it (`not synced,
 being symlinks or hard links`). Whatever the remote has of such a path is
 kept, not read as deleted. The sync repo gets no symlinks either, whatever
@@ -98,15 +105,26 @@ in the container, not only tmux sessions: a `tmux = false` session, a
 those as "outside tmux"). It starts the container if it is
 stopped, as a launch would.
 
-**git runs in the sandbox, not on your host.** The launcher reads and writes
-the files, but every git command runs in the container through `docker
-exec`, so the host needs no git, and neither your host's git config, hooks
-and credential helpers nor anything a remote sends come near it. Pushes use
-what the sandbox has: the forwarded SSH agent, and `gh`'s token when gh is
-in the image. The sandbox's own git config is not read at all: it can
-arrive by sync, and a `url.*.insteadOf` or a credential helper in it must
-not redirect the sync's own push. That is why the image must have git
-(2.28 or later).
+**The sync runs in the sandbox, not on your host.** The launcher starts it
+there (`caboose-agent sync`, under every isolation), and it reads and writes
+the files and runs git on the home and the sync repo as the sandbox sees
+them, so git never meets a file the host changed a moment ago that the
+sandbox's view still has otherwise (a VM's shared folders cache what they
+show). The host needs no git, and neither your host's git config, hooks and
+credential helpers nor anything a remote sends come near it; the launcher
+only holds the lock, says what happened, and asks at your terminal what
+the sync needs asked: how to settle a conflict, and git's or ssh's own
+questions (a host key to accept, a username, a password or a passphrase,
+the last two without echo). Pushes use what the sandbox has: the forwarded
+SSH agent, and `gh`'s token when gh is in the image. The sandbox's own git
+config is not read at all: it can arrive by sync, and a `url.*.insteadOf`
+or a credential helper in it must not redirect the sync's own push. That is
+why the image must have git (2.28 or later). A container made from an
+older caboose's image, whose `caboose-agent` cannot run the sync, is
+refused with what fixes it: `caboose restart`. Interrupt a sync (^C, a closed terminal) and it
+stops in the sandbox too, finishing any files it was writing back; the
+next sync takes it from there, and one started while it stops is told to
+try again in a moment.
 
 Over SSH, the sync's ssh keeps the remote's host key in
 `<data>/sync/.git/known_hosts`, so the sandbox asks about it once, on the

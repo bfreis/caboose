@@ -2,18 +2,22 @@ package statesync
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
-// gitConfig overrides what a user's global git config could otherwise do to
-// the sync repo: sign commits (and prompt for a passphrase), run hooks,
-// rewrite line endings, or detect renames the merge should not guess at.
-// In the container the global config is not read at all (the launcher's
-// syncGit): it can arrive by sync, and must not steer the sync's own push.
+// gitConfig overrides what a user's git config could otherwise do to the
+// sync repo: sign commits (and prompt for a passphrase), run hooks, rewrite
+// line endings, or detect renames the merge should not guess at. The global
+// config is not read at all in the sandbox (internal/syncagent): it can
+// arrive by sync, and must not steer the sync's own push.
 var gitConfig = []string{
 	"-c", "commit.gpgsign=false",
 	"-c", "tag.gpgsign=false",
@@ -29,27 +33,26 @@ var gitConfig = []string{
 	"-c", "advice.detachedHead=false",
 }
 
-// Command makes the command that runs git with args. remote is set for the
-// commands that reach the remote (fetch, push): the ones that can hang on a
-// network, and prompt for credentials; interactive, when such a prompt has
-// a terminal to be shown on.
-type Command func(remote, interactive bool, args ...string) *exec.Cmd
-
-// LocalGit runs the git on this machine's PATH.
-func LocalGit(_, _ bool, args ...string) *exec.Cmd {
-	return exec.Command("git", args...)
-}
-
 // git runs git commands in one repo.
 type git struct {
-	// dir is the repo as git sees it, which in a container is not the
-	// host path.
-	dir     string
-	command Command
+	dir string
+	// env and args are added to every command's environment and
+	// arguments (Syncer.Env, Syncer.GitArgs).
+	env, args []string
 	// Stderr, when set, receives the output of commands that talk to the
-	// remote (fetch, push), so a prompt for credentials is seen.
-	Stderr *os.File
+	// remote (fetch, push).
+	Stderr io.Writer
+	// budget bounds the commands that reach the remote, all told, from
+	// the first; deadline is when it runs out, set by that first one.
+	budget   time.Duration
+	deadline time.Time
+	// ctx, when set, stops a command that reaches the remote once done.
+	ctx context.Context
 }
+
+// ErrNoAnswer is a command that reaches the remote stopped at the end of
+// the budget; its text, with the budget, is what the caller shows.
+var ErrNoAnswer = errors.New("no answer from the remote")
 
 // gitError is a failed git command, with what it said.
 type gitError struct {
@@ -75,12 +78,12 @@ func exitCode(err error) int {
 	return -1
 }
 
-func (g *git) cmd(remote, interactive bool, args []string, stdin []byte) *exec.Cmd {
-	command := g.command
-	if command == nil {
-		command = LocalGit
+func (g *git) cmd(ctx context.Context, args []string, stdin []byte) *exec.Cmd {
+	argv := append(append(append([]string{"-C", g.dir}, g.args...), gitConfig...), args...)
+	c := exec.CommandContext(ctx, "git", argv...)
+	if len(g.env) > 0 {
+		c.Env = append(os.Environ(), g.env...)
 	}
-	c := command(remote, interactive, append(append([]string{"-C", g.dir}, gitConfig...), args...)...)
 	if stdin != nil {
 		c.Stdin = bytes.NewReader(stdin)
 	}
@@ -93,7 +96,7 @@ func (g *git) out(args ...string) ([]byte, error) {
 }
 
 func (g *git) outIn(stdin []byte, args ...string) ([]byte, error) {
-	c := g.cmd(false, false, args, stdin)
+	c := g.cmd(context.Background(), args, stdin)
 	var stdout, stderr bytes.Buffer
 	c.Stdout, c.Stderr = &stdout, &stderr
 	if err := c.Run(); err != nil {
@@ -112,21 +115,43 @@ func (g *git) run(args ...string) error {
 	return err
 }
 
-// talk runs a command that reaches the remote, with its stderr shown so an
-// SSH or credential prompt is not left waiting unseen.
+// talk runs a command that reaches the remote. Its output goes to Stderr
+// when that is set. Within a budget it runs in a process group of its own,
+// killed whole when the budget runs out: git's ssh, and whatever ssh
+// started (a ProxyCommand), go with it.
 func (g *git) talk(args ...string) error {
-	c := g.cmd(true, g.Stderr != nil, args, nil)
+	ctx := context.Background()
+	if g.ctx != nil {
+		ctx = g.ctx
+	}
+	if g.budget > 0 {
+		if g.deadline.IsZero() {
+			g.deadline = time.Now().Add(g.budget)
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, g.deadline)
+		defer cancel()
+	}
+	c := g.cmd(ctx, args, nil)
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
+	// What the group left holding the output open is not waited for.
+	c.WaitDelay = time.Second
 	var stderr bytes.Buffer
 	if g.Stderr != nil {
-		// Stdout too: through `docker exec -t` a prompt git writes to
-		// its terminal arrives on docker's stdout.
-		c.Stdin = os.Stdin
 		c.Stdout = g.Stderr
 		c.Stderr = g.Stderr
 	} else {
 		c.Stderr = &stderr
 	}
-	if err := c.Run(); err != nil {
+	err := c.Run()
+	if g.ctx != nil && g.ctx.Err() != nil {
+		return ErrStopped
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w in %s", ErrNoAnswer, g.budget.Round(time.Second))
+	}
+	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return &gitError{args: args, code: ee.ExitCode(), stderr: stderr.String()}

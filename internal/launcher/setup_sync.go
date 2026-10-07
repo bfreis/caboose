@@ -4,11 +4,12 @@ import (
 	"path/filepath"
 
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/statesync"
 )
 
 // setupSync asks for the sync remote and whether a launch syncs by itself
 // (auto_sync in [session]). auto_sync is config.toml's; the remote lives in the sync
-// repo, whose git runs in the container, so a new one is set by running
+// repo, which only the sync in the sandbox sets up, so a new one is set by running
 // what `caboose sync --remote URL` runs: the container brought up (never
 // built), no session running, a first sync. That failing is said, with
 // what to run once it can work, and setup goes on. A remote cannot be
@@ -16,7 +17,7 @@ import (
 // automatic part.
 func (a *App) setupSync(p *prompter) error {
 	c := a.Cfg
-	cur := a.newSyncer(nil).RemoteHint()
+	cur := statesync.RemoteHint(a.syncRepo())
 	p.heading("Sync", "Keeps memories, settings, skills, agents, commands and MCP servers in step across machines, "+
 		"through a git remote you own. An empty private repo will do.")
 	question := "Sync remote, a git URL (empty for none)"
@@ -52,7 +53,7 @@ func (a *App) setupSync(p *prompter) error {
 	p.note("Setting the remote and syncing, as 'caboose sync --remote %s' does...", url)
 	if err := a.Sync([]string{"--remote", url}); err != nil {
 		p.fail("Did not sync: %v", err)
-		if a.newSyncer(nil).RemoteHint() == url {
+		if statesync.RemoteHint(a.syncRepo()) == url {
 			p.warn("The remote is set; %s finishes the first sync.", p.code("caboose sync"))
 		} else {
 			p.warn("The remote is not set; once that is fixed, %s sets it.", p.code("caboose sync --remote "+url))

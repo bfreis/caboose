@@ -260,8 +260,8 @@ vm_group() {
     check 'what the VM writes to a kept path is in the data dir' kept \
         "$(cat "$VM_DATA/home/.claude/caboose-test-keep" 2>/dev/null)"
 
-    # caboose sync, against a bare repo under the root: the sync's git runs
-    # in the VM, which sees it at /work/sync-remote.git. Another machine is
+    # caboose sync, against a bare repo under the root: the sync runs in
+    # the VM, which sees it at /work/sync-remote.git. Another machine is
     # a clone on the host.
     local remote="$VM_ROOT/sync-remote.git" probe="$VM_DATA/home/.config/caboose/caboose-test-sync" path
     git init -q --bare "$remote"

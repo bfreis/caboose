@@ -18,10 +18,12 @@ import (
 	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
+	"github.com/bfreis/caboose/internal/syncagent"
 )
 
-// doctorBudget is how long doctor's fetch may take: shorter than a launch's
-// syncBudget, since nothing waits on the answer but the person who asked.
+// doctorBudget is how long doctor's fetch (and a status nobody can answer)
+// may take: shorter than a launch's syncBudget, since nothing waits on the
+// answer but the person who asked.
 // A variable for the tests.
 var doctorBudget = 10 * time.Second
 
@@ -254,7 +256,7 @@ func (a *App) Doctor(args []string) error {
 	case !reachable:
 		a.doctorSync(c, "docker did not answer")
 	case !running:
-		a.doctorSync(c, agentWhy+", and the sync's git runs there")
+		a.doctorSync(c, agentWhy+", and the sync runs there")
 	case offline:
 		a.doctorSync(c, "--offline")
 	default:
@@ -380,7 +382,7 @@ func (a *App) doctorSandbox(c *checkup) {
 	// The sync rules' {roots} are the file's roots: a root added here
 	// after the file was written syncs nothing until it is listed. Only
 	// worth saying where something syncs.
-	if sb.Absent || !a.newSyncer(nil).MaybeRemote() {
+	if sb.Absent || !statesync.MaybeRemote(a.syncRepo()) {
 		return
 	}
 	for _, r := range have {
@@ -765,14 +767,14 @@ func holds(agentKeys []string, pub string) bool {
 }
 
 // doctorSync checks the sync: whether a remote is set, what this machine
-// has not sent (from the host), and, unless remoteWhy says why not, what
-// the remote has that this machine has not taken (a fetch, through the
-// same prompt-free, budgeted git as a launch's sync). The sync lock is
-// held throughout, so no sync changes the repo underneath; a sync already
+// has not sent, and, unless remoteWhy says why not, what the remote has
+// that this machine has not taken (a fetch, in the sandbox, through the
+// same prompt-free, budgeted sync as a launch's). Without the sandbox, what
+// is waiting to be sent is read on the host. The sync lock is held
+// throughout, so no sync changes the repo underneath; a sync already
 // running is said, not waited for.
 func (a *App) doctorSync(c *checkup, remoteWhy string) {
-	s := a.newSyncer(nil)
-	if !s.MaybeRemote() {
+	if !statesync.MaybeRemote(a.syncRepo()) {
 		if a.Cfg.AutoSync {
 			c.note("sync", "auto_sync is on, but no remote is set; 'caboose sync --remote URL' sets one")
 			return
@@ -780,7 +782,7 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 		c.ok("sync", "not set up ('caboose sync --remote URL' starts it)")
 		return
 	}
-	unlock, err := s.Lock()
+	unlock, err := statesync.Lock(a.Cfg.DataDir)
 	if errors.Is(err, statesync.ErrLocked) {
 		c.note("sync", "a sync is running; not checked")
 		return
@@ -795,45 +797,68 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 	if a.Cfg.AutoSync {
 		auto = "auto_sync on"
 	}
-	c.ok("sync", "%s, %s", or(s.RemoteHint(), "a remote is set"), auto)
+	c.ok("sync", "%s, %s", or(proposal.Printable(statesync.RemoteHint(a.syncRepo())), "a remote is set"), auto)
 
-	p, err := s.Pending()
+	var mounts []backend.Mount
+	var mountErr error
+	if remoteWhy == "" {
+		mounts, mountErr = a.checkSyncMount()
+	}
+	if remoteWhy != "" || mountErr != nil {
+		if st, err := a.localPending(); err != nil {
+			c.problem("sync", "'caboose sync' says the same, in full", "cannot read what syncs: %v", err)
+		} else {
+			a.doctorPending(c, st)
+		}
+		if mountErr != nil {
+			c.problem("sync", "caboose restart"+endsSessions, "the %s has no sync mount for this data dir", a.noun())
+		} else {
+			c.unchecked("sync", "the remote: %s", remoteWhy)
+		}
+		return
+	}
+	req, err := a.syncRequest(mounts)
+	if err != nil {
+		c.unchecked("sync", "%v", err)
+		return
+	}
+	req.Auto, req.Budget = true, budgetSecs(doctorBudget)
+	c.checking("fetching from the sync remote")
+	cmd := a.box().Command(backend.ExecSpec{Argv: []string{AgentPath, "sync", syncagent.OpStatus}, Stdin: true})
+	res, err := syncagent.Run(cmd, req, syncagent.Handler{Timeout: doctorBudget + syncMargin}, nil)
 	switch {
+	case errors.Is(err, syncagent.ErrOldAgent):
+		c.problem("sync", "caboose restart"+endsSessions, "%s", a.oldAgent())
+		return
 	case err != nil:
-		c.problem("sync", "'caboose sync' says the same, in full", "cannot read what syncs: %v", err)
-	default:
-		a.doctorPending(c, p)
-	}
-	if remoteWhy != "" {
-		c.unchecked("sync", "the remote: %s", remoteWhy)
+		c.unchecked("sync", "%s", shown(err.Error()))
+		return
+	case res.Err != nil:
+		c.problem("sync", "'caboose sync' says the same, in full", "cannot read what syncs: %s", shown(res.Err.Message))
+		return
+	case res.Status == nil:
+		c.unchecked("sync", "the sync in the %s said nothing of its state", a.noun())
 		return
 	}
-	if err := a.checkSyncMount(); err != nil {
-		c.problem("sync", "caboose restart"+endsSessions, "the %s has no sync mount for this data dir", a.noun())
-		return
-	}
-	g := a.newSyncGit(true)
-	g.deadline = time.Now().Add(doctorBudget)
-	s.Git = g.command
-	if dirty, err := s.Dirty(); err == nil && dirty {
+	st := res.Status
+	a.doctorPending(c, st)
+	if st.Dirty {
 		c.note("sync", "an earlier sync stopped halfway; the next one finishes it (what is waiting to be sent may be miscounted)")
 	}
-	// Before the fetch, which a push that failed may fail just the same.
-	if u, err := s.Unsent(); err == nil && len(u.Paths) > 0 {
+	if u := st.Unsent; len(u.Paths) > 0 {
 		c.note("sync", "%s in %s synced here never reached the remote (a push that failed); 'caboose sync' sends %s",
 			plural(len(u.Paths), "1 file", fmt.Sprintf("%d files", len(u.Paths))),
 			plural(u.Commits, "1 commit", fmt.Sprintf("%d commits", u.Commits)), plural(len(u.Paths), "it", "them"))
 	}
-	c.checking("fetching from the sync remote")
-	if err := s.Fetch(); err != nil {
-		what, fix := fetchFailure(err)
-		c.problem("sync", fix, "%s", what)
+	if st.FetchErr != "" {
+		what, fix := fetchFailure(errors.New(st.FetchErr))
+		c.problem("sync", fix, "%s", shown(what))
 		return
 	}
-	d, err := s.Divergence()
+	d := st.Divergence
 	switch {
-	case err != nil:
-		c.unchecked("sync", "the remote: %v", err)
+	case st.DivergenceErr != "":
+		c.unchecked("sync", "the remote: %s", shown(st.DivergenceErr))
 	case !d.Remote:
 		c.note("sync", "the remote is empty; 'caboose sync' sends this machine's state")
 	default:
@@ -846,30 +871,31 @@ func (a *App) doctorSync(c *checkup, remoteWhy string) {
 }
 
 // doctorPending reports what this machine has not sent.
-func (a *App) doctorPending(c *checkup, p *statesync.Pending) {
-	var se *statesync.SecretsError
-	if err := p.Export.ScanSecrets(); errors.As(err, &se) {
-		c.problem("sync", "take the secrets out of those files; every sync refuses until then", "%v", err)
-	} else if err != nil {
-		c.unchecked("sync", "the secrets scan: %v", err)
+func (a *App) doctorPending(c *checkup, st *syncagent.Status) {
+	if len(st.Secrets) > 0 {
+		c.problem("sync", "take the secrets out of those files; every sync refuses until then", "%v",
+			(&statesync.SecretsError{Paths: shownAll(st.Secrets)}).Error())
 	}
-	if len(p.Export.Refused) > 0 {
-		c.note("sync", "not synced, being symlinks or hard links (never followed): %s", strings.Join(p.Export.Refused, ", "))
+	if len(st.Refused) > 0 {
+		c.note("sync", "not synced, being symlinks or hard links (never followed): %s", homeList(st.Refused))
 	}
-	if len(p.Export.Shadowed) > 0 {
+	if len(st.Shadowed) > 0 {
 		c.note("sync", "%s never %s anything, earlier rules of %s entry taking all %s matches (first match wins): %s",
-			plural(len(p.Export.Shadowed), "a sync rule", "sync rules"), plural(len(p.Export.Shadowed), "decides", "decide"),
-			plural(len(p.Export.Shadowed), "its", "their"), plural(len(p.Export.Shadowed), "it", "they"), strings.Join(p.Export.Shadowed, ", "))
+			plural(len(st.Shadowed), "a sync rule", "sync rules"), plural(len(st.Shadowed), "decides", "decide"),
+			plural(len(st.Shadowed), "its", "their"), plural(len(st.Shadowed), "it", "they"), strings.Join(shownAll(st.Shadowed), ", "))
 	}
-	if !p.Any() {
+	if len(st.Unmounted) > 0 {
+		c.note("sync", "%s not synced until 'caboose restart' mounts %s", homeList(st.Unmounted), plural(len(st.Unmounted), "it", "them"))
+	}
+	paths := shownAll(append(append([]string{}, st.Changed...), st.Deleted...))
+	if len(paths) == 0 {
 		c.ok("sync", "nothing here waiting to be sent")
 		return
 	}
-	paths := append(append([]string{}, p.Changed...), p.Deleted...)
-	const shown = 3
-	list := strings.Join(paths[:min(len(paths), shown)], ", ")
-	if len(paths) > shown {
-		list += fmt.Sprintf(", and %d more", len(paths)-shown)
+	const shownN = 3
+	list := strings.Join(paths[:min(len(paths), shownN)], ", ")
+	if len(paths) > shownN {
+		list += fmt.Sprintf(", and %d more", len(paths)-shownN)
 	}
 	n := len(paths)
 	c.note("sync", "%s here not sent yet (%s); %s", plural(n, "1 change", fmt.Sprintf("%d changes", n)), list, a.syncHow())
@@ -890,7 +916,7 @@ func fetchFailure(err error) (what, fix string) {
 	switch {
 	case strings.Contains(msg, "Host key verification failed"):
 		return "the remote's SSH host key is not accepted yet", "caboose sync, from a terminal: it asks once to accept the key"
-	case strings.Contains(msg, "no answer from the remote"):
+	case strings.Contains(msg, statesync.ErrNoAnswer.Error()):
 		return fmt.Sprintf("no answer from the remote in %s", doctorBudget), "check the network (or the remote), then try again"
 	}
 	return "cannot fetch from the remote: " + strings.TrimPrefix(firstLine(msg), "git fetch -q origin: "), "'caboose sync' shows the whole error"

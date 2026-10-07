@@ -61,9 +61,7 @@ func TestDoctorSyncNotSetUp(t *testing.T) {
 
 func TestDoctorSyncInStep(t *testing.T) {
 	here, _ := pair(t)
-	if _, err := here.syncer().Sync(); err != nil {
-		t.Fatal(err)
-	}
+	here.sync()
 	c := here.doctorSync("")
 	wantLines(t, c,
 		"  ✓ sync  "+here.remote+", auto_sync on",
@@ -77,9 +75,7 @@ func TestDoctorSyncInStep(t *testing.T) {
 func TestDoctorSyncBothWays(t *testing.T) {
 	here, there := pair(t)
 	here.a.Cfg.AutoSync = false
-	if _, err := here.syncer().Sync(); err != nil {
-		t.Fatal(err)
-	}
+	here.sync()
 	here.write(filepath.Join(here.data, memRel("p", "mine.md")), "mine\n")
 	here.write(filepath.Join(here.data, memRel("p", "more.md")), "more\n")
 	there.write(filepath.Join(there.data, memRel("p", "theirs.md")), "theirs\n")
@@ -119,9 +115,7 @@ func (e *autoEnv) git(args ...string) string {
 func TestDoctorSyncManyChanges(t *testing.T) {
 	here, _ := pair(t)
 	here.a.Cfg.AutoSync = true
-	if _, err := here.syncer().Sync(); err != nil {
-		t.Fatal(err)
-	}
+	here.sync()
 	for _, f := range []string{"a.md", "b.md", "c.md", "d.md", "e.md"} {
 		here.write(filepath.Join(here.data, memRel("p", f)), f)
 	}
@@ -141,9 +135,7 @@ func TestDoctorSyncEmptyRemoteAndUnsent(t *testing.T) {
 	wantLines(t, e.doctorSync(""), "  ! sync  the remote is empty; 'caboose sync' sends this machine's state")
 
 	here, _ := pair(t)
-	if _, err := here.syncer().Sync(); err != nil {
-		t.Fatal(err)
-	}
+	here.sync()
 	// A sync whose push never got through: its files are in the repo, so
 	// nothing is "waiting to be sent", and yet the remote lacks them.
 	here.write(filepath.Join(here.data, "home/.claude/agents/a.md"), "a\n")
@@ -211,13 +203,13 @@ func TestDoctorSyncSecretsAndLinks(t *testing.T) {
 	wantLines(t, c,
 		"  ✗ sync  refusing to sync; these look like they hold a credential: home/.claude/projects/"+
 			statesync.ProjectKey("/work/dev/p")+"/memory/leak.md (remove it and sync again; nothing was committed)",
-		"  ! sync  not synced, being symlinks or hard links (never followed): home/.claude/projects/"+
+		"  ! sync  not synced, being symlinks or hard links (never followed): ~/.claude/projects/"+
 			statesync.ProjectKey("/work/dev/q")+"/memory")
 }
 
 func TestDoctorSyncWhileSyncing(t *testing.T) {
 	here, _ := pair(t)
-	unlock, err := here.syncer().Lock()
+	unlock, err := statesync.Lock(here.data)
 	if err != nil {
 		t.Fatal(err)
 	}

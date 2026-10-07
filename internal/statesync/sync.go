@@ -2,8 +2,10 @@ package statesync
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
@@ -23,9 +26,9 @@ import (
 // Dir is the sync repo, relative to the data dir.
 const Dir = datadir.SyncDir
 
-// ContainerDir is where the container mounts the sync repo, and so the path
-// the git that runs it -- the container's -- sees it at.
-const ContainerDir = "/home/agent/.caboose-sync"
+// ContainerDir is where the sandbox mounts the sync repo, and where the
+// sync, which runs there, finds it.
+const ContainerDir = sandboxcfg.ContainerHome + "/.caboose-sync"
 
 // LockFile is the lock, in the data dir, that one sync holds throughout.
 const LockFile = "sync.lock"
@@ -51,6 +54,16 @@ const baseAttributes = "* -filter -text -eol -ident -working-tree-encoding -diff
 // machine's do now, is one this machine has just started syncing, whose
 // file is not here yet -- to be taken from the repo, not read as deleted.
 const rulesFile = ".git/caboose-rules.toml"
+
+// unmountedFile lists, one a line, the keep entries of rulesFile the
+// sandbox did not mount at that sync, which therefore synced nothing: to
+// the next sync after a restart mounts one, its files are new, to be taken
+// from the repo.
+const unmountedFile = ".git/caboose-unmounted"
+
+// applyingFile holds HEAD as it was before a sync took the remote's
+// changes, until they are all applied to the home (pull, resume).
+const applyingFile = ".git/caboose-applying"
 
 var (
 	// ErrNoRemote is returned when the sync repo has no remote yet.
@@ -104,8 +117,7 @@ func (c Conflict) Take(s Side) Resolution {
 }
 
 // Markers is c as a file with diff3 conflict markers, to edit by hand. The
-// three sides are written inside the repo's .git, the one place both this
-// process and the git it runs (in a container, say) can see.
+// three sides are written inside the repo's .git for git merge-file.
 func (c Conflict) Markers() ([]byte, error) {
 	if c.s == nil {
 		return nil, errors.New("conflict has no repo")
@@ -146,22 +158,33 @@ var markerRE = regexp.MustCompile(`(?m)^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)`)
 // Resolver settles a conflict, or returns ErrAborted.
 type Resolver func(Conflict) (Resolution, error)
 
-// Syncer syncs one data dir.
+// Syncer syncs one home with one sync repo. It runs where both are local
+// files -- in the sandbox, on its home and the repo it mounts -- so git
+// sees every change the moment it is made, with no file system shared
+// between two kernels in between.
 type Syncer struct {
-	DataDir string
+	// Home is the live home: what syncs is read from it, and what a sync
+	// takes is written to it.
+	Home string
+	// Repo is the sync repo.
+	Repo string
 	// Host names this machine in commits.
 	Host string
 	// Resolve settles conflicts MergeJSON cannot; nil aborts on the first.
 	Resolve Resolver
-	// Stderr shows fetch and push output (and any credential prompt);
-	// nil keeps it quiet.
-	Stderr *os.File
-	// Git runs git; nil is the host's (LocalGit). GitDir is the repo's path
-	// as that git sees it, "" for RepoDir.
-	Git    Command
-	GitDir string
+	// Stderr shows fetch and push output; nil keeps it quiet, and then
+	// what git said is in the error of one that fails.
+	Stderr io.Writer
+	// Env is added to the environment of every git command, and GitArgs
+	// go before each one's own arguments (-c settings, say).
+	Env     []string
+	GitArgs []string
+	// Budget, when set, bounds in time the commands that reach the remote
+	// (fetch, push), all told, from the first: one still running when it
+	// is spent is killed, with everything it started.
+	Budget time.Duration
 	// Sandbox is the sandbox config whose rules say what syncs; nil reads
-	// the data dir's (datadir.LoadSandboxConfig).
+	// Home's (ReadSandbox).
 	Sandbox *datadir.Sandbox
 	// Roots are the container paths of this machine's roots: the roots
 	// of the defaults in effect while there is no sandbox config yet.
@@ -170,6 +193,16 @@ type Syncer struct {
 	// that took what the remote has still leaves none: no machine had one
 	// to bring. It goes out in the same sync.
 	Defaults []byte
+	// Ctx, when set, stops the sync once done: a command reaching the
+	// remote is killed, with what it started, and nothing more is begun.
+	// An apply under way is finished first: it is local, and quick.
+	Ctx context.Context
+	// Mounted, when not nil, are the home-relative keep entries the
+	// sandbox has mounted. An entry the sandbox config has and the sandbox
+	// does not mount yet (one added since it was created) syncs nothing:
+	// what were written there would be lost with the sandbox. It syncs
+	// once a restart mounts it, its files then taken from the repo.
+	Mounted []string
 
 	g *git
 }
@@ -177,7 +210,7 @@ type Syncer struct {
 // sandbox is the sandbox config in effect, read once.
 func (s *Syncer) sandbox() (*datadir.Sandbox, error) {
 	if s.Sandbox == nil {
-		sb, err := datadir.LoadSandboxConfig(s.DataDir, s.Roots)
+		sb, err := ReadSandbox(s.Home, s.Roots)
 		if err != nil {
 			return nil, err
 		}
@@ -186,7 +219,34 @@ func (s *Syncer) sandbox() (*datadir.Sandbox, error) {
 	return s.Sandbox, nil
 }
 
-// rules is the sandbox config's rules, when it can be used as it is.
+// ReadSandbox reads the sandbox config from home, never through a link.
+// With no file the defaults for roots are in effect (Absent); a file that
+// cannot be used has Err set, and the defaults stand in.
+func ReadSandbox(home string, roots []string) (*datadir.Sandbox, error) {
+	data, _, err := nofollow.Dir(home).ReadFile(sandboxcfg.Rel)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		d := sandboxcfg.Default(roots)
+		c, err := sandboxcfg.Parse(d)
+		return &datadir.Sandbox{Config: c, Data: d, Absent: true}, err
+	case err != nil && !errors.Is(err, nofollow.ErrNotPlain):
+		return nil, err
+	}
+	bad := err
+	if err == nil {
+		c, perr := sandboxcfg.Parse(data)
+		if perr == nil {
+			return &datadir.Sandbox{Config: c, Data: data}, nil
+		}
+		bad = perr
+	}
+	d := sandboxcfg.Default(roots)
+	c, err := sandboxcfg.Parse(d)
+	return &datadir.Sandbox{Config: c, Data: d, Err: bad}, err
+}
+
+// rules is the sandbox config's rules, when it can be used as it is, less
+// the entries the sandbox does not mount (Mounted).
 func (s *Syncer) rules() (*sandboxcfg.Config, error) {
 	sb, err := s.sandbox()
 	if err != nil {
@@ -195,11 +255,47 @@ func (s *Syncer) rules() (*sandboxcfg.Config, error) {
 	if sb.Err != nil {
 		return nil, fmt.Errorf("%w: %s %v; fix it (or 'caboose update', for a newer format) and sync again", ErrSandboxConfig, sandboxcfg.HomePath, sb.Err)
 	}
-	return sb.Config, nil
+	return withoutEntries(sb.Config, s.unmounted(sb.Config)), nil
 }
 
-// prevRules is the sandbox config the last successful sync ran with, nil
-// when there is none to read.
+// Unmounted are the keep entries with sync rules that the sandbox does not
+// mount yet (Mounted), which sync nothing until it does.
+func (s *Syncer) Unmounted() []string {
+	sb, err := s.sandbox()
+	if err != nil {
+		return nil
+	}
+	return s.unmounted(sb.Config)
+}
+
+// unmounted are the keep entries of c with rules that Mounted lacks.
+func (s *Syncer) unmounted(c *sandboxcfg.Config) []string {
+	if s.Mounted == nil {
+		return nil
+	}
+	var out []string
+	for _, k := range c.Keep {
+		if len(k.Rules) > 0 && !slices.Contains(s.Mounted, k.Rel) {
+			out = append(out, k.Rel)
+		}
+	}
+	return out
+}
+
+// withoutEntries is c less the keep entries rels; c itself when none.
+func withoutEntries(c *sandboxcfg.Config, rels []string) *sandboxcfg.Config {
+	if len(rels) == 0 {
+		return c
+	}
+	out := *c
+	out.Keep = slices.DeleteFunc(slices.Clone(c.Keep), func(k sandboxcfg.Keep) bool {
+		return slices.Contains(rels, k.Rel)
+	})
+	return &out
+}
+
+// prevRules is the sandbox config the last successful sync ran with -- less
+// the entries it found unmounted -- nil when there is none to read.
 func (s *Syncer) prevRules() *sandboxcfg.Config {
 	data, _, err := s.repo().ReadFile(rulesFile)
 	if err != nil {
@@ -209,7 +305,11 @@ func (s *Syncer) prevRules() *sandboxcfg.Config {
 	if err != nil {
 		return nil
 	}
-	return c
+	var skipped []string
+	if data, _, err := s.repo().ReadFile(unmountedFile); err == nil {
+		skipped = strings.Fields(string(data))
+	}
+	return withoutEntries(c, skipped)
 }
 
 // Report is what a sync did.
@@ -218,7 +318,7 @@ type Report struct {
 	Committed bool
 	// Merged is set when the remote had changes this machine took.
 	Merged bool
-	// Applied are the data dir paths the sync wrote or deleted.
+	// Applied are the home paths the sync wrote or deleted.
 	Applied []string
 	// Ignored are repo paths this machine does not sync (another
 	// machine's rules, a newer caboose's, or not valid here); they are
@@ -229,21 +329,21 @@ type Report struct {
 	SandboxConfig bool
 	// Shadowed are rules that never decide anything (Export.Shadowed).
 	Shadowed []string
-	// Refused are data dir paths not synced for not being plain files and
+	// Refused are home paths not synced for not being plain files and
 	// directories (Export.Refused), both ways: never read, never written.
 	Refused []string
+	// Unmounted are the keep entries with sync rules that the sandbox
+	// does not mount yet: nothing of them synced. They do once a restart
+	// mounts them.
+	Unmounted []string
 	// Pushed is set when the remote was updated.
 	Pushed bool
 }
 
-// RepoDir is the sync repo's path.
-func (s *Syncer) RepoDir() string { return filepath.Join(s.DataDir, Dir) }
-
-// repo and live are the sync repo and the data dir, as this process touches
-// them: the container writes both (the repo is all its git's; .claude is
-// its own), so never through a symlink.
-func (s *Syncer) repo() nofollow.Dir { return nofollow.Dir(s.RepoDir()) }
-func (s *Syncer) live() nofollow.Dir { return nofollow.Dir(s.DataDir) }
+// repo and live are the sync repo and the home: the sandbox writes both,
+// and anything in it could have put a link there, so never through one.
+func (s *Syncer) repo() nofollow.Dir { return nofollow.Dir(s.Repo) }
+func (s *Syncer) live() nofollow.Dir { return nofollow.Dir(s.Home) }
 
 // inRepo reports whether rel exists in the sync repo, as itself.
 func (s *Syncer) inRepo(rel string) (bool, error) {
@@ -256,18 +356,15 @@ func (s *Syncer) inRepo(rel string) (bool, error) {
 
 func (s *Syncer) git() *git {
 	if s.g == nil {
-		dir := s.GitDir
-		if dir == "" {
-			dir = s.RepoDir()
-		}
-		s.g = &git{dir: dir, command: s.Git, Stderr: s.Stderr}
+		s.g = &git{dir: s.Repo, env: s.Env, args: s.GitArgs, Stderr: s.Stderr, budget: s.Budget, ctx: s.Ctx}
 	}
 	return s.g
 }
 
-// Lock takes the sync lock without waiting.
-func (s *Syncer) Lock() (unlock func(), err error) {
-	f, err := os.OpenFile(filepath.Join(s.DataDir, LockFile), os.O_RDWR|os.O_CREATE, 0o666)
+// Lock takes the sync lock of data dir dataDir without waiting. It is the
+// host's: one sync at a time per data dir, whatever runs it.
+func Lock(dataDir string) (unlock func(), err error) {
+	f, err := os.OpenFile(filepath.Join(dataDir, LockFile), os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return nil, err
 	}
@@ -297,12 +394,11 @@ func (s *Syncer) Lock() (unlock func(), err error) {
 // not as the remote's deleted.
 func (s *Syncer) Init() error {
 	g := s.git()
-	// The repo's own dir is the data dir's, and the container's mount
-	// point: nothing inside can replace it.
-	if err := os.MkdirAll(s.RepoDir(), 0o700); err != nil {
+	// The repo's own dir is a mount point: nothing inside can replace it.
+	if err := os.MkdirAll(s.Repo, 0o700); err != nil {
 		return err
 	}
-	if has, err := s.inRepo(".git"); err != nil {
+	if has, err := s.inRepo(".git/HEAD"); err != nil {
 		return err
 	} else if !has {
 		if err := g.run("init", "-q", "-b", Branch); err != nil {
@@ -350,20 +446,20 @@ func (s *Syncer) SetRemote(url string) error {
 	return g.run("remote", "add", "origin", url)
 }
 
-// MaybeRemote reports whether the sync repo's git config names the remote,
-// without running git: cheap enough to ask on every launch. It can be
-// fooled -- the container writes the repo -- so Remote is the answer; a
-// false here is only ever "no remote".
-func (s *Syncer) MaybeRemote() bool {
-	data, _, err := s.repo().ReadFile(".git/config")
+// MaybeRemote reports whether the git config of the sync repo at repo names
+// the remote, without running git: cheap enough to ask on every launch. It
+// can be fooled -- the sandbox writes the repo -- so Remote is the answer;
+// a false here is only ever "no remote".
+func MaybeRemote(repo string) bool {
+	data, _, err := nofollow.Dir(repo).ReadFile(".git/config")
 	return err == nil && bytes.Contains(data, []byte(`[remote "origin"]`))
 }
 
 // RemoteHint is the remote's URL as the repo's git config spells it, read
 // without git, for showing: like MaybeRemote it can be fooled, and is no
 // input to anything. "" when there is none to read.
-func (s *Syncer) RemoteHint() string {
-	data, _, err := s.repo().ReadFile(".git/config")
+func RemoteHint(repo string) string {
+	data, _, err := nofollow.Dir(repo).ReadFile(".git/config")
 	if err != nil {
 		return ""
 	}
@@ -383,7 +479,7 @@ func (s *Syncer) RemoteHint() string {
 
 // Remote is the sync repo's remote URL, or "" when there is none.
 func (s *Syncer) Remote() string {
-	if has, _ := s.inRepo(".git"); !has {
+	if has, _ := s.inRepo(".git/HEAD"); !has {
 		return ""
 	}
 	url, err := s.git().str("remote", "get-url", "origin")
@@ -394,7 +490,7 @@ func (s *Syncer) Remote() string {
 }
 
 // Sync runs one sync: export, commit, fetch, merge, apply, push. The caller
-// holds the lock and has made sure nothing is writing the data dir.
+// holds the lock and has made sure nothing is writing the home.
 func (s *Syncer) Sync() (*Report, error) {
 	if err := s.Init(); err != nil {
 		return nil, err
@@ -409,6 +505,12 @@ func (s *Syncer) Sync() (*Report, error) {
 	if err := s.clean(); err != nil {
 		return nil, err
 	}
+	if err := s.resume(r); err != nil {
+		return r, err
+	}
+	if err := s.stopped(); err != nil {
+		return r, err
+	}
 	if err := s.commitExport(r); err != nil {
 		return nil, err
 	}
@@ -416,6 +518,9 @@ func (s *Syncer) Sync() (*Report, error) {
 	// then the remote has something new to merge: go round again. Any
 	// other failure (auth, network) is reported as it is, not retried.
 	for attempt := 0; ; attempt++ {
+		if err := s.stopped(); err != nil {
+			return r, err
+		}
 		if err := s.pull(r); err != nil {
 			return r, err
 		}
@@ -423,6 +528,9 @@ func (s *Syncer) Sync() (*Report, error) {
 			return r, err
 		}
 		if err := s.writeDefaults(r); err != nil {
+			return r, err
+		}
+		if err := s.stopped(); err != nil {
 			return r, err
 		}
 		err := s.push(r)
@@ -441,22 +549,33 @@ func (s *Syncer) writeDefaults(r *Report) error {
 	if s.Defaults == nil {
 		return nil
 	}
-	if _, err := s.live().Lstat(datadir.SandboxConfig); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := s.live().Lstat(sandboxcfg.Rel); !errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err := s.live().WriteFile(datadir.SandboxConfig, s.Defaults, 0o644); err != nil {
+	if err := s.live().WriteFile(sandboxcfg.Rel, s.Defaults, 0o644); err != nil {
 		return err
 	}
 	return s.commitExport(r)
 }
 
-// saveRules records the sandbox config this sync ran with (rulesFile).
+// saveRules records the sandbox config this sync ran with (rulesFile), and
+// the entries of it the sandbox did not mount (unmountedFile).
 func (s *Syncer) saveRules() error {
 	sb, err := s.sandbox()
 	if err != nil {
 		return err
 	}
-	return s.repo().WriteFile(rulesFile, sb.Data, 0o644)
+	if err := s.repo().WriteFile(rulesFile, sb.Data, 0o644); err != nil {
+		return err
+	}
+	skipped := s.unmounted(sb.Config)
+	if len(skipped) == 0 {
+		if err := s.repo().Remove(unmountedFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return s.repo().WriteFile(unmountedFile, []byte(strings.Join(skipped, "\n")+"\n"), 0o644)
 }
 
 // remoteMoved fetches, and reports whether the remote branch now has
@@ -471,7 +590,7 @@ func (s *Syncer) remoteMoved() bool {
 }
 
 // clean puts the work tree back at HEAD, finishing off a sync that died
-// halfway. Nothing live is in it: the export is redone from the data dir.
+// halfway. Nothing live is in it: the export is redone from the home.
 func (s *Syncer) clean() error {
 	g := s.git()
 	if merging, err := s.inRepo(".git/MERGE_HEAD"); err != nil {
@@ -493,11 +612,14 @@ func (s *Syncer) commitExport(r *Report) error {
 	if err != nil {
 		return err
 	}
-	e, err := ExportLive(s.DataDir, c)
+	e, err := ExportLive(s.Home, c)
 	if err != nil {
 		return err
 	}
 	r.Refused, r.Shadowed = e.Refused, e.Shadowed
+	if sb, err := s.sandbox(); err == nil {
+		r.Unmounted = s.unmounted(sb.Config)
+	}
 	if err := e.ScanSecrets(); err != nil {
 		return err
 	}
@@ -575,6 +697,14 @@ func (s *Syncer) pull(r *Report) error {
 	if err != nil {
 		return err
 	}
+	// Recorded before HEAD moves, and removed once what moved is all in
+	// the home: a sync stopped in between (killed, its host gone) has the
+	// next one finish the apply before it exports, which would otherwise
+	// read the files not written yet as this machine's changes, and undo
+	// the remote's.
+	if err := s.repo().WriteFile(applyingFile, []byte(old+"\n"), 0o644); err != nil {
+		return err
+	}
 	if ff, err := g.ok("merge-base", "--is-ancestor", "HEAD", remote); err != nil {
 		return err
 	} else if ff {
@@ -585,7 +715,58 @@ func (s *Syncer) pull(r *Report) error {
 		return err
 	}
 	r.Merged = true
-	return s.applyAll(old, r)
+	if err := s.applyAll(old, r); err != nil {
+		return err
+	}
+	return s.applied()
+}
+
+// applied removes applyingFile: the apply it marks is done.
+func (s *Syncer) applied() error {
+	if err := s.repo().Remove(applyingFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// resume finishes the apply of a sync that stopped halfway through it
+// (applyingFile), before anything is exported.
+func (s *Syncer) resume(r *Report) error {
+	data, _, err := s.repo().ReadFile(applyingFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	old := strings.TrimSpace(string(data))
+	if !commitRE.MatchString(old) {
+		return s.applied() // not what a sync wrote: nothing to finish
+	}
+	if ok, _ := s.git().ok("cat-file", "-e", old+"^{commit}"); !ok {
+		return s.applied()
+	}
+	if err := s.applyAll(old, r); err != nil {
+		return err
+	}
+	if len(r.Applied) > 0 {
+		r.Merged = true
+	}
+	return s.applied()
+}
+
+var commitRE = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// ErrStopped is a sync stopped on the way, its Ctx done: nothing more was
+// started, and the next sync takes it from where it is.
+var ErrStopped = errors.New("the sync was stopped")
+
+// stopped is ErrStopped once Ctx is done.
+func (s *Syncer) stopped() error {
+	if s.Ctx != nil && s.Ctx.Err() != nil {
+		return ErrStopped
+	}
+	return nil
 }
 
 // applyAll applies what changed since old; and when that changed the
@@ -595,17 +776,21 @@ func (s *Syncer) applyAll(old string, r *Report) error {
 	if err := s.apply(old, r); err != nil {
 		return err
 	}
-	if !slices.Contains(r.Applied, datadir.SandboxConfig) {
+	if !slices.Contains(r.Applied, sandboxcfg.Rel) {
 		return nil
 	}
 	r.SandboxConfig = true
-	sb, err := datadir.LoadSandboxConfig(s.DataDir, s.Roots)
+	sb, err := ReadSandbox(s.Home, s.Roots)
 	if err != nil || sb.Err != nil {
 		// Kept by the old rules: doctor and the next launch say why.
 		return nil
 	}
 	s.Sandbox, r.Ignored = sb, nil
-	return s.apply(old, r)
+	if err := s.apply(old, r); err != nil {
+		return err
+	}
+	r.Unmounted = s.unmounted(sb.Config)
+	return nil
 }
 
 // adopt takes from the repo each file this machine has only just started
@@ -765,8 +950,9 @@ func (s *Syncer) resolve(p string, res Resolution) error {
 	return g.run("add", "--", p)
 }
 
-// apply writes to the data dir what changed in the repo since old, which is
-// what the data dir held when this sync exported it.
+// apply writes to the home what changed in the repo since old, which is
+// what the home held when this sync exported it. A path of an entry the
+// sandbox does not mount is left in the repo, and said apart (Unmounted).
 func (s *Syncer) apply(old string, r *Report) error {
 	c, err := s.rules()
 	if err != nil {
@@ -778,6 +964,10 @@ func (s *Syncer) apply(old string, r *Report) error {
 		return err
 	}
 	fields := zsplit(out)
+	sb, err := s.sandbox()
+	if err != nil {
+		return err
+	}
 	modes, err := s.modes()
 	if err != nil {
 		return err
@@ -785,6 +975,11 @@ func (s *Syncer) apply(old string, r *Report) error {
 	for i := 0; i+1 < len(fields); i += 2 {
 		status, p := fields[i], fields[i+1]
 		t, err := LiveTarget(c, p)
+		if err != nil {
+			if _, all := LiveTarget(sb.Config, p); all == nil {
+				continue // an entry not mounted yet
+			}
+		}
 		// Only files: a symlink (120000) or a submodule a remote
 		// committed is nothing this machine writes.
 		if mode := modes[p]; err != nil || (status != "D" && mode != "100644" && mode != "100755") {
@@ -848,7 +1043,7 @@ func appendNew(list []string, s string) []string {
 // The next export sends it again.
 var errKeptFile = errors.New("a kept file is never deleted by a sync")
 
-// write puts one file into the data dir, or deletes it. A path that is, or
+// write puts one file into the home, or deletes it. A path that is, or
 // runs through, a symlink or a hard link is nofollow.ErrNotPlain, and left
 // alone: a symlink someone made is theirs, and is never written through.
 func (s *Syncer) write(t Target, data []byte, del, exec bool) error {
@@ -880,7 +1075,7 @@ func (s *Syncer) write(t Target, data []byte, del, exec bool) error {
 }
 
 // pruneEmpty removes dir and its empty parents, up to but not including
-// stop (Target.Stop), all relative to the data dir.
+// stop (Target.Stop), all relative to the home.
 func (s *Syncer) pruneEmpty(dir, stop string) {
 	for dir != stop && strings.HasPrefix(dir, stop+"/") {
 		if s.live().Remove(dir) != nil {
@@ -913,7 +1108,7 @@ func (s *Syncer) writeKeys(t Target, data []byte, del bool) error {
 		v, err := decode(data)
 		m, ok := v.(map[string]any)
 		if err != nil || !ok {
-			return fmt.Errorf("the synced ~/%s is not a JSON object", t.Home)
+			return fmt.Errorf("the synced ~/%s is not a JSON object", t.Rel)
 		}
 		synced = m
 	}

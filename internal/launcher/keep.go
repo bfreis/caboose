@@ -16,6 +16,7 @@ import (
 	"github.com/bfreis/caboose/internal/nofollow"
 	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
+	"github.com/bfreis/caboose/internal/statesync"
 )
 
 // sandboxProblems is where the host tells sessions what is wrong with the
@@ -52,7 +53,7 @@ func (a *App) sandboxConfig() (*datadir.Sandbox, error) {
 // would each write their own and conflict on their first sync.
 func (a *App) writeSandboxDefaults() error {
 	sb, err := a.sandboxConfig()
-	if err != nil || !sb.Absent || a.newSyncer(nil).MaybeRemote() {
+	if err != nil || !sb.Absent || statesync.MaybeRemote(a.syncRepo()) {
 		return err
 	}
 	return a.writeDefaultsNow(sb)

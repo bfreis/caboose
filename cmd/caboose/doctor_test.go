@@ -415,7 +415,7 @@ func TestDoctorSync(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 	for _, l := range dockerLog(t, log) {
-		if strings.Contains(l, " git ") || strings.HasSuffix(l, " git") {
+		if strings.Contains(l, " git ") || strings.HasSuffix(l, " git") || strings.Contains(l, "caboose-agent sync") {
 			t.Errorf("--offline ran git: %s", l)
 		}
 	}
@@ -425,8 +425,8 @@ func TestDoctorSync(t *testing.T) {
 	if code != 0 || row(out, "sync", "nothing new on the remote") == "" {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
-	if !strings.Contains(strings.Join(dockerLog(t, log), "\n"), " fetch -q origin") {
-		t.Error("did not fetch")
+	if !strings.Contains(strings.Join(dockerLog(t, log), "\n"), "caboose-agent sync status") {
+		t.Error("did not ask the sandbox")
 	}
 }
 

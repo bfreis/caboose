@@ -90,7 +90,7 @@ const LastGoodConfig = "sandbox.last-good.toml"
 const ProposalsDir = "proposals"
 
 // SyncDir is caboose sync's git repo (internal/statesync), mounted so that the
-// container's git runs it. Created here, before the container is, since a
+// sync, which runs in the sandbox, works on it there. Created here, before the container is, since a
 // bind-mount source docker has to create itself is root's on a Linux host.
 const SyncDir = "sync"
 

@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/backend"
-	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/statesync"
+	"github.com/bfreis/caboose/internal/syncagent"
 )
 
 // caboose sync status fetches from the remote, and under vm the fetch's
@@ -34,9 +34,9 @@ func TestSyncStatusStartsTheLinkBeforeTheFetch(t *testing.T) {
 				t.Fatal(err)
 			}
 			box.Exec = func(s backend.ExecSpec) *exec.Cmd {
-				// The fetch took nothing: no remote branch yet.
-				if slices.Contains(s.Argv, "rev-parse") {
-					return backendtest.Reply("", "", 1)
+				// The status, the fetch in it: no remote branch yet.
+				if isSyncExec(s, syncagent.OpStatus) {
+					return fakeAgent(`{"type":"status","status":{"remote":true}}`)
 				}
 				return nil
 			}
@@ -49,7 +49,7 @@ func TestSyncStatusStartsTheLinkBeforeTheFetch(t *testing.T) {
 			wait := index(func(argv []string) bool {
 				return len(argv) >= 2 && slices.Equal(argv[:2], waitProxy)
 			})
-			fetch := index(func(argv []string) bool { return slices.Contains(argv, "fetch") })
+			fetch := index(func(argv []string) bool { return slices.Equal(argv, []string{AgentPath, "sync", syncagent.OpStatus}) })
 			if fetch < 0 {
 				t.Fatalf("no fetch in %+v", box.Execs)
 			}
@@ -75,9 +75,7 @@ func TestSyncStatusStartsTheLinkBeforeTheFetch(t *testing.T) {
 // even when the fetch fails as that push did.
 func TestSyncStatusShowsUnsentCommits(t *testing.T) {
 	here, _ := pair(t)
-	if _, err := here.syncer().Sync(); err != nil {
-		t.Fatal(err)
-	}
+	here.sync()
 	here.write(filepath.Join(here.data, "home/.claude/agents/a.md"), "a\n")
 	here.write(filepath.Join(here.data, statesync.Dir, "home/.claude/agents/a.md"), "a\n")
 	here.git("add", "-A")

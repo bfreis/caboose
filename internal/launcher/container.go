@@ -447,7 +447,7 @@ func (a *App) createContainer(mayBuild bool) error {
 		backend.Mount{Source: d + "/" + pm[0], Target: "/home/agent/.local/bin"},
 		backend.Mount{Source: d + "/" + pm[1], Target: "/home/agent/.local/share/claude"},
 		backend.Mount{Source: d + "/" + pm[2], Target: "/home/agent/.cache/claude"},
-		// caboose sync's repo: the container's git runs it (launcher/sync.go).
+		// caboose sync's repo, which the sync in the sandbox works on (launcher/sync.go).
 		backend.Mount{Source: d + "/" + datadir.SyncDir, Target: statesync.ContainerDir},
 		// Where sessions propose what only the host can change (apply.go).
 		backend.Mount{Source: d + "/" + datadir.ProposalsDir, Target: proposal.ContainerDir},

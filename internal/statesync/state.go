@@ -14,7 +14,7 @@ import (
 // Pending is what this machine has changed since its last sync: the live
 // export against the sync repo's work tree, which every sync leaves at the
 // commit it made or took (clean resets it at the start, a failed merge is
-// aborted). Read on the host, with no git and no network.
+// aborted). No git and no network.
 type Pending struct {
 	// Changed are repo paths the export has and the work tree lacks, or
 	// holds with other contents or another mode.
@@ -30,7 +30,7 @@ type Pending struct {
 // Any reports whether anything is waiting to be sent.
 func (p *Pending) Any() bool { return len(p.Changed)+len(p.Deleted) > 0 }
 
-// Pending compares the live data dir with the sync repo's work tree. The
+// Pending compares the live home with the sync repo's work tree. The
 // caller holds the lock, so no sync is rewriting the work tree meanwhile.
 // Both are read without following a link: a work tree path that is not a
 // plain file reads as changed, as the next sync rewrites it.
@@ -39,7 +39,7 @@ func (s *Syncer) Pending() (*Pending, error) {
 	if err != nil {
 		return nil, err
 	}
-	e, err := ExportLive(s.DataDir, c)
+	e, err := ExportLive(s.Home, c)
 	if err != nil {
 		return nil, err
 	}

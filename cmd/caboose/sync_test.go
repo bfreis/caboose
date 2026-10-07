@@ -7,43 +7,63 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/launcher"
 	"github.com/bfreis/caboose/internal/statesync"
+	"github.com/bfreis/caboose/internal/syncagent"
 )
+
+// The fake docker runs caboose-agent's sync as this test binary, on the
+// home and sync repo these name (syncContainer).
+const (
+	testSyncHome = "CABOOSE_TEST_SYNC_HOME"
+	testSyncRepo = "CABOOSE_TEST_SYNC_REPO"
+)
+
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "askpass" && os.Getenv(syncagent.AskpassEnv) != "" {
+		os.Exit(syncagent.Askpass(os.Args[2:], os.Stdout, os.Stderr))
+	}
+	if home := os.Getenv(testSyncHome); home != "" && len(os.Args) == 3 && os.Args[1] == "sync" {
+		exe, _ := os.Executable()
+		os.Exit(syncagent.Serve(os.Args[2], os.Stdin, os.Stdout, os.Stderr,
+			syncagent.Paths{Home: home, Repo: os.Getenv(testSyncRepo), Exe: exe}))
+	}
+	os.Exit(m.Run())
+}
 
 // syncContainer is a running, ready container "caboose-default" with no sessions,
 // mounting the sync repo at mount (the data dir's, unless a test says
-// otherwise), whose `docker exec caboose-default git ...` runs the real git on the host
-// copy, translating the container path. git is called by absolute path: the
-// launcher's own PATH has none, since the host needs no git.
+// otherwise) and the default keep entries, whose `docker exec caboose-default git ...`
+// runs the real git on the host, and whose caboose-agent sync is this test
+// binary's (TestMain) on the data dir's home and sync repo. git is called by
+// absolute path: the launcher's own PATH has none, since the host needs no
+// git.
 func syncContainer(git, data, mount string) string {
+	home := filepath.Join(data, "home")
 	return containerRunning + `
 case "$*" in
   "exec caboose-default test -f /tmp/.caboose-ready") exit 0 ;;
   "exec caboose-default bash -c for d in /proc/"*) echo "` + procRow("7", "1", "sleep") + `"; exit 0 ;;
-  "inspect --type=container caboose-default --format "*) printf '` + statesync.ContainerDir + `\t%s\n' "` + mount + `"; exit 0 ;;
+  "inspect --type=container caboose-default --format "*)
+    for k in .claude .claude.json .config/caboose .config/git .config/jj .config/gh .ssh; do printf '/home/agent/%s\t%s\n' "$k" "` + home + `/$k"; done
+    printf '` + statesync.ContainerDir + `\t%s\n' "` + mount + `"; exit 0 ;;
 esac
 if [ "$1" = exec ]; then
   shift
   while :; do
     case "$1" in
       -i|-t) shift ;;
-      -e) echo "env $2" >> "` + filepath.Join(data, "..", "exec-env") + `"; shift 2 ;;
+      -e) shift 2 ;;
       *) break ;;
     esac
   done
-  # git, or git under the watchdog: bash -c SCRIPT NAME SECS git ...
-  if [ "$1" = caboose-default ] && { [ "$2" = git ] || { [ "$2" = bash ] && [ "$3" = -c ] && [ "$5" = watchdog ]; }; }; then
-    shift
-    n=$#
-    for a; do
-      case "$a" in
-        ` + statesync.ContainerDir + `) a="` + filepath.Join(data, statesync.Dir) + `" ;;
-        git) a=` + git + ` ;;
-      esac
-      set -- "$@" "$a"
-    done
-    shift $n
-    exec "$@"
+  if [ "$1" = caboose-default ] && [ "$2" = git ]; then
+    shift 2
+    exec ` + git + ` "$@"
+  fi
+  if [ "$1" = caboose-default ] && [ "$2" = ` + launcher.AgentPath + ` ]; then
+    shift 2
+    PATH="` + filepath.Dir(git) + `:$PATH" exec env ` + testSyncHome + `="` + home + `" ` + testSyncRepo + `="` + filepath.Join(data, statesync.Dir) + `" "` + os.Args[0] + `" "$@"
   fi
 fi`
 }
@@ -122,14 +142,6 @@ func TestSyncCommand(t *testing.T) {
 	if code != 0 || !strings.Contains(errs, "already in sync") {
 		t.Errorf("second sync: exit %d\n%s", code, errs)
 	}
-
-	// Its ssh keeps host keys in the sync repo, and may ask about one:
-	// someone is at the terminal.
-	env, _ := os.ReadFile(filepath.Join(data, "..", "exec-env"))
-	if !strings.Contains(string(env), "env GIT_SSH_COMMAND=ssh -o 'UserKnownHostsFile="+statesync.ContainerDir+"/.git/known_hosts ~/.ssh/known_hosts'\n") ||
-		strings.Contains(string(env), "BatchMode") || strings.Contains(string(env), "GIT_TERMINAL_PROMPT") {
-		t.Errorf("git's environment:\n%s", env)
-	}
 }
 
 func TestSyncRefusesLiveSessions(t *testing.T) {
@@ -207,7 +219,7 @@ func TestSyncNeedsTheMount(t *testing.T) {
 			return strings.Replace(mountedHere(git, data), statesync.ContainerDir+`\t`, `/other\t`, 1)
 		})
 		code, _, errs := runIt("sync")
-		if code != 1 || !strings.Contains(errs, "where the sync's git runs") || !strings.Contains(errs, "caboose restart") {
+		if code != 1 || !strings.Contains(errs, "where the sync runs") || !strings.Contains(errs, "caboose restart") {
 			t.Errorf("exit %d\n%s", code, errs)
 		}
 	})

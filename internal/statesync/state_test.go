@@ -50,7 +50,7 @@ func TestPendingAgainstTheLastSync(t *testing.T) {
 	if err := os.Remove(a.path(mem("p", "gone.md"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(a.s.DataDir, "home/.claude/skills/s/run.sh"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(a.s.Home, ".claude/skills/s/run.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// A path another machine (or a newer caboose) put in the repo is not
@@ -84,7 +84,7 @@ func TestPendingReadsNoLinkInTheRepo(t *testing.T) {
 	if err := os.WriteFile(secret, []byte(`{"x":1}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(a.s.RepoDir(), "home/.claude/settings.json")
+	target := filepath.Join(a.s.Repo, "home/.claude/settings.json")
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestUnsent(t *testing.T) {
 	// push that failed.
 	commit := func(rel, data string) {
 		t.Helper()
-		p := filepath.Join(a.s.DataDir, Dir, filepath.FromSlash(rel))
+		p := filepath.Join(a.s.Repo, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o777); err != nil {
 			t.Fatal(err)
 		}
@@ -232,7 +232,7 @@ func TestRemoteHint(t *testing.T) {
 	needGit(t)
 	remote := newRemote(t)
 	a := newMachine(t, "a", remote)
-	if got := a.s.RemoteHint(); got != remote {
+	if got := RemoteHint(a.s.Repo); got != remote {
 		t.Errorf("RemoteHint = %q, want %q", got, remote)
 	}
 	// Another remote's url is not origin's.
@@ -242,10 +242,10 @@ func TestRemoteHint(t *testing.T) {
 	if err := a.s.git().run("remote", "remove", "origin"); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.s.RemoteHint(); got != "" {
+	if got := RemoteHint(a.s.Repo); got != "" {
 		t.Errorf("with no origin: RemoteHint = %q", got)
 	}
-	if got := (&Syncer{DataDir: t.TempDir()}).RemoteHint(); got != "" {
+	if got := RemoteHint(t.TempDir()); got != "" {
 		t.Errorf("with no repo: RemoteHint = %q", got)
 	}
 }

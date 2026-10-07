@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/syncagent"
 )
 
 // ErrNoLink is a command run while no host is linked.
@@ -324,6 +325,8 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
                       wait until the outbound proxy serves (30 seconds at most
                       by default), under vm
   link                the sandbox's end of the link (the host's caboose runs it)
+  sync run|status     caboose sync, run in the sandbox (the host's caboose runs it)
+  askpass PROMPT      answers git's and ssh's prompts during a sync
   guest               a vm guest's agent: its control, exec and link ports (the init runs it)
 `)
 		return 2
@@ -378,6 +381,18 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 			secs = n
 		}
 		err = WaitProxy(agentproto.EgressListen, time.Duration(secs)*time.Second)
+	case "sync":
+		if len(rest) != 1 {
+			return usage()
+		}
+		p, perr := syncagent.SandboxPaths()
+		if perr != nil {
+			fmt.Fprintf(stderr, "caboose-agent: sync: %v\n", perr)
+			return 1
+		}
+		return syncagent.Serve(rest[0], stdin, stdout, stderr, p)
+	case "askpass":
+		return syncagent.Askpass(rest, stdout, stderr)
 	case "link":
 		if len(rest) != 0 {
 			return usage()

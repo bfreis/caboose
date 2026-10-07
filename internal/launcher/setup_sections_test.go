@@ -271,12 +271,15 @@ func syncSetupEnv(t *testing.T) (e *setupEnv, remote string) {
 	c.ReadyTimeout = 1
 	c.Roots = []config.Root{{Name: config.DefaultRootName, Host: filepath.Join(t.TempDir(), "dev"), Container: config.WorkDir + "/" + config.DefaultRootName}}
 	repo := filepath.Join(c.DataDir, statesync.Dir)
+	home := filepath.Join(c.DataDir, datadir.HomeDir)
 	script := `#!/bin/sh
 case "$*" in
   "inspect --type=container -f {{.State.Status}} ` + c.Container + `") echo running; exit 0 ;;
   "exec ` + c.Container + ` test -f ` + ReadyMarker + `") exit 0 ;;
   "exec ` + c.Container + ` bash -c for d in /proc/"*) echo "7 1 sleep"; exit 0 ;;
-  "inspect --type=container ` + c.Container + ` --format "*) printf '` + statesync.ContainerDir + `\t%s\n' "` + repo + `"; exit 0 ;;
+  "inspect --type=container ` + c.Container + ` --format "*)
+    for k in .claude .claude.json .config/caboose; do printf '/home/agent/%s\t%s\n' "$k" "` + home + `/$k"; done
+    printf '` + statesync.ContainerDir + `\t%s\n' "` + repo + `"; exit 0 ;;
 esac
 [ "$1" = exec ] || exit 1
 shift
@@ -289,17 +292,12 @@ while :; do
 done
 [ "$1" = ` + c.Container + ` ] || exit 1
 shift
-[ "$1" = git ] || { [ "$1" = bash ] && [ "$2" = -c ] && [ "$4" = watchdog ]; } || exit 1
-n=$#
-for a; do
-  case "$a" in
-    ` + statesync.ContainerDir + `) a="` + repo + `" ;;
-    git) a=` + git + ` ;;
-  esac
-  set -- "$@" "$a"
-done
-shift $n
-exec "$@"
+case "$1" in
+  git) exec "$@" ;;
+  ` + AgentPath + `) shift
+    exec env ` + testSyncHome + `="` + home + `" ` + testSyncRepo + `="` + repo + `" "` + os.Args[0] + `" "$@" ;;
+esac
+exit 1
 `
 	if err := os.WriteFile(e.a.Docker.Path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

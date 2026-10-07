@@ -1,15 +1,22 @@
-// Package statesync backs up and syncs the portable part of the data dir --
-// what the sandbox config's rules name: memories, settings, skills,
+// Package statesync backs up and syncs the portable part of the sandbox's
+// home -- what the sandbox config's rules name: memories, settings, skills,
 // start-up scripts and shell config by default -- through a git remote,
 // across machines.
 //
-// The data dir itself is never a git work tree: a checkout of a commit that
-// predates an ignore rule lets a VCS snapshot live state and then delete it.
-// So the sync repo is a separate directory
-// (<data dir>/sync), and a sync goes export -> commit -> fetch -> merge ->
-// apply: the files the rules name are copied into the repo, the merge
-// happens there, and only what the merge changed is written back, file by
-// file. Git never checks anything out over live state.
+// The home (the data dir's home/ on the host) is never a git work tree: a
+// checkout of a commit that predates an ignore rule lets a VCS snapshot
+// live state and then delete it. So the sync repo is a separate directory
+// (<data dir>/sync, mounted in the sandbox at ContainerDir), and a sync goes
+// export -> commit -> fetch -> merge -> apply: the files the rules name are
+// copied into the repo, the merge happens there, and only what the merge
+// changed is written back, file by file. Git never checks anything out over
+// live state.
+//
+// A sync runs in the sandbox (caboose-agent sync, internal/syncagent), on
+// the home and the repo as the sandbox sees them: every file it reads and
+// every git command it runs see the same file system, with no cache of
+// another kernel's in between. The host holds the lock and does the
+// talking.
 //
 // What syncs is what the sandbox config's rules say (internal/sandboxcfg),
 // on this machine: a path a remote sends that no rule here names is never
@@ -23,7 +30,6 @@ import (
 	"path"
 	"strings"
 
-	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
@@ -37,13 +43,11 @@ func ProjectKey(cwd string) string { return sandboxcfg.ProjectKey(cwd) }
 
 // Target is where a repo path lives on this machine, and how it syncs.
 type Target struct {
-	// Rel is the path relative to the data dir, slash-separated.
+	// Rel is the path relative to the home, slash-separated.
 	Rel string
-	// Home is the path relative to the home.
-	Home string
 	// Rule is the sandbox config's rule that syncs it.
 	Rule *sandboxcfg.Rule
-	// Stop is the data dir path deleting files never prunes: the
+	// Stop is the home path deleting files never prunes: the
 	// directory its rule syncs (up to the first glob), or its keep
 	// entry's, which must survive being emptied.
 	Stop string
@@ -56,7 +60,7 @@ type Target struct {
 // Keys reports whether only some of the file's keys sync.
 func (t Target) Keys() bool { return t.Rule.Merge == sandboxcfg.MergeJSON && len(t.Rule.Keys) > 0 }
 
-// LiveTarget maps a repo path to its place in the data dir, or returns an
+// LiveTarget maps a repo path to its place in the home, or returns an
 // error for a path no rule of c syncs, or one that would escape.
 func LiveTarget(c *sandboxcfg.Config, repoPath string) (Target, error) {
 	if !safeRel(repoPath) {
@@ -78,7 +82,7 @@ func LiveTarget(c *sandboxcfg.Config, repoPath string) (Target, error) {
 	if stop != k.Rel && !strings.HasPrefix(stop, k.Rel+"/") {
 		stop = k.Rel
 	}
-	return Target{Rel: datadir.Home(rel), Home: rel, Rule: r, Stop: datadir.Home(stop), InPlace: k.File}, nil
+	return Target{Rel: rel, Rule: r, Stop: stop, InPlace: k.File}, nil
 }
 
 // safeRel reports whether p is a slash-separated relative path with no

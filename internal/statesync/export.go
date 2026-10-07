@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
@@ -19,7 +18,7 @@ type File struct {
 	Exec bool
 }
 
-// Export is what the live data dir holds of what syncs.
+// Export is what the live home holds of what syncs.
 type Export struct {
 	// Files are the repo paths to write, with their contents.
 	Files map[string]File
@@ -28,7 +27,7 @@ type Export struct {
 	// a symlink), and must not read as deleted. A path ending in "/" keeps
 	// everything under it.
 	Keep map[string]bool
-	// Refused are data dir paths that would have synced but are not plain
+	// Refused are home paths that would have synced but are not plain
 	// files and directories: symlinks, hard links (see internal/nofollow).
 	// They are never followed; what the repo has of them is kept.
 	Refused []string
@@ -51,16 +50,16 @@ func (e *Export) kept(p string) bool {
 	return false
 }
 
-// refuse records data dir path rel, synced as repo path repoPath, as not
+// refuse records home path rel, synced as repo path repoPath, as not
 // plain.
 func (e *Export) refuse(rel, repoPath string) {
 	e.Refused = append(e.Refused, rel)
 	e.Keep[repoPath] = true
 }
 
-// ExportLive reads what c's rules sync out of data dir dir. The container
-// writes the whole home, so nothing there is trusted to be what its name
-// says: a symlink or a hard link is refused, never followed, anywhere on a
+// ExportLive reads what c's rules sync out of home dir. Anything in the
+// sandbox writes the whole home, so nothing there is trusted to be what its
+// name says: a symlink or a hard link is refused, never followed, anywhere on a
 // path -- one to .credentials.json would otherwise export the Claude login.
 func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
 	e := &Export{Files: map[string]File{}, Keep: map[string]bool{}}
@@ -73,14 +72,14 @@ func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
 		}
 		if k.File {
 			if r, ok := c.Match(k.Rel); ok {
-				if err := e.addFile(d, datadir.Home(k.Rel), RepoHome+k.Rel, r); err != nil {
+				if err := e.addFile(d, k.Rel, RepoHome+k.Rel, r); err != nil {
 					return nil, err
 				}
 			}
 			continue
 		}
-		err := d.Walk(datadir.Home(k.Rel), func(p string, ent fs.DirEntry) error {
-			rel := strings.TrimPrefix(p, datadir.HomeDir+"/")
+		err := d.Walk(k.Rel, func(p string, ent fs.DirEntry) error {
+			rel := p
 			repoPath := RepoHome + rel
 			switch {
 			case ent.Name() == ".DS_Store" || (ent.IsDir() && ent.Name() == ".git"):
@@ -131,7 +130,7 @@ func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
 	return e, nil
 }
 
-// addFile exports the file at data dir path rel as repoPath, as rule r
+// addFile exports the file at home path rel as repoPath, as rule r
 // says: with Keys, only those keys of it. A JSON file that does not parse
 // is kept as the repo has it instead, since its program may be halfway
 // through rewriting it; one with none of the keys has nothing to export,
