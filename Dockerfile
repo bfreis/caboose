@@ -16,14 +16,16 @@
 # The base is a plain distro, not node:22-*. The node images are built on
 # buildpack-deps, which cost ~381MB compressed and — worse — pinned the whole
 # userland to whatever Node's base froze: bookworm's git was 2.39.5, four years
-# stale. Ubuntu 26.04 LTS is 38.9MB and ships git 2.53.0 in main, so git needs
-# no special handling here at all. Every language toolchain below is now an
-# explicit, independently bumpable ARG rather than a side effect of the base.
+# stale. Ubuntu 26.04 LTS is 38.9MB, and its git (2.53.0) is only one release
+# short of what the sandbox wants, which the Git Maintainers PPA covers below.
+# Every language toolchain below is now an explicit, independently bumpable
+# ARG rather than a side effect of the base.
 #
 # Rule of thumb for what goes in apt vs. a release tarball: apt when the
 # distro's version is close enough to upstream and we want its security
-# updates (git), a tarball when the distro is hopelessly behind (gh is 2.46 in
-# Ubuntu vs 2.101 upstream; jj and the docker CLI are not packaged at all).
+# updates (git, through its PPA), a tarball when the distro is hopelessly
+# behind (gh is 2.46 in Ubuntu vs 2.101 upstream; jj and the docker CLI are
+# not packaged at all).
 #
 # Everything after the OS packages is in sections, between a
 # "# caboose:section NAME [off] TITLE" line and "# caboose:end": what
@@ -45,17 +47,50 @@
 # minutes), which a fixed cap of a few minutes cut short.
 FROM ubuntu:26.04
 
-# git comes from the archive on purpose: 2.53.0 is two releases off upstream
-# and Ubuntu patches it for CVEs, which a source build would make our problem.
+# git is the one package that comes from the Git Maintainers PPA
+# (ppa:git-core/ppa) rather than the archive: the archive's 2.53.0 is behind
+# what the sandbox needs (2.54 or later), and the PPA tracks upstream with
+# Ubuntu's packaging and security fixes, which a source build would make our
+# problem. The repo is added by hand, as a deb822 source signed by the PPA's
+# key alone, pinned by fingerprint (Launchpad's API names it) and checked after
+# the download, so nothing needs add-apt-repository. An apt preference keeps
+# every other package on the archive and git and git-man on the PPA.
+# gpg is installed to check the key, and removed again unless something
+# installed after it depends on it (marked auto, then autoremoved, rather than
+# purged, which would take any such package with it).
 # universe is enabled in the stock ubuntu image, which is where ripgrep lives.
-RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
-    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
-        ca-certificates curl git openssh-client \
+ARG GIT_PPA_KEY=F911AB184317630C59970973E363C90F8F1B6217
+RUN set -eux; \
+    apt='apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30'; \
+    fetch() { \
+      t="$1"; u="$2"; shift 2; \
+      curl -fsSL --connect-timeout 15 --speed-limit 10000 --speed-time 60 --max-time "$t" --retry 3 --retry-delay 2 --retry-all-errors "$@" "$u" \
+        || { echo "could not download $u: check the network from the build (a VPN route? a proxy?)" >&2; exit 1; }; \
+    }; \
+    $apt update; \
+    $apt install -y --no-install-recommends ca-certificates curl gpg; \
+    fetch 120 "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${GIT_PPA_KEY}" -o /tmp/git-ppa.asc; \
+    got="$(gpg --batch --show-keys --with-colons /tmp/git-ppa.asc | awk -F: '/^pub:/{p=1;next} /^fpr:/&&p{print $10;exit}')"; \
+    [ "$got" = "$GIT_PPA_KEY" ] || { echo "the git PPA key is $got, expected $GIT_PPA_KEY" >&2; exit 1; }; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    install -m 0644 /tmp/git-ppa.asc /etc/apt/keyrings/git-core-ppa.asc; \
+    rm /tmp/git-ppa.asc; \
+    . /etc/os-release; \
+    printf 'Types: deb\nURIs: https://ppa.launchpadcontent.net/git-core/ppa/ubuntu\nSuites: %s\nComponents: main\nSigned-By: /etc/apt/keyrings/git-core-ppa.asc\n' "$VERSION_CODENAME" \
+      > /etc/apt/sources.list.d/git-core-ppa.sources; \
+    printf 'Package: *\nPin: release o=LP-PPA-git-core\nPin-Priority: 1\n\nPackage: git git-man\nPin: release o=LP-PPA-git-core\nPin-Priority: 990\n' \
+      > /etc/apt/preferences.d/git-core-ppa; \
+    $apt update; \
+    $apt install -y --no-install-recommends \
+        git openssh-client \
         ripgrep jq less vim procps unzip \
         build-essential python3 python3-venv \
         tmux zstd \
-        ncurses-term \
-    && rm -rf /var/lib/apt/lists/*
+        ncurses-term; \
+    apt-mark auto gpg >/dev/null; \
+    $apt autoremove --purge -y; \
+    rm -rf /var/lib/apt/lists/*; \
+    git --version
 
 # caboose:section node Node.js, npm and corepack (for npx-launched MCP servers)
 # Node. Not for Claude Code — that is a self-contained native binary — but for

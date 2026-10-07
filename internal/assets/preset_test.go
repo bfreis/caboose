@@ -32,7 +32,7 @@ func TestCoreIsNotOptional(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(data)
-	for _, want := range []string{"FROM ubuntu:", "ca-certificates curl git openssh-client", "ripgrep", "tmux", "ncurses-term"} {
+	for _, want := range []string{"FROM ubuntu:", "ca-certificates curl gpg", "git openssh-client", "ripgrep", "tmux", "ncurses-term"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the core lacks %q", want)
 		}
