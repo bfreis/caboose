@@ -197,6 +197,22 @@ type App struct {
 	// checkGuest, when set, stands in for booting the builder guest for
 	// caboose check-image under vm: the tests' fake.
 	checkGuest func() (imageGuest, error)
+	// buildGuest, when set, stands in for booting the builder guest for
+	// caboose build under vm (startBuilder): the tests' fake.
+	buildGuest func(out, template string) (vmBuildGuest, error)
+	// apko, when set, stands in for internal/apkobuild in an apko build:
+	// the tests' way to build without the network.
+	apko *apkoTools
+	// buildImage, when set, stands in for building the image when caboose
+	// apply applies packages (App.build, on the configuration it is
+	// called with): the tests' fake.
+	buildImage func() error
+	// deferLock, set by caboose apply around its build, keeps an apko
+	// build from writing the lock: it leaves writing it in pendingLock
+	// instead, for apply to call once config.toml says what the lock is
+	// of. nil when the build had no lock to write.
+	deferLock   bool
+	pendingLock func() error
 	// vmFiles, when set, stands in for finding vm's files beside the
 	// launcher (findVMFiles), which only a Mac has: the tests' way to
 	// take the vm isolation's paths anywhere.

@@ -8,8 +8,9 @@ package caboose
 
 import "embed"
 
-// Files holds the images' build inputs -- the default base's Dockerfile, and
-// the layer built on every base (layer.Dockerfile and the files it COPYs) --
+// Files holds the images' build inputs -- the Dockerfile a dockerfile image
+// profile's dir is seeded with, and the layer built on every base
+// (layer.Dockerfile and the files it COPYs) --
 // the sandbox-wide CLAUDE.md, and the image probe that caboose check-image runs
 // (imagecheck.sh, which is not part of any image: internal/assets'
 // BaseContext and LayerContext decide what is).

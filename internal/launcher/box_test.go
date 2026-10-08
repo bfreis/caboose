@@ -74,7 +74,8 @@ exit 99
 	}
 	b.App = &App{
 		Cfg: &config.Config{Env: "default", Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
-			DataDir: b.data, KeepVersions: 2, ReadyTimeout: 0, Egress: true, Isolation: iso, Getenv: func(string) string { return "" }},
+			DataDir: b.data, KeepVersions: 2, ReadyTimeout: 0, Egress: true, Isolation: iso, Getenv: func(string) string { return "" },
+			ImageProfile: config.ImageProfile{Kind: config.ImageKindRef, Name: "default", Ref: boxBase}},
 		Docker:   &docker.CLI{Path: fake},
 		HostPart: func() string { return "laptop" },
 		Backend:  box,
@@ -108,10 +109,15 @@ func (b *boxApp) write(t *testing.T, name, content string) {
 	}
 }
 
+// boxBase is a boxApp's base, a ref: the fake engine gives every image
+// the ID boxImageID.
+const boxBase = "base:box"
+
 // currentLabels are the labels of an image this launcher built, for
-// platform, on the embedded Dockerfile's base, for this user.
+// platform, on a boxApp's base, for this user.
 func currentLabels(platform string) map[string]string {
-	l := labelsFor(assets.BaseKindDefault, assets.BaseHash(), "")
+	l := labelsFor(assets.BaseKindRef, "", boxBase)
+	l[assets.LabelBaseID] = boxImageID
 	l[assets.LabelPlatform] = platform
 	l[assets.LabelCompat] = strconv.Itoa(assets.Compat)
 	return l

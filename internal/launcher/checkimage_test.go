@@ -106,10 +106,12 @@ func TestCheckImageVMDefaultBase(t *testing.T) {
 }
 
 // A default base no build has made yet is not pulled: its name is only
-// caboose's own tag.
+// caboose's own tag. So with an apko profile, the default: its base is in
+// the builder's store only once a build loaded it there.
 func TestCheckImageVMNotBuilt(t *testing.T) {
 	g := &fakeImageGuest{store: map[string]*imagecheck.Report{}, remote: map[string]*imagecheck.Report{"caboose-base:default": passingReport(t)}}
 	a, _, stderr := vmCheckApp(g, nil)
+	a.Cfg.ImageProfile = config.DefaultImageProfile()
 	err := a.CheckImage(nil)
 	if exitCode(err) != checkFailed || !strings.Contains(err.Error(), "not built yet") {
 		t.Fatalf("err = %v", err)

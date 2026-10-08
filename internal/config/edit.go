@@ -14,7 +14,8 @@ import (
 // their order -- stays as it was.
 type Edit struct {
 	// Set are keys by their dotted names ("isolation", "session.tmux",
-	// "vm.default.cpus") and their new values: a string, a bool or an int.
+	// "vm.default.cpus") and their new values: a string, a bool, an int or
+	// a []string.
 	Set map[string]any
 	// Unset are keys, by their dotted names, to comment out.
 	Unset []string
@@ -61,7 +62,11 @@ func EditFile(data []byte, e Edit) []byte {
 		}
 		for i := start + 1; i < active; i++ {
 			if activeKey(key).MatchString(ed.lines[i]) {
-				ed.lines[i] = "#" + ed.lines[i]
+				end := ed.valueEnd(i)
+				for j := i; j <= end; j++ {
+					ed.lines[j] = "#" + ed.lines[j]
+				}
+				i = end
 			}
 		}
 	}
@@ -183,7 +188,8 @@ func (ed *editor) set(k, v string) {
 	start, activeEnd, anyEnd := ed.block(table)
 	line := key + " = " + v
 	if i := findLine(ed.lines[start+1:activeEnd], activeKey(key)); i >= 0 {
-		ed.lines[start+1+i] = line
+		at := start + 1 + i
+		ed.lines = slices.Concat(ed.lines[:at], []string{line}, ed.lines[ed.valueEnd(at)+1:])
 		return
 	}
 	if i := findLine(ed.lines[start+1:anyEnd], commentedKey(key)); i >= 0 {
@@ -212,6 +218,48 @@ func (ed *editor) set(k, v string) {
 		}
 	}
 	ed.lines = slices.Insert(ed.lines, at, line)
+}
+
+// valueEnd is the last line of the value set on line i, a key's active
+// line: i itself, unless the value is an array that does not close on it,
+// when it is the line that closes it. Brackets are counted outside strings
+// and comments, which is enough for the arrays of strings and numbers
+// caboose writes; anything it cannot follow (an array that never closes, a
+// multi-line string) leaves i, for CheckEdit to catch.
+func (ed *editor) valueEnd(i int) int {
+	_, rest, ok := strings.Cut(ed.lines[i], "=")
+	if !ok {
+		return i
+	}
+	depth := 0
+	for j := i; j < len(ed.lines); j++ {
+		l := rest
+		if j > i {
+			l = ed.lines[j]
+		}
+	scan:
+		for k := 0; k < len(l); k++ {
+			switch l[k] {
+			case '#':
+				break scan
+			case '"', '\'':
+				q := l[k]
+				for k++; k < len(l) && l[k] != q; k++ {
+					if q == '"' && l[k] == '\\' {
+						k++
+					}
+				}
+			case '[':
+				depth++
+			case ']':
+				depth--
+			}
+		}
+		if depth <= 0 {
+			return j
+		}
+	}
+	return i
 }
 
 // setRoots rewrites [roots] as roots, or comments it out when roots is
@@ -298,8 +346,8 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 				return fmt.Errorf("%s would change, from %v to %v", displayKey(k), v, got)
 			}
 		}
-		for _, p := range o.Profiles {
-			if !slices.Contains(f.Profiles, p) {
+		for _, p := range slices.Concat(o.Profiles, o.ImageProfiles) {
+			if !slices.Contains(f.Profiles, p) && !slices.Contains(f.ImageProfiles, p) {
 				return fmt.Errorf("[%s] would be lost", p)
 			}
 		}
@@ -308,8 +356,15 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 		}
 	}
 	for k, v := range e.Set {
-		if n, ok := v.(int); ok {
-			v = int64(n)
+		switch t := v.(type) {
+		case int:
+			v = int64(t)
+		case []string:
+			list := make([]any, len(t))
+			for i, e := range t {
+				list[i] = e
+			}
+			v = list
 		}
 		if got, ok := f.Vals[k]; !ok || !reflect.DeepEqual(got, v) {
 			return fmt.Errorf("%s reads back as %v, not %v", displayKey(k), got, v)
@@ -322,7 +377,7 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 	}
 	for _, t := range e.Tables {
 		kind, _, _ := strings.Cut(t, ".")
-		if profileKeys[kind] != nil && !slices.Contains(f.Profiles, t) {
+		if kindKeys(kind) != nil && !slices.Contains(f.Profiles, t) && !slices.Contains(f.ImageProfiles, t) {
 			return fmt.Errorf("[%s] is not there", t)
 		}
 	}
@@ -392,9 +447,17 @@ func findLine(lines []string, re *regexp.Regexp) int {
 	return -1
 }
 
-// tomlValue writes v, a string, a bool or a whole number, as TOML: a
-// string as a basic string, with \, " and control characters escaped.
+// tomlValue writes v, a string, a bool, a whole number or a []string, as
+// TOML: a string as a basic string, with \, " and control characters
+// escaped, and a []string as an inline array of them.
 func tomlValue(v any) string {
+	if list, ok := v.([]string); ok {
+		parts := make([]string, len(list))
+		for i, e := range list {
+			parts[i] = tomlValue(e)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
 	s, ok := v.(string)
 	if !ok {
 		return fmt.Sprint(v)

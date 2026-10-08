@@ -47,9 +47,16 @@ func (e *setupEnv) dir(rel string) string {
 	return filepath.Join(e.a.Cfg.Home, rel)
 }
 
-func presetHash(t *testing.T) string {
+// useDockerfile makes the environment's image a dockerfile profile, at
+// its default dir, as Load would read [dockerfile.default].
+func (e *setupEnv) useDockerfile() {
+	e.a.Cfg.ImageProfile = config.ImageProfile{Kind: config.ImageKindDockerfile, Name: "default",
+		Dir: config.DockerfileDir(e.a.Cfg.EnvDir, "default")}
+}
+
+func seedHash(t *testing.T) string {
 	t.Helper()
-	b, err := assets.Preset(assets.DefaultSections())
+	b, err := assets.Seed(assets.DefaultSections())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,28 +94,29 @@ func TestApplyNeedsATerminal(t *testing.T) {
 	}
 }
 
-// A section, on an environment with no Dockerfile of its own: the preset
-// is written with the section, which apply says first, and the proposal is
-// gone.
+// A section, on a dockerfile profile whose dir has no Dockerfile yet:
+// caboose's seed is written with the section, which apply says first, and
+// the proposal is gone.
 func TestApplySection(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
-	p := e.propose("foo.toml", "title = \"Install foo\"\nreason = \"for the docs\"\ndockerfile_sha256 = \""+presetHash(t)+"\"\n"+
+	e.useDockerfile()
+	p := e.propose("foo.toml", "title = \"Install foo\"\nreason = \"for the docs\"\ndockerfile_sha256 = \""+seedHash(t)+"\"\n"+
 		fooSection+"\n")
 	// Apply it; don't build.
 	if err := e.apply("1\nn\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("Install foo", "for the docs", "caboose's preset", "+ # caboose:section foo foo 2.3",
-		"no longer reach it", "Applied foo", "Not built")
-	df, err := os.ReadFile(filepath.Join(e.a.Cfg.EnvDir, "image", "Dockerfile"))
+	e.wantOut("Install foo", "for the docs", "caboose's Dockerfile", "+ # caboose:section foo foo 2.3",
+		"has no Dockerfile yet", "Applied foo", "Not built")
+	df, err := os.ReadFile(filepath.Join(config.DockerfileDir(e.a.Cfg.EnvDir, "default"), "Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(df), "# caboose:section foo foo 2.3\nARG FOO_VERSION=2.3.0\n") {
 		t.Errorf("Dockerfile:\n%s", df)
 	}
-	if h, ok := assets.ReadHeader(df); !ok || h.ID != assets.PresetID() {
-		t.Errorf("the preset's header is gone: %+v", h)
+	if !strings.HasPrefix(string(df), "# Written by caboose from the Dockerfile it embeds.") {
+		t.Errorf("not the seed:\n%s", df[:200])
 	}
 	if c := e.configFile(); c != "" {
 		t.Errorf("config.toml written:\n%s", c)
@@ -118,14 +126,14 @@ func TestApplySection(t *testing.T) {
 	}
 	// Sessions now see the new Dockerfile, and its hash.
 	state, _ := os.ReadFile(filepath.Join(e.a.Cfg.DataDir, proposal.Dir, proposal.CurrentDir, "state.toml"))
-	for _, want := range []string{`dockerfile = "image/Dockerfile"`, proposal.Hash(df)} {
+	for _, want := range []string{`image = "dockerfile.default"`, `dockerfile = "dockerfile"`, proposal.Hash(df)} {
 		if !strings.Contains(string(state), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, state)
 		}
 	}
 	cur, _ := os.ReadFile(filepath.Join(e.a.Cfg.DataDir, proposal.Dir, proposal.CurrentDir, "Dockerfile"))
 	if string(cur) != string(df) {
-		t.Error("current/Dockerfile is not image/Dockerfile")
+		t.Error("current/Dockerfile is not the profile's Dockerfile")
 	}
 }
 
@@ -133,6 +141,7 @@ func TestApplySection(t *testing.T) {
 // answer; it can be left pending, or deleted.
 func TestApplyRefusesAStaleSection(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
+	e.useDockerfile()
 	p := e.propose("foo.toml", "title = \"Install foo\"\ndockerfile_sha256 = \""+proposal.Hash([]byte("FROM old\n"))+"\"\n"+fooSection)
 	if err := e.apply("2\n"); err != nil {
 		t.Fatal(err)
@@ -141,8 +150,8 @@ func TestApplyRefusesAStaleSection(t *testing.T) {
 	if _, err := os.Stat(p); err != nil {
 		t.Errorf("left pending, yet gone: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(e.a.Cfg.EnvDir, "image")); !os.IsNotExist(err) {
-		t.Errorf("image/ was written: %v", err)
+	if _, err := os.Stat(config.DockerfileDir(e.a.Cfg.EnvDir, "default")); !os.IsNotExist(err) {
+		t.Errorf("the build context was written: %v", err)
 	}
 	if err := e.apply("1\n"); err != nil {
 		t.Fatal(err)
@@ -152,15 +161,31 @@ func TestApplyRefusesAStaleSection(t *testing.T) {
 	}
 }
 
-// On a base image there is no Dockerfile to put a section in.
-func TestApplyRefusesASectionOnABaseImage(t *testing.T) {
-	e := newSetupEnv(t, "default", "", false)
-	e.a.Cfg.BaseImage = "debian:13"
-	e.propose("foo.toml", "title = \"Install foo\"\ndockerfile_sha256 = \""+presetHash(t)+"\"\n"+fooSection)
-	if err := e.apply("2\n"); err != nil {
-		t.Fatal(err)
+// Under apko or a ref there is no Dockerfile to put a section in, and
+// sessions are told there is none.
+func TestApplyRefusesASectionWithoutADockerfile(t *testing.T) {
+	for _, p := range []config.ImageProfile{
+		config.DefaultImageProfile(),
+		{Kind: config.ImageKindRef, Name: "mine", Ref: "debian:13"},
+	} {
+		e := newSetupEnv(t, "default", "", false)
+		e.a.Cfg.ImageProfile = p
+		prop := e.propose("foo.toml", "title = \"Install foo\"\ndockerfile_sha256 = \""+seedHash(t)+"\"\n"+fooSection)
+		if err := e.apply("2\n"); err != nil {
+			t.Fatal(err)
+		}
+		e.wantOut("This environment's image is " + p.String() + ", which has no Dockerfile: a section applies to a dockerfile image profile only.")
+		if _, err := os.Stat(prop); err != nil {
+			t.Errorf("%s: left pending, yet gone: %v", p, err)
+		}
+		if _, err := os.Stat(config.DockerfileDir(e.a.Cfg.EnvDir, "default")); !os.IsNotExist(err) {
+			t.Errorf("%s: the build context was written: %v", p, err)
+		}
+		state, _ := os.ReadFile(filepath.Join(e.a.Cfg.DataDir, proposal.Dir, proposal.CurrentDir, "state.toml"))
+		if !strings.Contains(string(state), `image = "`+p.String()+`"`) || strings.Contains(string(state), "\ndockerfile") {
+			t.Errorf("%s: state.toml:\n%s", p, state)
+		}
 	}
-	e.wantOut("builds on base debian:13 in [image]")
 }
 
 // A root is added only once its name is typed.
@@ -297,6 +322,7 @@ func TestLaunchNotesPendingProposals(t *testing.T) {
 	e := newSetupEnv(t, "work", "", false)
 	e.propose("foo.toml", "title = \"t\"\n")
 	e.propose("bar.toml", "title = \"t\"\n")
+	e.useDockerfile()
 	e.a.exportProposals()
 	e.a.notePendingProposals()
 	e.wantOut("2 pending proposals (bar, foo): 'caboose -e work apply' reviews them")
@@ -304,9 +330,24 @@ func TestLaunchNotesPendingProposals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`dockerfile = "preset"`, presetHash(t), `host = "~/dev"`, `path = "/work/dev"`} {
+	for _, want := range []string{`image = "dockerfile.default"`, `dockerfile = "seed"`, seedHash(t), `host = "~/dev"`, `path = "/work/dev"`} {
 		if !strings.Contains(string(state), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, state)
 		}
+	}
+}
+
+// An error quoting a name the sandbox chose is shown escaped: a proposal
+// gone by the time it is deleted fails with its path in the error.
+func TestDeleteProposalErrorIsPrintable(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.propose("other.toml", "title = \"t\"\n")
+	var out strings.Builder
+	p := newPrompter(strings.NewReader(""), &out)
+	if err := e.a.deleteProposal(p, proposal.Entry{File: "x\x1b]0;owned\a.toml"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); strings.ContainsAny(got, "\x1b\a") || !strings.Contains(got, `\u001B`) {
+		t.Errorf("output %q", got)
 	}
 }

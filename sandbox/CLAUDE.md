@@ -119,7 +119,10 @@ machines, with the rest of `~/.config/caboose`.
   shell included. `*.sh` must work in bash and zsh alike (aliases, exports,
   plain functions); `*.bash` is for bash only. A new file reaches the next
   shell. An alias here changes what your own commands do, so add only what
-  was asked for.
+  was asked for. `PATH` is the exception: this tool's shell takes it from
+  Claude Code, not from `shell.d`, so a directory added there reaches the
+  user's shells but not yours. A command for both goes in `~/.local/bin`,
+  first on every `PATH` and kept.
 
 Say what you wrote, and that a `start.d` script runs at the next start
 (`caboose restart` on the host), unless it was run by hand.
@@ -132,34 +135,57 @@ install a tool for good, or mount another host directory, write a
 **proposal**; the user reviews it on the host with `caboose apply`, which
 applies it only once they say yes.
 
-First read `~/.caboose-proposals/current/`: `state.toml` (where the
-Dockerfile comes from, its hash, the roots there are now) and `Dockerfile`
-(the one the next build uses). Then write `~/.caboose-proposals/NAME.toml`
-(NAME: lowercase letters, digits, `-`, `_`), with either part or both:
+First read `~/.caboose-proposals/current/state.toml`: `image` says what
+the image is built from, `"<kind>.<name>"`, and the kind says what can be
+proposed for it; the roots there are now are listed too. Then write
+`~/.caboose-proposals/NAME.toml` (NAME: lowercase letters, digits, `-`,
+`_`): a `title`, a `reason`, the image's part for its kind, a root, or both.
 
 ```toml
-title = "Install foo"                  # one line
+title = "Install graphviz"             # one line
 reason = "Why, in a sentence or two."
-dockerfile_sha256 = "..."              # from state.toml; needed with [section]
-
-[section]                              # a Dockerfile section: root, after the base
-name = "foo"                           # replaces a section of that name, else is added
-title = "foo 2.3"
-body = '''
-ARG FOO_VERSION=2.3.0
-RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
-'''
 
 [roots]                                # one host directory to mount, at /work/NAME
 other = "~/src/other"                # long form for another path: [roots.other] host = ..., path = ...
 ```
 
-- One request, one proposal, and one `[section]` in it: applying a section
-  changes the Dockerfile's hash, and a proposal written against the old one
-  is refused. Re-read `current/` before proposing again.
-- A section cannot hold `FROM`, `ONBUILD`, `RUN --network` or
-  `RUN --security`, nor `# caboose:` lines. Plain text only: no control
-  characters (escape sequences) or invisible ones anywhere.
+- **apko** (packages from Wolfi): a `[packages]` table, `add = [...]`
+  and/or `remove = [...]`, 64 names at most. `state.toml` lists the
+  profile's own `packages` (only those can be removed) and every package
+  `installed` (do not add one of those). To find a name, fetch the index,
+  `https://packages.wolfi.dev/os/<aarch64|x86_64>/APKINDEX.tar.gz`: its
+  `P:` lines are package names, and `cmd:NAME` on a package's `p:` line
+  says it provides the command NAME. Within seconds the host writes
+  `NAME.check` beside the proposal. Its first line is `ok`, with what the
+  list resolves to; `error`, with why (an unknown name comes with close
+  ones): fix the proposal until it says `ok` before telling the user; or
+  `unchecked`: the host could not check it now. Do not rewrite the
+  proposal for that; tell the user, since `caboose apply` checks it
+  anyway.
+- **dockerfile**: a `[section]`, with `dockerfile_sha256` from
+  `state.toml`; `current/Dockerfile` is the Dockerfile it goes into (when
+  `state.toml` says `dockerfile = "seed"`, caboose's own, which then
+  becomes the profile's).
+
+  ```toml
+  dockerfile_sha256 = "..."
+  [section]                            # root, after the base
+  name = "foo"                         # replaces a section of that name, else is added
+  title = "foo 2.3"
+  body = '''
+  ARG FOO_VERSION=2.3.0
+  RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
+  '''
+  ```
+
+  One `[section]` per proposal: applying one changes the Dockerfile's
+  hash, and a proposal written against the old one is refused, so re-read
+  `current/` before proposing again. A section cannot hold `FROM`,
+  `ONBUILD`, `RUN --network` or `RUN --security`, nor `# caboose:` lines.
+- **ref** (an image of the user's own): nothing can be proposed for it;
+  tell the user what to add to their image.
+- Plain text only, everywhere: no control characters (escape sequences)
+  or invisible ones.
 - Nothing else can be proposed — not the base image, the docker socket, or
   any other setting. For those, tell the user what to change on the host:
   a capability, a device or another `docker run` flag is
@@ -168,8 +194,9 @@ other = "~/src/other"                # long form for another path: [roots.other]
 - Then tell the user to run `caboose apply` in a host terminal (with the
   same `-e ENV` as this session's, if it has one); the host also shows
   them a notification saying so, once the file is written, but it may be
-  missed. It rebuilds the image
-  and offers `caboose restart`, which ends this session: nothing proposed
+  missed. It builds the image (packages are built before anything is
+  written: a list that does not build is left pending) and offers
+  `caboose restart`, which ends this session: nothing proposed
   is in effect before that. A tool installed this way whose settings
   should last needs a `[[keep]]` entry too (above), in the same restart.
 

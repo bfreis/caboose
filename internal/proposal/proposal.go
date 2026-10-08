@@ -1,5 +1,6 @@
 // Package proposal is how a session in the sandbox asks for a change only
-// the host can make: a tool installed in the image, or another root.
+// the host can make: packages added to or removed from an apko image, a
+// section in a dockerfile image's Dockerfile, or another root.
 // (What the sandbox keeps of its home is its own to change, in the sandbox
 // config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
@@ -10,13 +11,16 @@
 // through nofollow, refused whole when anything in it is out of place --
 // an unknown key, a control character or a bidi override that could make
 // the terminal show other than what is there, a section that starts a
-// stage -- and what it may ask for is an allowlist: a Dockerfile section,
-// and one root. Nothing else in config.toml can be proposed at all.
+// stage -- and what it may ask for is an allowlist: package names or a
+// Dockerfile section, and one root. Nothing else in config.toml can be
+// proposed at all.
 //
 // The host also writes what a proposal is made against into proposals/
 // current/ (WriteCurrent): the Dockerfile the next build uses, and the
-// roots config.toml has, which the sandbox cannot otherwise see. A proposal for a section names the hash of that
-// Dockerfile, and is refused when the real one has changed since.
+// roots config.toml has, and an apko image's packages, which the sandbox
+// cannot otherwise see. A proposal for a section names the hash of that
+// Dockerfile, and is refused when the real one has changed since. Beside a
+// proposal for packages the host writes what checking it found (CheckExt).
 package proposal
 
 import (
@@ -34,6 +38,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/bfreis/caboose/internal/apkobuild/pkgset"
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
@@ -53,6 +58,9 @@ const (
 	// MaxSize is the largest proposal read: a Dockerfile section, not a
 	// place to put files.
 	MaxSize = 64 << 10
+	// MaxPackages is the most package names one proposal adds and removes
+	// in all.
+	MaxPackages = 64
 )
 
 // sandboxHint is where what the sandbox keeps is changed instead.
@@ -63,6 +71,13 @@ type Section struct {
 	Name  string `toml:"name"`
 	Title string `toml:"title"`
 	Body  string `toml:"body"`
+}
+
+// Packages are package names to add to an apko image profile's packages,
+// and to remove from them.
+type Packages struct {
+	Add    []string `toml:"add"`
+	Remove []string `toml:"remove"`
 }
 
 // Root is a root to add: its name, the directory under /work, and
@@ -79,6 +94,9 @@ type Proposal struct {
 	// against; set exactly when Section is.
 	DockerfileSHA256 string
 	Section          *Section
+	// Packages are the packages to add and remove, or nil; never with
+	// Section.
+	Packages *Packages
 	// Root is the root to add, or nil.
 	Root *Root
 }
@@ -89,6 +107,7 @@ type file struct {
 	Reason           string            `toml:"reason"`
 	DockerfileSHA256 *string           `toml:"dockerfile_sha256"`
 	Section          *Section          `toml:"section"`
+	Packages         *Packages         `toml:"packages"`
 	Roots            map[string]string `toml:"roots"`
 }
 
@@ -114,7 +133,7 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section] and [roots]; what the sandbox keeps is changed in %s, with no proposal)",
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages] and [roots]; what the sandbox keeps is changed in %s, with no proposal)",
 			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
@@ -153,6 +172,17 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		p.Section, p.DockerfileSHA256 = &s, *f.DockerfileSHA256
 	}
 
+	if f.Packages != nil {
+		if p.Section != nil {
+			return nil, errors.New("both [section] and [packages]: one request, one proposal -- and a section is for a dockerfile image, packages for an apko image")
+		}
+		pk, err := checkPackages(*f.Packages)
+		if err != nil {
+			return nil, err
+		}
+		p.Packages = pk
+	}
+
 	switch len(f.Roots) {
 	case 0:
 	case 1:
@@ -172,10 +202,40 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		return nil, errors.New("more than one root: a proposal adds one at most, so that each is confirmed on its own")
 	}
 
-	if p.Section == nil && p.Root == nil {
-		return nil, errors.New("it proposes nothing: no [section] or [roots]")
+	if p.Section == nil && p.Packages == nil && p.Root == nil {
+		return nil, errors.New("it proposes nothing: no [section], [packages] or [roots]")
 	}
 	return p, nil
+}
+
+// checkPackages checks a [packages] table: package names, each once in
+// add and remove together, MaxPackages at most, and at least one.
+func checkPackages(pk Packages) (*Packages, error) {
+	if len(pk.Add)+len(pk.Remove) == 0 {
+		return nil, errors.New("[packages] proposes nothing: name packages in add or remove")
+	}
+	if n := len(pk.Add) + len(pk.Remove); n > MaxPackages {
+		return nil, fmt.Errorf("[packages] names %d packages, and a proposal names %d at most", n, MaxPackages)
+	}
+	seen := map[string]string{}
+	for _, l := range []struct {
+		key   string
+		names []string
+	}{{"add", pk.Add}, {"remove", pk.Remove}} {
+		for _, n := range l.names {
+			if err := pkgset.CheckName(n); err != nil {
+				return nil, fmt.Errorf("packages.%s: %v", l.key, err)
+			}
+			if prev, ok := seen[n]; ok {
+				if prev == l.key {
+					return nil, fmt.Errorf("packages.%s names %s twice", l.key, n)
+				}
+				return nil, fmt.Errorf("[packages] both adds and removes %s", n)
+			}
+			seen[n] = l.key
+		}
+	}
+	return &Packages{Add: append([]string{}, pk.Add...), Remove: append([]string{}, pk.Remove...)}, nil
 }
 
 // checkText refuses what could make a terminal show other than what s
@@ -233,7 +293,7 @@ func List(dataDir string) ([]Entry, error) {
 			continue
 		}
 		ent := Entry{File: name}
-		ent.Proposal, ent.Modified, ent.Err = read(d, name)
+		ent.Proposal, ent.Modified, _, ent.Err = read(d, name)
 		out = append(out, ent)
 	}
 	return out, nil
@@ -273,35 +333,53 @@ func Stamps(dataDir string) ([]Stamp, error) {
 
 // Read reads and checks the proposal in dataDir's Dir/file, as List does.
 func Read(dataDir, file string) (*Proposal, error) {
-	p, _, err := read(nofollow.Dir(dataDir), file)
+	p, _, _, err := read(nofollow.Dir(dataDir), file)
 	return p, err
 }
 
+// ReadHashed is Read, with the hash of the file's contents as read ("" when
+// it could not be read at all): what a proposal is told apart by when its
+// file's time says nothing.
+func ReadHashed(dataDir, file string) (p *Proposal, hash string, err error) {
+	p, _, data, err := read(nofollow.Dir(dataDir), file)
+	if data != nil {
+		hash = Hash(data)
+	}
+	return p, hash, err
+}
+
 // read reads and parses Dir/name, refusing one too large before reading
-// it.
-func read(d nofollow.Dir, name string) (*Proposal, time.Time, error) {
+// it; data is what was read, nil when nothing was.
+func read(d nofollow.Dir, name string) (*Proposal, time.Time, []byte, error) {
 	rel := path.Join(Dir, name)
 	fi, err := d.Lstat(rel)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, fi.ModTime(), errors.New("not a plain file")
+		return nil, fi.ModTime(), nil, errors.New("not a plain file")
 	}
 	if fi.Size() > MaxSize {
-		return nil, fi.ModTime(), fmt.Errorf("larger than %d KiB", MaxSize>>10)
+		return nil, fi.ModTime(), nil, fmt.Errorf("larger than %d KiB", MaxSize>>10)
 	}
 	data, _, err := d.ReadFile(rel)
 	if err != nil {
-		return nil, fi.ModTime(), err
+		return nil, fi.ModTime(), nil, err
 	}
 	p, err := Parse(name, data)
-	return p, fi.ModTime(), err
+	return p, fi.ModTime(), data, err
 }
 
-// Remove deletes proposal file from dataDir's Dir.
+// Remove deletes proposal file from dataDir's Dir, and then, at best,
+// what checking it found (CheckFile): the sandbox can put anything at that
+// name, a directory say, and that must never keep a proposal from going.
 func Remove(dataDir, file string) error {
-	return nofollow.Dir(dataDir).Remove(path.Join(Dir, file))
+	d := nofollow.Dir(dataDir)
+	if err := d.Remove(path.Join(Dir, file)); err != nil {
+		return err
+	}
+	_ = d.Remove(path.Join(Dir, CheckFile(file)))
+	return nil
 }
 
 // Names are the names of the proposals in entries, for a message.

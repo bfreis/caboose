@@ -27,7 +27,7 @@ func TestSections(t *testing.T) {
 // What the image check requires is outside every section: no choice in
 // setup can leave it out.
 func TestCoreIsNotOptional(t *testing.T) {
-	data, err := Preset(nil)
+	data, err := Seed(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,36 +42,37 @@ func TestCoreIsNotOptional(t *testing.T) {
 			t.Errorf("no sections, yet %q is in it", gone)
 		}
 	}
-	if h, ok := ReadHeader(data); !ok || h.ID != PresetID() || h.Sections != nil {
-		t.Errorf("header %+v %v", h, ok)
+	if strings.Contains(s, "caboose:preset") {
+		t.Error("the seed has a preset header")
 	}
 }
 
-// The default preset is the embedded Dockerfile, less its off sections,
-// under the header: what an environment without image/ builds.
-func TestDefaultPresetIsTheDockerfile(t *testing.T) {
-	data, err := Preset(DefaultSections())
+// The default seed is the embedded Dockerfile, less its off sections,
+// under a few comment lines.
+func TestDefaultSeedIsTheDockerfile(t *testing.T) {
+	data, err := Seed(DefaultSections())
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, ok := ReadHeader(data)
-	if !ok || !slices.Equal(h.Sections, DefaultSections()) {
-		t.Fatalf("header %+v %v", h, ok)
+	body, ok := strings.CutPrefix(string(data), seedHeader)
+	if !ok {
+		t.Fatalf("no header:\n%s", data[:200])
 	}
-	_, body, _ := strings.Cut(string(data), "\n#\n# Written by caboose setup")
-	_, body, _ = strings.Cut(body, "\n#\n")
 	want := string(embeddedDockerfile())
 	i := strings.Index(want, "# caboose:section rust off")
 	j := strings.Index(want[i:], "# caboose:end\n") + i + len("# caboose:end\n")
 	want = want[:i] + want[j:]
 	if body != want {
-		t.Errorf("the default preset differs from the Dockerfile:\n%s", body)
+		t.Errorf("the default seed differs from the Dockerfile:\n%s", body)
+	}
+	if _, err := parseSections(data); err != nil {
+		t.Errorf("the seed does not read back: %v", err)
 	}
 }
 
 // An off section, chosen, is uncommented: its instructions run.
-func TestPresetUncommentsAnOffSection(t *testing.T) {
-	data, err := Preset([]string{"rust"})
+func TestSeedUncommentsAnOffSection(t *testing.T) {
+	data, err := Seed([]string{"rust"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +87,10 @@ func TestPresetUncommentsAnOffSection(t *testing.T) {
 			t.Errorf("no %q in:\n%s", want, s)
 		}
 	}
-	if strings.Contains(s, "NODE_VERSION") || !strings.HasPrefix(s, "# caboose:preset "+PresetID()+" rust\n") {
-		t.Errorf("preset:\n%s", s)
+	if strings.Contains(s, "NODE_VERSION") || !strings.HasPrefix(s, seedHeader) {
+		t.Errorf("seed:\n%s", s)
 	}
-	if _, err := Preset([]string{"cobol"}); err == nil {
+	if _, err := Seed([]string{"cobol"}); err == nil {
 		t.Error("an unknown section was taken")
 	}
 }
@@ -105,24 +106,6 @@ func TestParseSectionsRefuses(t *testing.T) {
 	} {
 		if _, err := parseSections([]byte(tc.in)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%q: %v, want %q", tc.in, err, tc.want)
-		}
-	}
-}
-
-func TestReadHeader(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		ok   bool
-		want Header
-	}{
-		{"# caboose:preset abc123 node,go\nFROM x\n", true, Header{"abc123", []string{"node", "go"}}},
-		{"# caboose:preset abc123 \n", true, Header{ID: "abc123"}},
-		{"FROM x\n", false, Header{}},
-		{"# caboose:preset \n", false, Header{}},
-	} {
-		h, ok := ReadHeader([]byte(tc.in))
-		if ok != tc.ok || h.ID != tc.want.ID || !slices.Equal(h.Sections, tc.want.Sections) {
-			t.Errorf("%q: %+v %v", tc.in, h, ok)
 		}
 	}
 }

@@ -61,15 +61,17 @@ it refuses.`},
 	{Name: "apply", Args: noArgs,
 		Summary: "review the changes sessions proposed, and apply them",
 		Help: `A session in the sandbox cannot change what the sandbox is: it proposes
-the change instead, into ~/.caboose-proposals -- a Dockerfile section to
-install a tool, or another root. (What it keeps of its home is its own
-sandbox config's, which it edits itself.) This shows each proposal whole, and
-applies it, leaves it pending or deletes it as you say. Nothing else in
-config.toml can be proposed, and a root that would hand the sandbox your
-home, a hidden directory of it or caboose's own state is refused. Then it
-builds the image if the Dockerfile changed, and offers the restart that
-moves the sandbox onto the changes (which ends running sessions). With
-no terminal it refuses.`},
+the change instead, into ~/.caboose-proposals -- packages to add or remove
+under an apko image, a Dockerfile section under a dockerfile one, or
+another root. (What it keeps of its home is its own sandbox config's,
+which it edits itself.) This shows each proposal whole, and applies it,
+leaves it pending or deletes it as you say. Nothing else in config.toml
+can be proposed, and a root that would hand the sandbox your home, a
+hidden directory of it or caboose's own state is refused. Packages are
+built before anything is written, so a list that does not build stays
+pending; after a Dockerfile change it offers to build. Then it offers the
+restart that moves the sandbox onto the changes (which ends running
+sessions). With no terminal it refuses.`},
 	{Name: "doctor", Usage: "[--offline]", Args: ownArgs,
 		Summary: "what is wrong, and the command that fixes each problem",
 		Help: `Checks the whole environment -- configuration, data dir, Docker engine,
@@ -92,11 +94,12 @@ by itself, at most daily, in the background; CABOOSE_NO_AUTO_UPDATE=1 turns
 that off. A build from a checkout never updates itself.`},
 	{Name: "build", Usage: "[ARGS]", Args: passArgs,
 		Summary: "build the image: base, checked, then caboose's layer",
-		Help: `Builds the base (the embedded Dockerfile, the environment's image/, or
-pulls the [image] base), checks it, and builds the layer on it. ARGS go
-to both docker builds (--no-cache, --progress=plain, -q), except --pull,
-which only the default base's build gets. The sandbox is not touched:
-'caboose restart' moves it onto the new image.`},
+		Help: `Builds the base the image profile names (packages with apko, a
+Dockerfile's dir, or pulls a ref), checks it, and builds the layer on it.
+ARGS go to the docker builds (--no-cache, --progress=plain, -q), except
+--pull, which resolves an apko profile's packages again, pulls a ref, or
+goes to a Dockerfile's build. The sandbox is not touched: 'caboose
+restart' moves it onto the new image.`},
 	{Name: "check-image", Usage: "[IMAGE]", Args: ownArgs,
 		Summary: "whether IMAGE can be the sandbox's base",
 		Help: `Runs a throwaway container of IMAGE (default: the base in use) and lists
@@ -137,9 +140,14 @@ terminal, it logs there instead. One runs at a time. It rereads
 config.toml by itself when that changes. --restart stops the running one
 and starts another in the background.`},
 	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
-		Summary: "delete old Claude Code versions now",
+		Summary: "delete old Claude Code versions and unused packages",
 		Help: `Deletes the installed Claude Code versions beyond the newest
-keep_versions in [session], and says what the rest take up.
+keep_versions in [session], and says what the rest take up. First, on
+this machine, it removes from the package cache apko builds share
+(CABOOSE_HOME/cache/apk) every package no environment's lock names, and
+every index but the newest, keeping anything fetched in the last hour,
+and says what that freed. A lock it cannot read could name anything, so
+then it leaves the cache alone, and says which lock.
 
 --docker, under isolation vm, deletes the disk the sandbox's own dockerd
 keeps everything on -- images, containers, volumes, build cache -- for an

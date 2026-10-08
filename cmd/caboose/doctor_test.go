@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/apkobuild"
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
@@ -109,22 +111,56 @@ func changesNothing(t *testing.T, log string) {
 }
 
 // setUp gives home's default environment a config.toml, as caboose setup
-// leaves it.
+// leaves it, with the tests' dockerfile profile chosen (sandboxEnv).
 func setUp(t *testing.T, home string) {
 	t.Helper()
 	dir := filepath.Join(home, ".caboose", "envs", "default")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config.Template), 0o644); err != nil {
+	data := config.EditFile([]byte(config.Template), config.Edit{Set: map[string]any{"image": "dockerfile.default"}, Tables: []string{"dockerfile.default"}})
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// apkoBuilt gives home's default environment the lock of apko.default at
+// its defaults, as a build resolves it, and returns the labels of an image
+// built from it.
+func apkoBuilt(t *testing.T, home string) string {
+	t.Helper()
+	list, err := apkobuild.Spec{Defaults: true}.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkgs []map[string]string
+	for _, p := range list {
+		pkgs = append(pkgs, map[string]string{"name": p, "version": "1", "architecture": "aarch64", "url": "https://example.invalid/" + p})
+	}
+	b, err := json.Marshal(map[string]any{"version": "v1", "config": map[string]string{"name": apkobuild.ConfigName(apkobuild.Spec{Defaults: true}, list)},
+		"contents": map[string]any{"packages": pkgs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".caboose", "envs", "default", "apko-default.lock.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := apkobuild.ReadLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return defaultLabels("v1", assets.LabelBaseKind+"="+assets.BaseKindApko, assets.LabelBaseHash+"="+lock.Hash())
+}
+
 // An environment never set up is a note, not a problem: it runs on
-// defaults.
+// defaults, an apko image among them.
 func TestDoctorNotSetUp(t *testing.T) {
 	home, _ := doctorEnv(t)
+	if err := os.Remove(filepath.Join(home, ".caboose", "envs", "default", "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	scriptedDocker(t, doctorBox(t, home, imageLabels(apkoBuilt(t, home))))
 	code, out, _ := runIt("doctor", "--offline")
 	want := "note: default is not set up (no " + filepath.Join(home, ".caboose", "envs", "default", "config.toml") +
 		"), and runs on defaults; 'caboose setup' asks for its settings"
@@ -239,6 +275,9 @@ func TestDoctorContainerNotRunning(t *testing.T) {
 	}
 }
 
+// dockerfileTOML is the tests' dockerfile profile, as sandboxEnv writes it.
+const dockerfileTOML = "image = \"dockerfile.default\"\n[dockerfile.default]\n"
+
 func TestDoctorImage(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -250,16 +289,18 @@ func TestDoctorImage(t *testing.T) {
 	}{
 		{"stale", "", imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
 			"problem: caboose:default is out of date: built by v0, with a different layer", "caboose restart, which rebuilds it (this ends running sessions)"},
-		{"stale, no auto build", "[image]\nauto_build = false\n", imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
+		{"stale, no auto build", dockerfileTOML + "[build]\nauto_build = false\n", imageLabels(defaultLabels("v0", assets.LabelLayerHash+"="+otherHash)), 1,
 			"problem: caboose:default is out of date: built by v0, with a different layer", "caboose build, then caboose restart (this ends running sessions)"},
-		{"on another base", "[image]\nbase = \"node:20\"\n", "", 1,
+		{"on another base", "[ref.default]\nimage = \"node:20\"\n", "", 1,
 			"problem: caboose:default is out of date", "caboose restart, which rebuilds it on the configured base"},
 		{"missing", "", imageAbsent, 0, "note: 'caboose:default' is not built yet; the first launch builds it", ""},
-		{"missing, no auto build", "[image]\nauto_build = false\n", imageAbsent, 1,
-			"problem: 'caboose:default' is not built, and auto_build = false in [image]", "caboose build"},
+		{"missing, no auto build", dockerfileTOML + "[build]\nauto_build = false\n", imageAbsent, 1,
+			"problem: 'caboose:default' is not built, and auto_build = false in [build]", "caboose build"},
 		{"unlabelled", "", imageLabels("{}"), 0, "note: caboose:default was not built by caboose build (it has none of its labels)", ""},
-		{"its own base", "[image]\nbase = \"caboose:default\"\n", "", 1,
-			"problem: base in [image] names the environment's own image ('caboose:default')", "name the image to build on in base in [image]"},
+		{"its own base", "[ref.default]\nimage = \"caboose:default\"\n", "", 1,
+			"problem: image in [ref.default] names the environment's own image ('caboose:default')", "name the image to build on in image in [ref.default]"},
+		{"no Dockerfile", "image = \"dockerfile.nowhere\"\n[dockerfile.nowhere]\n", "", 1,
+			"problem: dockerfile.nowhere builds from ", "caboose setup image, which writes caboose's Dockerfile there, or write one"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, _ := doctorEnv(t, tc.answer)
@@ -427,20 +468,6 @@ func TestDoctorSync(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(dockerLog(t, log), "\n"), "caboose-agent sync status") {
 		t.Error("did not ask the sandbox")
-	}
-}
-
-func TestDoctorTwoBases(t *testing.T) {
-	home, _ := doctorEnv(t)
-	writeConfig(t, home, "[image]\nbase = \"node:22\"\n")
-	dir := filepath.Join(home, ".caboose", "envs", "default", "image")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	code, out, _ := runIt("doctor", "--offline")
-	if code != 1 || row(out, "image", "problem: the environment has "+dir+", and base in [image] names 'node:22'") == "" ||
-		!strings.Contains(out, "or move "+dir+" away") || strings.Count(out, "\n  ✗ image  ") != 1 {
-		t.Errorf("exit %d:\n%s", code, out)
 	}
 }
 

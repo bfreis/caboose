@@ -242,7 +242,8 @@ func TestDefaults(t *testing.T) {
 		Roots:     []Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}},
 		AutoBuild: true, Tmux: true, KeepVersions: 2, ReadyTimeout: 600, Home: "/h",
 		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: KindContainer,
-		Egress: true, EgressPorts: DefaultEgressPorts}
+		ImageProfile: ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true},
+		Egress:       true, EgressPorts: DefaultEgressPorts}
 	c.Getenv = nil
 	if !reflect.DeepEqual(*c, want) {
 		t.Errorf("got %+v\nwant %+v", *c, want)
@@ -273,8 +274,8 @@ func TestEnvironments(t *testing.T) {
 			if c.Env != tc.env || c.EnvDir != tc.dir || c.Container != tc.container || c.Image != tc.image {
 				t.Errorf("env %q dir %q container %q image %q", c.Env, c.EnvDir, c.Container, c.Image)
 			}
-			if ref, byo := c.Base(); ref != "caboose-base:"+tc.env || byo {
-				t.Errorf("base %q %v", ref, byo)
+			if ref := c.BaseRef(); ref != "caboose-base:"+tc.env {
+				t.Errorf("base %q", ref)
 			}
 		})
 	}
@@ -377,51 +378,136 @@ func TestDescribeRoots(t *testing.T) {
 	}
 }
 
-// [image] base may be any image but the environment's own.
+// A ref may be any image but the environment's own.
 func TestCheckImages(t *testing.T) {
 	for _, tc := range []struct {
-		base string
-		ok   bool
+		ref string
+		ok  bool
 	}{
-		{"", true},
 		{"caboose-base:default", true},
 		{"node:22", true},
 		{"caboose:default", false},
 		{"docker.io/library/caboose:default", false},
 	} {
-		c := &Config{Env: "default", Image: ImageFor("default"), BaseImage: tc.base}
+		c := &Config{Env: "default", Image: ImageFor("default"), ImageProfile: ImageProfile{Kind: ImageKindRef, Name: "a", Ref: tc.ref}}
 		if err := c.CheckImages(); (err == nil) != tc.ok {
 			t.Errorf("%+v: %v", tc, err)
 		} else if err != nil && !strings.Contains(err.Error(), "is the environment's own image") {
 			t.Errorf("%+v: %v", tc, err)
 		}
 	}
-}
-
-// An environment's image/ dir is its base, found by Load; with [image]
-// base as well, which to build on would be a guess.
-func TestImageDir(t *testing.T) {
-	fs := fakeFS{"/h/.caboose/envs/work": "dir", "/h/.caboose/envs/work/image": "dir", "/h/.caboose/envs/default/image": "file"}
-	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fs, "work")
-	if err != nil || c.ImageDir != "/h/.caboose/envs/work/image" {
-		t.Fatalf("ImageDir %q, %v", c.ImageDir, err)
-	}
-	if ref, byo := c.Base(); ref != "caboose-base:work" || byo {
-		t.Errorf("Base = %q, %v", ref, byo)
-	}
+	// Other kinds build their own base.
+	c := &Config{Env: "default", Image: ImageFor("default"), ImageProfile: DefaultImageProfile()}
 	if err := c.CheckImages(); err != nil {
 		t.Error(err)
 	}
-	c.BaseImage = "node:22"
-	if ref, byo := c.Base(); ref != "node:22" || !byo {
-		t.Errorf("Base = %q, %v", ref, byo)
+}
+
+// The image profile is chosen as the isolation profile is: image names
+// it; else the only one defined; else apko.default, which image may name
+// without a table.
+func TestImageProfile(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want ImageProfile
+	}{
+		"nothing":          {"", ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true}},
+		"implicit":         {`image = "apko.default"`, ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true}},
+		"the one":          {"[ref.mine]\nimage = \"node:22\"\n", ImageProfile{Kind: ImageKindRef, Name: "mine", Ref: "node:22"}},
+		"named":            {"image = \"apko.min\"\n[apko.min]\ndefaults = false\npackages = [\"jq\", \"go-1.26\"]\n[ref.mine]\nimage = \"x\"\n", ImageProfile{Kind: ImageKindApko, Name: "min", Packages: []string{"jq", "go-1.26"}}},
+		"dockerfile":       {"[dockerfile.default]\n", ImageProfile{Kind: ImageKindDockerfile, Name: "default", Dir: "/h/.caboose/envs/default/dockerfile/default"}},
+		"named dockerfile": {"image = \"dockerfile.x\"\n[dockerfile.x]\n[ref.y]\nimage = \"z\"\n", ImageProfile{Kind: ImageKindDockerfile, Name: "x", Dir: "/h/.caboose/envs/default/dockerfile/x"}},
+		"with apko":        {"image = \"apko.default\"\n[apko.default]\npackages = []\n", ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := load(t, tc.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(c.ImageProfile, tc.want) {
+				t.Errorf("got %+v, want %+v", c.ImageProfile, tc.want)
+			}
+		})
 	}
-	if err := c.CheckImages(); !errors.Is(err, ErrTwoBases) || !strings.Contains(err.Error(), "remove base from /h/.caboose/envs/work/config.toml") {
-		t.Errorf("both: %v", err)
+}
+
+func TestImageProfileRefuses(t *testing.T) {
+	for name, tc := range map[string]struct{ body, err string }{
+		"several":          {"[ref.a]\nimage = \"x\"\n[dockerfile.b]\n", `it defines the image profiles dockerfile.b, ref.a, and image does not say which to use: set image = "dockerfile.b", say`},
+		"an isolation":     {"image = \"vm.default\"\n[vm.default]\n", `image = "vm.default" is not an image profile, "<kind>.<name>" of a kind apko, dockerfile, ref`},
+		"no kind":          {`image = "default"`, `image = "default" is not an image profile`},
+		"undefined":        {"image = \"ref.x\"\n", `image = "ref.x" names a profile the file does not define (none is): add a [ref.x] table, or name another`},
+		"undefined apko":   {"image = \"apko.min\"\n[ref.a]\nimage = \"x\"\n", `image = "apko.min" names a profile the file does not define (ref.a are)`},
+		"bad package":      {"[apko.default]\npackages = [\"Bad Name\"]\n", `packages in [apko.default]: package name "Bad Name" has the character`},
+		"empty package":    {"[apko.default]\npackages = [\"\"]\n", `packages in [apko.default] must be an array of strings`},
+		"apko key":         {"[apko.default]\ndir = \"x\"\n", "unknown setting in [apko.default] dir (known: defaults, packages;"},
+		"dockerfile key":   {"[dockerfile.default]\npackages = []\n", "unknown setting in [dockerfile.default] packages (it takes none"},
+		"ref key":          {"[ref.default]\nbase = \"x\"\n", "unknown setting in [ref.default] base (known: image;"},
+		"ref without one":  {"[ref.default]\n", "[ref.default] needs image"},
+		"dir":              {"[dockerfile.x]\ndir = \"/srv/df\"\n", "unknown setting in [dockerfile.x] dir (it takes none"},
+		"undefined docker": {"image = \"dockerfile.x\"\n", `image = "dockerfile.x" names a profile the file does not define (none is): add a [dockerfile.x] table`},
+		"bad profile name": {"[apko.Big]\n", "'Big' is not a profile name"},
+		"old [image]":      {"[image]\nauto_build = false\n", "image must be a string"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, tc.body)
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("err = %v, want %q", err, tc.err)
+			}
+		})
 	}
-	// Not a directory: not an image dir.
-	if c, _ := Load(envOf(map[string]string{"HOME": "/h"}), fs, "default"); c.ImageDir != "" {
-		t.Errorf("default: ImageDir %q", c.ImageDir)
+}
+
+// [build] auto_build is read; it is on by default.
+func TestAutoBuild(t *testing.T) {
+	if c, err := load(t, ""); err != nil || !c.AutoBuild {
+		t.Errorf("default: %v", err)
+	}
+	if c, err := load(t, "[build]\nauto_build = false\n"); err != nil || c.AutoBuild {
+		t.Errorf("off: %v", err)
+	}
+}
+
+// An apko profile's lock is next to config.toml, named after the profile;
+// no other kind has one.
+func TestLockPath(t *testing.T) {
+	c, err := load(t, "image = \"apko.min\"\n[apko.min]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.LockPath(); got != "/h/.caboose/envs/default/apko-min.lock.json" {
+		t.Errorf("LockPath = %q", got)
+	}
+	if got := c.BaseRef(); got != "caboose-base:default" {
+		t.Errorf("BaseRef = %q", got)
+	}
+	c, err = load(t, "[ref.a]\nimage = \"node:22\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.LockPath(); got != "" {
+		t.Errorf("LockPath of a ref = %q", got)
+	}
+	if got := c.BaseRef(); got != "node:22" {
+		t.Errorf("BaseRef = %q", got)
+	}
+}
+
+// ReadImage resolves the image again from a reread File.
+func TestReadImage(t *testing.T) {
+	c, err := load(t, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.File, err = ParseFile(cfgPath, []byte("[ref.a]\nimage = \"x\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ReadImage(); err != nil || c.ImageProfile.String() != "ref.a" {
+		t.Errorf("%v %v", c.ImageProfile, err)
+	}
+	c.File = nil
+	if err := c.ReadImage(); err != nil || c.ImageProfile.String() != "apko.default" {
+		t.Errorf("%v %v", c.ImageProfile, err)
 	}
 }
 

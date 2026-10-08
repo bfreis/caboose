@@ -5,8 +5,8 @@
 You need a running Docker engine — Docker Desktop, OrbStack or colima — and,
 only if you build from source, a Go toolchain (the version in `go.mod`).
 Nothing else: the image is not published anywhere, because the launcher
-carries the `Dockerfile` it is built from and builds it on your machine — or
-builds on an image of your own ([Use your own image](images.md)).
+builds it on your machine, from Wolfi packages by default — or from a
+Dockerfile of yours, or on an image of your own ([The image](images.md)).
 
 ```sh
 curl -fsSL https://github.com/bfreis/caboose/releases/latest/download/install.sh | sh
@@ -45,13 +45,14 @@ Run `caboose` from inside a project under one of the [roots](configuration.md#ro
 time, it:
 
 1. **Builds the image**, when there is none. It says so first, then builds
-   in two steps: the base (the `Dockerfile` embedded in the binary, tagged
-   `caboose-base:<env>`, or your own `base` in `[image]`, pulled if need be),
-   which it [checks](images.md), and on top of it a
+   in two steps: the base (by default caboose's packages, resolved, pinned
+   in a lock and built with apko, tagged `caboose-base:<env>`; or whatever
+   the [image profile](configuration.md#image-profiles) says), which it
+   [checks](images.md), and on top of it a
    small layer with the `agent` user at your UID and GID, so files the
    container writes into your repos belong to you. It takes a few minutes,
    once. The build log goes to stderr, and it builds without a TTY too.
-   `auto_build = false` in `[image]` turns this off: a missing image is then an
+   `auto_build = false` in `[build]` turns this off: a missing image is then an
    error telling you to run `caboose build`.
 2. **Creates the container**, with the roots and the data dir mounted.
 3. **Installs Claude Code** into the persisted `~/.local` on its first boot
@@ -95,9 +96,10 @@ launcher's version, commit and build date, how it was installed, a hash of
 the build context embedded in it, the image name it expects, the base it
 builds on, and whether that image exists and was built from the same
 context on the same base — `caboose build` records the hashes, and the
-base's name and ID, as labels on the image. On the default base, the
-embedded `Dockerfile`'s hash is the base's identity; on your own base it is
-the image ID ([When your image changes](images.md#when-your-image-changes)). `caboose build` rebuilds
+base's kind, name and ID, as labels on the image. On an `apko` base the
+lock's hash is the base's identity, on a `dockerfile` one a hash of its
+dir, and on an image of your own its image ID
+([When the image is out of date](images.md#when-the-image-is-out-of-date)). `caboose build` rebuilds
 the image now, without touching the container.
 
 Rarely, a new caboose cannot work with a container an older one created at

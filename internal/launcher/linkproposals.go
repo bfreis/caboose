@@ -131,7 +131,7 @@ func (r *linkRunner) watchProposals(stop <-chan struct{}) {
 		actions := r.cfg.Actions
 		r.mu.Unlock()
 		if err := hostlink.Notify(actions, title, text); err != nil {
-			r.log.Printf("cannot show that a session proposed a change: %v", err)
+			r.log.Printf("cannot show that a session proposed a change: %s", proposal.Printable(err.Error()))
 			continue
 		}
 		r.log.Printf("told of new proposals")

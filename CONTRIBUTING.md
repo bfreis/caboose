@@ -52,9 +52,10 @@ anywhere but a Mac with `caboose-vmm`, the kernel and the builder disk;
 `make test-vm` runs it alone. CI runs `make lint` and go test on every branch
 push.
 
-**Changes to the image need a rebuild, on the host.** `Dockerfile`,
+**Changes to the image need a rebuild, on the host.**
 `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `tmux.conf` and
-`shellrc.bash` are baked into the image, which is built from the copies embedded in the
+`shellrc.bash` are baked into the image, and caboose's package groups
+(`internal/apkobuild/pkgset/packages.toml`) decide an `apko` base's, which is built from the copies embedded in the
 launcher, so an edit needs `make build && make
 restart` (make rebuilds the launcher for you), which moves the `dev`
 environment onto it. A launcher change takes effect
@@ -67,16 +68,20 @@ placeholders are the launcher's to fill in, though: after pulling, rebuild
 binary can go unexpanded.
 
 The image is not built from the checkout. `caboose build` writes the
-files embedded in the binary into empty temp dirs and builds there — the
-`Dockerfile` alone for the base, then `layer.Dockerfile`, `layer-user.sh`,
-`entrypoint.sh`, `tmux.conf` and `shellrc.bash` for the layer — so nothing else in the tree
-— `.git`, `.jj`, whatever is lying around — can reach the Docker daemon.
-That is an allowlist by construction: a file `layer.Dockerfile` starts to
-`COPY` has to be added to `embed.go` and the layer's context too, or the
-build fails (the base `Dockerfile` COPYs nothing, and a test keeps it that
-way). The image is labelled with the launcher version, hashes of those
-contexts, the base's name and ID, and the platform, which is what
-`caboose version` compares and what picks the `local/<platform>` dir to mount.
+layer's files embedded in the binary — `layer.Dockerfile`, `layer-user.sh`,
+`entrypoint.sh`, `tmux.conf` and `shellrc.bash` — into an empty temp dir
+and builds there, so nothing else in the tree — `.git`, `.jj`, whatever is
+lying around — can reach the Docker daemon. That is an allowlist by
+construction: a file `layer.Dockerfile` starts to `COPY` has to be added
+to `embed.go` and the layer's context too, or the build fails. The base
+comes from the environment's image profile: built in-process with apko, from
+a `dockerfile` profile's own directory, or a `ref`. The embedded
+`Dockerfile` is only the seed `caboose setup image` writes into a
+`dockerfile` profile's directory (it COPYs nothing, and a test keeps it
+that way). The image is labelled with the launcher version, the layer's
+hash, the kind of base and what identifies it, its name and ID, and the
+platform, which is what `caboose version` compares and what picks the
+`local/<platform>` dir to mount.
 `imagecheck.sh`, the probe `caboose check-image` runs, is embedded too but is
 part of neither image: an edit to it needs only the launcher rebuilt.
 
@@ -133,7 +138,8 @@ again: `rm caboose-vmm` first.
 
 | | |
 |---|---|
-| `Dockerfile` | the default base image: OS packages, toolchains, jj |
+| `Dockerfile` | the seed of a `dockerfile` image profile: OS packages and toolchains, in sections |
+| `internal/apkobuild` | `apko` bases: caboose's package groups (`pkgset/packages.toml`), locks, builds, the package cache |
 | `layer.Dockerfile`, `layer-user.sh` | the layer on every base: the agent user, its home, the entrypoint |
 | `imagecheck.sh` | the probe `caboose check-image` and every build run in the base; `internal/imagecheck` holds the requirements |
 | `entrypoint.sh` | bootstraps Claude Code, clears stale state, prunes versions, runs `start.d`, idles |

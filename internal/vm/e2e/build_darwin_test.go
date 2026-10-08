@@ -53,7 +53,16 @@ func TestBuild(t *testing.T) {
 	defer keepLogs()
 
 	base, layer := filepath.Join(work, "base"), filepath.Join(work, "layer")
-	for d, write := range map[string]func(string) error{base: assets.WriteBaseContext, layer: assets.WriteLayerContext} {
+	// The base: caboose's Dockerfile, as a dockerfile profile's dir is
+	// seeded with it.
+	writeSeed := func(dir string) error {
+		data, err := assets.Seed(assets.DefaultSections())
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "Dockerfile"), data, 0o644)
+	}
+	for d, write := range map[string]func(string) error{base: writeSeed, layer: assets.WriteLayerContext} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}

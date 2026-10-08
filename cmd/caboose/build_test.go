@@ -79,11 +79,7 @@ func layerPrefix(image string) string {
 	return "build -t " + image + " -f "
 }
 
-func layerArgs(base string, byo bool, platform string) string {
-	kind, baseHash := "byo", ""
-	if !byo {
-		kind, baseHash = "default", assets.BaseHash()
-	}
+func layerArgs(base, kind, baseHash, platform string) string {
 	// Every label, the empty ones too: a base built FROM a caboose image
 	// passes its own on, and an unset one would read as the base's.
 	return " --build-arg BASE=" + base +
@@ -101,13 +97,13 @@ func layerArgs(base string, byo bool, platform string) string {
 		" --label " + assets.LabelCompat + "=" + strconv.Itoa(assets.Compat)
 }
 
-// The default base: the embedded Dockerfile built as caboose-base:default with the extra
-// args, checked by ID, then the layer FROM it, labelled with what it was
-// built from. Only the layer's build writes to stdout, so -q still prints
-// one image ID.
-func TestBuildOnDefaultBase(t *testing.T) {
+// A dockerfile profile: its dir built as caboose-base:default with the
+// extra args, checked by ID, then the layer FROM it, labelled with what it
+// was built from. Only the layer's build writes to stdout, so -q still
+// prints one image ID.
+func TestBuildOnDockerfile(t *testing.T) {
 	log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
-	sandboxEnv(t)
+	home := sandboxEnv(t)
 	code, out, errs := runIt("build", "--no-cache")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
@@ -116,7 +112,7 @@ func TestBuildOnDefaultBase(t *testing.T) {
 		t.Errorf("stdout %q", out)
 	}
 	for _, w := range []string{
-		"caboose: building the base image 'caboose-base:default' from the Dockerfile embedded in this launcher\n" +
+		"caboose: building the base image 'caboose-base:default' from ~/.caboose/envs/default/dockerfile/default/Dockerfile (dockerfile.default)\n" +
 			"docker build stdout\ndocker build stderr\n",
 		"caboose: checking base image 'caboose-base:default' (ba5e00000000) against caboose's requirements\n",
 		"caboose: building the caboose layer on 'caboose-base:default' as 'caboose:default'\ndocker build stderr\n",
@@ -130,23 +126,25 @@ func TestBuildOnDefaultBase(t *testing.T) {
 		t.Fatalf("builds: %v", bs)
 	}
 	wantBase := "build -t caboose-base:default --label " + assets.LabelVersion + "=" + version.Get().Version +
-		" --label " + assets.LabelBaseHash + "=" + assets.BaseHash() + " --no-cache "
-	if !strings.HasPrefix(bs[0].argv, wantBase) || bs[0].context != "Dockerfile" {
-		t.Errorf("base build %s (context %q)\nwant prefix %s", bs[0].argv, bs[0].context, wantBase)
+		" --no-cache " + imageDir(home)
+	if bs[0].argv != wantBase || bs[0].context != "Dockerfile" {
+		t.Errorf("base build %s (context %q)\nwant %s", bs[0].argv, bs[0].context, wantBase)
 	}
 	if strings.Contains(bs[0].argv, "UID") {
 		t.Errorf("the base took the host's IDs: %s", bs[0].argv)
 	}
 	dir := ctxDir(t, bs[1].argv)
 	want := layerPrefix("caboose:default") + dir + "/layer.Dockerfile" +
-		layerArgs("caboose-base:default", false, "linux-arm64") + " --no-cache " + dir
+		layerArgs("caboose-base:default", "dockerfile", dockerfileHash(), "linux-arm64") + " --no-cache " + dir
 	if bs[1].argv != want {
 		t.Errorf("layer build\n%s\nwant\n%s", bs[1].argv, want)
 	}
 	if bs[1].context != "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf" {
 		t.Errorf("layer context held %q", bs[1].context)
 	}
-	ctxDir(t, bs[0].argv)
+	if _, err := os.Stat(filepath.Join(imageDir(home), "Dockerfile")); err != nil {
+		t.Errorf("the image dir was removed: %v", err)
+	}
 	// The check ran on the base's ID, between the two builds.
 	b, _ := os.ReadFile(log)
 	s := string(b)
@@ -156,8 +154,8 @@ func TestBuildOnDefaultBase(t *testing.T) {
 	}
 }
 
-// --pull is for the base: the default base's build gets it, the layer never
-// (its FROM is local only), and a user's base is pulled first instead.
+// --pull is for the base: a Dockerfile's build gets it, the layer never
+// (its FROM is local only), and a ref is pulled first instead.
 func TestBuildPull(t *testing.T) {
 	log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
 	sandboxEnv(t)
@@ -174,7 +172,7 @@ func TestBuildPull(t *testing.T) {
 	log = scriptedDocker(t, imageLabels("{}")+"\n"+baseBuilds(t, "node:22"))
 	sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22")
 	code, _, errs := runIt("build", "--pull=true")
-	if code != 1 || !strings.Contains(errs, "caboose: pulling base image 'node:22' (base in [image]), as --pull asks\n") {
+	if code != 1 || !strings.Contains(errs, "caboose: pulling base image 'node:22' (ref.default), as --pull asks\n") {
 		t.Errorf("exit %d, stderr:\n%s", code, errs)
 	}
 	for _, l := range dockerLog(t, log) {
@@ -184,7 +182,7 @@ func TestBuildPull(t *testing.T) {
 	}
 }
 
-// [image] base: no base build, a pull only when it is not local, the
+// A ref: no base build, a pull only when it is not local, the
 // layer FROM it with its name, and the platform the check found -- here
 // musl's.
 func TestBuildOnOwnBase(t *testing.T) {
@@ -217,7 +215,7 @@ func TestBuildOnOwnBase(t *testing.T) {
 			}
 			dir := ctxDir(t, bs[0].argv)
 			want := layerPrefix("caboose:default") + dir + "/layer.Dockerfile" +
-				layerArgs("alpine:3", true, "linux-arm64-musl") + " --no-cache " + dir
+				layerArgs("alpine:3", "ref", "", "linux-arm64-musl") + " --no-cache " + dir
 			if bs[0].argv != want {
 				t.Errorf("layer build\n%s\nwant\n%s", bs[0].argv, want)
 			}
@@ -325,15 +323,25 @@ func TestBuildPlatformReachesTheCheck(t *testing.T) {
 			t.Errorf("%v: builds %v", form, bs)
 		}
 	}
-	// The default base: its build and the check both get it.
+	// A Dockerfile: its build and the check both get it.
 	log := scriptedDocker(t, imageIDOf("caboose-base:default", baseID)+"\n"+
 		`[ "$1 $2 $3 $4 $5" = "run --rm --init --platform linux/amd64" ] && { cat "`+probeFile(t, probeComplete)+`"; exit 0; }`+"\n"+imageAbsent)
 	sandboxEnv(t)
 	if code, _, errs := runIt("build", "--platform", "linux/amd64"); code != 0 {
-		t.Fatalf("default base: exit %d: %s", code, errs)
+		t.Fatalf("dockerfile: exit %d: %s", code, errs)
 	}
 	if bs := builds(t, log); len(bs) != 2 || !strings.Contains(bs[0].argv, " --platform linux/amd64 ") {
-		t.Errorf("default base: builds %v", bs)
+		t.Errorf("dockerfile: builds %v", bs)
+	}
+	// apko builds for the engine: no --platform.
+	log = scriptedDocker(t, "")
+	sandboxEnv(t, "CABOOSE_APKO", "")
+	if code, _, errs := runIt("build", "--platform", "linux/amd64"); code != 1 ||
+		errs != "caboose: an apko image (apko.default) is built for the docker engine's architecture, so caboose build takes no --platform\n" {
+		t.Errorf("apko: exit %d: %s", code, errs)
+	}
+	if b, _ := os.ReadFile(log); len(b) != 0 {
+		t.Errorf("apko: docker was run:\n%s", b)
 	}
 }
 
@@ -366,7 +374,7 @@ func TestBuildRefusesATag(t *testing.T) {
 	}
 }
 
-// [image] base naming the environment's own image -- in any spelling docker
+// A ref naming the environment's own image -- in any spelling docker
 // takes for the same image -- would build the layer over its own base, and
 // stack one more on every rebuild: a build refuses it before docker is asked
 // anything, and so does a launch. (The reviewer's repro.)
@@ -381,7 +389,7 @@ func TestImageIsItsOwnBase(t *testing.T) {
 			home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", base)
 			inProject(t, home)
 			code, _, errs := runIt(argv...)
-			if code != 1 || !strings.Contains(errs, "caboose: base in [image] ('"+base+"') is the environment's own image") {
+			if code != 1 || !strings.Contains(errs, "caboose: image in [ref.default] ('"+base+"') is the environment's own image") {
 				t.Errorf("%v %v: exit %d, stderr:\n%s", base, argv, code, errs)
 			}
 			for _, l := range dockerLog(t, log) {
@@ -402,13 +410,14 @@ func TestImageIsItsOwnBase(t *testing.T) {
 	}
 }
 
-// An environment's image/ dir is its base's context, built in place (not
-// copied, not removed afterwards), and the layer says so: kind env, and
-// the dir's hash, as it was when the build started.
-func TestBuildOnImageDir(t *testing.T) {
+// A dockerfile profile's dir is dockerfile/<name> in the environment's
+// directory, and may hold more than the Dockerfile: it is the context,
+// built in place (not copied, not removed afterwards).
+func TestBuildOnANamedDockerfileProfile(t *testing.T) {
 	log := scriptedDocker(t, baseBuilds(t, "caboose-base:default"))
 	home := sandboxEnv(t)
-	dir := filepath.Join(home, ".caboose", "envs", "default", "image")
+	dir := filepath.Join(home, ".caboose", "envs", "default", "dockerfile", "mine")
+	writeConfig(t, home, "image = \"dockerfile.mine\"\n[dockerfile.mine]\n")
 	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -425,23 +434,18 @@ func TestBuildOnImageDir(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
-	if !strings.Contains(errs, "caboose: building the base image 'caboose-base:default' from "+filepath.Join(dir, "Dockerfile")+"\n") {
+	if !strings.Contains(errs, "caboose: building the base image 'caboose-base:default' from ~/.caboose/envs/default/dockerfile/mine/Dockerfile (dockerfile.mine)\n") {
 		t.Errorf("stderr:\n%s", errs)
 	}
 	bs := builds(t, log)
 	if len(bs) != 2 {
 		t.Fatalf("builds: %v", bs)
 	}
-	wantBase := "build -t caboose-base:default --label " + assets.LabelVersion + "=" + version.Get().Version +
-		" --label " + assets.LabelBaseHash + "= " + dir
-	if bs[0].argv != wantBase || bs[0].context != "Dockerfile files" {
-		t.Errorf("base build %s (context %q)\nwant %s", bs[0].argv, bs[0].context, wantBase)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err != nil {
-		t.Errorf("the image dir was removed: %v", err)
+	if want := "build -t caboose-base:default --label " + assets.LabelVersion + "=" + version.Get().Version + " " + dir; bs[0].argv != want || bs[0].context != "Dockerfile files" {
+		t.Errorf("base build %s (context %q)\nwant %s", bs[0].argv, bs[0].context, want)
 	}
 	for _, label := range []string{
-		" --label " + assets.LabelBaseKind + "=env ",
+		" --label " + assets.LabelBaseKind + "=dockerfile ",
 		" --label " + assets.LabelBaseHash + "=" + hash + " ",
 		" --label " + assets.LabelBaseName + "=caboose-base:default ",
 	} {
@@ -451,18 +455,38 @@ func TestBuildOnImageDir(t *testing.T) {
 	}
 }
 
-// An image dir and [image] base: which to build on would be a guess.
-func TestBuildRefusesTwoBases(t *testing.T) {
+// A dockerfile profile whose dir has no Dockerfile is not a guess: the
+// build says what writes one.
+func TestBuildNeedsADockerfile(t *testing.T) {
 	log := scriptedDocker(t, "")
-	home := sandboxEnv(t, "CABOOSE_BASE_IMAGE", "node:22")
-	if err := os.MkdirAll(filepath.Join(home, ".caboose", "envs", "default", "image"), 0o755); err != nil {
+	home := sandboxEnv(t)
+	if err := os.Remove(filepath.Join(imageDir(home), "Dockerfile")); err != nil {
 		t.Fatal(err)
 	}
 	code, _, errs := runIt("build")
-	if code != 1 || !strings.Contains(errs, "remove base from") {
+	if code != 1 || !strings.Contains(errs, "caboose: image profile dockerfile.default builds from ~/.caboose/envs/default/dockerfile/default, which has no Dockerfile:\n") ||
+		!strings.Contains(errs, "'caboose setup image' writes caboose's there") {
 		t.Errorf("exit %d\n%s", code, errs)
 	}
 	if len(builds(t, log)) != 0 {
 		t.Error("something was built")
+	}
+}
+
+// apko.default, the default: its packages are resolved and built
+// in-process, for the engine's architecture, which docker is asked first.
+// Without an engine that answers, nothing is resolved.
+func TestBuildApkoAsksTheEngine(t *testing.T) {
+	log := scriptedDocker(t, "")
+	home := sandboxEnv(t, "CABOOSE_APKO", "")
+	code, _, errs := runIt("build")
+	if code != 1 || !strings.Contains(errs, "caboose: cannot ask the docker engine its architecture") {
+		t.Errorf("exit %d\n%s", code, errs)
+	}
+	if lines := dockerLog(t, log); len(lines) != 1 || lines[0] != "info --format {{.Architecture}}" {
+		t.Errorf("docker: %q", lines)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".caboose", "envs", "default", "apko-default.lock.json")); !os.IsNotExist(err) {
+		t.Errorf("a lock was written: %v", err)
 	}
 }

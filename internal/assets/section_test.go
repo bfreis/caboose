@@ -7,10 +7,10 @@ import (
 
 const fooBody = "ARG FOO_VERSION=2.3.0\nRUN curl -fsSL https://example.invalid/foo.tgz | tar -xz -C /usr/local/bin foo\n"
 
-// A new section goes at the end, after a blank line; the preset's header
-// stays first, and the file reads back.
+// A new section goes at the end, after a blank line, and the file reads
+// back.
 func TestSetSectionAppends(t *testing.T) {
-	base, err := Preset(DefaultSections())
+	base, err := Seed(DefaultSections())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,18 +19,12 @@ func TestSetSectionAppends(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	if !strings.HasPrefix(s, string(base[:strings.IndexByte(string(base), '\n')+1])) {
-		t.Errorf("the header moved:\n%s", s[:200])
-	}
 	want := "\n\n# caboose:section foo foo 2.3\n" + fooBody + "# caboose:end\n"
 	if !strings.HasSuffix(s, want) {
 		t.Errorf("does not end with the section:\n%s", s[len(s)-300:])
 	}
 	if !strings.HasPrefix(s, strings.TrimSuffix(string(base), "\n")) {
 		t.Error("the rest of the Dockerfile changed")
-	}
-	if h, ok := ReadHeader(out); !ok || h.ID != PresetID() {
-		t.Errorf("header %+v %v", h, ok)
 	}
 }
 

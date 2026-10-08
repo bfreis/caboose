@@ -21,15 +21,17 @@ type ContextFile struct {
 	Mode os.FileMode
 }
 
-// The two build contexts. Every image caboose runs is a base with the layer
-// on top: the base is the embedded Dockerfile's image by default, or
-// config.toml's [image] base, which caboose never builds; the layer is the same for
-// both. They replaced the checkout's deny-all-plus-allowlist .dockerignore:
-// a new COPY needs a line here and a name in the //go:embed directive in
-// embed.go, and forgetting either fails loudly (in go test, or at build time)
-// rather than leaking anything.
+// The build contexts. Every image caboose runs is a base with the layer on
+// top: the base comes from the environment's image profile (packages
+// built with apko, a Dockerfile of the user's, or an image of theirs);
+// the layer is the same on all of them. They replaced the checkout's
+// deny-all-plus-allowlist .dockerignore: a new COPY needs a line here and
+// a name in the //go:embed directive in embed.go, and forgetting either
+// fails loudly (in go test, or at build time) rather than leaking anything.
 var (
-	// BaseContext is the default base: OS packages and toolchains, no COPY.
+	// BaseContext is the embedded Dockerfile, the seed a dockerfile
+	// profile's dir starts from (Seed): OS packages and toolchains, no
+	// COPY. caboose never builds it from here.
 	BaseContext = []ContextFile{
 		{Name: "Dockerfile", Mode: 0o644},
 	}
@@ -65,23 +67,22 @@ const (
 	LabelVersion = "dev.bfreis.caboose.version"
 	// LabelLayerHash is LayerHash, the layer's context.
 	LabelLayerHash = "dev.bfreis.caboose.layer-hash"
-	// LabelBaseHash is BaseHash when the base was the embedded Dockerfile's,
-	// DirHash of the environment's image/ dir when it was built from that,
-	// and empty on a user's base, which is identified by LabelBaseID
-	// instead. Set on the default base itself too, which is what makes it
-	// matter that the layer sets it explicitly (see LayerLabels).
+	// LabelBaseHash is what identifies the base the layer was built on,
+	// by its kind: an apko lock's hash (apkobuild.Lock.Hash), DirHash of a
+	// dockerfile profile's dir, and empty on a ref, which is identified by
+	// LabelBaseID instead.
 	LabelBaseHash = "dev.bfreis.caboose.base-hash"
 	// LabelBaseKind is which kind of base the layer was built on:
-	// BaseKindDefault, BaseKindEnv or BaseKindBYO. Said outright rather
+	// BaseKindApko, BaseKindDockerfile or BaseKindRef. Said outright rather
 	// than read off LabelBaseHash, which a label inherited through FROM
 	// could fake.
 	LabelBaseKind = "dev.bfreis.caboose.base-kind"
-	// LabelBaseName is the base as it was named: the default base's tag, or
-	// [image] base as set.
+	// LabelBaseName is the base as it was named: the tag caboose gave the
+	// base it built, or a ref profile's image as set.
 	LabelBaseName = "dev.bfreis.caboose.base-name"
 	// LabelBaseID is the image ID of the base the layer was built on, the
-	// one the image check passed. On an [image] base it is what tells
-	// a pull or rebuild of the base since.
+	// one the image check passed. On a ref it is what tells a pull or
+	// rebuild of the base since.
 	LabelBaseID = "dev.bfreis.caboose.base-id"
 	// LabelPlatform is the Claude Code platform (linux-x64, linux-arm64-musl,
 	// ...) the image check found the image to be, which names the data dir's
@@ -138,21 +139,19 @@ const (
 // that, and a rebuild at the next restart is all it takes.
 const Compat = 1
 
-// The values of LabelBaseKind.
+// The values of LabelBaseKind: the image kinds of config.toml.
 const (
-	BaseKindDefault = "default"
-	BaseKindBYO     = "byo"
-	// BaseKindEnv is a base built from the environment's own image/ dir,
-	// identified by DirHash in LabelBaseHash.
-	BaseKindEnv = "env"
+	BaseKindApko       = "apko"
+	BaseKindDockerfile = "dockerfile"
+	BaseKindRef        = "ref"
 )
 
 // LayerLabels are every label caboose puts on the layer, in the order the
 // build passes them. A label is inherited through FROM, and a user's base
-// may well be built FROM a caboose image -- the default base, or a whole
-// sandbox -- so a label the layer left unset would read as the base's. Every
+// may well be built FROM a caboose image -- a base caboose built, or a
+// whole sandbox -- so a label the layer left unset would read as the base's. Every
 // one is therefore set, to "" where it does not apply (LabelBaseHash on a
-// user's base), and the launcher reads an empty value as unset.
+// ref), and the launcher reads an empty value as unset.
 var LayerLabels = []string{
 	LabelVersion, LabelLayerHash, LabelBaseKind, LabelBaseHash,
 	LabelBaseName, LabelBaseID, LabelPlatform, LabelUID, LabelGID, LabelCompat,
@@ -165,12 +164,6 @@ const SandboxInstructionsPath = "sandbox/CLAUDE.md"
 // SandboxInstructions returns the embedded copy of sandbox/CLAUDE.md.
 func SandboxInstructions() ([]byte, error) {
 	return fs.ReadFile(caboose.Files, SandboxInstructionsPath)
-}
-
-// WriteBaseContext writes the default base's build context into dir, which
-// should be a fresh, empty directory.
-func WriteBaseContext(dir string) error {
-	return writeContext(caboose.Files, BaseContext, dir)
 }
 
 // WriteLayerContext writes the layer's build context into dir, which should
@@ -212,36 +205,14 @@ func missingHint(name string) string {
 // Hash tags: the scheme each hash is made under, so that none of them can
 // collide with another, or with a later scheme.
 const (
-	tagContext = "caboose-context-v1"
-	tagBase    = "caboose-base-v1"
-	tagLayer   = "caboose-layer-v1"
-	tagDir     = "caboose-envimage-v1"
+	tagLayer = "caboose-layer-v1"
+	tagDir   = "caboose-envimage-v1"
 )
 
-// ContextHash is the sha256, in hex, of everything the launcher builds on
-// the default base: the base's context and the layer's, together. It
-// panics if the context cannot be read, which only a broken build of the
-// launcher can cause, and which TestContextsHoldEveryCopySource already
-// guards; so do the other hashes.
-func ContextHash() string {
-	return mustHash(tagContext, append(append([]ContextFile{}, BaseContext...), LayerContext...))
-}
-
-// BaseHash is the hash of the default base's context alone.
-func BaseHash() string { return mustHash(tagBase, BaseContext) }
-
-// LayerHash is the hash of the layer's context alone.
+// LayerHash is the sha256, in hex, of the layer's context. It panics if
+// the context cannot be read, which only a broken build of the launcher
+// can cause, and which TestContextsHoldEveryCopySource already guards.
 func LayerHash() string { return mustHash(tagLayer, LayerContext) }
-
-// ContextHashFor is ContextHash on the default base, and LayerHash on a
-// user's (byo): the embedded files a build in that mode is made of, which
-// caboose version shows as its context.
-func ContextHashFor(byo bool) string {
-	if byo {
-		return LayerHash()
-	}
-	return ContextHash()
-}
 
 func mustHash(tag string, files []ContextFile) string {
 	h, err := contextHash(caboose.Files, tag, files)
@@ -280,8 +251,8 @@ func contextHash(fsys fs.FS, tag string, files []ContextFile) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// DirHash is the sha256, in hex, of a build context on disk: an
-// environment's image/ dir. Every entry under dir, in path order, goes in
+// DirHash is the sha256, in hex, of a build context on disk: a dockerfile
+// profile's dir. Every entry under dir, in path order, goes in
 // as its kind, its path, its permission bits and its content -- a file's
 // bytes, a symlink's target (never followed: docker sends it as a link) --
 // so any edit, added file, rename or chmod changes it. Everything counts,

@@ -9,180 +9,243 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/apkobuild"
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
 )
 
-// setupImage asks what the sandbox is built on: the Dockerfile embedded in
-// caboose (which changes with caboose), the environment's own
-// image/Dockerfile (written from a preset, then the user's), or an image
-// of the user's own ([image] base). The default is always what is there now.
+// setupImage asks what the sandbox is built from, as an image profile:
+// caboose's packages (apko), the package groups chosen one by one (apko,
+// without the defaults), a Dockerfile the user edits (dockerfile, seeded
+// with caboose's), or an image of the user's own (ref). The default is
+// always what is configured now. A profile of the kind chosen keeps its
+// name; another kind's is written as <kind>.default.
 //
-// A Dockerfile written here is never rewritten unasked: replacing one
-// shows how it differs from the fresh preset and asks first, and the other
-// files in image/ are left alone. After a change it offers to build; the
+// A Dockerfile is never rewritten here: one that is there is kept, and
+// only a dir without one is seeded. After a change it offers to build; the
 // container moves onto the new image at its next creation ('caboose
 // restart'), which is never done here, since it ends sessions.
 func (a *App) setupImage(p *prompter) error {
 	c := a.Cfg
-	p.heading("Image", "What the sandbox is built on.")
-	if err := c.CheckImages(); errors.Is(err, config.ErrTwoBases) {
-		return Die("%v", err)
+	cur := c.ImageProfile
+	p.heading("Image", "What the sandbox is built from.")
+	p.say("Now: %s.", a.imageSummary())
+	if cur.Kind == config.ImageKindDockerfile && !isFile(filepath.Join(cur.Dir, "Dockerfile")) {
+		p.note("%s has no Dockerfile yet.", a.short(cur.Dir))
 	}
-	dir := filepath.Join(c.EnvDir, config.ImageDirName)
-	var unsetBase bool
+	p.blank()
+	def := 0
 	switch {
-	case c.BaseImage != "":
-		p.say("Now: your own image, '%s' (base in [image]).", c.BaseImage)
-		p.blank()
-		keep, err := p.yesNo(fmt.Sprintf("Keep building on '%s'?", c.BaseImage), true)
+	case cur.Kind == config.ImageKindApko && !cur.Defaults:
+		def = 1
+	case cur.Kind == config.ImageKindDockerfile:
+		def = 2
+	case cur.Kind == config.ImageKindRef:
+		def = 3
+	}
+	i, err := p.choose("Build the sandbox from", []string{
+		"caboose's packages (recommended)",
+		"Choose package groups",
+		"A Dockerfile you edit (for experts)",
+		"An image of your own",
+	}, def)
+	if err != nil {
+		return err
+	}
+	// The profile of the kind chosen: the one in use when it is of that
+	// kind, else the kind's default one.
+	profile := func(kind string) string {
+		if cur.Kind == kind {
+			return cur.String()
+		}
+		return kind + ".default"
+	}
+	var e config.Edit
+	switch i {
+	case 0:
+		target, err := a.apkoTarget(profile(config.ImageKindApko))
 		if err != nil {
 			return err
 		}
-		if keep {
+		name := target.String()
+		if cur.String() == name && cur.Defaults {
 			p.same("Nothing changed")
 			return nil
 		}
-		unsetBase = true
-		fallthrough
-	case c.ImageDir == "":
-		var data []byte
-		var err error
-		if !unsetBase {
-			p.say("Now: the Dockerfile built into caboose, which is Ubuntu with")
-			p.bullets(sectionTitles(assets.DefaultSections()))
-			p.blank()
-			p.note("It changes as caboose does. A Dockerfile of the environment's own is yours to edit, and never changes by itself.")
-			p.blank()
+		e = config.Edit{Set: map[string]any{"image": name}, Unset: []string{name + ".defaults"}}
+		// The groups' packages go with the defaults; the profile's own stay,
+		// whether it is in use now or not.
+		own := ownPackages(target.Packages)
+		switch {
+		case len(own) == 0:
+			e.Unset = append(e.Unset, name+".packages")
+		case len(own) < len(target.Packages):
+			e.Set[name+".packages"] = own
 		}
-		choices := []string{
-			"Keep building from the Dockerfile built into caboose",
-			"Write caboose's default Dockerfile into " + a.short(dir) + "/, to edit",
-			"Choose what goes in, and write that into " + a.short(dir) + "/",
+		if len(own) > 0 {
+			p.note("Your own packages in [%s] stay: %s.", name, strings.Join(own, ", "))
 		}
-		if unsetBase {
-			choices[0] = "Build from the Dockerfile built into caboose"
-		}
-		i, err := p.choose("Build the sandbox from", choices, 0)
+	case 1:
+		target, err := a.apkoTarget(profile(config.ImageKindApko))
 		if err != nil {
 			return err
 		}
-		switch i {
-		case 0:
-			if !unsetBase {
-				p.same("Nothing changed")
-				return nil
-			}
-		case 1:
-			data, err = assets.Preset(assets.DefaultSections())
-		case 2:
-			data, err = a.choosePreset(p, assets.DefaultSections())
-		}
+		name := target.String()
+		pkgs, err := a.chooseGroups(p, target)
 		if err != nil {
 			return err
 		}
-		if unsetBase {
-			if _, err := a.writeConfig(config.Edit{Unset: []string{"image.base"}}); err != nil {
-				return err
-			}
-			p.ok("Removed base from [image] in %s", a.short(filepath.Join(c.EnvDir, config.FileName)))
-			c.BaseImage = ""
-		}
-		if data != nil {
-			if err := a.writeImageDir(p, dir, data); err != nil {
-				return err
-			}
-		}
-	default:
-		changed, err := a.replaceDockerfile(p, dir)
-		if err != nil || !changed {
+		e = config.Edit{Set: map[string]any{"image": name, name + ".defaults": false, name + ".packages": pkgs}}
+	case 2:
+		name := profile(config.ImageKindDockerfile)
+		e = config.Edit{Set: map[string]any{"image": name}, Tables: []string{name}}
+	case 3:
+		name := profile(config.ImageKindRef)
+		ref, err := a.askRef(p, cur)
+		if err != nil {
 			return err
 		}
+		e = config.Edit{Set: map[string]any{"image": name, name + ".image": ref}}
+	}
+	changed, err := a.writeConfig(e)
+	if err != nil {
+		return err
+	}
+	if changed {
+		if err := a.rereadConfigFile(); err != nil {
+			return err
+		}
+		if err := c.ReadImage(); err != nil {
+			return Die("%v", err)
+		}
+		p.ok("Wrote image = %q to %s", c.ImageProfile.String(), a.short(filepath.Join(c.EnvDir, config.FileName)))
+	}
+	seeded := false
+	if np := c.ImageProfile; np.Kind == config.ImageKindDockerfile {
+		df := filepath.Join(np.Dir, "Dockerfile")
+		switch _, err := os.Lstat(df); {
+		case errors.Is(err, fs.ErrNotExist):
+			data, err := assets.Seed(assets.DefaultSections())
+			if err != nil {
+				return Die("%v", err)
+			}
+			if err := a.writeImageDir(p, np.Dir, data); err != nil {
+				return err
+			}
+			seeded = true
+		case err != nil:
+			return Die("reading %s: %v", df, err)
+		default:
+			p.note("%s is there already, and stays as it is: it is yours.", a.short(df))
+		}
+	}
+	if !changed && !seeded {
+		p.same("Nothing changed")
+		return nil
 	}
 	return a.offerBuild(p)
 }
 
-// replaceDockerfile shows the environment's image/Dockerfile and offers a
-// fresh preset in its place: shown as a difference, and asked for again.
-func (a *App) replaceDockerfile(p *prompter, dir string) (bool, error) {
-	path := filepath.Join(dir, "Dockerfile")
-	cur, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, Die("reading %s: %v", path, err)
-	}
-	defaults := assets.DefaultSections()
-	switch h, ok := assets.ReadHeader(cur); {
-	case cur == nil:
-		p.say("Now: %s/, which has no Dockerfile.", a.short(dir))
-	case ok:
-		p.say("Now: %s, written from caboose's preset %s, with", a.short(path), h.ID)
-		p.bullets(sectionTitles(h.Sections))
-		if h.ID != assets.PresetID() {
-			p.blank()
-			p.warn("caboose's preset has changed since: it is %s now.", assets.PresetID())
-		}
-		defaults = h.Sections
-	default:
-		p.say("Now: %s, your own (it names no preset).", a.short(path))
-	}
-	p.blank()
-	i, err := p.choose("The environment's Dockerfile", []string{
-		"Keep it as it is",
-		"Replace it with a fresh preset (you see the difference first)",
-	}, 0)
+// apkoTarget is the apko profile setup writes, name ("apko.default"), as
+// config.toml defines it now, whatever kind is in use.
+func (a *App) apkoTarget(name string) (config.ImageProfile, error) {
+	_, pname, _ := strings.Cut(name, ".")
+	target, err := a.Cfg.File.ApkoProfile(pname)
 	if err != nil {
-		return false, err
+		return target, Die("%v", err)
 	}
-	if i == 0 {
-		p.same("Nothing changed")
-		return false, nil
-	}
-	data, err := a.choosePreset(p, defaults)
-	if err != nil {
-		return false, err
-	}
-	if string(data) == string(cur) {
-		p.same("The fresh preset is what %s has already; nothing changed", a.short(path))
-		return false, nil
-	}
-	p.blank()
-	p.diff(a.short(path), "the fresh preset", lineDiff(string(cur), string(data)))
-	p.blank()
-	ok, err := p.yesNo("Replace "+a.short(path)+" with it?", false)
-	if err != nil || !ok {
-		if err == nil {
-			p.same("Nothing changed")
-		}
-		return false, err
-	}
-	return true, a.writeImageDir(p, dir, data)
+	return target, nil
 }
 
-// choosePreset asks, section by section, what goes into the image, with
-// defaults (section names) checked, and returns the Dockerfile.
-func (a *App) choosePreset(p *prompter, defaults []string) ([]byte, error) {
-	p.note("The base is always in: Ubuntu, and what caboose needs (git, curl, tmux, ripgrep, ...).")
+// chooseGroups asks which of caboose's package groups go into target, an
+// apko profile, beyond the required one, and returns the packages to
+// write: theirs, and any of target's own packages that are in no group,
+// which stay. The groups ticked to start with are those target has all of,
+// when it lists its packages without the defaults; else the default
+// groups.
+func (a *App) chooseGroups(p *prompter, target config.ImageProfile) ([]string, error) {
+	p.note("What the sandbox requires is always in: %s.", strings.Join(apkobuild.Required(), ", "))
 	p.blank()
-	all := assets.Sections()
-	titles, on := make([]string, len(all)), make([]bool, len(all))
-	for i, s := range all {
-		titles[i], on[i] = capFirst(s.Title), slices.Contains(defaults, s.Name)
+	var groups []apkobuild.Group
+	for _, g := range apkobuild.Groups() {
+		if !g.Required {
+			groups = append(groups, g)
+		}
 	}
-	on, err := p.checklist("What else goes into the image?", titles, on)
+	titles, on := make([]string, len(groups)), make([]bool, len(groups))
+	for i, g := range groups {
+		titles[i] = capFirst(g.Title)
+		on[i] = g.Default
+		if !target.Defaults {
+			on[i] = len(g.Packages) > 0
+			for _, pkg := range g.Packages {
+				on[i] = on[i] && slices.Contains(target.Packages, pkg)
+			}
+		}
+	}
+	on, err := p.checklist("What goes into the image?", titles, on)
 	if err != nil {
 		return nil, err
 	}
-	var names []string
-	for i, s := range all {
+	pkgs := []string{}
+	for i, g := range groups {
 		if on[i] {
-			names = append(names, s.Name)
+			pkgs = append(pkgs, g.Packages...)
 		}
 	}
-	return assets.Preset(names)
+	for _, pkg := range ownPackages(target.Packages) {
+		if !slices.Contains(pkgs, pkg) {
+			pkgs = append(pkgs, pkg)
+		}
+	}
+	return pkgs, nil
 }
 
-// writeImageDir writes data as dir/Dockerfile, making dir if need be, and
-// points this run's configuration at it. dir is outside the data dir, and
+// ownPackages are those of pkgs in none of caboose's groups.
+func ownPackages(pkgs []string) []string {
+	inGroup := map[string]bool{}
+	for _, g := range apkobuild.Groups() {
+		for _, pkg := range g.Packages {
+			inGroup[pkg] = true
+		}
+	}
+	own := []string{}
+	for _, pkg := range pkgs {
+		if !inGroup[pkg] {
+			own = append(own, pkg)
+		}
+	}
+	return own
+}
+
+// askRef asks for the image to build on, until it is one: not empty, and
+// not the environment's own image.
+func (a *App) askRef(p *prompter, cur config.ImageProfile) (string, error) {
+	p.note("Any image the image check passes ('caboose check-image IMAGE' tells): it is pulled when it is not local.")
+	def := ""
+	if cur.Kind == config.ImageKindRef {
+		def = cur.Ref
+	}
+	for {
+		ref, err := p.ask("The image to build on", def)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case ref == "":
+			p.fail("Name an image, as docker pull takes it: debian:13.7-slim, say.")
+		case config.SameImage(ref, a.Cfg.Image):
+			p.fail("'%s' is the environment's own image, which caboose builds on the base: name another.", ref)
+		case strings.ContainsAny(ref, " \t\n"):
+			p.fail("'%s' is not an image reference.", ref)
+		default:
+			return ref, nil
+		}
+	}
+}
+
+// writeImageDir writes data as dir/Dockerfile, making dir if need be: a
+// dockerfile profile's dir. It is outside the data dir, and
 // never mounted into the container: the host's to write as it would any
 // file of the user's.
 func (a *App) writeImageDir(p *prompter, dir string, data []byte) error {
@@ -207,7 +270,6 @@ func (a *App) writeImageDir(p *prompter, dir string, data []byte) error {
 	if err != nil {
 		return Die("writing %s: %v", filepath.Join(dir, "Dockerfile"), err)
 	}
-	a.Cfg.ImageDir = dir
 	p.ok("Wrote %s; it is yours to edit from here on", a.short(filepath.Join(dir, "Dockerfile")))
 	return nil
 }
@@ -234,20 +296,6 @@ func (a *App) offerBuild(p *prompter) error {
 		p.warn("The %s keeps the image it was created from: %s moves it onto the new one, and ends running sessions.", a.noun(), p.code("caboose restart"))
 	}
 	return nil
-}
-
-// sectionTitles lists the titles of the named sections, for a list.
-func sectionTitles(names []string) []string {
-	var titles []string
-	for _, s := range assets.Sections() {
-		if slices.Contains(names, s.Name) {
-			titles = append(titles, capFirst(s.Title))
-		}
-	}
-	if len(titles) == 0 {
-		return []string{"nothing optional"}
-	}
-	return titles
 }
 
 // lineDiff is a unified-style difference between two texts, line by line:

@@ -3,6 +3,7 @@ package launcher
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -287,13 +288,15 @@ func (a *App) doctorConfig(c *checkup) bool {
 	default:
 		c.ok("env", "%s", cfg.Env)
 	}
-	switch err := cfg.CheckImages(); {
-	case errors.Is(err, config.ErrTwoBases):
-		c.problem("image", "remove base from [image] in "+cfg.EnvDir+"/"+config.FileName+", or move "+cfg.ImageDir+" away",
-			"the environment has %s, and base in [image] names '%s': which to build on would be a guess", cfg.ImageDir, cfg.BaseImage)
-	case err != nil:
-		c.problem("image", "name the image to build on in base in [image]",
-			"base in [image] names the environment's own image ('%s'): the build would build over its own base", cfg.Image)
+	if err := cfg.CheckImages(); err != nil {
+		c.problem("image", "name the image to build on in image in ["+cfg.ImageProfile.String()+"]",
+			"image in [%s] names the environment's own image ('%s'): the build would build over its own base", cfg.ImageProfile, cfg.Image)
+	}
+	if p := cfg.ImageProfile; p.Kind == config.ImageKindDockerfile {
+		if _, err := os.Stat(filepath.Join(p.Dir, "Dockerfile")); err != nil {
+			c.problem("image", SetupCommand(cfg.Env, "image")+", which writes caboose's Dockerfile there, or write one",
+				"%s builds from %s, which has no Dockerfile", p, p.Dir)
+		}
 	}
 	a.doctorRunArgs(c)
 	a.doctorHostExec(c)
@@ -446,9 +449,6 @@ func (a *App) doctorDocker(c *checkup) bool {
 // use, as a launch and caboose version do.
 func (a *App) doctorImage(c *checkup) {
 	cfg := a.Cfg
-	if errors.Is(cfg.CheckImages(), config.ErrTwoBases) {
-		return // no base to judge it against; the configuration's row says why
-	}
 	labels, exists, err := a.images().ImageLabels(cfg.Image)
 	if err != nil && !exists {
 		c.problem("image", "check that docker runs ('docker info')", "cannot inspect '%s': %v", cfg.Image, err)
@@ -458,7 +458,7 @@ func (a *App) doctorImage(c *checkup) {
 	switch st := a.imageStatus(labels, exists); st.state {
 	case imageMissing:
 		if !cfg.AutoBuild {
-			c.problem("image", "caboose build", "'%s' is not built, and auto_build = false in [image] keeps a launch from building it", cfg.Image)
+			c.problem("image", "caboose build", "'%s' is not built, and auto_build = false in [build] keeps a launch from building it", cfg.Image)
 			return
 		}
 		c.note("image", "'%s' is not built yet; the first launch builds it (or 'caboose build' now)", cfg.Image)

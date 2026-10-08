@@ -21,13 +21,13 @@ func (a *App) Env(args []string) error {
 	return Die("usage: caboose env [list] ('caboose -e NAME setup' creates an environment)")
 }
 
-// listEnvs shows every environment, the current one marked, each with its
-// container and that container's state.
-func (a *App) listEnvs() error {
+// envNames is every environment, sorted: the default one, this one, and
+// each dir of CABOOSE_HOME/envs with an environment's name.
+func (a *App) envNames() ([]string, error) {
 	names := map[string]bool{config.DefaultEnv: true, a.Cfg.Env: true}
 	entries, err := os.ReadDir(filepath.Join(a.Cfg.CabooseHome, "envs"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return Die("%v", err)
+		return nil, err
 	}
 	for _, e := range entries {
 		if e.IsDir() && config.ValidEnv(e.Name()) {
@@ -39,6 +39,16 @@ func (a *App) listEnvs() error {
 		sorted = append(sorted, n)
 	}
 	sort.Strings(sorted)
+	return sorted, nil
+}
+
+// listEnvs shows every environment, the current one marked, each with its
+// container and that container's state.
+func (a *App) listEnvs() error {
+	sorted, err := a.envNames()
+	if err != nil {
+		return Die("%v", err)
+	}
 	for _, n := range sorted {
 		// Another environment's isolation is its own config's, not read
 		// here: its sandbox is asked of docker, as a container.

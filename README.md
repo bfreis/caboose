@@ -67,9 +67,10 @@ building from a checkout.
 - **The same paths on every machine.** Projects live at `/work/...`
   whatever the host path is, so `caboose sync` can carry memories, settings
   and skills between machines through a private git repo.
-- **Your image, if you want.** The default image is Ubuntu with git, gh,
-  jj, Node, Bun, Go and Docker. You can trim it, edit its
-  Dockerfile, or build on any glibc or musl image that passes
+- **Your image, if you want.** The default image is built from Wolfi
+  packages, pinned in a lock: git, gh, Node, Bun, Go, Docker and the
+  basics. You can pick its package groups, add packages of your own, build
+  from a Dockerfile, or build on any glibc or musl image that passes
   `caboose check-image`.
 - **Environments.** Run several fully separate cabooses side by side, for
   example to keep a work subscription apart from a personal one.
@@ -97,7 +98,7 @@ caboose help               # every command
 | [How it works](docs/how-it-works.md) | the sandbox, persistent state, tmux, terminal rendering |
 | [Start-up scripts and shell config](docs/startup.md) | `start.d` run at container start, `shell.d` read by every bash |
 | [Proposals](docs/proposals.md) | sessions asking for a tool, a kept directory or a root; `caboose apply` |
-| [Use your own image](docs/images.md) | building on another image, and what it must contain |
+| [The image](docs/images.md) | what the sandbox is built from: packages, a Dockerfile, or an image of your own, and what it must contain |
 | [The sandbox config](docs/sandbox-config.md) | what the sandbox keeps of its home, and what of that syncs |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |
 | [The host link](docs/host-link.md) | ports forwarded to your localhost, URLs and notifications from the sandbox, the VM's outbound connections, and commands run on the host where you allow it |

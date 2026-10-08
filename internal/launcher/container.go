@@ -504,7 +504,7 @@ func (a *App) createContainer(mayBuild bool) error {
 // included, with its log on stderr since stdout is claude's. It builds with
 // no tty too: a first `caboose claude -p` in a script has no one to ask, and
 // failing it would only defer the same build to the next run.
-// auto_build = false in [image] restores the error, for anyone who would rather
+// auto_build = false in [build] restores the error, for anyone who would rather
 // build (or pull) deliberately.
 //
 // mayBuild is false for the commands that only look after a container --
@@ -516,12 +516,13 @@ func (a *App) createContainer(mayBuild bool) error {
 // even look up (an invalid name), which a build would only reject later.
 //
 // An image that exists but was built on another base than the configured
-// one -- [image] base set, unset or changed since, compared as
-// classifyImage does -- is rebuilt the same way: the user changed the base
+// one -- another image profile, or its packages, lock, Dockerfile dir or
+// ref changed since, compared as classifyImage does -- is rebuilt the same
+// way: the user changed the base
 // and ran a command that creates the container, so creating it on the old
 // base, with a warning, would be doing the opposite of what they asked.
-// Every other staleness (a new ID under the same base name, a launcher that
-// embeds a different Dockerfile or layer, another host user) stays a
+// Every other staleness (a new ID under the same ref, a launcher that
+// embeds a different layer, another host user) stays a
 // warning: nobody asked for that rebuild, and it takes minutes. This is
 // only ever reached with no container (createContainer), so no rebuild
 // moves an image out from under a running one. auto_build = false and
@@ -571,25 +572,25 @@ func (a *App) ensureImageOnce(mayBuild bool) (map[string]string, error) {
 		case !c.AutoBuild:
 			return nil, Die("%s —\n"+
 				"       run 'caboose build' to rebuild it on that base first\n"+
-				"       (auto_build in [image] is false, so a launch does not rebuild it)", why)
+				"       (auto_build in [build] is false, so a launch does not rebuild it)", why)
 		case !mayBuild:
 			return nil, Die("%s,\n"+
 				"       and there is no %s yet — run caboose in a project (it rebuilds the image first)\n"+
 				"       or 'caboose build'", why, a.noun())
 		}
 		a.Note("%s — rebuilding", why)
-		a.Note("%s; a few minutes, and auto_build = false in [image] turns this off.", a.buildNote())
+		a.Note("%s; a few minutes, and auto_build = false in [build] turns this off.", a.buildNote())
 	} else {
 		switch {
 		case !c.AutoBuild:
 			return nil, Die("image '%s' not found — run 'caboose build' first\n"+
-				"       (auto_build in [image] is false, so a launch does not build it)", c.Image)
+				"       (auto_build in [build] is false, so a launch does not build it)", c.Image)
 		case !mayBuild:
 			return nil, Die("no %s yet, and no image '%s' to create it from — run caboose in a project\n"+
 				"       (it builds the image first) or 'caboose build'", a.noun(), c.Image)
 		}
 		a.Note("no image '%s' yet — %s", c.Image, a.buildNote())
-		a.Note("(a few minutes, once; auto_build = false in [image] turns this off).")
+		a.Note("(a few minutes, once; auto_build = false in [build] turns this off).")
 	}
 	if err := a.build(nil, a.Stderr); err != nil {
 		return nil, err

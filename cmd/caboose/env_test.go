@@ -63,7 +63,7 @@ func noTerminal(t *testing.T) {
 // though CheckEnv would refuse it.
 func TestSetupNeedsATerminal(t *testing.T) {
 	log := fakeDocker(t)
-	home := sandboxEnv(t) // setup git needs no repo root
+	home := sandboxEnv(t, "CABOOSE_APKO", "") // setup git needs no repo root; nothing in CABOOSE_HOME
 	noTerminal(t)
 	for _, argv := range [][]string{{"setup"}, {"-e", "work", "setup"}, {"setup", "git"}} {
 		code, _, errs := runIt(argv...)

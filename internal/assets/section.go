@@ -43,7 +43,7 @@ func CheckSectionBody(body string) error {
 
 // SetSection puts section name, titled title, with body, into dockerfile:
 // in place of a section of that name, where it was, or else at the end.
-// Everything else stays as it is, a preset's header line included.
+// Everything else stays as it is.
 func SetSection(dockerfile []byte, name, title, body string) ([]byte, error) {
 	switch {
 	case !SectionName.MatchString(name):
@@ -57,14 +57,7 @@ func SetSection(dockerfile []byte, name, title, body string) ([]byte, error) {
 	if err := CheckSectionBody(body); err != nil {
 		return nil, err
 	}
-	// A written preset's header is a caboose marker parseSections does not
-	// know: it is kept aside, as it is.
-	head, rest := "", string(dockerfile)
-	if _, ok := ReadHeader(dockerfile); ok {
-		first, after, _ := strings.Cut(rest, "\n")
-		head, rest = first+"\n", after
-	}
-	blocks, err := parseSections([]byte(rest))
+	blocks, err := parseSections(dockerfile)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +79,9 @@ func SetSection(dockerfile []byte, name, title, body string) ([]byte, error) {
 		}
 		lines = append(append(lines, ""), sec.lines...)
 	}
-	out := head + strings.Join(lines, "\n") + "\n"
+	out := strings.Join(lines, "\n") + "\n"
 	// What was written must read back as it was meant.
-	if _, err := parseSections([]byte(strings.TrimPrefix(out, head))); err != nil {
+	if _, err := parseSections([]byte(out)); err != nil {
 		return nil, fmt.Errorf("the Dockerfile would not read back: %v", err)
 	}
 	return []byte(out), nil

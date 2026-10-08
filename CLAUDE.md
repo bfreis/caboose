@@ -7,12 +7,14 @@ means day to day is in the installed `~/.claude/CLAUDE.md`, whose source is
 
 ## Changes here need a rebuild, and it has to happen on the host
 
-`Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
+`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
 `tmux.conf`, `shellrc.bash` and `caboose-agent` (built from
 `cmd/caboose-agent`, `internal/agent` and `internal/agentproto` into
-`agent-bin/` by `make agent`) are baked into the image. The launcher is a
+`agent-bin/` by `make agent`) are baked into the image, and caboose's
+package groups (`internal/apkobuild/pkgset/packages.toml`) decide an apko
+base's packages. The launcher is a
 Go binary, `./caboose`, built from `cmd/` and `internal/` and gitignored, with those
-files, `sandbox/CLAUDE.md` and `imagecheck.sh` embedded in it; the bind
+files, the seed `Dockerfile`, `sandbox/CLAUDE.md` and `imagecheck.sh` embedded in it; the bind
 mounts it sets up are fixed when the container is created. None of it is
 read live, so an edit alone changes nothing:
 
@@ -38,12 +40,14 @@ the checkout — a stale `./caboose` would build the old image.
 
 A running container cannot rebuild the image it runs from, and the launcher
 cannot run in here -- so whenever you touch
-`Dockerfile`, `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
-`tmux.conf`, `shellrc.bash`, the agent's or the launcher's Go code, **say that a host
+`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
+`tmux.conf`, `shellrc.bash`, `packages.toml`, the agent's or the launcher's Go code, **say that a host
 terminal has to run `make build && make restart`** to try it (in the `dev`
 environment; the sandbox you are in moves only with a release), or `make
 test` to test it, or the change looks applied and isn't
-(`imagecheck.sh` is in no image: it needs only the launcher rebuilt). Never
+(`imagecheck.sh` and the seed `Dockerfile` are in no image: they need
+only the launcher rebuilt, and the seed reaches only a dockerfile
+profile's dir that setup or a proposal seeds after that). Never
 build `./caboose` in here: the checkout is shared with the host, so a linux
 binary there replaces the host's own, and `make launcher` refuses inside the
 sandbox for that reason. `make go-test` and
@@ -59,14 +63,21 @@ Users install release binaries with `install.sh` (goreleaser publishes the
 GitHub release it downloads from), have no checkout, and are kept current by
 the binary itself (`internal/selfupdate`); building from a checkout still
 needs a Go toolchain on the host (the version in `go.mod`). `caboose build` labels the
-image with the launcher version and a sha256 of the embedded build context
-(`internal/assets`), and a launch compares that hash to its own to spot a
-stale image — so any change to an embedded image file is a new hash, which
-is the point. There are two contexts, hashed apart: the base (`Dockerfile`,
-the default base image) and the layer (the rest), built FROM whichever base
-is in use, after the image check passes on it. On a configured `[image] base` the
-`Dockerfile`'s hash plays no part; the base's image ID does. The layer is
-also labelled with the kind of base, its name and ID, the host UID/GID and
+image with the launcher version and a sha256 of the layer's embedded build
+context (`internal/assets`), and a launch compares that hash to its own to
+spot a stale image — so any change to an embedded layer file is a new
+hash, which is the point. The layer is built FROM whichever base the image
+profile (`image = "<kind>.<name>"` in `config.toml`) gives, after the image
+check passes on it, and is labelled with the kind of base
+(`LabelBaseKind`: `BaseKindApko`, `BaseKindDockerfile`, `BaseKindRef`) and
+what identifies it (`LabelBaseHash`): an apko lock's `Hash`, which mixes in
+`ApkoVersion` and the input caboose's groups made; a dockerfile profile's
+dir's `assets.DirHash`; `""` on a ref, whose image ID (`LabelBaseID`) is
+compared instead. A change the user made (another profile, its packages,
+its dir edited, another ref) is a switched base, rebuilt at creation even
+past a warning; caboose's groups or apko changing, or a ref's new ID, is
+drift (`classifyImage`, `classifyLock`). The layer is
+also labelled with the base's name and ID, the host UID/GID and
 the platform the check found (`linux-arm64-musl`, ...), which picks the
 `local/<platform>` a new container mounts; `USE_BUILTIN_RIPGREP=0` is
 set at `docker run` on musl. Labels are inherited through `FROM`, and a
@@ -88,10 +99,13 @@ embedded in it instead.
 
 | | |
 |---|---|
-| `Dockerfile` | the default base image: OS packages and toolchains, nothing agent-specific; its optional parts are marked sections, which `caboose setup image` cuts it down to (`internal/assets/preset.go`) |
+| `Dockerfile` | the seed: what `caboose setup image` (or the first section a proposal applies) writes into a dockerfile image profile's dir that has no Dockerfile (`assets.Seed`, `internal/assets/seed.go`, under a header saying it is the user's now). OS packages and toolchains, nothing agent-specific, its optional parts in marked sections; in no image of its own, and no build reads it |
+| `internal/apkobuild` | apko bases, apko as a library: `Resolve` a profile's spec (`Spec`: its packages, and whether the default groups come) into a `Lock` (apko's lock format, the spec and the list it stood for kept in its config name), `Build` a lock into an image tarball at a fixed time (one lock, one digest), `Check` a spec against the signed indexes alone (no package downloaded: the link's proposal check), and `PruneCache` (`cache.go`: apko's cache layout, matched to the locks' URLs); `network_test.go` runs against Wolfi, the rest against a fixture repository served from memory |
+| `internal/apkobuild/pkgset` | caboose's package groups, `packages.toml` (Wolfi names: one required group, default groups, off ones), and the checks on package names, apart from apko so that `internal/config` and the agent need not link it |
+| `internal/launcher/apko.go`, `linkcheck.go`, `apply_packages.go` | an apko base in the launcher: when the lock is resolved again, building it into `docker load` or the vm builder, writing the lock after; the package cache (`CABOOSE_HOME/cache/apk`) and `caboose prune`'s pruning of it; the link's check of `[packages]` proposals as they arrive (`NAME.check`); `caboose apply` building a `[packages]` proposal before writing it |
 | `layer.Dockerfile` | the layer built on every base: the agent user, its home, the entrypoint, `tmux.conf`, `HOME`/`PATH`/`LANG` |
 | `layer-user.sh` | the layer's user setup, POSIX sh editing /etc/passwd, group, shadow directly; tested by `layeruser_test.go` |
-| `entrypoint.sh` | container entrypoint; points root's home at `HOME` when it runs as root (vm, some gVisor), bootstraps Claude Code, clears stale session state, prunes versions, runs the user's `start.d` in the background, idles under tini |
+| `entrypoint.sh` | container entrypoint; points root's home at `HOME`, and its shell at bash, when it runs as root (vm, some gVisor), bootstraps Claude Code, clears stale session state, prunes versions, runs the user's `start.d` in the background, idles under tini |
 | `shellrc.bash` | the `shell.d` loader every interactive bash sources, through the line `layer-user.sh` adds to `~/.bashrc`; tested by `shellrc_test.go` |
 | `tmux.conf` | tmux configuration baked into the image, set up to own no keys |
 | `imagecheck.sh` | the image probe, POSIX sh, run by `caboose check-image` and before every layer build; reports facts only, embedded but in no image |
@@ -126,7 +140,7 @@ embedded in it instead.
 | `sandbox/CLAUDE.md` | the global CLAUDE.md installed into the sandbox |
 | `README.md`, `docs/`, `CONTRIBUTING.md` | a short README (logo in `docs/assets/`, badges, links); the user docs, one file per topic; building and testing caboose |
 | `tests/run.sh` | integration suite; drives the real launcher against a real container |
-| `tests/byo/` | bring-your-own-image suite (`make test-byo`): Debian and Alpine test bases, one shared throwaway data dir, stock images the check must refuse, and a preset built from an environment's `image/` dir (`tests/byo/preset` prints it) |
+| `tests/byo/` | bring-your-own-image suite (`make test-byo`): Debian and Alpine test bases as ref profiles, one shared throwaway data dir, stock images the check must refuse, and a dockerfile profile's dir (`envs/<env>/dockerfile/default`) built from the seed with the off section (`tests/byo/seed` prints it) |
 
 Nothing in this checkout is state. The live OAuth credential, transcripts and
 the ~224MB version binaries live in `$CABOOSE_DATA_DIR` (default
@@ -144,8 +158,14 @@ outside the repo.
   runs on its own libc and arch (`internal/datadir/platform.go`).
 - **caboose never installs packages into a base.** No apt, apk or dnf in
   `layer.Dockerfile`, `layer-user.sh` or anywhere the launcher runs against
-  a user's image; the user owns it. What the sandbox needs is documented as
-  a requirement and checked, and the layer only adds the user, the
+  a base; a ref image and a dockerfile profile's are the user's, and hold
+  what they put there. An apko base is not installed into either: it is
+  caboose's own build of the list the profile gives (caboose's groups and
+  the user's packages), unpacked by apko, which runs no package's scripts,
+  so nothing of a package runs on the host. Every base, apko's too, then
+  goes through the same image check and the same layer. What the sandbox
+  needs is documented as a requirement and checked (and is the required
+  group in `packages.toml`), and the layer only adds the user, the
   entrypoint and `tmux.conf`. Setting env at `docker run` (as
   `USE_BUILTIN_RIPGREP=0` on musl) is configuration, and fine.
 - **Anything the layer's scripts call must be a probe requirement.** Every
@@ -196,15 +216,17 @@ outside the repo.
   too: git writes `~/.config/git/config` only while it is absent.
   `.claude.json` is a file entry caboose itself needs; a user's file entry
   is allowed, and doctor notes the risk.
-- **The image's build contexts are an allowlist.** `caboose build` writes the
-  embedded files to empty temp dirs (one per context) and builds there,
-  never from the checkout, so nothing unlisted can drift into a context. A
-  new `COPY` in `layer.Dockerfile` needs its file added to the `//go:embed`
-  line in `embed.go`, to `LayerContext` in `internal/assets` (the base
-  `Dockerfile` COPYs nothing, and a test keeps it that way), and to
-  `EMBEDDED` in the `Makefile` so edits to it rebuild the launcher.
-  Forgetting the first two fails loudly — in `go test` and at build time —
-  which is the point.
+- **The layer's build context is an allowlist.** `caboose build` writes the
+  layer's embedded files to an empty temp dir and builds there, never from
+  the checkout, so nothing unlisted can drift into it. A base's context is
+  never caboose's: apko builds from the lock alone, a dockerfile profile's
+  is its own dir, a ref has none. A new `COPY` in `layer.Dockerfile` needs
+  its file added to the `//go:embed` line in `embed.go`, to `LayerContext`
+  in `internal/assets`, and to `EMBEDDED` in the `Makefile` so edits to it
+  rebuild the launcher. Forgetting the first two fails loudly — in `go
+  test` and at build time — which is the point. The seed `Dockerfile`
+  (`BaseContext`) COPYs nothing, and a test keeps it that way: it is
+  written into a dir that holds nothing else.
 - **What `caboose sync` syncs is the sandbox config's rules, and a remote
   is untrusted.** Syncing a new path is a rule in the sandbox config, never
   code; what code decides is `sandboxcfg.Denied` (the login, whatever a
@@ -314,27 +336,53 @@ outside the repo.
   git` is its only writer (`datadir.WriteSandboxGit`); a launch and doctor
   only say when there is none. Never seed it from the host: that would
   give every new environment the host's identity without a word.
-- **The Dockerfile's sections are setup's menu.** Everything after the OS
-  packages sits between `# caboose:section NAME [off] TITLE` and
-  `# caboose:end`, and carries its own `ARG`s and `ENV`s: a section must
-  build without any other, since setup can leave any of them out. What the
-  image check requires stays outside every section. An `off` section is
-  commented out line by line (`# `), so the Dockerfile builds without it.
-  `internal/assets` tests the markers; `make test-byo` builds the core
-  with the off section for real.
-- **An environment's `image/` dir is the user's.** A base built from it is
-  labelled kind `env` with `assets.DirHash` of the whole dir, hashed before
-  the build; nothing of caboose's ever rewrites it but `caboose setup
-  image`, after showing the difference and asking. It is never mounted
-  into the container, and it excludes `[image] base`
-  (`config.ErrTwoBases`).
-- **Setup edits `config.toml`, it never rewrites it.** Changes go through
-  `config.EditFile` (line by line: only the keys asked about, by dotted
-  name, in their table, comments kept, a top-level key always above the
-  first table) and are read back
-  with `config.CheckEdit` before `writeConfig` writes them; a result that
-  does not say what was answered is not written. Never marshal the whole
-  file: that would drop the user's comments and hand edits.
+- **The seed's sections are what proposals find.** Everything after the
+  OS packages in the seed `Dockerfile` sits between `# caboose:section
+  NAME [off] TITLE` and `# caboose:end`, and carries its own `ARG`s and
+  `ENV`s: a section must build without any other. A `[section]` proposal
+  is one more of them, added to the dockerfile profile's Dockerfile or
+  replacing one of its name (`assets.SetSection`), which is why the seed
+  keeps them marked in the user's copy. What the image check requires
+  stays outside every section. An `off` section is commented out line by
+  line (`# `), so the Dockerfile builds without it, and `assets.Seed`
+  uncomments one it is asked for. `internal/assets` tests the markers;
+  `make test-byo` builds the seed with the off section for real.
+- **A dockerfile profile's dir is the user's.** It is always
+  `<env>/dockerfile/<name>/` (`config.DockerfileDir`): a fixed place,
+  which is why `[dockerfile.NAME]` has no dir key -- no setting, a
+  proposal included, can point a build at another host path. A base built
+  from it is labelled kind `dockerfile` with `assets.DirHash` of the whole
+  dir, hashed before the build. Nothing of caboose's ever writes into it
+  but the seed, into a dir with no Dockerfile (`caboose setup image`, or
+  the first `[section]` applied), and `caboose apply`'s sections, after
+  showing the diff and asking. It is never mounted into the container.
+- **Setup and apply edit `config.toml`, they never rewrite it.** Changes go
+  through `config.EditFile` (line by line: only the keys asked about, by
+  dotted name, in their table, comments kept, a top-level key always above
+  the first table; `Tables` makes an empty profile table, as
+  `[dockerfile.default]`, from the template's commented header when there
+  is one) and are read back with `config.CheckEdit` before `writeConfig`
+  writes them; a result that does not say what was answered is not
+  written. Never marshal the whole file: that would drop the user's
+  comments and hand edits.
+- **An apko lock is the image's record.** `<env>/apko-<name>.lock.json`
+  (`config.LockPath`) is written only once the image it built is in
+  (`apkoBase`, after the load or the vm builder took it): a resolve or a
+  build that fails leaves the last good lock, and the image it describes,
+  and a `[packages]` proposal writes the profile's packages only after its
+  build. The profile's spec is recorded in the lock (its config name,
+  beside the list it stood for), which is how a user's change (another
+  spec: switched, rebuilt at creation) is told from caboose's (the same
+  spec standing for another list: the groups changed with the launcher,
+  drift) and from a change that asks for the same packages (`WithSpec`
+  rewrites the record, no resolve). `ApkoVersion` is mixed into every
+  lock's hash: bump it with apko in `go.mod`, or a new apko's images look
+  current. `caboose prune` keeps every cached package any environment's
+  lock names, and none it cannot be sure of: an unreadable lock prunes
+  nothing. The link's check of a `[packages]` proposal fetches the indexes
+  only, never a package (`apkobuild.Check`), each check bounded in time
+  and the checks budgeted per hour, since the sandbox decides how often
+  it writes one; past the budget, `apply` checks.
 - **An environment is a whole caboose.** Everything that can differ between
   two -- data dir, container, image, config -- is derived from the
   environment in `internal/config`, never from a fixed name: the default
@@ -347,9 +395,10 @@ outside the repo.
   trace: no table of moved keys or variables, no hint for an old key,
   which is an unknown key like any other. The file is read as tables: a
   key or table it does not know is an error naming it, and each isolation kind
-  (`[container.NAME]`, `[gvisor.NAME]`, `[vm.NAME]`) has its own keys
-  (`profileKeys`), so a key a kind lacks cannot be written; there is no
-  inheritance between profiles.
+  (`[container.NAME]`, `[gvisor.NAME]`, `[vm.NAME]`) and image kind
+  (`[apko.NAME]`, `[dockerfile.NAME]`, `[ref.NAME]`) has its own keys
+  (`profileKeys`, `imageProfileKeys`), so a key a kind lacks cannot be
+  written; there is no inheritance between profiles.
 - **caboose updates itself; the container does not move with it.** An
   install made by `install.sh` (`selfupdate.Layout.Managed`) checks at
   most daily in a detached `caboose update --background`, and a checkout's

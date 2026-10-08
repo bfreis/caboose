@@ -255,21 +255,23 @@ func entrypointFunc(t *testing.T, name string) string {
 func TestEntrypointRootHome(t *testing.T) {
 	needBash(t)
 	script := "set -euo pipefail\nlog() { printf 'caboose: %s\\n' \"$*\" >&2; }\n" +
-		entrypointFunc(t, "point_root_home") + `point_root_home "$1" "$2"` + "\n"
+		entrypointFunc(t, "point_root_home") + `point_root_home "$1" "$2" "$3"` + "\n"
+	said := "caboose: root's home in PASSWD is now /home/agent, its shell /usr/bin/bash\n"
 	for _, tc := range []struct{ name, in, want, said string }{
 		{"moved",
 			"root:x:0:0:root:/root:/bin/bash\nagent:x:501:20::/home/agent:/bin/bash\n",
-			"root:x:0:0:root:/home/agent:/bin/bash\nagent:x:501:20::/home/agent:/bin/bash\n",
-			"caboose: root's home in PASSWD is now /home/agent\n"},
-		{"already", "root:x:0:0:root:/home/agent:/bin/bash\n", "", ""},
+			"root:x:0:0:root:/home/agent:/usr/bin/bash\nagent:x:501:20::/home/agent:/bin/bash\n",
+			said},
+		// Alpine's and Wolfi's root logs in to ash, which reads no ~/.bashrc.
+		{"ash", "root:x:0:0:root:/home/agent:/bin/ash\n", "root:x:0:0:root:/home/agent:/usr/bin/bash\n", said},
+		{"already", "root:x:0:0:root:/home/agent:/usr/bin/bash\n", "", ""},
 		// getpwuid(0) answers with the first entry; a second is not root's
 		// home, and comments and NIS lines are no entry at all.
 		{"first only",
 			"# x:x:0:0::/c:/bin/sh\n+::0:0::/n:\ntoor:x:0:0::/root:\nroot:x:0:0:root:/root:/bin/sh\n",
-			"# x:x:0:0::/c:/bin/sh\n+::0:0::/n:\ntoor:x:0:0::/home/agent:\nroot:x:0:0:root:/root:/bin/sh\n",
-			"caboose: root's home in PASSWD is now /home/agent\n"},
-		{"no newline at the end", "root:x:0:0:root:/root:/bin/sh", "root:x:0:0:root:/home/agent:/bin/sh\n",
-			"caboose: root's home in PASSWD is now /home/agent\n"},
+			"# x:x:0:0::/c:/bin/sh\n+::0:0::/n:\ntoor:x:0:0::/home/agent:/usr/bin/bash\nroot:x:0:0:root:/root:/bin/sh\n",
+			said},
+		{"no newline at the end", "root:x:0:0:root:/root:/bin/sh", "root:x:0:0:root:/home/agent:/usr/bin/bash\n", said},
 		{"no root", "agent:x:501:20::/home/agent:/bin/bash\n", "", ""},
 		{"uid 0 only", "r:x:00:0::/root:/bin/sh\nn:x:10:0::/root:/bin/sh\n", "", ""},
 	} {
@@ -280,7 +282,7 @@ func TestEntrypointRootHome(t *testing.T) {
 			}
 			old, _ := os.Stat(passwd)
 			var stderr strings.Builder
-			cmd := exec.Command("bash", "-c", script, "root-home", passwd, "/home/agent")
+			cmd := exec.Command("bash", "-c", script, "root-home", passwd, "/home/agent", "/usr/bin/bash")
 			cmd.Stderr = &stderr
 			if err := cmd.Run(); err != nil {
 				t.Fatalf("point_root_home: %v\n%s", err, stderr.String())

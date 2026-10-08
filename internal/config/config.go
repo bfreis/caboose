@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/bfreis/caboose/internal/apkobuild/pkgset"
 )
 
 // Env looks up an environment variable; "" means unset or empty, which is
@@ -68,16 +70,10 @@ type Config struct {
 	// because someone who never set them has no reason to know they exist.
 	RootsFrom string
 
-	// BaseImage is [image] base: the image to build the sandbox on, "" for
-	// one caboose builds (see Base).
-	BaseImage string
-	// ImageDir is the environment's image/ dir, when it has one: the build
-	// context of its own base, with a Dockerfile that caboose setup wrote
-	// and the user owns. "" when there is none, and the embedded
-	// Dockerfile is built instead. It and BaseImage exclude each other
-	// (CheckImages).
-	ImageDir string
-	// AutoBuild is [image] auto_build: a missing image is built, and a
+	// ImageProfile is the image profile in use: what the sandbox's base is
+	// built from (selectImage).
+	ImageProfile ImageProfile
+	// AutoBuild is [build] auto_build: a missing image is built, and a
 	// stale one rebuilt, when the container is created. False makes either
 	// an error that says to run caboose build.
 	AutoBuild bool
@@ -162,15 +158,54 @@ type Config struct {
 	File *File
 }
 
-// Base is the image the sandbox's layer is built on, and whether it is the
-// user's own ([image] base) rather than one caboose builds -- from the
-// environment's ImageDir, or else the embedded Dockerfile -- and tags
-// BaseImageFor(Env).
-func (c *Config) Base() (ref string, byo bool) {
-	if c.BaseImage != "" {
-		return c.BaseImage, true
+// ImageProfile is an image profile, resolved: what the sandbox's base is
+// built from. Kind is an image kind (ImageKindApko, ImageKindDockerfile,
+// ImageKindRef) and Name the profile's name; the rest are its kind's keys.
+type ImageProfile struct {
+	Kind, Name string
+	// Packages and Defaults are an apko profile's packages and defaults:
+	// the user's own packages, and whether caboose's default groups come
+	// with them.
+	Packages []string
+	Defaults bool
+	// Dir is a dockerfile profile's dir, absolute: the build context, with
+	// its Dockerfile, always DockerfileDir(EnvDir, Name).
+	Dir string
+	// Ref is a ref profile's image.
+	Ref string
+}
+
+// String is the profile as config.toml names it: "apko.default".
+func (p ImageProfile) String() string { return p.Kind + "." + p.Name }
+
+// Spec is an apko profile's package set.
+func (p ImageProfile) Spec() pkgset.Spec {
+	return pkgset.Spec{Packages: p.Packages, Defaults: p.Defaults}
+}
+
+// DefaultImageProfile is the image profile used when config.toml defines
+// none: caboose's packages, built with apko.
+func DefaultImageProfile() ImageProfile {
+	return ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true}
+}
+
+// BaseRef is the image the sandbox's layer is built on: a ref profile's
+// image, or else the base caboose builds and tags BaseImageFor(Env).
+func (c *Config) BaseRef() string {
+	if c.ImageProfile.Kind == ImageKindRef {
+		return c.ImageProfile.Ref
 	}
-	return BaseImageFor(c.Env), false
+	return BaseImageFor(c.Env)
+}
+
+// LockPath is where an apko image profile's lock is kept: next to
+// config.toml, as apko-<name>.lock.json. "" for any other kind, or with no
+// EnvDir.
+func (c *Config) LockPath() string {
+	if c.ImageProfile.Kind != ImageKindApko || c.EnvDir == "" {
+		return ""
+	}
+	return c.EnvDir + "/apko-" + c.ImageProfile.Name + ".lock.json"
 }
 
 // NormalizeImage spells an image reference the way docker resolves it, so
@@ -200,29 +235,21 @@ func NormalizeImage(ref string) string {
 // NormalizeImage spells them.
 func SameImage(a, b string) bool { return NormalizeImage(a) == NormalizeImage(b) }
 
-// CheckImages refuses an [image] base that is the environment's image
+// CheckImages refuses a ref profile whose image is the environment's image
 // itself. The layer is built FROM the base and tagged Image, so the first
 // build would move that tag off the base onto the layer, and every build
 // after it would stack one more layer on the last one -- while the base
 // looked "changed" each time, so the image was never current.
 func (c *Config) CheckImages() error {
-	if c.BaseImage != "" && c.ImageDir != "" {
-		return fmt.Errorf("%w: the environment has %s, and base in [image] names '%s'.\n"+
-			"       Keep one: remove base from %s/%s to build from the dir,\n"+
-			"       or move the dir away to build on '%s'", ErrTwoBases, c.ImageDir, c.BaseImage, c.EnvDir, FileName, c.BaseImage)
-	}
-	if c.BaseImage != "" && SameImage(c.BaseImage, c.Image) {
-		return fmt.Errorf("base in [image] ('%s') is the environment's own image: caboose builds its layer\n"+
+	p := c.ImageProfile
+	if p.Kind == ImageKindRef && SameImage(p.Ref, c.Image) {
+		return fmt.Errorf("image in [%s] ('%s') is the environment's own image: caboose builds its layer\n"+
 			"       FROM the base and tags the result '%s', so it would build over its own base, and stack\n"+
 			"       another layer on every rebuild. Name the image to build on instead",
-			c.BaseImage, c.Image)
+			p, p.Ref, c.Image)
 	}
 	return nil
 }
-
-// ErrTwoBases is CheckImages' error for an environment with both an image/
-// dir and [image] base: which to build on would be a guess.
-var ErrTwoBases = errors.New("two bases")
 
 // Machine is the part of the configuration that is the machine's, not an
 // environment's: HOME, CABOOSE_HOME and the variables. It is what caboose
@@ -297,6 +324,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		ForwardPorts: DefaultForwardPorts,
 		OpenURLs:     "ask",
 		Isolation:    KindContainer,
+		ImageProfile: DefaultImageProfile(),
 		Egress:       true,
 		EgressPorts:  DefaultEgressPorts,
 		Home:         home,
@@ -336,9 +364,6 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 	if c.Roots == nil {
 		c.Roots = []Root{{Name: DefaultRootName, Host: home + "/" + DefaultRootName, Container: WorkDir + "/" + DefaultRootName}}
 	}
-	if envDir := c.EnvDir; envDir != "" && fsys.IsDir(envDir+"/"+ImageDirName) {
-		c.ImageDir = envDir + "/" + ImageDirName
-	}
 	return c, nil
 }
 
@@ -370,8 +395,7 @@ func (c *Config) readFile() error {
 		return nil
 	}
 
-	str("image.base", &c.BaseImage)
-	boolean("image.auto_build", &c.AutoBuild)
+	boolean("build.auto_build", &c.AutoBuild)
 	boolean("session.tmux", &c.Tmux)
 	str("session.tz", &c.TZ)
 	str("session.hostname", &c.Hostname)
@@ -423,6 +447,10 @@ func (c *Config) readFile() error {
 		}
 	}
 
+	if err := c.selectImage(); err != nil {
+		return fail("%v", err)
+	}
+
 	if f.Roots != nil {
 		roots, err := FileRoots(f.Roots, c.Home)
 		if err != nil {
@@ -468,6 +496,101 @@ func (c *Config) selectProfile() error {
 	}
 	c.Isolation, c.Profile = kind, name
 	return nil
+}
+
+// ReadImage resolves the image profile again from File, as Load does: for
+// a caller that has just reread File after changing it.
+func (c *Config) ReadImage() error {
+	c.ImageProfile = DefaultImageProfile()
+	if c.File == nil {
+		return nil
+	}
+	if err := c.selectImage(); err != nil {
+		return fmt.Errorf("%s: %v", c.File.Path, err)
+	}
+	return nil
+}
+
+// selectImage picks the image profile, as selectProfile does the isolation
+// profile: the one image names; else the only one the file defines; else,
+// with none, apko.default at its defaults, which image may also name
+// without a table. Several and no image is an error, not a guess.
+func (c *Config) selectImage() error {
+	f := c.File
+	defined := f.ImageProfiles
+	name, set := f.Vals["image"].(string)
+	if !set {
+		switch len(defined) {
+		case 0:
+			return nil
+		case 1:
+			name = defined[0]
+		default:
+			return fmt.Errorf("it defines the image profiles %s, and image does not say which to use: set image = %q, say",
+				strings.Join(defined, ", "), defined[0])
+		}
+	}
+	kind, pname, ok := strings.Cut(name, ".")
+	if !ok || !slices.Contains(ImageKinds, kind) || !ValidProfileName(pname) {
+		return fmt.Errorf("image = %q is not an image profile, \"<kind>.<name>\" of a kind %s: e.g. %q, with a [%s] table",
+			name, strings.Join(ImageKinds, ", "), ImageKindDockerfile+".default", ImageKindDockerfile+".default")
+	}
+	p := ImageProfile{Kind: kind, Name: pname}
+	if !slices.Contains(defined, name) {
+		if p.String() != DefaultImageProfile().String() {
+			what := "none is"
+			if len(defined) > 0 {
+				what = strings.Join(defined, ", ") + " are"
+			}
+			return fmt.Errorf("image = %q names a profile the file does not define (%s): add a [%s] table, or name another", name, what, name)
+		}
+	}
+	switch kind {
+	case ImageKindApko:
+		ap, err := f.ApkoProfile(pname)
+		if err != nil {
+			return err
+		}
+		p = ap
+	case ImageKindDockerfile:
+		if c.EnvDir == "" {
+			return fmt.Errorf("[%s] is built from %s/%s in the environment's directory, and there is none", name, DockerfileDirName, pname)
+		}
+		p.Dir = DockerfileDir(c.EnvDir, pname)
+	case ImageKindRef:
+		ref, _ := f.Vals[name+".image"].(string)
+		if ref == "" {
+			return fmt.Errorf("[%s] needs image, the image to build on: image = \"debian:13.7-slim\", say", name)
+		}
+		p.Ref = ref
+	}
+	c.ImageProfile = p
+	return nil
+}
+
+// ApkoProfile is apko profile name ("default" for [apko.default]) as the
+// file defines it, whether or not image selects it: its packages, and
+// defaults, true unless it says otherwise. A profile the file does not
+// define, or a nil file, is caboose's packages alone.
+func (f *File) ApkoProfile(name string) (ImageProfile, error) {
+	p := ImageProfile{Kind: ImageKindApko, Name: name, Defaults: true}
+	if f == nil {
+		return p, nil
+	}
+	key := p.String()
+	if v, ok := f.Vals[key+".defaults"].(bool); ok {
+		p.Defaults = v
+	}
+	if v, ok := f.Vals[key+".packages"].([]any); ok {
+		for _, e := range v {
+			pkg := e.(string)
+			if err := pkgset.CheckName(pkg); err != nil {
+				return p, fmt.Errorf("packages in [%s]: %v", key, err)
+			}
+			p.Packages = append(p.Packages, pkg)
+		}
+	}
+	return p, nil
 }
 
 // portsString is a ports array as hostlink.ParsePorts reads it: the
@@ -531,8 +654,17 @@ func CheckHostname(v string) error {
 
 var hostnameLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
-// ImageDirName is an environment's own image's build context, in its EnvDir.
-const ImageDirName = "image"
+// DockerfileDirName is the directory of an environment's EnvDir that holds
+// its dockerfile image profiles' build contexts, one per profile:
+// dockerfile/<name>.
+const DockerfileDirName = "dockerfile"
+
+// DockerfileDir is dockerfile profile name's build context in envDir, with
+// its Dockerfile: fixed, never configured, since a dir of the user's
+// choosing could be one the sandbox can write.
+func DockerfileDir(envDir, name string) string {
+	return filepath.Join(envDir, DockerfileDirName, name)
+}
 
 // EnvDirFor is where environment name lives under cabooseHome.
 func EnvDirFor(cabooseHome, name string) string { return cabooseHome + "/envs/" + name }
@@ -545,8 +677,8 @@ func ContainerFor(name string) string { return "caboose-" + name }
 // caboose:<name>.
 func ImageFor(name string) string { return "caboose:" + name }
 
-// BaseImageFor is the base caboose builds for environment name, from the
-// embedded Dockerfile or the environment's image/ dir: caboose-base:<name>.
+// BaseImageFor is the base caboose builds for environment name, from an
+// apko or a dockerfile image profile: caboose-base:<name>.
 func BaseImageFor(name string) string { return "caboose-base:" + name }
 
 // CheckEnv refuses an environment other than the default that has not been

@@ -103,24 +103,28 @@ clear_stale_runtime_state() {
 # sandbox runs as root with HOME at the agent's home, where everything kept
 # is. What takes its home from passwd rather than HOME -- ssh, for its
 # config and known_hosts -- would look in root's own, /root, and find none
-# of it, so root's entry is pointed at HOME. Only the first uid 0 entry
-# changes, the one getpwuid finds. Bash builtins alone, so the image needs
-# no more tools; the file is rewritten in place, as the layer's user setup
-# does, keeping its mode and owner, and left alone when it already says so.
+# of it, so root's entry is pointed at HOME. Its shell becomes bash, as
+# the agent's is: what starts root's login shell -- Claude Code, for the
+# shell its commands run in -- would otherwise get the base's, ash on an
+# Alpine or Wolfi base, which reads no ~/.bashrc and so no shell.d. Only
+# the first uid 0 entry changes, the one getpwuid finds. Bash builtins
+# alone, so the image needs no more tools; the file is rewritten in place,
+# as the layer's user setup does, keeping its mode and owner, and left
+# alone when it already says so.
 point_root_home() {
-    local passwd=$1 home=$2 line out="" found=""
-    local re='^([^:]*:[^:]*:0:[^:]*:[^:]*:)([^:]*)(:.*)$'
+    local passwd=$1 home=$2 shell=$3 line out="" found=""
+    local re='^([^:]*:[^:]*:0:[^:]*:[^:]*:)([^:]*):([^:]*)$'
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$found" ] && [[ $line != [#+-]* && $line =~ $re ]]; then
             found=1
-            [ "${BASH_REMATCH[2]}" = "$home" ] && return 0
-            line="${BASH_REMATCH[1]}$home${BASH_REMATCH[3]}"
+            [ "${BASH_REMATCH[2]}" = "$home" ] && [ "${BASH_REMATCH[3]}" = "$shell" ] && return 0
+            line="${BASH_REMATCH[1]}$home:$shell"
         fi
         out+="$line"$'\n'
     done < "$passwd"
     [ -n "$found" ] || return 0
     printf '%s' "$out" > "$passwd" || return 1
-    log "root's home in $passwd is now $home"
+    log "root's home in $passwd is now $home, its shell $shell"
 }
 
 # version_newer A B: whether A is the later version, as `sort -V` orders the
@@ -297,7 +301,7 @@ case "${1:-}" in
         ;;
     --cc-supervise)
         if [ "$EUID" -eq 0 ]; then
-            point_root_home /etc/passwd "$HOME" || log "could not point root's home at $HOME"
+            point_root_home /etc/passwd "$HOME" "$BASH" || log "could not point root's home at $HOME"
         fi
         ensure_claude_installed
         clear_stale_runtime_state

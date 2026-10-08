@@ -1,0 +1,61 @@
+# The package sets the sandbox's base image is built from, in the order they
+# are offered. Names are Wolfi packages.
+
+[[group]]
+name = "required"
+title = "what the sandbox requires"
+required = true
+packages = ["wolfi-baselayout", "ca-certificates-bundle", "busybox", "bash", "curl", "git", "tmux", "ncurses", "tzdata"]
+
+[[group]]
+name = "core"
+title = "command-line basics"
+default = true
+packages = ["coreutils", "findutils", "grep", "sed", "diffutils", "openssh-client", "openssh-keygen", "ripgrep", "jq", "less", "vim", "procps", "unzip", "zstd", "build-base", "python-3.13", "ncurses-terminfo"]
+
+[[group]]
+name = "node"
+title = "Node.js, npm and corepack"
+default = true
+packages = ["nodejs-24", "npm", "corepack"]
+
+[[group]]
+name = "bun"
+title = "Bun"
+default = true
+packages = ["bun"]
+
+[[group]]
+name = "go"
+title = "Go"
+default = true
+packages = ["go-1.26"]
+
+[[group]]
+name = "gh"
+title = "the GitHub CLI (gh)"
+default = true
+packages = ["gh"]
+
+[[group]]
+name = "docker"
+title = "the Docker CLI"
+default = true
+packages = ["docker-cli", "docker-cli-buildx", "docker-compose"]
+
+[[group]]
+name = "dockerd"
+title = "the Docker engine"
+default = true
+packages = ["docker-29-dockerd", "iptables"]
+
+[[group]]
+name = "sudo"
+title = "sudo"
+default = true
+packages = ["sudo"]
+
+[[group]]
+name = "rust"
+title = "Rust (rustup)"
+packages = ["rustup"]

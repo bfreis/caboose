@@ -157,7 +157,8 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		var out, errb bytes.Buffer
 		a := &App{
 			Cfg: &config.Config{Env: "default", Container: "caboose-x", Image: "img", Roots: []config.Root{{Host: "/h/dev", Container: "/work"}},
-				DataDir: "/h/.caboose", KeepVersions: 2, Egress: true, Isolation: tc.iso, Getenv: func(string) string { return "" }},
+				DataDir: "/h/.caboose", KeepVersions: 2, Egress: true, Isolation: tc.iso, Getenv: func(string) string { return "" },
+				ImageProfile: config.ImageProfile{Kind: config.ImageKindApko, Name: "default", Defaults: true, Packages: []string{"jq", "postgresql-17-client"}}},
 			Backend: &backendtest.Fake{},
 			Stdout:  &out, Stderr: &errb,
 		}
@@ -167,6 +168,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		want := "env       : default\n" +
 			tc.noun + " : caboose-x (absent)\n" +
 			"image     : img\n" +
+			"base      : apko.default (caboose's packages + 2 of yours)\n" +
 			"root      : /h/dev -> /work\n" +
 			"data dir  : /h/.caboose\n" +
 			"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +

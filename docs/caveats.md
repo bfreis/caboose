@@ -25,7 +25,7 @@
   container is on.
 - A caboose checkout under a root is, like any other checkout
   there, **writable** from inside — and its `CLAUDE.md` invites the agent to
-  edit the launcher's source and the `Dockerfile`, which the *host* then
+  edit the launcher's source and the layer, which the *host* then
   builds and executes. That is the price of being able to fix the sandbox
   from within it; keep the checkout outside every root if you would
   rather not pay it, and it becomes invisible from inside. An installed

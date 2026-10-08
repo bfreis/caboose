@@ -12,11 +12,12 @@ keeps of its home, and what of that syncs, is not here: it is the
 ```toml
 format = 1
 isolation = "gvisor.default"       # which profile; needed only when several are defined
+image = "apko.default"             # likewise, for the image
 
 [roots]
 projects = "~/dev/projects"        # /work/projects
 
-[image]
+[build]
 auto_build = true
 
 [session]
@@ -27,6 +28,9 @@ open_urls = "ask"
 
 [gvisor.default]
 engine_socket = false
+
+[apko.default]
+packages = ["graphviz", "postgresql-17-client"]
 ```
 
 ## Top level
@@ -35,17 +39,17 @@ engine_socket = false
 |---|---|---|
 | `format` | `1` | the file's structure, which `caboose setup` writes; a file of a newer format than this caboose reads is refused, saying `caboose update` |
 | `isolation` | the one profile defined, else `container` | the [isolation profile](#isolation-profiles) the sandbox runs under, `"<kind>.<name>"` |
+| `image` | the one profile defined, else `apko.default` | the [image profile](#image-profiles) the sandbox is built from, `"<kind>.<name>"` |
 
 ## `[roots]`
 
 The host directories the sandbox can reach; see [roots](#roots). Each entry
 is `name = "host path"`, or a table with `host` and `path`.
 
-## `[image]`
+## `[build]`
 
 | Key | Default | |
 |---|---|---|
-| `base` | unset | [your own image](images.md) to build the sandbox on; unset, the environment's `image/Dockerfile` when it has one, else the embedded Dockerfile, built and tagged `caboose-base:<env>` |
 | `auto_build` | `true` | build a missing image, or rebuild a stale one, when creating the container; `false` says to run `caboose build` |
 
 ## `[session]`
@@ -121,6 +125,52 @@ memory = "16G"
 
 `caboose status` says which is in use and, when no profile is defined, that
 it is the default.
+
+## Image profiles
+
+`image` says what the sandbox is [built from](images.md), as the profile
+it picks, the way `isolation` does. A profile is a table
+`[<kind>.<name>]`, where the kind is one of:
+
+- `apko`, the default: a base built from Wolfi packages with apko, no
+  Dockerfile: caboose's package groups and your own packages. See
+  [Packages](images.md#packages-the-default).
+- `dockerfile`: a base built from a Dockerfile of yours, in the
+  environment's `dockerfile/<name>/`. See
+  [A Dockerfile](images.md#a-dockerfile).
+- `ref`: an image of your own, used as it is. See
+  [An image of your own](images.md#an-image-of-your-own).
+
+Each kind has its own keys, and a key another kind has is an error:
+
+| Kind | Key | Default | |
+|---|---|---|---|
+| `apko` | `packages` | `[]` | packages of your own, on top of caboose's: Wolfi package names |
+| `apko` | `defaults` | `true` | whether caboose's default package groups come with them; `false` leaves only what the sandbox requires, and `packages` |
+| `ref` | `image` | none, required | the image to build the sandbox on, as `docker pull` takes it; pulled when it is not local |
+
+A `dockerfile` profile has no keys: its build context is always the
+environment's `dockerfile/<name>/` (`~/.caboose/envs/default/dockerfile/default/`
+for `[dockerfile.default]`), Dockerfile and all. Profile names and which
+one is used follow the rules for isolation profiles, except that with
+none defined it is `apko.default`, caboose's packages, and naming
+`apko.default` needs no table.
+
+```toml
+image = "dockerfile.default"
+
+[apko.default]
+packages = ["jq", "graphviz"]
+
+[dockerfile.default]
+
+[ref.team]
+image = "registry.example/team/image:tag"
+```
+
+An apko profile's packages are pinned in the environment's
+`apko-<name>.lock.json`, next to `config.toml`; see
+[The lock](images.md#the-lock).
 
 ## Other variables
 
@@ -276,14 +326,15 @@ needs no Docker engine, and runs these:
   source and config are.
 
 The launcher looks for the last two in `~/.caboose/vm/<version>/arm64/`, then the checkout's `vm-dist/`. `caboose build` then builds the same image as
-with a docker engine, in a builder VM of its own (the first build about a minute
+with a docker engine, in a builder VM of its own (an `apko` base is built
+here, on the Mac, and streamed into it; the first build about a minute
 and a half; one after a caboose update some fifteen seconds), and keeps
 it in the data dir's `vm/images/` as a disk. A launch boots the sandbox in
 about a second.
 
 **Docker inside.** The VM is the sandbox, so it runs its own `dockerd`:
-no socket of this machine's, no Docker-in-Docker. The default image has
-it (its `dockerd` section, with buildx and compose, and a `sudo` section),
+no socket of this machine's, no Docker-in-Docker. caboose's packages have
+it (the `dockerd` group, with the CLI, buildx and compose, and `sudo`),
 and the sandbox starts it when it boots; for [your own
 image](images.md#requirements-for-your-own-image), `caboose check-image`
 says whether it has one. Its images live on a disk of
@@ -433,14 +484,18 @@ and setup shows the lines to change by hand.
   find them under the old one (nothing is moved or deleted). Removing one
   of several keeps the other's name, and so its paths. A container that
   exists keeps the roots it was created with until `caboose restart`.
-- **image** keeps what the sandbox is built on, or changes it: the
-  Dockerfile embedded in caboose (the default when there is no `image/`),
-  an [environment's own](images.md) `image/Dockerfile` written
-  from caboose's preset or from the parts you choose, or, given up, the
-  `base` in `[image]`. An `image/Dockerfile` that is there is
-  kept by default; replacing it shows the difference and asks. After a
-  change it offers to build; moving the container onto the new image is
-  `caboose restart`, which it leaves to you.
+- **image** keeps what the sandbox is built from, or changes it, as an
+  [image profile](#image-profiles): caboose's packages (the default),
+  package groups you choose one by one (an `apko` profile with
+  `defaults = false` and the groups' packages listed), a Dockerfile you
+  edit, or an image of your own, which it asks for. The profile in use
+  keeps its name when you pick its kind again; another kind is written as
+  `<kind>.default`. Your own packages in an `apko` profile stay through
+  either apko choice. Choosing the Dockerfile writes caboose's seed into
+  the profile's `dockerfile/<name>/` when there is no Dockerfile there; one
+  that is there is yours, and stays as it is. After a change it offers to
+  build; moving the container onto the new image is `caboose restart`,
+  which it leaves to you.
 - **isolation** asks for the [isolation](#isolation-profiles) and writes
   `isolation = "<kind>.<name>"`, the existing profile of that kind, else a
   new empty `[<kind>.default]`, even when it is the default: the strongest that works, `vm` when this Mac has

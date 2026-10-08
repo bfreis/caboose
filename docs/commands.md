@@ -5,18 +5,18 @@
 | `caboose` | start or attach the session for the current directory (run it *in* the repo) |
 | `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
 | `caboose setup [roots \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks); see [Setup](configuration.md#setup) |
-| `caboose apply` | review the changes sessions proposed (a tool in the image, a directory to keep, a root), and apply them; see [Proposals](proposals.md) |
+| `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root), and apply them; see [Proposals](proposals.md) |
 | `caboose doctor [--offline]` | what, if anything, is wrong, and the command that fixes each problem; see [below](#when-something-is-wrong) |
 | `caboose status` | the sandbox, version, platform, live sessions, disk use |
 | `caboose version` | launcher version, and whether the image matches it |
 | `caboose update` | update caboose to the latest release now; see [Updates](getting-started.md#updates) |
-| `caboose build` | build (or rebuild) the image: the base, checked, then the layer |
+| `caboose build [--pull]` | build (or rebuild) the image: the base, checked, then the layer; see [What a build does](images.md#what-a-build-does) |
 | `caboose check-image [IMAGE]` | whether an image can be the sandbox's base; see [Checking an image](images.md#checking-an-image) |
 | `caboose restart` | recreate the sandbox, to pick up a rebuilt image or new mounts |
 | `caboose stop` | stop the sandbox |
 | `caboose detach` | detach this project's session, leaving it running |
 | `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; every launch starts one in the background, and `--restart` replaces it; see [The host link](host-link.md) |
-| `caboose prune` | delete old Claude Code versions now |
+| `caboose prune` | delete old Claude Code versions now, and cached packages no environment's lock names |
 | `caboose prune --docker` | under a `vm` profile, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `CABOOSE_FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |
@@ -42,13 +42,28 @@ or `caboose COMMAND --help`, says what one command does and takes; for
 `--help` right after the command is caboose's.
 
 `caboose build` passes extra args (`--no-cache`, `--progress=plain`, `-q`) to
-both `docker build`s, the base's and the layer's, with one exception:
-`--pull` goes to the default base's build only, and on a `base` in `[image]`
-means `docker pull` it first. `--platform` also goes to that pull and to the
-image check, so the variant checked is the one built on. `-t`/`--tag` is
-refused: the images' names (`caboose:<env>`, `caboose-base:<env>`) come from the environment. Only the layer's
-build writes to stdout, so `caboose build -q` prints just the final
-image's ID.
+every `docker build` it runs: a `dockerfile` profile's base, and the layer.
+`--pull` is the exception, and means what fits the
+[image profile](configuration.md#image-profiles): on `apko`, resolve the
+packages again, to the newest the repository has, rewriting the lock; on
+`dockerfile`, it goes to the base's build only; on `ref`, `docker pull` the
+image first. `--platform` also goes to that pull and to the image check, so
+the variant checked is the one built on; an `apko` base is built for the
+engine's architecture, and refuses it. `-t`/`--tag` is refused: the images'
+names (`caboose:<env>`, and the base caboose builds, `caboose-base:<env>`)
+come from the environment. Only the layer's build writes to stdout, so
+`caboose build -q` prints just the final image's ID.
+
+`caboose prune` also clears the package cache `apko` builds share,
+`~/.caboose/cache/apk`, on this machine: every cached package that no
+environment's lock names goes, and every index but the newest of each
+repository. Anything fetched in the last hour stays, since a build still
+fetching has not written its lock yet, and while a build, or the host
+link's check of a proposal, is using the cache, it leaves the cache
+alone and says so ("a build is using the package cache; not pruned"),
+pruning the Claude Code versions all the same. A lock it cannot read
+could name anything, so then it removes nothing from the cache and says
+which lock. It ends with one line: what it freed.
 
 `caboose restart` and `caboose stop` destroy every running session, so they list
 the sessions they are about to kill and ask first. `CABOOSE_FORCE=1` (or `true`) skips the

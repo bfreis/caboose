@@ -115,6 +115,53 @@ func (c *CLI) Build(stdout, stderr io.Writer, args ...string) error {
 	return cmd.Run()
 }
 
+// Load runs docker load, reading the image tarball from r, with its
+// stdout and stderr connected to the given writers. It returns when docker
+// exits, even one that exits without reading r to its end: a reader that
+// blocks (a pipe the image is still being written into) does not hold it
+// up. The copy from r then ends at r's next read or write that fails, so
+// such a reader is the caller's to close.
+func (c *CLI) Load(r io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.Command(c.Path, "load")
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if f, ok := r.(*os.File); ok {
+		cmd.Stdin = f
+		return cmd.Run()
+	}
+	// exec's own copy of a reader that is not a file would keep Wait from
+	// returning until that reader gave something, or ended.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stdin = pr
+	err = cmd.Start()
+	pr.Close()
+	if err != nil {
+		pw.Close()
+		return err
+	}
+	go func() {
+		_, _ = io.Copy(pw, r)
+		pw.Close()
+	}()
+	return cmd.Wait()
+}
+
+// Architecture is the engine's architecture as docker info reports it:
+// the kernel's name for it, "x86_64" or "aarch64" on the machines caboose
+// runs on.
+func (c *CLI) Architecture() (string, error) {
+	arch, err := c.Output("info", "--format", "{{.Architecture}}")
+	if err != nil {
+		return "", err
+	}
+	if arch == "" {
+		return "", errors.New("docker info reports no architecture")
+	}
+	return arch, nil
+}
+
 // Command is docker with args, not yet started, for a caller that needs
 // its pipes or its process: every exec in the sandbox (backend.Docker),
 // and caboose logs, which becomes it.

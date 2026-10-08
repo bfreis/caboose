@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/imagecheck"
 )
@@ -26,18 +27,18 @@ const (
 // each is needed, on stderr. Like caboose version it needs no root and
 // creates nothing but a throwaway container, which `docker run --rm` removes.
 //
-// IMAGE defaults to the base in use: [image] base, else the embedded
-// Dockerfile's image, which caboose build tags config.BaseImageFor the
-// environment -- the image the layer is built on, not the one caboose runs,
-// which has the layer's user in it already. A build runs this same check on
-// the base before building the layer on it.
+// IMAGE defaults to the base in use: a ref profile's image, else the base
+// caboose builds from an apko or dockerfile profile, tagged
+// config.BaseImageFor the environment -- the image the layer is built on,
+// not the one caboose runs, which has the layer's user in it already. A
+// build runs this same check on the base before building the layer on it.
 //
 // An image that is not in the local store is pulled first, with docker's
 // progress on stderr -- but only one that was named, on the command line or
-// in [image] base. The default base is built locally, and pulling its
+// in a ref profile. A base caboose builds is built locally, and pulling its
 // name would fetch whatever a registry happens to hold under it.
 func (a *App) CheckImage(args []string) error {
-	image, named := a.Cfg.Base()
+	image, named := a.Cfg.BaseRef(), a.Cfg.ImageProfile.Kind == config.ImageKindRef
 	switch {
 	case len(args) > 1:
 		return Die("caboose check-image takes at most one image (got %q)", strings.Join(args, " "))
@@ -174,7 +175,7 @@ func (a *App) checkImageVM(out *ui, image string, named bool) (*imagecheck.Repor
 	return rep, nil
 }
 
-// notBuiltYet is the answer for the default base before a build made it.
+// notBuiltYet is the answer for a base caboose builds before a build made it.
 func notBuiltYet(a *App, image string) error {
 	a.Note("run 'caboose build' to build it, or name an image to check: caboose check-image IMAGE")
 	return &ExitError{Code: checkFailed, Msg: fmt.Sprintf("base image '%s' is not built yet", image)}

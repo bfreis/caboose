@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
@@ -434,5 +435,181 @@ func TestLinkEgress(t *testing.T) {
 	g = &Guest{b: b, run: f.run}
 	if err := g.linkEgress(); err != nil || linked != nil || f.calls != nil {
 		t.Errorf("without the proxy: %v, linked %v, calls %q", err, linked, f.calls)
+	}
+}
+
+// imageTar is a tarball of names, as docker save writes one.
+func imageTar(t *testing.T, names ...string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	for _, n := range names {
+		if err := tw.WriteHeader(&tar.Header{Name: n, Mode: 0o644, Size: 2}); err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(tw, "{}")
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// A base given as a tarball goes into docker load in the guest, on its
+// stdin, within a base's timeout; then the check, the layer and the root
+// disk, as for any base.
+func TestBuildTarball(t *testing.T) {
+	_, layer := contexts(t)
+	f := &guest{tars: map[string][]string{}, probe: passingProbe(t)}
+	var timeouts []time.Duration
+	g := &Guest{run: func(timeout time.Duration, in io.Reader, out, stderr io.Writer, argv ...string) error {
+		timeouts = append(timeouts, timeout)
+		return f.run(timeout, in, out, stderr, argv...)
+	}}
+	r, err := g.Build(Request{
+		BaseTarball: bytes.NewReader(imageTar(t, "index.json", "oci-layout")), BaseTag: "caboose-base",
+		Probe: []byte("probe"), UID: 501, GID: 20,
+		LayerContext: layer, LayerFile: "layer.Dockerfile", Image: "caboose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	layerArgs := "--provenance=false -f layer.Dockerfile --build-arg BASE=caboose-base --build-arg CABOOSE_UID=501 --build-arg CABOOSE_GID=20"
+	want := []string{
+		"docker load",
+		"docker image inspect --format {{json .Id}} {{json .Config}} caboose-base",
+		"docker run --network=host --rm --init --user 0:0 -e CABOOSE_PROBE_ROOT= --entrypoint /bin/sh sha256:caboose-base -c probe caboose-probe 501 20",
+		"docker build --progress=plain -t caboose " + layerArgs + " -",
+		"caboose-builder root " + layerArgs,
+		"docker image inspect --format {{json .Id}} {{json .Config}} caboose",
+	}
+	if !reflect.DeepEqual(f.calls, want) {
+		t.Fatalf("calls:\n%s\nwant:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
+	}
+	if got := f.tars["docker load"]; !reflect.DeepEqual(got, []string{"index.json", "oci-layout"}) {
+		t.Errorf("docker load read %q", got)
+	}
+	if timeouts[0] != baseTimeout {
+		t.Errorf("docker load within %v, want %v", timeouts[0], baseTimeout)
+	}
+	if r.Base != "caboose-base" || r.BaseID != "sha256:caboose-base" {
+		t.Errorf("result %+v", r)
+	}
+}
+
+// A tarball whose reading fails fails the load, and the build stops
+// there, even when docker load took what it got.
+func TestBuildTarballCut(t *testing.T) {
+	_, layer := contexts(t)
+	f := &guest{tars: map[string][]string{}, probe: passingProbe(t)}
+	g := &Guest{run: func(timeout time.Duration, in io.Reader, out, stderr io.Writer, argv ...string) error {
+		f.calls = append(f.calls, strings.Join(argv, " "))
+		io.Copy(io.Discard, in)
+		return nil
+	}}
+	cut := io.MultiReader(bytes.NewReader(imageTar(t, "index.json")), iotestErrReader{errors.New("no such package")})
+	_, err := g.Build(Request{BaseTarball: cut, BaseTag: "caboose-base", Probe: []byte("p"),
+		LayerContext: layer, LayerFile: "layer.Dockerfile", Image: "caboose"})
+	if err == nil || !strings.Contains(err.Error(), "loading the base image 'caboose-base': reading the image: no such package") {
+		t.Fatalf("err = %v", err)
+	}
+	if !reflect.DeepEqual(f.calls, []string{"docker load"}) {
+		t.Errorf("calls %q", f.calls)
+	}
+
+	f = &guest{tars: map[string][]string{}, probe: passingProbe(t), failOn: "docker load"}
+	g = &Guest{run: f.run}
+	_, err = g.Build(Request{BaseTarball: bytes.NewReader(imageTar(t, "index.json")), BaseTag: "caboose-base", Probe: []byte("p"),
+		LayerContext: layer, LayerFile: "layer.Dockerfile", Image: "caboose"})
+	if err == nil || !strings.Contains(err.Error(), "loading the base image 'caboose-base'") || len(f.calls) != 1 {
+		t.Errorf("a failed load: %v, calls %q", err, f.calls)
+	}
+}
+
+type iotestErrReader struct{ err error }
+
+func (r iotestErrReader) Read([]byte) (int, error) { return 0, r.err }
+
+// A build has exactly one base, and a base it builds or loads has a tag.
+func TestBuildOneBase(t *testing.T) {
+	base, layer := contexts(t)
+	tarball := func() io.Reader { return bytes.NewReader(imageTar(t, "index.json")) }
+	for name, req := range map[string]Request{
+		"none":             {},
+		"context and ref":  {BaseContext: base, BaseTag: "b", BaseRef: "example/img:1"},
+		"tarball and ref":  {BaseTarball: tarball(), BaseTag: "b", BaseRef: "example/img:1"},
+		"context, tarball": {BaseContext: base, BaseTarball: tarball(), BaseTag: "b"},
+		"tarball, no tag":  {BaseTarball: tarball()},
+		"context, no tag":  {BaseContext: base},
+	} {
+		req.Probe, req.LayerContext, req.LayerFile, req.Image = []byte("p"), layer, "layer.Dockerfile", "caboose"
+		f := &guest{tars: map[string][]string{}, probe: passingProbe(t)}
+		g := &Guest{run: f.run}
+		if _, err := g.Build(req); err == nil || len(f.calls) != 0 {
+			t.Errorf("%s: %v, calls %q", name, err, f.calls)
+		}
+	}
+}
+
+// shellCommand is a Guest whose steps run script in sh on this machine,
+// through the real exec, whatever their argv.
+func shellCommand(script string) *Guest {
+	return &Guest{command: func([]string, bool) *exec.Cmd { return exec.Command("sh", "-c", script) }}
+}
+
+// A docker load that fails at once returns at once, though the tarball's
+// writer has not written yet and never does: the step is over when the
+// command is, and the tarball is closed, which stops its writer.
+func TestLoadFailsPromptlyWhileTheTarballBlocks(t *testing.T) {
+	defer func(d time.Duration) { execWaitDelay = d }(execWaitDelay)
+	execWaitDelay = time.Minute
+	pr, pw := io.Pipe()
+	g := shellCommand("exit 3")
+	done := make(chan error, 1)
+	go func() { done <- g.load(pr) }()
+	select {
+	case err := <-done:
+		var se *StepError
+		if !errors.As(err, &se) || se.ExitCode() != 3 {
+			t.Errorf("load: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("load still waiting for the tarball")
+	}
+	if _, err := pw.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Errorf("the tarball's writer can still write: %v", err)
+	}
+}
+
+// A step whose output something else still holds ends all the same,
+// execWaitDelay after its command.
+func TestExecWaitsForItsOutputABoundedTime(t *testing.T) {
+	defer func(d time.Duration) { execWaitDelay = d }(execWaitDelay)
+	execWaitDelay = 100 * time.Millisecond
+	g := shellCommand("sleep 30 & exit 0")
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- g.Run(time.Minute, nil, &out) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the step waits for its output's last holder")
+	}
+}
+
+// Input that cannot be read fails the step, and kills its command rather
+// than let it see the input end.
+func TestExecInputReadFailure(t *testing.T) {
+	g := shellCommand("cat >/dev/null && exec sleep 30")
+	in := io.MultiReader(strings.NewReader("part"), iotest.ErrReader(errors.New("disk on fire")))
+	done := make(chan error, 1)
+	go func() { done <- g.Run(time.Minute, in, nil) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "reading its input: disk on fire") {
+			t.Errorf("run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the step did not end")
 	}
 }

@@ -66,6 +66,7 @@ func newSetupEnv(t *testing.T, env, hostGit string, running bool, agentKeys ...s
 	return &setupEnv{t: t, errb: &errb, a: &App{
 		Cfg: &config.Config{Env: env, CabooseHome: home, EnvDir: envDir, DataDir: envDir + "/data",
 			Container: config.ContainerFor(env), Image: config.ImageFor(env), Home: userHome,
+			ImageProfile: config.DefaultImageProfile(), AutoBuild: true,
 			Getenv: func(k string) string { return map[string]string{"HOME": userHome, "CABOOSE_HOME": home}[k] }},
 		Docker: &docker.CLI{Path: bin},
 		Stdout: &bytes.Buffer{}, Stderr: &errb,

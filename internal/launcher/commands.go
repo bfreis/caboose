@@ -113,6 +113,7 @@ func (a *App) Status() error {
 	fmt.Fprintf(out, "env       : %s\n", c.Env)
 	fmt.Fprintf(out, "%s %s (%s)\n", a.nounLabel(), c.Container, state)
 	fmt.Fprintf(out, "image     : %s\n", c.Image)
+	fmt.Fprintf(out, "base      : %s\n", a.imageSummary())
 	for _, r := range c.Roots {
 		fmt.Fprintf(out, "root      : %s -> %s\n", r.Host, r.Container)
 	}
@@ -297,6 +298,9 @@ func (a *App) Restart() error {
 // Prune deletes old installed versions now, with the current
 // keep_versions rather than the one baked in at creation. Like
 // Logs, it creates a missing container but does not build a missing image.
+// First, on the host, it removes from the package cache what no
+// environment's lock names (pruneApkCache), which needs no sandbox; its
+// error is returned once the versions are pruned.
 // --docker deletes the vm sandbox's docker disk instead (pruneDocker).
 func (a *App) Prune(args []string) error {
 	switch {
@@ -305,6 +309,7 @@ func (a *App) Prune(args []string) error {
 	case len(args) > 0:
 		return &ExitError{Code: 2, Msg: fmt.Sprintf("usage: caboose prune [--docker] (got %q)", args[0])}
 	}
+	cacheErr := a.pruneApkCache()
 	if err := a.ensureRunning(false); err != nil {
 		return err
 	}
@@ -331,7 +336,7 @@ func (a *App) Prune(args []string) error {
 			a.Note("  delete it by hand if no image of yours needs it any more.")
 		}
 	}
-	return nil
+	return cacheErr
 }
 
 // dockerDisk is the disk the vm sandbox's dockerd keeps its images on.

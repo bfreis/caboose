@@ -274,8 +274,8 @@ func lockLink(dataDir string) (func(), error) {
 // terminal, and exits quietly when another one already runs. --restart
 // stops the running one and starts another in the background, for
 // settings a launch would not notice changed. The running one rereads
-// config.toml itself when it changes, and tells of new proposals
-// (watchProposals).
+// config.toml itself when it changes, tells of new proposals
+// (watchProposals), and checks those for packages (checkProposals).
 func (a *App) Link(args []string) error {
 	background, restart := false, false
 	for _, arg := range args {
@@ -331,6 +331,7 @@ func (a *App) Link(args []string) error {
 	go killHostExecsAtSignal(stop)
 	go r.watchConfig(stop)
 	go r.watchProposals(stop)
+	go r.checkProposals(stop)
 	return r.run(background)
 }
 

@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/apkobuild"
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/hostlink"
 	"github.com/bfreis/caboose/internal/hvsock"
 	"github.com/bfreis/caboose/internal/linkdebug"
-	"github.com/bfreis/caboose/internal/version"
 	"github.com/bfreis/caboose/internal/vm"
 	"github.com/bfreis/caboose/internal/vm/builder"
 )
@@ -26,7 +27,10 @@ import (
 // layer written as a root disk into the image store, recorded under the
 // image's name with the labels and config docker in the builder gave it.
 // The empty disk sandbox scratch disks are cloned from is made with the
-// first build.
+// first build. An apko base is built on this Mac, as with docker
+// (apkoBase), for the guests' architecture, and its tarball streamed into
+// docker load in the builder; its lock is written once the image is
+// recorded.
 func (a *App) buildVM(extra []string) error {
 	c := a.Cfg
 	if p := platformArg(extra); p != "" {
@@ -38,7 +42,7 @@ func (a *App) buildVM(extra []string) error {
 	}
 
 	pull, layerExtra := splitPull(extra)
-	base, byo := c.Base()
+	p, base := c.ImageProfile, c.BaseRef()
 	req := builder.Request{
 		UID: os.Getuid(), GID: os.Getgid(),
 		LayerFile: assets.LayerDockerfile, Image: c.Image,
@@ -48,34 +52,33 @@ func (a *App) buildVM(extra []string) error {
 	if req.Probe, err = assets.ProbeScript(); err != nil {
 		return Die("%v", err)
 	}
-	dirHash := ""
+	baseHash := ""
 	tmp, err := os.MkdirTemp("", "caboose-vm-build-")
 	if err != nil {
 		return Die("%v", err)
 	}
 	defer os.RemoveAll(tmp)
-	switch {
-	case byo:
+	switch p.Kind {
+	case config.ImageKindRef:
 		req.BaseRef = base
-		a.Note("pulling base image '%s' (base in [image]) in the builder when it lacks it", base)
-	case c.ImageDir != "":
+		a.Note("pulling base image '%s' (%s) in the builder when it lacks it", base, p)
+	case config.ImageKindDockerfile:
+		if err := a.checkDockerfileDir(); err != nil {
+			return err
+		}
 		// Before the build, so that the label never claims an edit made
 		// while it ran.
-		if dirHash, err = assets.DirHash(c.ImageDir); err != nil {
-			return Die("reading %s: %v", c.ImageDir, err)
+		if baseHash, err = assets.DirHash(p.Dir); err != nil {
+			return Die("reading %s: %v", p.Dir, err)
 		}
-		req.BaseContext, req.BaseTag = c.ImageDir, base
-		a.Note("building the base image '%s' from %s, in the builder", base, filepath.Join(c.ImageDir, "Dockerfile"))
+		req.BaseContext, req.BaseTag, req.BaseArgs = p.Dir, base, extra
+		a.Note("building the base image '%s' from %s (%s), in the builder", base, filepath.Join(p.Dir, "Dockerfile"), p)
+	case config.ImageKindApko:
+		// Built on this Mac, its packages in CABOOSE_HOME's cache, and
+		// streamed into the builder's docker load (below).
+		req.BaseTag = base
 	default:
-		req.BaseContext, req.BaseTag = filepath.Join(tmp, "base"), base
-		if err := writeContext(req.BaseContext, assets.WriteBaseContext); err != nil {
-			return Die("%v", err)
-		}
-		req.BaseLabels = []string{assets.LabelVersion + "=" + version.Get().Version, assets.LabelBaseHash + "=" + assets.BaseHash()}
-		a.Note("building the base image '%s' from the Dockerfile embedded in this launcher, in the builder", base)
-	}
-	if !byo {
-		req.BaseArgs = extra
+		return Die("image profile %s is of no kind this caboose builds", p)
 	}
 	req.LayerContext = filepath.Join(tmp, "layer")
 	if err := writeContext(req.LayerContext, assets.WriteLayerContext); err != nil {
@@ -87,11 +90,59 @@ func (a *App) buildVM(extra []string) error {
 	if !isFile(store.template()) {
 		template = filepath.Join(store.dir, ".empty-new.img")
 	}
-	g, err := a.startBuilder(out, template)
+	boot := a.buildGuest
+	if boot == nil {
+		boot = func(out, template string) (vmBuildGuest, error) { return a.startBuilder(out, template) }
+	}
+	g, err := boot(out, template)
 	if err != nil {
 		return err
 	}
 	defer g.Stop()
+	if p.Kind != config.ImageKindApko {
+		return a.finishVMBuild(g, req, out, template, baseHash)
+	}
+	arch, err := a.vmArch()
+	if err != nil {
+		return err
+	}
+	// The whole build is apkoBase's load, so the lock is written only once
+	// the image it built is in the image store.
+	_, err = a.apkoBase(base, pull, arch, "the builder guest", func(r io.Reader, lockHash string) error {
+		req.BaseTarball = r
+		return a.finishVMBuild(g, req, out, template, lockHash)
+	})
+	return err
+}
+
+// vmBuildGuest is what caboose build asks of the builder guest
+// (builder.Guest).
+type vmBuildGuest interface {
+	Build(req builder.Request) (builder.Result, error)
+	Template() error
+	Stop() error
+}
+
+// vmArch is the guests' architecture, the Mac's, as apk names it: what an
+// apko base is built for under vm.
+func (a *App) vmArch() (string, error) {
+	f, err := a.findVMFiles()
+	if err != nil {
+		return "", Die("%v", err)
+	}
+	arch, err := apkobuild.ArchFor(f.Arch)
+	if err != nil {
+		return "", Die("%v", err)
+	}
+	return arch, nil
+}
+
+// finishVMBuild runs req in the builder guest g, and records what it made
+// in the image store: the image's root disk, written onto out, and the
+// empty disk scratch disks are cloned from, onto template when not "".
+// baseHash labels the layer, as layerLabels takes it.
+func (a *App) finishVMBuild(g vmBuildGuest, req builder.Request, out, template, baseHash string) error {
+	c, p, store := a.Cfg, a.Cfg.ImageProfile, a.vmImages()
 	r, err := g.Build(req)
 	var ce *builder.CheckError
 	switch {
@@ -130,7 +181,7 @@ func (a *App) buildVM(extra []string) error {
 		}
 	}
 	rec := vmImage{Name: c.Image, ID: r.ImageID, Config: r.Config, Disk: diskName(r.ImageID),
-		Labels: layerLabels(r.Base, r.BaseID, byo, dirHash, r.Report.Platform)}
+		Labels: layerLabels(r.Base, r.BaseID, p.Kind, baseHash, r.Report.Platform)}
 	if err := os.Rename(out, store.disk(rec)); err != nil {
 		return Die("%v", err)
 	}

@@ -15,10 +15,10 @@ import (
 )
 
 // `caboose apply` is the host's half of a proposal (internal/proposal): a
-// session in the sandbox writes what it would change -- a Dockerfile
-// section, a root -- and apply shows each one and makes
+// session in the sandbox writes what it would change -- packages of an
+// apko image, a Dockerfile section, a root -- and apply shows each one and makes
 // the change when the user says so. The sandbox never writes config.toml
-// or image/ itself: both decide what it is, and what of the host it
+// or a dockerfile profile's dir itself: both decide what it is, and what of the host it
 // reaches, so a person at the host says yes to every change, having seen
 // all of it.
 //
@@ -50,7 +50,7 @@ func envCommand(env, cmd string) string {
 func (a *App) Apply() error {
 	c := a.Cfg
 	if c.EnvDir == "" {
-		return Die("this environment has no dir of its own (CABOOSE_DATA_DIR alone names its data), so no config.toml or image/ to apply a proposal to")
+		return Die("this environment has no dir of its own (CABOOSE_DATA_DIR alone names its data), so no config.toml to apply a proposal to")
 	}
 	entries, err := proposal.List(c.DataDir)
 	if err != nil {
@@ -103,15 +103,18 @@ func (a *App) applyRun(p *prompter, entries []proposal.Entry) error {
 
 // plan is one proposal as it would be applied.
 type plan struct {
-	// dockerfile is the new image/Dockerfile, and from what it was made.
+	// dockerfile is the dockerfile profile's new Dockerfile, and from what
+	// it was made.
 	dockerfile, oldDockerfile []byte
 	source                    string
+	// packages are an apko profile's packages, as they would be.
+	packages *packagesPlan
 	// root is the root to add, at host, its physical path.
 	root *proposal.Root
 	host string
 }
 
-func (pl plan) empty() bool { return pl.dockerfile == nil && pl.root == nil }
+func (pl plan) empty() bool { return pl.dockerfile == nil && pl.packages == nil && pl.root == nil }
 
 // applyOne shows one proposal and does what the user says with it.
 func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
@@ -167,24 +170,47 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 			return err
 		}
 	}
+	// Built before anything is written: a list that does not build leaves
+	// config.toml, the lock and the proposal as they were. The lock the
+	// build resolved is written after config.toml, below.
+	if pl.packages != nil && !a.applyPackages(p, pl.packages, &edit) {
+		return nil
+	}
 	if pl.dockerfile != nil {
-		if err := a.writeImageDir(p, filepath.Join(a.Cfg.EnvDir, config.ImageDirName), pl.dockerfile); err != nil {
+		if err := a.writeImageDir(p, a.Cfg.ImageProfile.Dir, pl.dockerfile); err != nil {
 			return err
 		}
 		done.dockerfile = true
 	}
-	if edit.SetRoots {
+	if edit.SetRoots || len(edit.Set) > 0 {
 		if _, err := a.writeConfig(edit); err != nil {
 			return err
+		}
+		// The lock only now: it is of the packages config.toml has.
+		if pl.packages != nil && pl.packages.writeLock != nil {
+			if err := pl.packages.writeLock(); err != nil {
+				p.warn("The lock could not be written (%v): the next build resolves the packages again.", err)
+			}
 		}
 		if err := a.rereadConfigFile(); err != nil {
 			return err
 		}
-		p.ok("Wrote the roots to %s", a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)))
+		// The next proposal is planned against the profile as written.
+		if err := a.Cfg.ReadImage(); err != nil {
+			return Die("%v", err)
+		}
+		var what []string
+		if edit.SetRoots {
+			what = append(what, "the roots")
+		}
+		if pl.packages != nil {
+			what = append(what, "the packages of ["+pl.packages.profile+"]")
+		}
+		p.ok("Wrote %s to %s", strings.Join(what, " and "), a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)))
 		done.config = true
 	}
 	if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
-		p.warn("Applied, but it could not be removed (%v): delete %s by hand, or apply will offer it again", err, a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
+		p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
 		return nil
 	}
 	p.ok("Applied %s", name)
@@ -200,8 +226,12 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		switch {
 		case err != nil:
 			refusals = append(refusals, fmt.Sprintf("Cannot read the Dockerfile: %v", err))
-		case source == proposal.SourceBaseImage:
-			refusals = append(refusals, fmt.Sprintf("This environment builds on base %s in [image], an image rather than a Dockerfile, so a section cannot go into it.", c.BaseImage))
+		case source == "":
+			why := fmt.Sprintf("This environment's image is %s, which has no Dockerfile: a section applies to a dockerfile image profile only.", c.ImageProfile)
+			if c.ImageProfile.Kind == config.ImageKindApko {
+				why += " Under an apko image, a [packages] proposal is what applies."
+			}
+			refusals = append(refusals, why)
 		case proposal.Hash(old) != pr.DockerfileSHA256:
 			refusals = append(refusals, "The Dockerfile has changed since this was proposed. Ask the session to propose it again: it reads the current one in "+
 				proposal.ContainerDir+"/"+proposal.CurrentDir+".")
@@ -212,12 +242,21 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 				break
 			}
 			pl.dockerfile, pl.oldDockerfile, pl.source = next, old, source
-			if source == proposal.SourcePreset {
-				warnings = append(warnings, fmt.Sprintf("This environment builds from the Dockerfile built into caboose, which changes as caboose does. "+
-					"Applying this writes caboose's preset, with this section, as %s: from then on the environment builds from its own Dockerfile, "+
-					"and a newer caboose's changes to its Dockerfile no longer reach it ('caboose setup image' shows how the two differ).",
-					a.short(filepath.Join(c.EnvDir, config.ImageDirName, "Dockerfile"))))
+			if source == proposal.SourceSeed {
+				warnings = append(warnings, fmt.Sprintf("%s has no Dockerfile yet: applying this writes caboose's Dockerfile, with this section, as %s, "+
+					"which is yours from then on.", a.short(c.ImageProfile.Dir), a.short(filepath.Join(c.ImageProfile.Dir, "Dockerfile"))))
 			}
+		}
+	}
+
+	if pk := pr.Packages; pk != nil {
+		if why := packagesRefusal(c.ImageProfile); why != "" {
+			refusals = append(refusals, why)
+		} else {
+			pp, why, warn := planPackages(c.ImageProfile, *pk)
+			refusals = append(refusals, why...)
+			warnings = append(warnings, warn...)
+			pl.packages = pp
 		}
 	}
 
@@ -234,13 +273,16 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 func (a *App) showPlan(p *prompter, pl plan) {
 	c := a.Cfg
 	if pl.dockerfile != nil {
-		from := a.short(filepath.Join(c.EnvDir, config.ImageDirName, "Dockerfile"))
-		if pl.source == proposal.SourcePreset {
-			from = "caboose's preset"
+		from := a.short(filepath.Join(c.ImageProfile.Dir, "Dockerfile"))
+		if pl.source == proposal.SourceSeed {
+			from = "caboose's Dockerfile"
 		}
 		p.say("The image: a section in the Dockerfile.")
 		p.diff(from, "with the proposal", lineDiff(string(pl.oldDockerfile), string(pl.dockerfile)))
 		p.blank()
+	}
+	if pl.packages != nil {
+		a.showPackages(p, pl.packages)
 	}
 	if pl.root != nil {
 		p.say("Mount a host directory into the sandbox ([roots]):")
@@ -324,7 +366,7 @@ func (a *App) keepOrDelete(p *prompter, e proposal.Entry) error {
 
 func (a *App) deleteProposal(p *prompter, e proposal.Entry) error {
 	if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
-		p.fail("Could not delete it: %v", err)
+		p.fail("Could not delete it: %s", proposal.Printable(err.Error()))
 		return nil
 	}
 	p.ok("Deleted %s", proposal.Printable(e.File))
@@ -431,23 +473,23 @@ func (a *App) reloadConfig() error {
 }
 
 // dockerfileBase is the Dockerfile a proposed section goes into, and where
-// it comes from: the environment's image/Dockerfile, or, when it has none,
-// caboose's default preset, which the first section proposed becomes. On
-// an [image] base there is none.
+// it comes from: a dockerfile profile's Dockerfile, or, when its dir has
+// none yet, caboose's seed, which the first section proposed becomes.
+// Under apko and ref there is none: source "".
 func (a *App) dockerfileBase() (source string, data []byte, err error) {
-	c := a.Cfg
-	if c.BaseImage != "" {
-		return proposal.SourceBaseImage, nil, nil
+	p := a.Cfg.ImageProfile
+	if p.Kind != config.ImageKindDockerfile {
+		return "", nil, nil
 	}
-	data, err = os.ReadFile(filepath.Join(c.EnvDir, config.ImageDirName, "Dockerfile"))
+	data, err = os.ReadFile(filepath.Join(p.Dir, "Dockerfile"))
 	if err == nil {
-		return proposal.SourceImageDir, data, nil
+		return proposal.SourceDockerfile, data, nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		return "", nil, err
 	}
-	data, err = assets.Preset(assets.DefaultSections())
-	return proposal.SourcePreset, data, err
+	data, err = assets.Seed(assets.DefaultSections())
+	return proposal.SourceSeed, data, err
 }
 
 // exportProposals writes what a proposal is made against where sessions
@@ -460,15 +502,22 @@ func (a *App) exportProposals() {
 	}
 	source, df, err := a.dockerfileBase()
 	if err != nil {
-		a.Note("not telling sessions about the Dockerfile: %v", err)
+		a.Note("not telling sessions about the Dockerfile: %s", proposal.Printable(err.Error()))
 		return
 	}
-	s := proposal.State{Source: source, Dockerfile: df, BaseImage: c.BaseImage, Roots: map[string]proposal.StateRoot{}}
+	s := proposal.State{Image: c.ImageProfile.String(), Source: source, Dockerfile: df, Roots: map[string]proposal.StateRoot{}}
+	if ip := c.ImageProfile; ip.Kind == config.ImageKindApko {
+		installed, err := ip.Spec().List()
+		if err != nil {
+			a.Note("not telling sessions about the packages: %v", err)
+		}
+		s.Apko = &proposal.ApkoState{Packages: ip.Packages, Defaults: ip.Defaults, Installed: installed}
+	}
 	for _, r := range a.fileRoots() {
 		s.Roots[r.Name] = proposal.StateRoot{Host: r.Path, Path: r.container()}
 	}
 	if err := proposal.WriteCurrent(c.DataDir, s); err != nil {
-		a.Note("not telling sessions what a proposal is made against: %v", err)
+		a.Note("not telling sessions what a proposal is made against: %s", proposal.Printable(err.Error()))
 	}
 }
 

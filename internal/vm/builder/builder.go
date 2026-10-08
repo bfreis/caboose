@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
@@ -86,6 +87,9 @@ type Guest struct {
 	// run, when set, stands in for the guest's exec port (tests): stderr
 	// is where the command's stderr is shown, nil when it is not.
 	run func(timeout time.Duration, in io.Reader, out, stderr io.Writer, argv ...string) error
+	// command, when set, stands in for the exec helper's command
+	// (vm.ExecCommand) under the real exec (tests).
+	command func(argv []string, stdin bool) *exec.Cmd
 }
 
 // Start boots the builder guest with out attached as the disk a root is
@@ -232,28 +236,59 @@ func (g *Guest) runQuiet(timeout time.Duration, in io.Reader, out io.Writer, arg
 	return g.exec(timeout, in, out, nil, argv...)
 }
 
+// execWaitDelay is how long a step that has ended waits for its output to
+// be copied before giving up on it: a pipe something else still holds
+// must not keep the step from ending.
+var execWaitDelay = 5 * time.Second
+
 // exec runs argv in the guest with its stderr shown on stderr (nil for
-// nowhere) and kept, the last of it, for the error.
+// nowhere) and kept, the last of it, for the error. in is copied to the
+// command by a goroutine of exec's own, not exec.Cmd's, which Wait would
+// wait for: in may be a stream that blocks until its writer writes again,
+// and the step is over when the command is, whatever in is doing. A
+// caller whose in can block closes it once exec returns (load). A failure
+// to read in kills the command and fails the step, since a command that
+// saw its input end early may otherwise succeed on a part of it.
 func (g *Guest) exec(timeout time.Duration, in io.Reader, out, stderr io.Writer, argv ...string) error {
 	if g.run != nil {
 		return g.run(timeout, in, out, stderr, argv...)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := vm.ExecCommand(g.b.Self, g.b.Dir.Socket(), agentproto.ExecRequest{Argv: argv, Stdin: in != nil})
+	var cmd *exec.Cmd
+	if g.command != nil {
+		cmd = g.command(argv, in != nil)
+	} else {
+		cmd = vm.ExecCommand(g.b.Self, g.b.Dir.Socket(), agentproto.ExecRequest{Argv: argv, Stdin: in != nil})
+	}
 	if cmd.Err != nil {
 		return cmd.Err
 	}
 	tail := &tailWriter{}
-	cmd.Stdin, cmd.Stdout = in, out
+	cmd.Stdout = out
 	cmd.Stderr = io.MultiWriter(tail, orDiscard(stderr))
+	cmd.WaitDelay = execWaitDelay
+	var stdin io.WriteCloser
+	if in != nil {
+		var err error
+		if stdin, err = cmd.StdinPipe(); err != nil {
+			return err
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		return err
+	}
+	feed := &stdinFeed{}
+	if in != nil {
+		go feed.copy(cmd.Process, stdin, in)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
+		if ferr := feed.failed(); ferr != nil {
+			return &StepError{Argv: argv, Err: fmt.Errorf("reading its input: %w", ferr), Said: tail.String()}
+		}
 		if err != nil {
 			return &StepError{Argv: argv, Err: err, Said: tail.String()}
 		}
@@ -263,6 +298,45 @@ func (g *Guest) exec(timeout time.Duration, in io.Reader, out, stderr io.Writer,
 		<-done
 		return &StepError{Argv: argv, Err: fmt.Errorf("no end after %v", timeout), Said: tail.String()}
 	}
+}
+
+// stdinFeed copies a step's input to its command, keeping the error
+// reading it gave, if any.
+type stdinFeed struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (f *stdinFeed) copy(p *os.Process, w io.WriteCloser, r io.Reader) {
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				// The command is gone, or has stopped reading.
+				_ = w.Close()
+				return
+			}
+		}
+		if err == io.EOF {
+			_ = w.Close()
+			return
+		}
+		if err != nil {
+			f.mu.Lock()
+			f.err = err
+			f.mu.Unlock()
+			_ = p.Kill()
+			_ = w.Close()
+			return
+		}
+	}
+}
+
+func (f *stdinFeed) failed() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
 }
 
 // Output is runQuiet with stdout returned: what it said on stderr is in

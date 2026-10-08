@@ -1,62 +1,161 @@
-# Use your own image
+# The image
 
-By default the sandbox is built on the `Dockerfile` embedded in the launcher:
-Ubuntu with git, gh, jj, Node, Bun, Go and the docker CLI. It changes with
-caboose. There are two ways to build on something else.
+The sandbox runs an image caboose builds on your machine, in two parts: a
+**base**, which holds the OS and the tools, and a thin **layer** on top,
+the same on every base. What the base is comes from the environment's
+[image profile](configuration.md#image-profiles), one of three kinds:
 
-**An environment's own Dockerfile.** `caboose setup image` writes
-`~/.caboose/envs/<env>/image/Dockerfile` from that same Dockerfile, with
-the parts you choose: Node, Bun, Go, gh, jj and the docker CLI (all in by
-default), and Rust (out by default). The base — Ubuntu, and what the
-sandbox needs — is always in. From then on the file is yours: a newer
-caboose never changes it, `image/` is the build context (files next to
-the Dockerfile can be `COPY`ed), and `caboose setup image` run again shows
-how it differs from a fresh preset before replacing it. The image is
-labelled with a hash of everything in `image/`, so an edit reads as out
-of date:
+- **`apko`**, the default: Wolfi packages, built into an image with
+  [apko](https://github.com/chainguard-dev/apko). No Dockerfile: caboose's
+  package groups and the packages you name. See [Packages](#packages-the-default).
+- **`dockerfile`**, for experts: a Dockerfile of yours, in the
+  environment's directory. See [A Dockerfile](#a-dockerfile).
+- **`ref`**: an image of your own, used as it is. See
+  [An image of your own](#an-image-of-your-own).
+
+`caboose setup image` picks one, and writes it into `config.toml`.
+
+**The layer** is all caboose adds to a base, whatever its kind
+(`layer.Dockerfile`, `layer-user.sh`): the `agent` user with your UID and
+GID and its home, the entrypoint, and `tmux.conf`. It installs nothing —
+no apt, apk or dnf, ever — so a base caboose did not build, a Dockerfile's
+or your own image, holds exactly what you put there. Every base, whatever
+its kind, goes through the same [check](#checking-an-image) first.
+
+## Packages (the default)
+
+With no image profile in `config.toml`, the sandbox is `apko.default`:
+caboose's packages. They come in groups, in
+`internal/apkobuild/pkgset/packages.toml`:
+
+| group | packages | |
+|---|---|---|
+| required | `wolfi-baselayout`, `ca-certificates-bundle`, `busybox`, `bash`, `curl`, `git`, `tmux`, `ncurses`, `tzdata` | always in: what the sandbox [requires](#requirements-for-your-own-image) |
+| core | coreutils, findutils, grep, sed, diffutils, an ssh client and ssh-keygen (for signing commits), ripgrep, jq, less, vim, procps, unzip, zstd, a C toolchain (`build-base`), Python | default |
+| node | Node.js, npm and corepack | default |
+| bun | Bun | default |
+| go | Go | default |
+| gh | the GitHub CLI | default |
+| docker | the Docker CLI, buildx and compose | default |
+| dockerd | the Docker engine and `iptables` | default |
+| sudo | sudo | default |
+| rust | rustup | off |
+
+Add your own, Wolfi package names, in the profile:
+
+```toml
+[apko.default]
+packages = ["graphviz", "postgresql-17-client"]
+```
+
+`defaults = false` leaves out every group but the required one, so the
+image is only what the sandbox requires and `packages`. `caboose setup
+image`'s "choose package groups" writes exactly that: `defaults = false`
+and the packages of the groups you tick, with any of your own kept. To
+find a package's name, Wolfi's index
+(`https://packages.wolfi.dev/os/<aarch64|x86_64>/APKINDEX.tar.gz`) lists
+each as a `P:` line, and a `cmd:NAME` on its `p:` line says it provides
+the command `NAME`. A session can [propose](proposals.md) packages too,
+and the host checks the names as the proposal arrives.
+
+An apko base is built on this machine, in caboose itself: no Docker build,
+and no package's install scripts run, since apko unpacks packages and
+runs none of them. It is built for the docker engine's architecture
+(x86_64 or aarch64; under `vm`, the VM's), at a fixed timestamp, so the same lock gives the same
+image, byte for byte; then `docker load`ed as `caboose-base:<env>`. Under
+a [`vm` profile](configuration.md#the-vm-isolation) it is built the same
+way, here, and streamed into the builder VM.
+
+### The lock
+
+The packages are resolved — each name and its dependencies, to exact
+versions — into a lock, `apko-<name>.lock.json` in the environment's
+directory, next to `config.toml`. A build builds the lock as it is, so a
+rebuild gives the same base until something calls for resolving again:
+
+- there is no lock yet, or it cannot be read;
+- the profile's `packages` or `defaults` changed;
+- caboose's groups changed with a new caboose;
+- the lock is for another architecture than the engine's;
+- `caboose build --pull`, which takes the newest packages the repository
+  has. That is how a base gets updates: nothing does it by itself.
+
+The lock is written only once the image it built is in: a resolve or a
+build that fails leaves the last good lock, and the image it describes.
+It also records what the profile asked for, so a change to the profile
+that asks for the same packages (adding one the groups already have)
+rewrites that record and nothing else.
+
+### The package cache
+
+Downloaded packages and indexes are kept in `~/.caboose/cache/apk`, shared
+by every environment, so a rebuild downloads only what changed. `caboose
+prune` removes what no environment's lock names, and every index but the
+newest; see [Commands](commands.md).
+
+## A Dockerfile
+
+A `dockerfile` profile builds the base from a Dockerfile of yours:
+
+```toml
+image = "dockerfile.default"
+
+[dockerfile.default]
+```
+
+It has no keys: its build context is always the environment's
+`dockerfile/<name>/` (`~/.caboose/envs/default/dockerfile/default/`), so
+files next to the Dockerfile can be `COPY`ed. That directory is on the
+host and never mounted into the container, so nothing in the sandbox can
+change what it is built from; its fixed place is why no key could point
+elsewhere.
+
+`caboose setup image`, choosing the Dockerfile you edit, writes the seed
+there when it has no Dockerfile: the one caboose carries, Ubuntu with
+Node, Bun, Go, gh, jj, the docker CLI and engine and sudo, each a section
+between a `# caboose:section NAME TITLE` line and `# caboose:end` (Rust
+is a section left commented out). From then on the file is yours: a newer
+caboose never changes it, and setup run again leaves it as it is. The
+sections are what a session's [proposal](proposals.md) adds to or
+replaces; keep the markers you want proposals to find.
 
 ```sh
-$EDITOR ~/.caboose/envs/default/image/Dockerfile
-caboose build              # builds the base from image/, checks it, adds the layer
+$EDITOR ~/.caboose/envs/default/dockerfile/default/Dockerfile
+caboose build              # builds the base from the dir, checks it, adds the layer
 caboose restart            # moves the container onto it; kills sessions, asks first
 ```
 
-An edit is a change you made, as a switched base is: the next launch that
-creates the container rebuilds for it by itself. A launch that finds the
-container running only says so. `image/` is on the host and never mounted
-into the container, so nothing in the sandbox can change what it is built
-from.
+The image is labelled with a hash of everything in the directory, so an
+edit is a change you made, and the next launch that creates the container
+rebuilds for it by itself. A launch that finds the container running only
+says so.
 
-**An image of your own.** To run on something else entirely — your own
-toolchains, another distro, Alpine — name it as `base` in `config.toml`'s `[image]` (an
-environment with an `image/` dir as well is refused: keep one):
+## An image of your own
+
+To run on something else entirely — your own toolchains, another distro —
+name it in a `ref` profile:
 
 ```toml
-[image]
-base = "registry.example/team/image:tag"
+[ref.default]
+image = "registry.example/team/image:tag"
 ```
 
 ```sh
 caboose restart            # builds on it, then recreates the container; kills running sessions, asks first
 ```
 
-It has to be another image than `caboose:<env>`, the one caboose builds on
-top of it — in any spelling (`img`, `img:latest`, `docker.io/library/img`):
-a build and a launch refuse the two being the same. An image built `FROM`
-a caboose one, the default base (`caboose-base:<env>`) included, is fine.
-
-**The image is yours.** caboose never installs anything into it — no apt,
-apk or dnf, ever — so what is in the sandbox is exactly what you put there.
-It documents what an image must contain, checks that it does, and adds only
-what cannot be part of a generic image, as a thin layer on top
-(`layer.Dockerfile`, `layer-user.sh`): the `agent` user with your UID and
-GID and its home, the entrypoint, and `tmux.conf`. The default base goes
-through the same path; it is just one image that passes the check.
+It is pulled when it is not local, and with `caboose build --pull`;
+otherwise it is used as it is. It has to be another image than
+`caboose:<env>`, the one caboose builds on top of it — in any spelling
+(`img`, `img:latest`, `docker.io/library/img`): a build and a launch refuse
+the two being the same. An image built `FROM` a caboose one,
+`caboose-base:<env>` included, is fine. Nothing can be proposed for it:
+a session that needs a tool tells you what to add to your image.
 
 ## Requirements for your own image
 
 Any image, glibc or musl based, that has all of this — exactly what
-`caboose check-image` checks:
+`caboose check-image` checks, on every base:
 
 | requirement | why |
 |---|---|
@@ -109,10 +208,10 @@ works inside it; that takes `dockerd`, `containerd`,
 `containerd-shim-runc-v2`, `runc`, `iptables` (dockerd will not start
 without it) and the `docker` CLI on `PATH`. Docker's static release
 (`https://download.docker.com/linux/static/stable/`) has all of them but
-`iptables`, which comes from the distribution; the default Dockerfile's
-`dockerd` section installs both. An image without them is as usable: its
-sandbox just has no docker. Under container and gvisor nothing starts an
-image's dockerd, so the check says nothing about it there.
+`iptables`, which comes from the distribution; caboose's `dockerd` group,
+and the seed's `dockerd` section, have both. An image without them is as
+usable: its sandbox just has no docker. Under container and gvisor nothing
+starts an image's dockerd, so the check says nothing about it there.
 
 The layer edits `/etc/passwd`, `/etc/group` and, where they exist,
 `/etc/shadow` and `/etc/gshadow` directly, with plain `sh`: no `useradd` or
@@ -151,13 +250,13 @@ with why it is needed. It exits
 - **0** when every requirement is met,
 - **1** when one isn't,
 - **2** when it couldn't check at all: docker not answering, the pull
-  failing, or, with no `IMAGE` and no `base` configured, a default base
-  that hasn't been built yet.
+  failing, or, with no `IMAGE` under an `apko` or `dockerfile` profile, a
+  base that hasn't been built yet.
 
 Under a [`vm` profile](configuration.md#the-vm-isolation) there may be no
 docker engine, so the check runs where `caboose build` builds: in the
 builder VM, whose own docker keeps the bases builds made or pulled. The
-default base is the one the last `caboose build` made there; a named image
+base in use is the one the last `caboose build` made there; a named image
 the builder lacks is pulled into it from its registry. An image that only a
 docker engine on this Mac has cannot reach the builder, so its pull fails
 (exit 2): push it to a registry first, or check it in that engine with
@@ -169,48 +268,59 @@ on stderr; `caboose build` notes it too.
 ## What a build does
 
 `caboose build` (or the launch that creates the container, when there
-is no image or it was built on another base):
+is no image or it is out of date):
 
-1. **Gets the base.** On the default, it builds the embedded `Dockerfile`
-   and tags it `caboose-base:<env>`. On a configured `base`, it never
-   builds anything: it pulls the image if it isn't local (or `--pull` asks),
-   and otherwise uses it as it is.
+1. **Gets the base**, as the profile's kind says. `apko`: resolves the
+   packages into the lock when [it must](#the-lock), builds the lock and
+   loads it as `caboose-base:<env>`. `dockerfile`: builds the profile's
+   directory, as `caboose-base:<env>`; a directory with no Dockerfile
+   stops here, saying how to get one. `ref`: never builds anything; pulls
+   the image if it isn't local (or `--pull` asks), and otherwise uses it
+   as it is.
 2. **Checks it**, as `caboose check-image` does. A base that fails stops the
    build here, before the layer, with the list of what is missing.
 3. **Builds the layer** on it, as `caboose:<env>`, for your UID and GID,
-   labelled with the hashes of what it was built from, which kind of base
-   and its name and ID, your UID and GID, and the platform the check found
-   — which is how the launcher knows which `~/.local` to mount without
-   starting a container first. Every label is set, empty where it does not
-   apply, so labels a base inherited from a caboose image never read as the
-   layer's.
+   labelled with what it was built from: the hash of the layer, the kind
+   of base and what identifies it (the lock's hash on `apko`, a hash of
+   the directory on `dockerfile`), its name and ID, your UID and GID, and
+   the platform the check found — which is how the launcher knows which
+   `~/.local` to mount without starting a container first. Every label is
+   set, empty where it does not apply, so labels a base inherited from a
+   caboose image never read as the layer's.
 
 A `^C` at any step stops the build there (exit 130).
 
-## When your image changes
+## When the image is out of date
 
-On your own base, the image caboose runs is current while it was built by
-the same layer on the base's current image ID. A pull or rebuild of
-`my/image:tag` since makes it stale: a launch warns, and `caboose
-version` says `local : out of date`, with the reason. So does an image
-built for another host user (its UID or GID labels differ from yours). Base
-names are compared as docker resolves them, so `node:22` and
-`docker.io/library/node:22` are one base. The embedded `Dockerfile` plays
-no part here, so a new launcher only makes your image stale when it changes
-the layer. A running container is never moved off its image: the next
-launch that creates the container (`caboose restart`, or any launch once
-the container is gone) rebuilds a stale image first, and says so;
-`caboose restart` builds before it removes the old container, so a build
-that fails leaves it running. `caboose build` rebuilds it now, without
-touching the container.
+`caboose version` says whether the image is current, and if not, why; a
+launch says so too. A running container is never moved off its image: the
+next launch that creates the container (`caboose restart`, or any launch
+once the container is gone) rebuilds an out-of-date image first, and says
+so; `caboose restart` builds before it removes the old container, so a
+build that fails leaves it running. `caboose build` rebuilds it now,
+without touching the container.
 
-When `base` names another base than the image was built on —
-or is set or unset since — that is a change you asked for, and the launch
-that creates the container rebuilds on the new base in the same way. With
-`auto_build = false`, a launch builds nothing: it refuses to create
-a container on another base than the configured one, naming both, and
-otherwise uses the stale image with a warning, until you run `caboose
-build`.
+What makes it out of date is one of two things. **A change you made**:
+another image profile, or the one in use changed —
+
+- `apko`: its `packages` or `defaults`, or its lock deleted or unreadable;
+- `dockerfile`: anything in its directory;
+- `ref`: another `image` (names compared as docker resolves them, so
+  `node:22` and `docker.io/library/node:22` are one image).
+
+**Or drift nobody asked for**:
+
+- `apko`: a new caboose whose groups, or whose apko, change what the
+  profile stands for, or a lock resolved again since the image was built
+  from it;
+- `ref`: a pull or rebuild of the same image since (a new image ID);
+- any kind: a new caboose whose layer differs, or an image built for
+  another host user (its UID or GID labels differ from yours).
+
+With `auto_build = false` in `[build]`, a launch builds nothing: it
+refuses to create a container on a base you changed, naming both, and
+uses an image that merely drifted as it is, with a warning, until you run
+`caboose build`.
 
 ## Switching between images
 

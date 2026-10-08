@@ -81,17 +81,17 @@ func TestEditFile(t *testing.T) {
 			Edit{Unset: []string{"isolation"}},
 			"#isolation = \"vm.a\"\n[vm.a]\nisolation = 1\n"},
 		{"comments a table's key out",
-			"[image]\nbase = \"x\"\nauto_build = true\n",
-			Edit{Unset: []string{"image.base"}},
-			"[image]\n#base = \"x\"\nauto_build = true\n"},
+			"[ref.a]\nimage = \"x\"\n[build]\nauto_build = true\n",
+			Edit{Unset: []string{"ref.a.image"}},
+			"[ref.a]\n#image = \"x\"\n[build]\nauto_build = true\n"},
 		{"unsetting in a missing table changes nothing",
 			"format = 1\n",
-			Edit{Unset: []string{"image.base"}},
+			Edit{Unset: []string{"ref.a.image"}},
 			"format = 1\n"},
 		{"puts [roots] in place of the template's commented one",
-			"#[roots]\n#dev = \"~/dev\"\n\n#[image]\n",
+			"#[roots]\n#dev = \"~/dev\"\n\n#[build]\n",
 			Edit{SetRoots: true, Roots: map[string]FileRoot{"work": {Host: "~/work"}, "dev": {Host: "~/dev"}}},
-			"[roots]\ndev = \"~/dev\"\nwork = \"~/work\"\n#dev = \"~/dev\"\n\n#[image]\n"},
+			"[roots]\ndev = \"~/dev\"\nwork = \"~/work\"\n#dev = \"~/dev\"\n\n#[build]\n"},
 		{"adds [roots] at the end",
 			"format = 1\n",
 			Edit{SetRoots: true, Roots: map[string]FileRoot{"dev": {Host: "/d"}}},
@@ -106,8 +106,16 @@ func TestEditFile(t *testing.T) {
 			"format = 1\n#[roots]\n# mine\n#dev = \"/d\"\n#w = \"/w\"\n"},
 		{"quotes what needs quoting",
 			"",
-			Edit{Set: map[string]any{"image.base": "a \"b\"\\c\td"}},
-			"[image]\nbase = \"a \\\"b\\\"\\\\c\\u0009d\"\n"},
+			Edit{Set: map[string]any{"ref.a.image": "a \"b\"\\c\td"}},
+			"[ref.a]\nimage = \"a \\\"b\\\"\\\\c\\u0009d\"\n"},
+		{"writes a list of strings",
+			"[apko.default]\n",
+			Edit{Set: map[string]any{"apko.default.packages": []string{"jq", "a\"b"}}},
+			"[apko.default]\npackages = [\"jq\", \"a\\\"b\"]\n"},
+		{"writes an empty list",
+			"",
+			Edit{Set: map[string]any{"apko.default.packages": []string{}}},
+			"[apko.default]\npackages = []\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := string(EditFile([]byte(tc.in), tc.e))
@@ -127,8 +135,11 @@ func TestEditTemplateReadsBack(t *testing.T) {
 		{SetRoots: true, Roots: map[string]FileRoot{"dev": {Host: "~/dev"}, "work": {Host: "/w k"}, "t": {Host: "/t", Path: "/opt/t"}}},
 		{Set: map[string]any{"session.auto_sync": true}},
 		{Set: map[string]any{"session.auto_sync": false}},
-		{Set: map[string]any{"image.base": "node:22"}},
-		{Unset: []string{"image.base"}},
+		{Set: map[string]any{"image": "ref.default", "ref.default.image": "node:22"}},
+		{Set: map[string]any{"image": "dockerfile.default"}, Tables: []string{"dockerfile.default"}},
+		{Set: map[string]any{"image": "apko.default", "apko.default.defaults": false, "apko.default.packages": []string{"jq", "go-1.26"}}},
+		{Unset: []string{"apko.default.defaults"}},
+		{Set: map[string]any{"build.auto_build": false}},
 		{Set: map[string]any{"isolation": "gvisor.default"}, Tables: []string{"gvisor.default"}},
 		{Set: map[string]any{"isolation": "vm.default"}, Tables: []string{"vm.default"}},
 		{Set: map[string]any{"vm.default.cpus": 4, "link.host_exec": true}},
@@ -147,7 +158,8 @@ func TestEditTemplateReadsBack(t *testing.T) {
 		}
 	}
 	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: string(data)}, "")
-	if err != nil || c.Profile != "vm.default" || c.VMCPUs != 4 || !c.HostExec || c.AutoSync || c.BaseImage != "" ||
+	if err != nil || c.Profile != "vm.default" || c.VMCPUs != 4 || !c.HostExec || c.AutoSync || c.AutoBuild ||
+		c.ImageProfile.String() != "apko.default" || !c.ImageProfile.Defaults || len(c.ImageProfile.Packages) != 2 ||
 		len(c.Roots) != 1 || c.Roots[0].Container != "/work" {
 		t.Errorf("%+v %v\n%s", c, err, data)
 	}
@@ -164,7 +176,11 @@ func TestCheckEdit(t *testing.T) {
 		{"", "[session]\nauto_sync = true\n", Edit{Set: map[string]any{"session.auto_sync": true}}, ""},
 		{"", "", Edit{Set: map[string]any{"session.auto_sync": true}}, "auto_sync in [session] reads back as <nil>, not true"},
 		{"", "[session]\nauto_sync = true\n", Edit{Set: map[string]any{"session.auto_sync": false}}, "reads back as true, not false"},
-		{"", "[image]\nbase = \"/x\"\n", Edit{Unset: []string{"image.base"}}, "base in [image] is still set, to /x"},
+		{"", "[ref.a]\nimage = \"/x\"\n", Edit{Unset: []string{"ref.a.image"}}, "image in [ref.a] is still set, to /x"},
+		{"", "[apko.a]\npackages = [\"jq\"]\n", Edit{Set: map[string]any{"apko.a.packages": []string{"jq"}}}, ""},
+		{"", "[apko.a]\npackages = [\"jq\"]\n", Edit{Set: map[string]any{"apko.a.packages": []string{"go"}}}, "packages in [apko.a] reads back as [jq], not [go]"},
+		{"", "", Edit{Tables: []string{"dockerfile.a"}}, "[dockerfile.a] is not there"},
+		{"[dockerfile.a]\n", "", Edit{}, "[dockerfile.a] would be lost"},
 		{"", "[roots]\na = \"/a\"\n", Edit{SetRoots: true, Roots: map[string]FileRoot{"b": {Host: "/b"}}}, "[roots] reads back as"},
 		{"", "[roots]\na = { host = \"/a\", path = \"/opt/a\" }\n", Edit{SetRoots: true, Roots: map[string]FileRoot{"a": {Host: "/a", Path: "/opt/a"}}}, ""},
 		{"", "isolation = \n", Edit{}, "config.toml:"},
@@ -182,11 +198,52 @@ func TestCheckEdit(t *testing.T) {
 
 func TestSnippet(t *testing.T) {
 	e := Edit{Set: map[string]any{"isolation": "vm.default", "vm.default.cpus": 4}, Tables: []string{"vm.default", "gvisor.x"},
-		Unset: []string{"image.base"}, SetRoots: true,
+		Unset: []string{"ref.a.image"}, SetRoots: true,
 		Roots: map[string]FileRoot{"dev": {Host: "~/dev"}, "t": {Host: "/t", Path: "/opt/t"}}}
-	want := "isolation = \"vm.default\"\n[gvisor.x]\n[vm.default]\ncpus = 4\n# (remove base in [image])\n" +
+	want := "isolation = \"vm.default\"\n[gvisor.x]\n[vm.default]\ncpus = 4\n# (remove image in [ref.a])\n" +
 		"[roots]\ndev = \"~/dev\"\nt = { host = \"/t\", path = \"/opt/t\" }\n"
 	if got := e.Snippet(); got != want {
 		t.Errorf("got\n%s", got)
+	}
+}
+
+// A multi-line array is one value: set replaces all its lines, unset
+// comments out all of them, and the key after it is left as it was.
+func TestEditMultiLineArray(t *testing.T) {
+	const in = "[apko.default]\n" +
+		"packages = [\n" +
+		"  \"jq\",       # a comment, with a ] in it\n" +
+		"  # a whole-line comment [\n" +
+		"  \"go-1.26\", \"a]b\",\n" +
+		"]\n" +
+		"defaults = false\n" +
+		"\n" +
+		"[session]\n" +
+		"tmux = false\n"
+	for _, tc := range []struct {
+		name string
+		e    Edit
+		want string
+	}{
+		{"set", Edit{Set: map[string]any{"apko.default.packages": []string{"git"}}},
+			"[apko.default]\npackages = [\"git\"]\ndefaults = false\n\n[session]\ntmux = false\n"},
+		{"unset", Edit{Unset: []string{"apko.default.packages"}},
+			"[apko.default]\n" +
+				"#packages = [\n" +
+				"#  \"jq\",       # a comment, with a ] in it\n" +
+				"#  # a whole-line comment [\n" +
+				"#  \"go-1.26\", \"a]b\",\n" +
+				"#]\n" +
+				"defaults = false\n\n[session]\ntmux = false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(EditFile([]byte(in), tc.e))
+			if got != tc.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tc.want)
+			}
+			if err := CheckEdit("config.toml", []byte(in), []byte(got), tc.e); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }

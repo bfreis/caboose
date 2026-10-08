@@ -1,10 +1,11 @@
-# Isolated Claude Code sandbox: the default base image.
+# Isolated Claude Code sandbox: a base image built from a Dockerfile.
 #
-# This is only the base: OS packages and toolchains. The launcher builds it,
-# tags it caboose-base:<env>, runs the image check against it like any
-# configured base, and then builds layer.Dockerfile FROM it -- the agent
-# user, its home, the entrypoint and tmux.conf all live there, so that a
-# user's own image goes through exactly the same path. Nothing in here may
+# This is only the base: OS packages and toolchains. It is the seed caboose
+# setup writes into a dockerfile image profile's directory. The launcher
+# builds that, tags it caboose-base:<env>, runs the image check against it
+# like any other base, and then builds layer.Dockerfile FROM it -- the
+# agent user, its home, the entrypoint and tmux.conf all live there, so
+# that every base goes through exactly the same path. Nothing in here may
 # assume the agent user exists, and nothing here takes the host's UID/GID.
 #
 # Claude Code itself is deliberately NOT installed into this image. It is
@@ -28,11 +29,11 @@
 # not packaged at all).
 #
 # Everything after the OS packages is in sections, between a
-# "# caboose:section NAME [off] TITLE" line and "# caboose:end": what
-# `caboose setup` offers to leave out of (or, for an "off" section, put
-# into) an environment's own image/Dockerfile. An off section is commented
-# out line by line, so this file builds without it. A section carries its
-# own ARGs and ENVs, and must not depend on another one.
+# "# caboose:section NAME [off] TITLE" line and "# caboose:end". A proposal
+# from a session adds a section of its own the same way, or replaces one
+# of the same name. An off section is commented out line by line, so this
+# file builds without it. A section carries its own ARGs and ENVs, and
+# must not depend on another one.
 #
 # No download may hang the build. apt runs with retries and timeouts, and
 # every RUN that downloads defines its own fetch (a section cannot lean on

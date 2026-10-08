@@ -61,7 +61,6 @@ func TestWriteContextsWriteOnlyTheirFiles(t *testing.T) {
 		write func(string) error
 		want  string
 	}{
-		{WriteBaseContext, "Dockerfile"},
 		{WriteLayerContext, "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf"},
 	} {
 		dir := t.TempDir()
@@ -122,20 +121,10 @@ func mustHashOf(t *testing.T, fsys fs.FS, tag string, files []ContextFile) strin
 	return h
 }
 
-func TestHashesAreStableAndDistinct(t *testing.T) {
-	seen := map[string]string{}
-	for name, f := range map[string]func() string{"context": ContextHash, "base": BaseHash, "layer": LayerHash} {
-		a, b := f(), f()
-		if a != b || len(a) != 64 {
-			t.Errorf("%s hash = %q then %q", name, a, b)
-		}
-		if other, ok := seen[a]; ok {
-			t.Errorf("%s hash equals the %s hash", name, other)
-		}
-		seen[a] = name
-	}
-	if ContextHashFor(false) != ContextHash() || ContextHashFor(true) != LayerHash() {
-		t.Error("ContextHashFor picks the wrong hash")
+func TestLayerHashIsStable(t *testing.T) {
+	a, b := LayerHash(), LayerHash()
+	if a != b || len(a) != 64 {
+		t.Errorf("layer hash = %q then %q", a, b)
 	}
 }
 
@@ -160,29 +149,17 @@ func TestContextHashOfKnownFixture(t *testing.T) {
 	}
 }
 
-// Staleness in each mode rests on this: the embedded Dockerfile is in the
-// base's hash and the combined one, never in the layer's, so a change to it
-// cannot flag an image built on a user's base.
-func TestHashesCoverTheirOwnFiles(t *testing.T) {
-	all := append(append([]ContextFile{}, BaseContext...), LayerContext...)
-	hashes := func(m fstest.MapFS) [3]string {
-		return [3]string{mustHashOf(t, m, tagContext, all), mustHashOf(t, m, tagBase, BaseContext),
-			mustHashOf(t, m, tagLayer, LayerContext)}
-	}
-	orig := hashes(fixture())
-	for _, f := range all {
+// Staleness rests on this: the embedded Dockerfile, now only a seed for a
+// dockerfile profile's dir, is not in the layer's hash, so a change to it
+// flags no image.
+func TestLayerHashCoversItsOwnFiles(t *testing.T) {
+	orig := mustHashOf(t, fixture(), tagLayer, LayerContext)
+	for _, f := range append(append([]ContextFile{}, BaseContext...), LayerContext...) {
 		m := fixture()
 		m[f.Name].Data = append(m[f.Name].Data, '#')
-		got := hashes(m)
-		inBase := f.Name == "Dockerfile"
-		if got[0] == orig[0] {
-			t.Errorf("editing %s left the combined hash", f.Name)
-		}
-		if (got[1] != orig[1]) != inBase {
-			t.Errorf("editing %s: base hash changed %v", f.Name, got[1] != orig[1])
-		}
-		if (got[2] != orig[2]) == inBase {
-			t.Errorf("editing %s: layer hash changed %v", f.Name, got[2] != orig[2])
+		changed := mustHashOf(t, m, tagLayer, LayerContext) != orig
+		if changed != (f.Name != "Dockerfile") {
+			t.Errorf("editing %s: layer hash changed %v", f.Name, changed)
 		}
 	}
 }

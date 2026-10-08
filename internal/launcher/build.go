@@ -1,8 +1,10 @@
 package launcher
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/imagecheck"
 	"github.com/bfreis/caboose/internal/version"
@@ -22,25 +25,27 @@ import (
 // refreshes the OS packages, the language toolchains, the CLIs and the
 // entrypoint.
 //
-// The base is built here and tagged config.BaseImageFor(the environment),
-// from the environment's image/ dir when it has one, else from the
-// embedded Dockerfile; or it is [image] base, which is the user's and
-// never built: only pulled, when it is not local or --pull asks.
-// Either way the image check runs on it next, and a base that fails it
-// stops the build with the list of what is missing, before the layer. So the
-// default image goes through the path a user's does, and there is one path
-// to test.
+// The base comes from the environment's image profile
+// (config.ImageProfile): an apko profile's packages, resolved into its
+// lock and built in-process with apko (apko.go), or a dockerfile
+// profile's dir, built with docker -- both tagged config.BaseImageFor(the
+// environment) -- or a ref profile's image, which is the user's and never
+// built: only pulled, when it is not local or --pull asks. Whichever it
+// is, the image check runs on it next, and a base that fails it stops the
+// build with the list of what is missing, before the layer. So every base
+// goes through one path, and there is one path to test.
 //
-// Each context is a temp dir holding only embedded files, never a checkout,
-// so nothing unlisted can reach the daemon, by construction rather than by
-// a .dockerignore someone has to keep up to date. The layer is built for the host UID/GID, so
-// files the container writes into bind mounts belong to the host user.
+// The layer's context is a temp dir holding only embedded files, never a
+// checkout, so nothing unlisted can reach the daemon, by construction
+// rather than by a .dockerignore someone has to keep up to date. The layer
+// is built for the host UID/GID, so files the container writes into bind
+// mounts belong to the host user.
 //
 // Extra args (--no-cache, --progress=plain, --platform ...) go to every
 // `docker build` this runs, except --pull: the layer is FROM a base that is
 // local by then, and may exist nowhere else, so pulling it would fail. It
-// goes to the base's build on the default base, and on a user's means
-// `docker pull` it first.
+// goes to a dockerfile profile's build, means `docker pull` on a ref, and
+// resolving the packages again on apko.
 //
 // A running container keeps using the image it was created from; pick up a
 // rebuild with `caboose restart`.
@@ -86,24 +91,42 @@ func (a *App) build(extra []string, stdout io.Writer) error {
 	if a.isVM() {
 		return interrupted(a.buildVM(extra))
 	}
-	base, byo := a.Cfg.Base()
-	dirHash := ""
-	if a.Cfg.ImageDir != "" {
+	p := a.Cfg.ImageProfile
+	base := a.Cfg.BaseRef()
+	pull, layerExtra := splitPull(extra)
+	platform := platformArg(extra)
+	baseHash := ""
+	switch p.Kind {
+	case config.ImageKindApko:
+		if platform != "" {
+			return Die("an apko image (%s) is built for the docker engine's architecture, so caboose build takes no --platform", p)
+		}
+		var err error
+		if baseHash, err = a.buildApko(base, pull); err != nil {
+			return interrupted(err)
+		}
+		if err := interrupted(nil); err != nil {
+			return err
+		}
+	case config.ImageKindDockerfile:
+		if err := a.checkDockerfileDir(); err != nil {
+			return err
+		}
 		// Before the build, so that the label never claims an edit made
 		// while it ran: such an edit reads as stale afterwards.
 		var err error
-		if dirHash, err = assets.DirHash(a.Cfg.ImageDir); err != nil {
-			return Die("reading %s: %v", a.Cfg.ImageDir, err)
+		if baseHash, err = assets.DirHash(p.Dir); err != nil {
+			return Die("reading %s: %v", p.Dir, err)
 		}
-	}
-	pull, layerExtra := splitPull(extra)
-	platform := platformArg(extra)
-	if byo {
+		if err := interrupted(a.buildBase(base, extra)); err != nil {
+			return err
+		}
+	case config.ImageKindRef:
 		if err := interrupted(a.fetchBase(base, pull, platform)); err != nil {
 			return err
 		}
-	} else if err := interrupted(a.buildBase(base, extra)); err != nil {
-		return err
+	default:
+		return Die("image profile %s is of no kind this caboose builds", p)
 	}
 
 	// The check and the labels are about this ID. The layer's FROM names the
@@ -142,7 +165,7 @@ func (a *App) build(extra []string, stdout io.Writer) error {
 		return Die("not building the caboose layer on '%s'", base)
 	}
 
-	return interrupted(a.buildLayer(base, baseID, byo, dirHash, rep.Platform, layerExtra, stdout))
+	return interrupted(a.buildLayer(base, baseID, p.Kind, baseHash, rep.Platform, layerExtra, stdout))
 }
 
 // interruptedBy is the exit for a build a signal stopped: 128 plus its
@@ -201,30 +224,34 @@ func splitPull(extra []string) (pull bool, rest []string) {
 	return pull, rest
 }
 
-// buildBase builds the base as tag, with all the extra args: from the
-// environment's image/ dir, which is its context as it stands, or else
-// from the embedded Dockerfile, written to a temp dir. Its stdout goes to
-// stderr, so that only the final image's build writes to stdout. It takes
-// no build args: nothing in the base depends on the host.
-func (a *App) buildBase(tag string, extra []string) error {
-	ctx, hash := a.Cfg.ImageDir, ""
-	if ctx != "" {
-		a.Note("building the base image '%s' from %s", tag, filepath.Join(ctx, "Dockerfile"))
-	} else {
-		dir, err := os.MkdirTemp("", "caboose-base-")
-		if err != nil {
-			return Die("%v", err)
-		}
-		defer os.RemoveAll(dir)
-		if err := assets.WriteBaseContext(dir); err != nil {
-			return Die("%v", err)
-		}
-		ctx, hash = dir, assets.BaseHash()
-		a.Note("building the base image '%s' from the Dockerfile embedded in this launcher", tag)
+// checkDockerfileDir makes sure a dockerfile profile's dir has its
+// Dockerfile, and says what to do when it has not.
+func (a *App) checkDockerfileDir() error {
+	p := a.Cfg.ImageProfile
+	df := filepath.Join(p.Dir, "Dockerfile")
+	fi, err := os.Stat(df)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return Die("image profile %s builds from %s, which has no Dockerfile:\n"+
+			"       '%s' writes caboose's there (choose the Dockerfile you edit),\n"+
+			"       or write one of your own, or set image to another profile in %s",
+			p, a.short(p.Dir), SetupCommand(a.Cfg.Env, "image"), a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)))
+	case err != nil:
+		return Die("reading %s: %v", df, err)
+	case !fi.Mode().IsRegular():
+		return Die("%s is not a file: image profile %s needs a Dockerfile there", df, p)
 	}
-	argv := []string{"-t", tag,
-		"--label", assets.LabelVersion + "=" + version.Get().Version,
-		"--label", assets.LabelBaseHash + "=" + hash}
+	return nil
+}
+
+// buildBase builds a dockerfile profile's dir as tag, with all the extra
+// args: the dir is its context as it stands. Its stdout goes to stderr,
+// so that only the final image's build writes to stdout. It takes no
+// build args: nothing in the base depends on the host.
+func (a *App) buildBase(tag string, extra []string) error {
+	ctx := a.Cfg.ImageProfile.Dir
+	a.Note("building the base image '%s' from %s (%s)", tag, a.short(filepath.Join(ctx, "Dockerfile")), a.Cfg.ImageProfile)
+	argv := []string{"-t", tag, "--label", assets.LabelVersion + "=" + version.Get().Version}
 	argv = append(append(argv, extra...), ctx)
 	if err := a.Docker.Build(a.Stderr, a.Stderr, argv...); err != nil {
 		return dockerFailed(err)
@@ -243,9 +270,9 @@ func (a *App) fetchBase(ref string, pull bool, platform string) error {
 	}
 	switch {
 	case !exists:
-		a.Note("base image '%s' (base in [image]) is not in the local store; pulling it (docker's output follows)", ref)
+		a.Note("base image '%s' (%s) is not in the local store; pulling it (docker's output follows)", ref, a.Cfg.ImageProfile)
 	case pull:
-		a.Note("pulling base image '%s' (base in [image]), as --pull asks", ref)
+		a.Note("pulling base image '%s' (%s), as --pull asks", ref, a.Cfg.ImageProfile)
 	default:
 		return nil
 	}
@@ -260,12 +287,12 @@ func (a *App) fetchBase(ref string, pull bool, platform string) error {
 }
 
 // buildLayer builds layer.Dockerfile FROM base as the environment's image, labelled
-// with what it was built from: the launcher's version, the hashes of the
-// embedded contexts it used, the kind of base and its name and ID, the
-// platform the check found, which picks the data dir's dot_local/<platform>,
-// and the host IDs the agent user has. dirHash is the environment's image/
-// dir's, when the base was built from it.
-func (a *App) buildLayer(base, baseID string, byo bool, dirHash, platform string, extra []string, stdout io.Writer) error {
+// with what it was built from: the launcher's version, the hash of the
+// layer's context, the kind of base (an image kind), what identifies it
+// (baseHash: an apko lock's hash, a dockerfile dir's DirHash, "" on a
+// ref), its name and ID, the platform the check found, which picks the
+// data dir's dot_local/<platform>, and the host IDs the agent user has.
+func (a *App) buildLayer(base, baseID, kind, baseHash, platform string, extra []string, stdout io.Writer) error {
 	dir, err := os.MkdirTemp("", "caboose-layer-")
 	if err != nil {
 		return Die("%v", err)
@@ -276,7 +303,7 @@ func (a *App) buildLayer(base, baseID string, byo bool, dirHash, platform string
 	}
 	a.Note("building the caboose layer on '%s' as '%s'", base, a.Cfg.Image)
 	uid, gid := strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid())
-	values := layerLabels(base, baseID, byo, dirHash, platform)
+	values := layerLabels(base, baseID, kind, baseHash, platform)
 	argv := []string{"-t", a.Cfg.Image, "-f", dir + "/" + assets.LayerDockerfile,
 		"--build-arg", "BASE=" + base,
 		"--build-arg", "CABOOSE_UID=" + uid,
@@ -293,16 +320,10 @@ func (a *App) buildLayer(base, baseID string, byo bool, dirHash, platform string
 }
 
 // layerLabels are the values of every label in assets.LayerLabels for a
-// layer built on base (ID baseID) whose check found platform: what it was
-// built from, by which caboose, for which host user.
-func layerLabels(base, baseID string, byo bool, dirHash, platform string) map[string]string {
-	kind, baseHash := assets.BaseKindBYO, ""
-	switch {
-	case dirHash != "":
-		kind, baseHash = assets.BaseKindEnv, dirHash
-	case !byo:
-		kind, baseHash = assets.BaseKindDefault, assets.BaseHash()
-	}
+// layer built on base (ID baseID), a base of kind identified by baseHash,
+// whose check found platform: what it was built from, by which caboose,
+// for which host user.
+func layerLabels(base, baseID, kind, baseHash, platform string) map[string]string {
 	return map[string]string{
 		assets.LabelVersion:   version.Get().Version,
 		assets.LabelLayerHash: assets.LayerHash(),
@@ -323,12 +344,14 @@ func shortID(id string) string {
 	return short(strings.TrimPrefix(id, "sha256:"))
 }
 
+// buildNote says what a launch's build builds from.
 func (a *App) buildNote() string {
-	if base, byo := a.Cfg.Base(); byo {
-		return fmt.Sprintf("building the caboose layer on '%s' (base in [image])", base)
+	p := a.Cfg.ImageProfile
+	switch p.Kind {
+	case config.ImageKindRef:
+		return fmt.Sprintf("building the caboose layer on '%s' (%s)", p.Ref, p)
+	case config.ImageKindDockerfile:
+		return "building it from " + a.short(filepath.Join(p.Dir, "Dockerfile")) + " (" + p.String() + ")"
 	}
-	if a.Cfg.ImageDir != "" {
-		return "building it from " + filepath.Join(a.Cfg.ImageDir, "Dockerfile")
-	}
-	return "building it from the Dockerfile embedded in this launcher"
+	return "building it from " + a.packagesPhrase() + " (" + p.String() + ")"
 }

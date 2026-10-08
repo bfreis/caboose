@@ -76,6 +76,11 @@ and the snapshot of the shell Claude Code's Bash tool takes — reads
   bash-only file can build on the shared one.
 - Anything else is skipped: dotfiles, a `README`, an editor's backup.
 
+One exception: `PATH`. The Bash tool's shell takes its `PATH` from Claude
+Code once `shell.d` has run, so a directory a file adds reaches your
+shells but not the agent's. A command both should find goes in (or is
+linked into) `~/.local/bin`, which is first on every `PATH` and kept.
+
 The Bash tool reads your aliases too. Something like `alias ll='ls -l'` is
 harmless; `alias rm='rm -i'` or `alias grep=rg` changes what the agent's
 commands do, so keep what you put here deliberate.

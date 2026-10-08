@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
@@ -19,10 +20,13 @@ import (
 // Request is one build of the sandbox's image: a base, checked, and the
 // layer on it, as caboose build does with docker today.
 type Request struct {
-	// The base: BaseContext, a directory with a Dockerfile, built as
-	// BaseTag; or else BaseRef, pulled when the builder lacks it or Pull
-	// says so.
+	// The base, exactly one of: BaseContext, a directory with a
+	// Dockerfile, built as BaseTag; BaseTarball, an image tarball as
+	// docker save writes one, read to its end into docker load, which
+	// tags it BaseTag (the tag it holds); or BaseRef, pulled when the
+	// builder lacks it or Pull says so.
 	BaseContext string
+	BaseTarball io.Reader
 	BaseTag     string
 	BaseLabels  []string // KEY=VALUE
 	BaseRef     string
@@ -63,6 +67,18 @@ func (e *CheckError) Error() string {
 // the output disk Start attached.
 func (g *Guest) Build(req Request) (Result, error) {
 	var r Result
+	n := 0
+	for _, set := range []bool{req.BaseContext != "", req.BaseTarball != nil, req.BaseRef != ""} {
+		if set {
+			n++
+		}
+	}
+	if n != 1 {
+		return r, fmt.Errorf("a build needs exactly one base: a context, a tarball or a ref (it has %d)", n)
+	}
+	if req.BaseRef == "" && req.BaseTag == "" {
+		return r, errors.New("a base built or loaded needs a tag")
+	}
 	switch {
 	case req.BaseContext != "":
 		r.Base = req.BaseTag
@@ -75,7 +91,12 @@ func (g *Guest) Build(req Request) (Result, error) {
 		if err := g.runWithContext(baseTimeout, req.BaseContext, append(argv, "-")...); err != nil {
 			return r, fmt.Errorf("building the base: %w", err)
 		}
-	case req.BaseRef != "":
+	case req.BaseTarball != nil:
+		r.Base = req.BaseTag
+		if err := g.load(req.BaseTarball); err != nil {
+			return r, fmt.Errorf("loading the base image '%s': %w", req.BaseTag, err)
+		}
+	default:
 		r.Base = req.BaseRef
 		_, _, err := g.Inspect(req.BaseRef)
 		if err != nil || req.Pull {
@@ -83,8 +104,6 @@ func (g *Guest) Build(req Request) (Result, error) {
 				return r, fmt.Errorf("pulling base image '%s': %w", req.BaseRef, err)
 			}
 		}
-	default:
-		return r, fmt.Errorf("a build needs a base")
 	}
 	id, rep, err := g.Check(r.Base, req.Probe, req.UID, req.GID)
 	if err != nil {
@@ -116,6 +135,59 @@ func (g *Guest) Build(req Request) (Result, error) {
 		return r, err
 	}
 	return r, nil
+}
+
+// load is docker load in the guest, of the tarball tarball reads: within
+// baseTimeout, as a base's build, since it comes over the exec port as a
+// build context does, and a base's tarball may be gigabytes, made as it
+// is sent. What docker says of it is shown, as a build's output is. A
+// tarball whose reading failed is an error even if docker load took what
+// it got: a stream cut short at a file's end is a tar all the same. Once
+// docker load has ended, a tarball that is an io.Closer is closed, whether
+// the load succeeded or not: what makes it, waiting to write again, is
+// stopped then, not at its next write.
+func (g *Guest) load(tarball io.Reader) error {
+	src := &readEnd{r: tarball}
+	var shown io.Writer
+	if g.b != nil {
+		shown = g.b.Stderr
+	}
+	err := g.Run(baseTimeout, src, shown, "docker", "load")
+	rerr := src.failed()
+	if c, ok := tarball.(io.Closer); ok {
+		_ = c.Close()
+	}
+	if rerr != nil && rerr != io.EOF {
+		return fmt.Errorf("reading the image: %w", rerr)
+	}
+	return err
+}
+
+// readEnd is a reader that keeps the first error its reader gave: io.EOF
+// for one read to its end. It may still be read from after the step that
+// read it ended (Guest.exec), hence the lock.
+type readEnd struct {
+	r   io.Reader
+	mu  sync.Mutex
+	err error
+}
+
+func (e *readEnd) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err != nil {
+		e.mu.Lock()
+		if e.err == nil {
+			e.err = err
+		}
+		e.mu.Unlock()
+	}
+	return n, err
+}
+
+func (e *readEnd) failed() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
 }
 
 // Has reports whether the builder's store holds image: a base an earlier

@@ -1,6 +1,7 @@
 package proposal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,7 +160,7 @@ func TestList(t *testing.T) {
 func TestWriteCurrent(t *testing.T) {
 	data := t.TempDir()
 	df := []byte("FROM x\n")
-	s := State{Source: SourceImageDir, Dockerfile: df, Roots: map[string]StateRoot{"dev": {Host: "~/dev", Path: "/work/dev"}}}
+	s := State{Image: "dockerfile.default", Source: SourceDockerfile, Dockerfile: df, Roots: map[string]StateRoot{"dev": {Host: "~/dev", Path: "/work/dev"}}}
 	if err := WriteCurrent(data, s); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +169,7 @@ func TestWriteCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`dockerfile = "image/Dockerfile"`, `dockerfile_sha256 = "` + Hash(df) + `"`, "[roots.dev]", `host = "~/dev"`, `path = "/work/dev"`} {
+	for _, want := range []string{`image = "dockerfile.default"`, `dockerfile = "dockerfile"`, `dockerfile_sha256 = "` + Hash(df) + `"`, "[roots.dev]", `host = "~/dev"`, `path = "/work/dev"`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("state.toml lacks %q:\n%s", want, b)
 		}
@@ -176,9 +177,13 @@ func TestWriteCurrent(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(cur, "Dockerfile")); string(got) != string(df) {
 		t.Errorf("Dockerfile %q", got)
 	}
-	// On a base image, no Dockerfile.
-	if err := WriteCurrent(data, State{Source: SourceBaseImage, BaseImage: "img"}); err != nil {
+	// Under apko or ref, no Dockerfile, and no dockerfile key.
+	if err := WriteCurrent(data, State{Image: "apko.default"}); err != nil {
 		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(cur, "state.toml")); !strings.Contains(string(b), `image = "apko.default"`) ||
+		strings.Contains(string(b), "\ndockerfile") {
+		t.Errorf("state.toml:\n%s", b)
 	}
 	if _, err := os.Stat(filepath.Join(cur, "Dockerfile")); !os.IsNotExist(err) {
 		t.Errorf("Dockerfile still there: %v", err)
@@ -204,5 +209,154 @@ func TestWriteCurrent(t *testing.T) {
 	}
 	if err := WriteCurrent(data, s); err == nil {
 		t.Error("wrote through a symlinked current/")
+	}
+}
+
+func TestParsePackages(t *testing.T) {
+	p, err := Parse("p.toml", []byte("title = \"Add graphviz\"\nreason = \"diagrams\"\n[packages]\nadd = [\"graphviz\", \"py3-pip\"]\nremove = [\"jq\"]\n[roots]\nx = \"/x\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Packages == nil || strings.Join(p.Packages.Add, " ") != "graphviz py3-pip" || strings.Join(p.Packages.Remove, " ") != "jq" || p.Root == nil {
+		t.Errorf("%+v %+v", p, p.Packages)
+	}
+	for _, s := range []string{
+		"title = \"t\"\n[packages]\nadd = [\"a\"]\n",
+		"title = \"t\"\n[packages]\nremove = [\"a\"]\n",
+	} {
+		if _, err := Parse("p.toml", []byte(s)); err != nil {
+			t.Errorf("%q: %v", s, err)
+		}
+	}
+	many := make([]string, MaxPackages)
+	for i := range many {
+		many[i] = fmt.Sprintf("\"p%d\"", i)
+	}
+	if _, err := Parse("p.toml", []byte("title = \"t\"\n[packages]\nadd = ["+strings.Join(many, ", ")+"]\n")); err != nil {
+		t.Errorf("%d packages: %v", MaxPackages, err)
+	}
+	sec := "dockerfile_sha256 = \"" + sha + "\"\n[section]\nname = \"a\"\ntitle = \"A\"\nbody = \"RUN x\"\n"
+	for _, tc := range []struct{ data, want string }{
+		{"title = \"t\"\n[packages]\n", "[packages] proposes nothing"},
+		{"title = \"t\"\n[packages]\nadd = []\nremove = []\n", "[packages] proposes nothing"},
+		{"title = \"t\"\n" + sec + "[packages]\nadd = [\"a\"]\n", "both [section] and [packages]"},
+		{"title = \"t\"\n[packages]\nadd = [\"Graphviz\"]\n", "packages.add: package name \"Graphviz\""},
+		{"title = \"t\"\n[packages]\nremove = [\"-x\"]\n", "packages.remove: package name \"-x\" must start"},
+		{"title = \"t\"\n[packages]\nadd = [\"a b\"]\n", "packages.add"},
+		{"title = \"t\"\n[packages]\nadd = [\"a\\u001b\"]\n", "packages.add"},
+		{"title = \"t\"\n[packages]\nadd = [\"\"]\n", "empty"},
+		{"title = \"t\"\n[packages]\nadd = [\"a\", \"a\"]\n", "packages.add names a twice"},
+		{"title = \"t\"\n[packages]\nadd = [\"a\"]\nremove = [\"a\"]\n", "both adds and removes a"},
+		{"title = \"t\"\n[packages]\nadd = [" + strings.Join(many, ", ") + "]\nremove = [\"zz\"]\n", "names 65 packages"},
+		{"title = \"t\"\n[packages]\nadd = [\"a\"]\npin = [\"b\"]\n", "unknown key packages.pin"},
+		{"title = \"t\"\n[packages]\nadd = \"a\"\n", "not a proposal"},
+	} {
+		_, err := Parse("p.toml", []byte(tc.data))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: %v, want %q", tc.data, err, tc.want)
+		}
+	}
+}
+
+// A check file is written beside its proposal, never through what the
+// sandbox put there, is not listed as a proposal, and goes with it.
+func TestCheckFile(t *testing.T) {
+	data := t.TempDir()
+	dir := filepath.Join(data, Dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p.toml"), []byte("title = \"t\"\n[packages]\nadd = [\"a\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "p.check")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := CheckModified(data, "p.toml"); ok {
+		t.Error("a symlink counts as a check file")
+	}
+	if err := WriteCheck(data, "p.toml", CheckError, []string{"no package named \"x\x1b[2J\"", "line one\nline two", strings.Repeat("y", 1000)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "keep" {
+		t.Errorf("wrote through the symlink: %q", got)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "p.check"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	if len(lines) != 5 || lines[0] != "error" || lines[1] != `no package named "x\u001B[2J"` || lines[2] != "line one" || lines[3] != "line two" ||
+		len(lines[4]) != checkLineMax || !strings.HasSuffix(lines[4], "...") {
+		t.Errorf("check file:\n%s", got)
+	}
+	if _, ok := CheckModified(data, "p.toml"); !ok {
+		t.Error("no check file")
+	}
+	var facts []string
+	for i := 0; i < 30; i++ {
+		facts = append(facts, "fact")
+	}
+	if n := strings.Count(string(FormatCheck(CheckOK, facts)), "\n"); n != checkLines+2 {
+		t.Errorf("%d lines", n)
+	}
+	es, err := List(data)
+	if err != nil || len(es) != 1 || es[0].File != "p.toml" {
+		t.Errorf("listed %+v %v", es, err)
+	}
+	if err := Remove(data, "p.toml"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "p.check")); !os.IsNotExist(err) {
+		t.Errorf("the check file stayed: %v", err)
+	}
+	if err := RemoveCheck(data, "p.toml"); err != nil {
+		t.Errorf("removing a missing check: %v", err)
+	}
+}
+
+func TestWriteCurrentApko(t *testing.T) {
+	data := t.TempDir()
+	s := State{Image: "apko.default", Apko: &ApkoState{Packages: nil, Defaults: true, Installed: []string{"bash", "jq"}}}
+	if err := WriteCurrent(data, s); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(data, Dir, CurrentDir, "state.toml"))
+	for _, want := range []string{`image = "apko.default"`, "packages = []", "defaults = true", `installed = ["bash", "jq"]`, "a [packages] proposal"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("state.toml lacks %q:\n%s", want, b)
+		}
+	}
+	if err := WriteCurrent(data, State{Image: "ref.mine"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(filepath.Join(data, Dir, CurrentDir, "state.toml"))
+	for _, not := range []string{"\npackages", "\ndefaults", "\ninstalled"} {
+		if strings.Contains(string(b), not) {
+			t.Errorf("state.toml for a ref has %q:\n%s", not, b)
+		}
+	}
+}
+
+// Whatever the sandbox put at a proposal's check file's name, a directory
+// with something in it say, the proposal itself still goes.
+func TestRemoveDespiteAPlantedCheck(t *testing.T) {
+	data := t.TempDir()
+	dir := filepath.Join(data, Dir)
+	if err := os.MkdirAll(filepath.Join(dir, "p.check", "inside"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p.toml"), []byte("title = \"t\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(data, "p.toml"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "p.toml")); !os.IsNotExist(err) {
+		t.Errorf("the proposal stayed: %v", err)
 	}
 }

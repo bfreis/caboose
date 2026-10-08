@@ -144,7 +144,7 @@ func TestCheckImageComplete(t *testing.T) {
 			t.Errorf("docker %s", l)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, ".caboose")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".caboose", "envs", "default", "data")); !os.IsNotExist(err) {
 		t.Error("caboose check-image created the data dir")
 	}
 }
@@ -269,7 +269,7 @@ func TestCheckImagePulls(t *testing.T) {
 	}
 }
 
-// With no IMAGE, [image] base is checked, and pulled if need be...
+// With no IMAGE, a ref profile's image is checked, and pulled if need be...
 func TestCheckImageDefaultsToBaseImage(t *testing.T) {
 	log := scriptedDocker(t, imageMissingButPullable+"\n"+probeRuns(t, probeComplete))
 	checkEnv(t, "CABOOSE_BASE_IMAGE", "mybase:1")
@@ -281,7 +281,7 @@ func TestCheckImageDefaultsToBaseImage(t *testing.T) {
 	}
 }
 
-// ...and without it, the default base caboose builds, which is never
+// ...and without one, the base caboose builds, which is never
 // pulled: a registry's image of that name is not the one caboose would
 // build. Not the image caboose runs, either: that one has the layer on it.
 func TestCheckImageDefaultNotBuilt(t *testing.T) {

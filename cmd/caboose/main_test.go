@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bfreis/caboose/internal/assets"
@@ -50,12 +51,15 @@ exit 1
 	return logPath
 }
 
-// sandboxEnv clears every setting the launcher reads, then applies kv. A key
-// that was a variable once and is a config.toml setting now is written to
-// the default environment's config.toml instead: CABOOSE_BASE_IMAGE
-// ([image] base), CABOOSE_NO_AUTO_BUILD ([image] auto_build),
-// CABOOSE_READY_TIMEOUT and CABOOSE_NO_TMUX ([session]). Names of the
-// container and image are not settings: caboose-default and caboose:default.
+// sandboxEnv clears every setting the launcher reads, then applies kv.
+// The image is a dockerfile profile, [dockerfile.default], whose dir holds
+// testDockerfile, unless kv says otherwise: CABOOSE_BASE_IMAGE makes it a
+// ref ([ref.default] image), and CABOOSE_APKO leaves it to the default,
+// apko.default. Other keys that are config.toml settings are written to
+// the default environment's config.toml too: CABOOSE_NO_AUTO_BUILD
+// ([build] auto_build), CABOOSE_READY_TIMEOUT and CABOOSE_NO_TMUX
+// ([session]). Names of the container and image are not settings:
+// caboose-default and caboose:default.
 func sandboxEnv(t *testing.T, kv ...string) (home string) {
 	t.Helper()
 	home = t.TempDir()
@@ -69,14 +73,19 @@ func sandboxEnv(t *testing.T, kv ...string) (home string) {
 	if err := os.Mkdir(filepath.Join(home, "dev"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var image, session []string
+	top := []string{`image = "dockerfile.default"`}
+	profile := "[dockerfile.default]\n"
+	var build, session []string
 	for i := 0; i+1 < len(kv); i += 2 {
 		k, v := kv[i], kv[i+1]
 		switch k {
 		case "CABOOSE_BASE_IMAGE":
-			image = append(image, "base = "+strconv.Quote(v))
+			top = []string{`image = "ref.default"`}
+			profile = "[ref.default]\nimage = " + strconv.Quote(v) + "\n"
+		case "CABOOSE_APKO":
+			top, profile = nil, ""
 		case "CABOOSE_NO_AUTO_BUILD":
-			image = append(image, "auto_build = false")
+			build = append(build, "auto_build = false")
 		case "CABOOSE_READY_TIMEOUT":
 			session = append(session, "ready_timeout = "+v)
 		case "CABOOSE_NO_TMUX":
@@ -86,8 +95,12 @@ func sandboxEnv(t *testing.T, kv ...string) (home string) {
 		}
 	}
 	var toml string
-	if len(image) > 0 {
-		toml += "[image]\n" + strings.Join(image, "\n") + "\n"
+	for _, l := range top {
+		toml += l + "\n"
+	}
+	toml += profile
+	if len(build) > 0 {
+		toml += "[build]\n" + strings.Join(build, "\n") + "\n"
 	}
 	if len(session) > 0 {
 		toml += "[session]\n" + strings.Join(session, "\n") + "\n"
@@ -95,8 +108,62 @@ func sandboxEnv(t *testing.T, kv ...string) (home string) {
 	if toml != "" {
 		writeConfig(t, home, toml)
 	}
+	if strings.HasPrefix(profile, "[dockerfile.") {
+		dir := imageDir(home)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestDockerfile(t, dir)
+	}
 	return home
 }
+
+// testDockerfile is what sandboxEnv's dockerfile profile builds.
+const testDockerfile = "FROM ubuntu:26.04\n"
+
+// imageDir is the default environment's dockerfile profile's dir.
+func imageDir(home string) string {
+	return filepath.Join(home, ".caboose", "envs", "default", "dockerfile", "default")
+}
+
+// writeTestDockerfile writes testDockerfile into dir, a directory, with
+// the modes whatever the umask, so that its DirHash is dockerfileHash.
+func writeTestDockerfile(t *testing.T, dir string) {
+	t.Helper()
+	if err := writeDockerfileIn(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeDockerfileIn(dir string) error {
+	df := filepath.Join(dir, "Dockerfile")
+	if err := os.WriteFile(df, []byte(testDockerfile), 0o644); err != nil {
+		return err
+	}
+	if err := os.Chmod(df, 0o644); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o755)
+}
+
+// dockerfileHash is DirHash of a dir holding testDockerfile alone, as
+// writeTestDockerfile writes it: what a build of sandboxEnv's dockerfile
+// profile labels the layer with.
+var dockerfileHash = sync.OnceValue(func() string {
+	dir, err := os.MkdirTemp("", "caboose-test-image-")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	if err := writeDockerfileIn(dir); err != nil {
+		panic(err)
+	}
+	h, err := assets.DirHash(dir)
+	if err != nil {
+		panic(err)
+	}
+	return h
+})
 
 // containerLabels is a piece of sh for scriptedDocker answering the running
 // container's labels as a current caboose made it, for roots mounted at the

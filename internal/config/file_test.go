@@ -17,8 +17,7 @@ func TestConfigFile(t *testing.T) {
 	c, err := load(t, `
 format = 1
 
-[image]
-base = "debian:13.7-slim"
+[build]
 auto_build = false
 
 [session]
@@ -38,7 +37,7 @@ host_exec = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.BaseImage != "debian:13.7-slim" || c.AutoBuild || c.Tmux || c.TZ != "Europe/Lisbon" || c.Hostname != "box" ||
+	if c.ImageProfile.String() != "apko.default" || c.AutoBuild || c.Tmux || c.TZ != "Europe/Lisbon" || c.Hostname != "box" ||
 		!c.AutoSync || c.KeepVersions != 3 || c.ReadyTimeout != 60 || c.ForwardPorts != "3000-3999 5173" ||
 		c.OpenURLs != "allow" || c.SSHAgent != "/h/agent.sock" || !c.HostExec || c.File.Format != 1 {
 		t.Errorf("config %+v", *c)
@@ -133,7 +132,7 @@ func TestProfileSelection(t *testing.T) {
 
 func TestConfigFileRefuses(t *testing.T) {
 	for name, tc := range map[string]struct{ body, err string }{
-		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [container.NAME], [gvisor.NAME], [image], [link], [roots], [session], [vm.NAME], format, isolation; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
+		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [apko.NAME], [build], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
 		"a misspelled table key": {"[session]\ntmuz = true", "unknown setting in [session] tmuz (known: auto_sync, hostname, keep_versions, ready_timeout, tmux, tz;"},
 		"another table":          {"[mounts]\ndev = \"/x\"", "unknown top-level setting mounts"},
 		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: cpus, egress, egress_allow, egress_ports, memory;"},
@@ -143,7 +142,9 @@ func TestConfigFileRefuses(t *testing.T) {
 		"a bad profile name":     {"[vm.Big]", "'Big' is not a profile name"},
 		"a string for a bool":    {"[session]\ntmux = \"false\"", "tmux in [session] must be true or false"},
 		"a number for a bool":    {"[link]\nhost_exec = 1", "host_exec in [link] must be true or false"},
-		"a bool for a string":    {"[image]\nbase = true", "base in [image] must be a string"},
+		"a bool for a string":    {"[ref.a]\nimage = true", "image in [ref.a] must be a string"},
+		"the old [image] table":  {"[image]\nbase = \"x\"", "image must be a string"},
+		"auto_build at the top":  {"auto_build = false", "unknown top-level setting auto_build"},
 		"a string for a number":  {"[session]\nkeep_versions = \"3\"", "keep_versions in [session] must be a whole number"},
 		"a zero":                 {"[session]\nready_timeout = 0", "ready_timeout in [session] must be a whole number, 1 or more"},
 		"no cpus":                {"[vm.a]\ncpus = 0", "cpus in [vm.a] must be a whole number, 1 or more"},

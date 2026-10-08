@@ -46,6 +46,7 @@ func (e *setupEnv) reload() {
 		e.t.Fatalf("config.toml does not load: %v\n%s", err, data)
 	}
 	e.a.Cfg.Isolation, e.a.Cfg.Profile, e.a.Cfg.AutoSync = cfg.Isolation, cfg.Profile, cfg.AutoSync
+	e.a.Cfg.ImageProfile, e.a.Cfg.AutoBuild = cfg.ImageProfile, cfg.AutoBuild
 }
 
 // file is the environment's config.toml, parsed.

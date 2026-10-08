@@ -10,8 +10,8 @@ import (
 	caboose "github.com/bfreis/caboose"
 )
 
-// A preset is the embedded Dockerfile cut down to the sections chosen:
-// what caboose setup writes as an environment's image/Dockerfile. The
+// The seed is the embedded Dockerfile cut down to the sections chosen:
+// what caboose setup writes into a dockerfile image profile's dir. The
 // Dockerfile marks its optional parts itself, between a
 //
 //	# caboose:section NAME [off] TITLE
@@ -24,15 +24,14 @@ import (
 // Section is one optional part of the image.
 type Section struct {
 	Name, Title string
-	// Default is whether the preset has it: every section but an off one.
+	// Default is whether the default seed has it: every section but an off
+	// one.
 	Default bool
 }
 
 var (
 	sectionRE = regexp.MustCompile(`^# caboose:section ([a-z0-9-]+)( off)? (.+)$`)
 	endRE     = regexp.MustCompile(`^# caboose:end$`)
-	// headerRE is the line a written preset starts with.
-	headerRE = regexp.MustCompile(`^# caboose:preset ([0-9a-f]+) ?([a-z0-9,-]*)$`)
 )
 
 // block is a stretch of the Dockerfile: outside every section (sec nil),
@@ -107,7 +106,7 @@ func Sections() []Section {
 	return out
 }
 
-// DefaultSections are the names of the sections the preset has.
+// DefaultSections are the names of the sections the default seed has.
 func DefaultSections() []string {
 	var out []string
 	for _, s := range Sections() {
@@ -118,17 +117,21 @@ func DefaultSections() []string {
 	return out
 }
 
-// PresetID names the preset a Dockerfile was written from: the embedded
-// Dockerfile's hash, short. It changes with every change to that file.
-func PresetID() string { return BaseHash()[:12] }
+// seedHeader is what a written seed starts with: plain comments, which
+// nothing reads back.
+const seedHeader = `# Written by caboose from the Dockerfile it embeds. It is yours now: a
+# newer caboose never changes it. This directory is the build context, so
+# files next to it can be COPYed. After an edit, 'caboose build' rebuilds
+# the image, and 'caboose restart' moves the container onto it.
+#
+`
 
-// Preset is the embedded Dockerfile with only the named sections, an off
-// one uncommented, under a header saying what it was written from: the
-// first line, "# caboose:preset ID NAME,NAME", is what ReadHeader reads,
-// and the rest says whose file it is now. With DefaultSections, the body is
-// the embedded Dockerfile without its off sections: what caboose builds
-// when an environment has no image/ dir.
-func Preset(names []string) ([]byte, error) {
+// Seed is the embedded Dockerfile with only the named sections, an off
+// one uncommented, under a few lines saying whose file it is now: what
+// caboose writes into a dockerfile image profile's dir that has no
+// Dockerfile yet. With DefaultSections, the body is the embedded
+// Dockerfile without its off sections.
+func Seed(sections []string) ([]byte, error) {
 	blocks, err := parseSections(embeddedDockerfile())
 	if err != nil {
 		return nil, err
@@ -139,23 +142,20 @@ func Preset(names []string) ([]byte, error) {
 			known[b.sec.Name] = true
 		}
 	}
-	for _, n := range names {
+	for _, n := range sections {
 		if !known[n] {
 			return nil, fmt.Errorf("no section %q in the embedded Dockerfile", n)
 		}
 	}
-	var chosen []string
 	var body []string
 	for _, b := range blocks {
 		switch {
 		case b.sec == nil:
 			body = append(body, b.lines...)
-		case !slices.Contains(names, b.sec.Name):
+		case !slices.Contains(sections, b.sec.Name):
 		case b.sec.Default:
-			chosen = append(chosen, b.sec.Name)
 			body = append(body, b.lines...)
 		default:
-			chosen = append(chosen, b.sec.Name)
 			body = append(body, "# caboose:section "+b.sec.Name+" "+b.sec.Title)
 			for _, l := range b.lines[1 : len(b.lines)-1] {
 				body = append(body, strings.TrimPrefix(strings.TrimPrefix(l, "#"), " "))
@@ -163,44 +163,5 @@ func Preset(names []string) ([]byte, error) {
 			body = append(body, b.lines[len(b.lines)-1])
 		}
 	}
-	header := fmt.Sprintf(`# caboose:preset %s %s
-#
-# Written by caboose setup from the Dockerfile embedded in caboose (preset
-# %s), with: %s. It is yours now: a newer caboose never
-# changes it, and 'caboose setup image' shows how it differs from a fresh
-# preset before replacing it. This directory is the build context, so
-# files next to it can be COPYed. After an edit, 'caboose build' rebuilds
-# the image, and 'caboose restart' moves the container onto it.
-#
-`, PresetID(), strings.Join(chosen, ","), PresetID(), or(strings.Join(chosen, ", "), "no optional sections"))
-	return []byte(header + strings.Join(body, "\n") + "\n"), nil
-}
-
-// Header is what a written preset's first line says: the preset it came
-// from and its sections.
-type Header struct {
-	ID       string
-	Sections []string
-}
-
-// ReadHeader reads a Dockerfile's preset header; false when it has none
-// (written by hand, or its first line edited).
-func ReadHeader(data []byte) (Header, bool) {
-	first, _, _ := strings.Cut(string(data), "\n")
-	m := headerRE.FindStringSubmatch(first)
-	if m == nil {
-		return Header{}, false
-	}
-	h := Header{ID: m[1]}
-	if m[2] != "" {
-		h.Sections = strings.Split(m[2], ",")
-	}
-	return h, true
-}
-
-func or(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
+	return []byte(seedHeader + strings.Join(body, "\n") + "\n"), nil
 }

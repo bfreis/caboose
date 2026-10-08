@@ -245,7 +245,9 @@ vm_group() {
     # In the VM: who runs, where, and the files the host shares with it.
     check 'it is a Linux guest' Linux "$(vsh 'uname -s')"
     check "it runs as root in the guest, whose shares show every file as root's" 0 "$(vsh 'id -u')"
-    check "root's home is the kept one, for what reads it from passwd" /home/agent "$(vsh 'getent passwd 0 | cut -d: -f6')"
+    # The file, not getent: the default base, built with apko, has none.
+    check "root's home is the kept one, for what reads it from passwd" /home/agent "$(vsh "awk -F: '\$3 == 0 { print \$6; exit }' /etc/passwd")"
+    check "and its login shell is bash, which reads shell.d" bash "$(vsh "awk -F: '\$3 == 0 { n = split(\$7, p, \"/\"); print p[n]; exit }' /etc/passwd")"
     check 'so ssh reads the kept known_hosts' /home/agent/.ssh/known_hosts \
         "$(vsh "ssh -G github.com 2>/dev/null | sed -n 's/^userknownhostsfile \([^ ]*\).*/\1/p'")"
     check 'a shell starts in the project, at its path under /work' /work/proj "$(vsh pwd)"
@@ -572,13 +574,19 @@ check 'and lands in the data dir' yes \
 # would silently send every later write outside the mounts.
 check 'no ~/.gitconfig shadows it' 1 \
     "$(docker exec "$CONTAINER" sh -c 'test -e "$HOME/.gitconfig"' 2>/dev/null; echo $?)"
-check 'jj config set --user succeeds inside' 0 \
-    "$(docker exec "$CONTAINER" jj config set --user caboose-test-probe yes >/dev/null 2>&1; echo $?)"
-check 'and lands in the data dir' 1 \
-    "$(grep -cx 'caboose-test-probe = "yes"' "$JJ_CFG" 2>/dev/null || true)"
-# A ~/.jjconfig.toml would win: jj writes to it rather than the XDG file.
-check 'jj writes nowhere but ~/.config/jj' "$(cexec sh -c 'echo "$HOME/.config/jj/config.toml"')" \
-    "$(cexec jj config path --user)"
+# jj is in the image only when its base has it (caboose's packages do not).
+HAS_JJ="$(docker exec "$CONTAINER" sh -c 'command -v jj' >/dev/null 2>&1 && echo 1 || echo 0)"
+if [ "$HAS_JJ" = 1 ]; then
+    check 'jj config set --user succeeds inside' 0 \
+        "$(docker exec "$CONTAINER" jj config set --user caboose-test-probe yes >/dev/null 2>&1; echo $?)"
+    check 'and lands in the data dir' 1 \
+        "$(grep -cx 'caboose-test-probe = "yes"' "$JJ_CFG" 2>/dev/null || true)"
+    # A ~/.jjconfig.toml would win: jj writes to it rather than the XDG file.
+    check 'jj writes nowhere but ~/.config/jj' "$(cexec sh -c 'echo "$HOME/.config/jj/config.toml"')" \
+        "$(cexec jj config path --user)"
+else
+    printf '  \033[33mSKIP\033[0m the image has no jj\n'
+fi
 # gh has no keyring in here, so ~/.config/gh holds the token itself.
 check '~/.config/gh is the data dir, from inside' 0 \
     "$(docker exec "$CONTAINER" sh -c 'touch "$HOME/.config/gh/caboose-test-probe"' >/dev/null 2>&1 \
@@ -604,8 +612,10 @@ check 'git runs in the container (sync needs it)' 0 \
     "$(docker exec "$CONTAINER" git --version >/dev/null 2>&1; echo $?)"
 # A Claude Code run outside tmux (tmux = false, caboose claude -p) is seen, from
 # docker top, as writing the data dir -- which is what keeps a sync away.
-# A sleep named as the launcher symlink stands in for one.
-docker exec -d "$CONTAINER" bash -c 'echo $$ > /tmp/caboose-test-claude.pid; exec -a /home/agent/.local/bin/claude sleep 60'
+# A bash named as the launcher symlink stands in for one: bash, since a
+# multicall binary (BusyBox, Wolfi's coreutils) takes its name for the tool
+# to run, and a sleep so named exits at once.
+docker exec -d "$CONTAINER" bash -c 'echo $$ > /tmp/caboose-test-claude.pid; exec -a /home/agent/.local/bin/claude bash -c "sleep 60 & wait"'
 sleep 1
 check 'a Claude Code run outside tmux is seen' 1 \
     "$("$CC" status 2>/dev/null | grep -c '^Claude Code outside tmux: [1-9]')"
@@ -692,8 +702,10 @@ rm -f "$START_D"/caboose-test-* "$SHELL_D"/caboose-test.*
 probes_before="$fail"
 check 'git config survived the restart' yes \
     "$(docker exec "$CONTAINER" git config --global --get caboose-test.probe 2>/dev/null | tr -d '\r')"
-check 'jj config survived the restart' yes \
-    "$(docker exec "$CONTAINER" jj config get caboose-test-probe 2>/dev/null | tr -d '\r')"
+if [ "$HAS_JJ" = 1 ]; then
+    check 'jj config survived the restart' yes \
+        "$(docker exec "$CONTAINER" jj config get caboose-test-probe 2>/dev/null | tr -d '\r')"
+fi
 check '~/.config/gh survived the restart' 0 \
     "$(docker exec "$CONTAINER" sh -c 'test -e "$HOME/.config/gh/caboose-test-probe"' 2>/dev/null; echo $?)"
 if [ "$fail" -ne "$probes_before" ]; then
@@ -813,12 +825,12 @@ check 'the image carries a version label' 1 \
 layer_label="$(label dev.bfreis.caboose.layer-hash)"
 base_label="$(label dev.bfreis.caboose.base-hash)"
 check 'the image carries a full layer hash' 64 "${#layer_label}"
-# The environment may build its base from its own image/ dir instead of
-# the embedded Dockerfile: the same kind of base to the suite, a full hash
-# either way, and version says which.
-base_kind=default
-case "$(ver_field base)" in *"(built from "*) base_kind="env" ;; esac
-check 'and, built on caboose'"'"'s base, a full base hash' 64 "${#base_label}"
+# The environment's image profile builds its base with apko (by default)
+# or from a Dockerfile's dir: a base caboose builds either way, with a full
+# hash (the lock's, or the dir's), and version says which.
+base_kind=apko
+case "$(ver_field base)" in *"(dockerfile."*) base_kind="dockerfile" ;; esac
+check 'and, built on a base caboose builds, a full base hash' 64 "${#base_label}"
 check "and says outright it is on that base ($base_kind)" "$base_kind" "$(label dev.bfreis.caboose.base-kind)"
 check 'the image records the host user it was built for' "$(id -u):$(id -g)" \
     "$(label dev.bfreis.caboose.uid):$(label dev.bfreis.caboose.gid)"

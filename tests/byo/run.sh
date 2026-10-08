@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Bring-your-own-image integration tests: an [image] base on a glibc and
-# a musl base, one after the other against the SAME data dir, and stock
-# images the image check has to refuse.
+# Bring-your-own-image integration tests: a ref image profile on a glibc and
+# a musl base, one after the other against the SAME data dir, stock images
+# the image check has to refuse, and a dockerfile profile's dir built from
+# caboose's seed.
 #
 #   tests/byo/run.sh
 #   CABOOSE_BIN=path/to/caboose tests/byo/run.sh
@@ -60,7 +61,7 @@ DEB_BASE="$PREFIX-debian-base"     # tests/byo/debian.Dockerfile
 ALP_BASE="$PREFIX-alpine-base"     # tests/byo/alpine.Dockerfile
 REFUSED_IMAGE="caboose:$REFUSED_ENV"
 REFUSED_CONTAINER="caboose-$REFUSED_ENV"
-DIR_BASE="caboose-base:$TEST_ENV"  # the base built from an environment's image/ dir
+DIR_BASE="caboose-base:$TEST_ENV"  # the base built from a dockerfile profile's dir
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -154,7 +155,8 @@ docker image rm -f "$DEB_BASE" "$ALP_BASE" "$DIR_BASE" >/dev/null 2>&1
 # would, from a project under the root with no tty -- stdin from
 # /dev/null, stdout and stderr to $OUT and $ERR -- and leave its exit status
 # in $rc. The NAME=value words are for this call only: BYO_BASE is the
-# environment's [image] base (none when absent), BYO_ENV the environment
+# environment's ref ([ref.default] image; without one, the image is
+# dockerfile.default, the environment's dockerfile/default dir), BYO_ENV the environment
 # (byo-test), which cc writes a config.toml for first -- the root, the boot
 # timeout and the base -- and CABOOSE_FORCE and the like are variables of the
 # launcher's. Launcher args never look like NAME=value, so they cannot be
@@ -164,7 +166,7 @@ docker image rm -f "$DEB_BASE" "$ALP_BASE" "$DIR_BASE" >/dev/null 2>&1
 # launcher.Attach: enterProjectDir,
 # the root guard, ensureRunning(true) -- which on an absent container
 # runs createContainer, whose ensureImage builds a missing image -- or
-# rebuilds one built on another base than [image] base names -- with
+# rebuilds one built on another base than the image profile names -- with
 # the same build as build ("TTY or not", its log on stderr), then
 # waitUntilReady, polling `docker exec CONTAINER test -f /tmp/.caboose-ready`
 # for up to ready_timeout seconds while the entrypoint installs
@@ -184,8 +186,12 @@ cc() {
     done
     mkdir -p "$CABOOSE_HOME/envs/$benv"
     {
-        printf 'format = 1\n\n[roots]\nroot = "%s"\n\n[session]\nready_timeout = %s\n' "$REPO_ROOT" "$READY_TIMEOUT"
-        [ -z "$base" ] || printf '\n[image]\nbase = "%s"\n' "$base"
+        if [ -n "$base" ]; then
+            printf 'format = 1\nimage = "ref.default"\n\n[ref.default]\nimage = "%s"\n' "$base"
+        else
+            printf 'format = 1\nimage = "dockerfile.default"\n\n[dockerfile.default]\n'
+        fi
+        printf '\n[roots]\nroot = "%s"\n\n[session]\nready_timeout = %s\n' "$REPO_ROOT" "$READY_TIMEOUT"
     } > "$CABOOSE_HOME/envs/$benv/config.toml"
     (cd "$PROJ" && env CABOOSE_ENV="$benv" ${envs[@]+"${envs[@]}"} "$CC" "$@") </dev/null >"$OUT" 2>"$ERR"
     rc=$?
@@ -357,10 +363,10 @@ cc "$DEB" claude --version
 check_rc 'a no-tty launch builds, starts and reaches claude' 0
 check 'claude --version answers through the pass-through' 1 "$(has "$OUT" '(Claude Code)')"
 DEB_VERSION="$(tr -d '\r' <"$OUT")"
-# ensureImage: "no image '%s' yet — %s", buildNote naming base in [image];
+# ensureImage: "no image '%s' yet — %s", buildNote naming the ref;
 # build: "checking base image '%s' (%s) ..." before buildLayer.
 check 'the launch built the missing image itself' 1 "$(has "$ERR" "no image '$IMAGE' yet")"
-check 'on the [image] base' 1 "$(has "$ERR" "building the caboose layer on '$DEB_BASE'")"
+check 'on the ref' 1 "$(has "$ERR" "building the caboose layer on '$DEB_BASE' (ref.default)")"
 check 'after checking that base' 1 "$(has "$ERR" "checking base image '$DEB_BASE'")"
 # noteInstall found no bin/claude in the platform dir before the container
 # started, so waitUntilReady says, on its first poll, that it installs.
@@ -373,7 +379,7 @@ check "the image's platform label is $GLIBC" "$GLIBC" "$(label "$IMAGE" dev.bfre
 check "its base-name label is the Debian base" "$DEB_BASE" "$(label "$IMAGE" dev.bfreis.caboose.base-name)"
 check "its base-id label is that base's ID" \
     "$(docker image inspect -f '{{.Id}}' "$DEB_BASE" 2>/dev/null)" "$(label "$IMAGE" dev.bfreis.caboose.base-id)"
-check 'no base-hash label: the embedded Dockerfile played no part' '' \
+check 'no base-hash label: a ref is identified by its ID' '' \
     "$(label "$IMAGE" dev.bfreis.caboose.base-hash)"
 check 'claude --version works by docker exec too' "$DEB_VERSION" "$(cexec claude --version)"
 check "local/$GLIBC/bin/claude is the installer's symlink" 0 \
@@ -389,7 +395,7 @@ check "status: local dir is local/$GLIBC" "$DATA/local/$GLIBC" "$(field 'local d
 cc "$DEB" version
 check 'version: the image matches' matches "$(field local | first)"
 check 'version: the container is on it' "$CONTAINER (running, on the local image)" "$(field container)"
-check 'version: the base is the [image] base' "$DEB_BASE (base in [image]," "$(field base | cut -d' ' -f1-4)"
+check 'version: the base is the ref' "$DEB_BASE (ref.default," "$(field base | cut -d' ' -f1-2)"
 check 'the container runs as the host UID' "$(id -u)" "$(cexec id -u)"
 check 'with the host GID' "$(id -g)" "$(cexec id -g)"
 check 'as agent' agent "$(cexec id -un)"
@@ -448,18 +454,18 @@ cc "$DEB" version
 # classifyImage: a BYO image built on another base name is stale, for a
 # changed base (builtOn), which the next container creation rebuilds.
 check 'version: the image is out of date (built on Alpine)' 'out of date' "$(field local | cut -c1-11)"
-check 'and says which base it was built on' 1 "$(has "$OUT" "on '$ALP_BASE', not on the [image] base '$DEB_BASE'")"
+check 'and says which base it was built on' 1 "$(has "$OUT" "on '$ALP_BASE', not on '$DEB_BASE' (ref.default)")"
 check 'and that a restart rebuilds it' 1 \
     "$(has "$ERR" "the next launch that creates the container rebuilds it on the configured base")"
 # No build this time: Restart's ensureImage sees an image built on
-# another base than [image] base names, says so, and runs the build
+# another base than the ref names, says so, and runs the build
 # (check, then buildLayer, log on stderr) before it removes the container.
 note "restart alone: rebuilds the layer on Debian, then recreates the container"
 cc "$DEB" CABOOSE_FORCE=1 restart
 check_rc 'restart rebuilds and moves the container back' 0
 record_image "$IMAGE"
 check 'saying why it rebuilds' 1 \
-    "$(has "$ERR" "image '$IMAGE' was built on '$ALP_BASE'; base in [image] now names '$DEB_BASE' — rebuilding")"
+    "$(has "$ERR" "image '$IMAGE' was built on '$ALP_BASE'; image is ref.default now, which builds on '$DEB_BASE' — rebuilding")"
 check 'on the Debian base' 1 "$(has "$ERR" "building the caboose layer on '$DEB_BASE' as '$IMAGE'")"
 check 'and that it built it' 1 "$(has "$ERR" "built image '$IMAGE'")"
 check 'with no stale-image warning' 0 "$(has "$ERR" "is out of date")"
@@ -516,30 +522,26 @@ check "no container $REFUSED_CONTAINER" 1 "$(docker inspect --type=container "$R
 check 'the other container was left alone' "$container_id" \
     "$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER" 2>/dev/null)"
 
-group "an environment's own image dir"
-# What caboose setup writes, built for real: the minimal core -- which no
+group "a dockerfile profile's dir"
+# What caboose setup seeds the dir with, built for real: the minimal core -- which no
 # answer can leave out, and which must pass the image check -- with the
 # opt-in Rust section, commented out in the embedded Dockerfile and
 # uncommented here. The Dockerfile comes from the same code setup uses
-# (tests/byo/preset), since there is no terminal here to answer setup.
-IMG_DIR="$CABOOSE_HOME/envs/$TEST_ENV/image"
+# (tests/byo/seed), since there is no terminal here to answer setup.
+IMG_DIR="$CABOOSE_HOME/envs/$TEST_ENV/dockerfile/default"
 mkdir -p "$IMG_DIR"
-if (cd "$ROOT" && go run ./tests/byo/preset rust) > "$IMG_DIR/Dockerfile"; then
-    ok 'the preset for core + rust is written'
+if (cd "$ROOT" && go run ./tests/byo/seed rust) > "$IMG_DIR/Dockerfile"; then
+    ok 'the seed for core + rust is written'
 else
-    bad 'the preset for core + rust is written'
+    bad 'the seed for core + rust is written'
 fi
 container_id="$(docker inspect --type=container -f '{{.Id}}' "$CONTAINER" 2>/dev/null)"
 record_image "$IMAGE"
-# Both a dir and an [image] base is a guess about what to build on: refused.
-cc "$DEB" build
-check_rc 'an image dir and an [image] base together are refused' 1
-check 'saying to keep one' 1 "$(has "$ERR" 'Keep one')"
 cc build
-check_rc 'build from the image dir' 0
+check_rc 'build from the dockerfile profile dir' 0
 record_image "$IMAGE"
-check 'the base is built from the dir' 1 "$(has "$ERR" "building the base image '$DIR_BASE' from $IMG_DIR/Dockerfile")"
-check 'the layer says so' 'env' \
+check 'the base is built from the dir' 1 "$(has "$ERR" "building the base image '$DIR_BASE' from $IMG_DIR/Dockerfile (dockerfile.default)")"
+check 'the layer says so' 'dockerfile' \
     "$(docker image inspect -f '{{index .Config.Labels "dev.bfreis.caboose.base-kind"}}' "$IMAGE" 2>/dev/null)"
 check 'rust runs in it' 1 \
     "$(docker run --rm --entrypoint sh "$IMAGE" -c 'rustc --version' 2>/dev/null | grep -c '^rustc ')"
