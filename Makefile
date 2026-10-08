@@ -19,7 +19,7 @@ CC       := ./$(LAUNCHER)
 # here is what makes that automatic. Test files do not reach the binary.
 GO_SRC   := go.mod $(wildcard go.sum) \
             $(shell find . -name '*.go' -not -name '*_test.go' -not -path './.*')
-EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh \
+EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md $(shell find sandbox/skills -type f -not -path '*/.*' -not -path '*/_*') imagecheck.sh \
             internal/apkobuild/pkgset/packages.toml
 GO_LDFLAGS ?=
 

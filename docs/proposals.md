@@ -158,6 +158,6 @@ from (`dockerfile`, the profile's own, or `seed`, caboose's, when the
 profile has none yet) and its hash, with the file itself as `Dockerfile`
 beside it. It is only information: changing it changes nothing, and `apply`
 checks every proposal against the real files. caboose's
-instructions to the sandbox, `/etc/claude-code/CLAUDE.md` inside, tell
-sessions all of this.
+instructions to the sandbox, `/etc/claude-code/CLAUDE.md` inside, and its
+`caboose-propose` skill tell sessions all of this.
 

@@ -195,6 +195,35 @@ func (d Dir) ReadFile(rel string) ([]byte, fs.FileMode, error) {
 	return data, fi.Mode(), err
 }
 
+// ErrTooLarge is returned by ReadFileMax for a file over its limit.
+var ErrTooLarge = errors.New("file too large")
+
+// ReadFileMax is ReadFile for a file of at most max bytes: one whose size
+// is over it is refused before a byte is read, and what grows past it while
+// being read is cut off there, so a sparse or growing file costs max+1
+// bytes at most. The error is ErrTooLarge.
+func (d Dir) ReadFileMax(rel string, max int64) ([]byte, fs.FileMode, error) {
+	r, name, err := d.parent(rel, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer r.Close()
+	f, fi, err := d.openFile(r, rel, name, os.O_RDONLY)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	tooLarge := &fs.PathError{Op: "read", Path: path.Join(string(d), rel), Err: ErrTooLarge}
+	if fi.Size() > max {
+		return nil, 0, tooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err == nil && int64(len(data)) > max {
+		return nil, 0, tooLarge
+	}
+	return data, fi.Mode(), err
+}
+
 // ReadDir lists the directory at rel, sorted by name.
 func (d Dir) ReadDir(rel string) ([]fs.DirEntry, error) {
 	r, err := d.open(rel, false)

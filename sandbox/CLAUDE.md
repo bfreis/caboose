@@ -1,230 +1,186 @@
-# Running inside the caboose sandbox
+# Running inside a caboose sandbox
 
-> These are caboose's managed instructions, installed read-only at
-> `/etc/claude-code/CLAUDE.md`, where Claude Code reads them before any
-> other CLAUDE.md. The host launcher regenerates them on every launch from
-> the tracked original, `sandbox/CLAUDE.md` in the caboose repo (path
-> below): **edit that**, never this copy. `~/.claude/CLAUDE.md` is the
-> user's own, and caboose never writes it.
->
-> Keep this file to what is true in *every* project. Anything about how the
-> sandbox itself is built or changed belongs in that repo's own CLAUDE.md.
+> Written by caboose (@@CABOOSE_VERSION@@) at every launch, and read-only in
+> here. `~/.claude/CLAUDE.md` is the user's own; caboose never writes it.
 
-This Claude Code instance is running inside the `caboose` Docker sandbox,
-not directly on the host machine.
+This Claude Code runs inside caboose's sandbox for the environment
+`@@CABOOSE_ENV@@`, not on the user's machine. One sandbox holds every session
+of the environment: each terminal running `caboose` in a project attaches to a
+session of its own, all in the same sandbox, which is why the fleet roster
+sees them all. With tmux on (the default), sessions are tmux sessions, so a
+closed terminal detaches and background work goes on.
 
-## The container is long-lived, and sessions are tmux sessions
+@@IF isolation=container@@
+## This sandbox: a Docker container
 
-The container is **not** started and thrown away per session. One container
-holds every session, because the agents/fleet feature registers sessions by
-PID and by unix socket under `/tmp` — sessions in different containers cannot
-see each other. Each project gets a tmux session, so closing the terminal
-detaches rather than killing the work, and background agents keep running.
+- You run as the user `agent`, with no sudo.
+- What you write outside the kept paths (below) survives a stop and start, but
+  not `caboose@@CABOOSE_ENV_FLAG@@ restart`, which recreates the container.
+- There is no Docker daemon in here. A docker CLI has no socket unless the
+  profile sets `engine_socket = true`, which hands the sandbox the host's
+  engine, root-equivalent on the host: never suggest it in passing.
+@@END@@
+@@IF isolation=gvisor@@
+## This sandbox: a container under gVisor
 
-Sessions are per project *and* per terminal. The first `caboose` in a repo
-creates `<project>`; a second one opened while the first is still up creates
-`<project>-2`, because a session someone is attached to is never taken over.
-Close a terminal and run `caboose` there again and it reattaches to the
-session it left, so the numbering stays put instead of climbing.
+- gVisor (`runsc`) gives the container a kernel of its own, in user space.
+- You run as `agent`, or as root where the engine requires it (`id` says).
+  That root exists only inside gVisor, and its home is `/home/agent` too.
+- What you write outside the kept paths (below) may not survive a stop, and
+  `caboose@@CABOOSE_ENV_FLAG@@ restart` always loses it.
+- There is no Docker daemon in here unless the profile sets
+  `engine_socket = true` (the host's engine, root-equivalent on the host).
+- The host's edits under the roots reach file watchers only as attribute
+  changes, and a directory held open can list stale contents: `stat` a file
+  by name before taking it for gone. See the caboose-troubleshoot skill.
+@@END@@
+@@IF isolation=vm@@
+## This sandbox: a Linux VM on the user's Mac
 
-`caboose --session NAME` (or `CABOOSE_SESSION=NAME caboose`) names a
-session outright and skips that search — it attaches if the name exists and
-creates it otherwise, which is also how to put two terminals on one session
-on purpose. Either way every session lives in the same container, so they all
-see each other in the fleet roster.
+- You run as root; the home is `/home/agent`. `CABOOSE_ISOLATION=vm` is set.
+- **Every boot starts from a fresh root filesystem.** Whatever you write
+  outside the mounts (packages, `/etc`, `/usr`, `/tmp`, an unkept path under
+  `~`) is gone after a stop, a restart, a Mac reboot, or the VM ending for
+  any reason. Only the roots and the kept paths (below) last.
+- The VM runs its own `dockerd` when the image has one (`caboose@@CABOOSE_ENV_FLAG@@ status`
+  says). Its images sit on a disk that is kept; its containers can
+  bind-mount `/work` paths, and a port they publish is forwarded like any
+  other.
+- The Mac's edits under the roots reach file watchers only as attribute
+  changes, and outbound traffic goes through the host for proxy-aware
+  clients only (below). See the caboose-troubleshoot skill.
+@@END@@
 
-## Repos are mounted at fixed paths
+## Paths
 
-The host directories that hold the projects are mounted at fixed container paths, `/work/<name>` unless a root was given a path of its own:
-@@CABOOSE_ROOTS@@. A project lives at its path under one of them, which is
-the same on every machine whatever the host's user name or layout — so a
-host path someone pastes in is not a path in here: translate it through
-that mapping. Nothing in here is reachable at a second path, so the path
-you are given (in here) is the path to edit.
+The host directories that hold the projects (roots) are mounted at fixed
+container paths: @@CABOOSE_ROOTS@@. These paths are the same on every
+machine. A host path someone pastes in is not a path in here: translate it
+through that mapping. Nothing is reachable at a second path. A changed root
+takes `caboose@@CABOOSE_ENV_FLAG@@ restart`.
 
-## Claude Code is not part of the image
+## What is kept
 
-It is installed in `~/.local` (bind-mounted out of `~/.caboose` on the host,
-which is where all sandbox state lives — outside any checkout), so it
-**updates itself in place** and survives image rebuilds. `claude` on `$PATH`
-is that persisted binary.
+Claude Code is not in the image. It lives in `~/.local/bin`,
+`~/.local/share/claude` and `~/.cache/claude` (kept, per platform), and
+updates itself in place. Besides those, only what the sandbox config
+`~/.config/caboose/sandbox.toml` keeps survives a restart: by default
+`~/.claude`, `~/.claude.json`, `~/.config/caboose`, `~/.config/git`,
+`~/.config/jj`, `~/.config/gh` and `~/.ssh` (no keys: they stay on the host,
+reached through the forwarded SSH agent). Everything else under the home is
+lost. `mount` shows what is kept.
 
-What else is installed depends on the base the image was built on: caboose's
-default, or one the user chose (`base` in `[image]` of the environment's `config.toml`). caboose installs
-nothing into a base, so a missing tool is the image's to add, on the host —
-not something to install from in here: propose it (below).
+You may edit the sandbox config, `start.d` (scripts run at each sandbox
+start) and `shell.d` (interactive shell config) when asked, without a
+proposal: they reach nothing outside the sandbox. Use the caboose-persist
+skill for that.
 
-## What survives a restart: ~/.config/caboose/sandbox.toml
+## Reaching the host
 
-`caboose restart` recreates the container. What outlives it is Claude Code
-in `~/.local`, and whatever the **sandbox config**,
-`~/.config/caboose/sandbox.toml`, keeps: by default `~/.claude`,
-`~/.claude.json`, `~/.config/caboose`, git, jj and gh config under
-`~/.config`, and `~/.ssh` (`known_hosts` and ssh's config; keys stay on the
-host, through the forwarded agent). Anything else under the home is lost.
-`mount` in here, or `caboose status` on the host, shows what is kept.
+- A server listening in here is forwarded to the same port on the host's
+  `localhost` if `forward_ports` (in `[link]` of the host's `config.toml`)
+  allows it; by default 3000-3999, 5173 and 8000-8999. Tell the user to open
+  `http://localhost:PORT`. `caboose-agent ports` lists what listens and what
+  is forwarded.
+- `caboose-agent open URL` opens an http(s) URL in the user's browser
+  (usually after a dialog); `caboose-agent notify TEXT` shows a notification.
+@@IF hostexec=on@@
+- Host commands are on: `caboose-agent host CMD ARGS` runs CMD on the host,
+  as the user, in the host directory of the current one, which must be under
+  a root (`-C DIR` names another). There is no shell
+  (`caboose-agent host sh -c '...'` for shell syntax) and no terminal;
+  stdin, stdout, stderr and the exit status come back. Run what has to run
+  on the host this way instead of asking the user, but treat it as the
+  user's own machine: nothing destructive without asking.
+@@ELSE@@
+- Host commands are off (`host_exec` in `[link]` of `config.toml`, the
+  user's call). Ask the user to run what has to run on the host.
+@@END@@
+@@IF isolation=vm@@
+- Outbound: by default proxy-aware clients (`HTTPS_PROXY` and the rest are
+  `http://127.0.0.1:9128`) and, usually, ssh go out through the Mac, VPN
+  included, on `egress_ports` only (default 22, 80, 443); private addresses
+  are refused unless `egress_allow` names them. Everything else, DNS lookups
+  included, uses the VM's own NAT, which reaches no VPN.
+@@END@@
+- All of this needs the host link, which every launch starts. "no host is
+  linked" means it is not running: see the caboose-troubleshoot skill.
 
-The sandbox config is yours to edit when asked, with no proposal: what it
-keeps lives in caboose's data dir on the host, never at a host path, so it
-reaches nothing more. It also says what of that `caboose sync` carries to
-the user's other machines, and it syncs itself, so a change reaches them
-too. The file explains its own fields. To keep a tool's settings, add
+## Changing the sandbox
 
-```toml
-[[keep]]
-path = "~/.foo"          # directly in ~, ~/.config, ~/.local, ~/.local/share or ~/.cache
-sync = true              # only if asked to sync it too
-```
+Nothing in here can change the image, `config.toml` or the roots. When the
+user wants something to last:
 
-Then read `~/.caboose-proposals/current/sandbox-config.txt`: when it exists,
-it lists what is wrong with the file, as of the host's last launch, which
-also rewrites it. A new `[[keep]]` entry takes effect at the next
-`caboose restart` on the host, and starts empty: say so, and configure the
-tool only after it. Never sync anything that holds a token.
+- **A tool installed for good, or another host directory mounted:** write a
+  proposal (the caboose-propose skill); the user reviews it with
+  `caboose@@CABOOSE_ENV_FLAG@@ apply` on the host.
+- **A tool's settings kept, a daemon started with the sandbox, an alias:** the
+  sandbox config, `start.d`, `shell.d` (the caboose-persist skill).
+- **Anything else**: a key in the host's `config.toml`, which the user
+  edits. `[link]` keys (ports, URLs, host commands) apply within seconds;
+  the isolation, its size, `run_args` and roots take a restart. The
+  caboose-propose skill lists them.
+@@IF image!=apko@@
+@@IF isolation=vm,gvisor@@
+- As root, a package manager the image has installs only for now: gone at
+@@IF isolation=vm@@
+  the next boot. Say so, and propose what should stay.
+@@ELSE@@
+  the next restart, or sooner. Say so, and propose what should stay.
+@@END@@
+@@END@@
+@@END@@
 
-## Reaching the host: ports, URLs, notifications, commands
+The configured image is `@@CABOOSE_IMAGE@@`; when proposing,
+`~/.caboose-proposals/current/state.toml` is the authority.
 
-A server listening in here is forwarded to the same port on the host's
-`localhost` while it runs, if `forward_ports` in the host's `config.toml` allows the port
-(by default 3000-3999, 5173 and 8000-8999), whatever address it is bound
-to: tell the user to open `http://localhost:PORT`. `caboose-agent ports`
-lists what listens and what is forwarded. `caboose-agent open URL` opens an
-http(s) URL in the user's browser (usually after a dialog there), and
-`caboose-agent notify TEXT` shows them a notification. All of it needs the
-host's `caboose link`, which every launch starts; "no host is linked"
-means it is not running.
+## caboose itself
 
-In a VM sandbox (`CABOOSE_ISOLATION=vm` is set in it), outbound connections go through
-the host by default: `HTTPS_PROXY` (and the rest) is then
-`http://127.0.0.1:9128`, and what the host reaches, VPN included, this
-reaches, on the ports its `vm` profile's `egress_ports` allows (22, 80 and 443 by
-default). Private, LAN, loopback and tailnet addresses are refused, with
-an HTTP 403 saying why, unless its `egress_allow` names them. ssh
-goes the same way, through `caboose-agent connect %h %p` as its
-`ProxyCommand`. Containers run by the sandbox's own dockerd do not: they
-stay on the VM's NAT.
+The user runs `caboose@@CABOOSE_ENV_FLAG@@ COMMAND` on the host, never in
+here: `setup`, `doctor`, `status`, `restart`, `stop`, `shell`, `logs`,
+`build`, `check-image`, `apply`, `sync`, `link`, `version`, `update`,
+`prune`, `detach`, `env`, `claude`, `help`. When the sandbox itself seems
+wrong, point the user at `caboose@@CABOOSE_ENV_FLAG@@ doctor` first: it names
+each problem and the command that fixes it.
+`caboose@@CABOOSE_ENV_FLAG@@ restart` recreates the sandbox and ends every
+session in it, this one included.
+@@IF hostexec=on@@
+You may run the read-only ones yourself, in full:
+`caboose-agent host caboose@@CABOOSE_ENV_FLAG@@ status` (and `doctor`, `version`).
+@@IF env!=default@@
+Keep `-e @@CABOOSE_ENV@@` on each: a host command carries none of the
+sandbox's variables.
+@@END@@
+Leave the rest to the user: `restart` and `stop` end this session; `apply`
+and `setup` ask a person.
+@@END@@
 
-### Running commands on the host
+@@IF source=checkout@@
+caboose's source is at `@@CABOOSE_SOURCE@@`, the checkout this launcher was
+built from. A change to caboose itself (launcher, image layer, entrypoint,
+these instructions) goes there; its own CLAUDE.md says how each takes effect,
+and most need a rebuild and a restart run on the host. Its user docs are in
+`@@CABOOSE_SOURCE@@/docs`.
+@@END@@
+@@IF source=clone@@
+A clone of caboose's source is at `@@CABOOSE_SOURCE@@`, but this launcher is
+an installed release (@@CABOOSE_VERSION@@): a change made there reaches this
+sandbox only through a release, or the user building and installing it on
+the host. Its user docs are in `@@CABOOSE_SOURCE@@/docs`.
+@@END@@
+@@IF source=outside@@
+This launcher was built from a checkout at `@@CABOOSE_SOURCE@@` on the host,
+which this sandbox cannot see: a change to caboose itself is made there, from
+the host. User docs: @@CABOOSE_UPSTREAM@@/tree/main/docs
+@@END@@
+@@IF source=release@@
+caboose is an installed release (@@CABOOSE_VERSION@@); its source, docs and
+issue tracker are at @@CABOOSE_UPSTREAM@@. Nothing in here changes caboose
+itself: for what the user's configuration cannot do, suggest an issue there.
+@@END@@
 
-@@CABOOSE_HOST_EXEC@@
+## Skills
 
-## Start-up scripts and shell config: ~/.config/caboose
-
-Two directories there are also yours to write when asked: they run as this
-user, in here, and reach nothing more. They sync to the user's other
-machines, with the rest of `~/.config/caboose`.
-
-- `start.d/`: executables run once at container start, one at a time in
-  name order (`10-foo` before `20-bar`), in `~`; a daemon is started in the
-  background by its script (`foo &`), or the ones after it wait. Output is
-  in `caboose logs` on the host. Run one by hand to try it now.
-- `shell.d/`: read by every interactive bash, this tool's snapshot of the
-  shell included. `*.sh` must work in bash and zsh alike (aliases, exports,
-  plain functions); `*.bash` is for bash only. A new file reaches the next
-  shell. An alias here changes what your own commands do, so add only what
-  was asked for. `PATH` is the exception: this tool's shell takes it from
-  Claude Code, not from `shell.d`, so a directory added there reaches the
-  user's shells but not yours. A command for both goes in `~/.local/bin`,
-  first on every `PATH` and kept.
-
-Say what you wrote, and that a `start.d` script runs at the next start
-(`caboose restart` on the host), unless it was run by hand.
-
-## Changing the sandbox: propose it, the user applies it
-
-Nothing in here can change the image, `config.toml` or the roots: they
-decide what the sandbox is and what of the host it reaches. When asked to
-install a tool for good, or mount another host directory, write a
-**proposal**; the user reviews it on the host with `caboose apply`, which
-applies it only once they say yes.
-
-First read `~/.caboose-proposals/current/state.toml`: `image` says what
-the image is built from, `"<kind>.<name>"`, and the kind says what can be
-proposed for it; the roots there are now are listed too. Then write
-`~/.caboose-proposals/NAME.toml` (NAME: lowercase letters, digits, `-`,
-`_`): a `title`, a `reason`, the image's part for its kind, a root, or both.
-
-```toml
-title = "Install graphviz"             # one line
-reason = "Why, in a sentence or two."
-
-[roots]                                # one host directory to mount, at /work/NAME
-other = "~/src/other"                # long form for another path: [roots.other] host = ..., path = ...
-```
-
-- **apko** (packages from Wolfi): a `[packages]` table, `add = [...]`
-  and/or `remove = [...]`, 64 names at most. `state.toml` lists the
-  profile's own `packages` (only those can be removed) and every package
-  `installed` (do not add one of those). To find a name, fetch the index,
-  `https://packages.wolfi.dev/os/<aarch64|x86_64>/APKINDEX.tar.gz`: its
-  `P:` lines are package names, and `cmd:NAME` on a package's `p:` line
-  says it provides the command NAME. Within seconds the host writes
-  `NAME.check` beside the proposal. Its first line is `ok`, with what the
-  list resolves to; `error`, with why (an unknown name comes with close
-  ones): fix the proposal until it says `ok` before telling the user; or
-  `unchecked`: the host could not check it now. Do not rewrite the
-  proposal for that; tell the user, since `caboose apply` checks it
-  anyway.
-- **dockerfile**: a `[section]`, with `dockerfile_sha256` from
-  `state.toml`; `current/Dockerfile` is the Dockerfile it goes into (when
-  `state.toml` says `dockerfile = "seed"`, caboose's own, which then
-  becomes the profile's).
-
-  ```toml
-  dockerfile_sha256 = "..."
-  [section]                            # root, after the base
-  name = "foo"                         # replaces a section of that name, else is added
-  title = "foo 2.3"
-  body = '''
-  ARG FOO_VERSION=2.3.0
-  RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
-  '''
-  ```
-
-  One `[section]` per proposal: applying one changes the Dockerfile's
-  hash, and a proposal written against the old one is refused, so re-read
-  `current/` before proposing again. A section cannot hold `FROM`,
-  `ONBUILD`, `RUN --network` or `RUN --security`, nor `# caboose:` lines.
-- **ref** (an image of the user's own): nothing can be proposed for it;
-  tell the user what to add to their image.
-- Plain text only, everywhere: no control characters (escape sequences)
-  or invisible ones.
-- Nothing else can be proposed — not the base image, the docker socket, or
-  any other setting. For those, tell the user what to change on the host:
-  a capability, a device or another `docker run` flag is
-  `run_args` in a `[container.NAME]` or `[gvisor.NAME]` profile of the
-  environment's `config.toml`, then `caboose restart`.
-- Then tell the user to run `caboose apply` in a host terminal (with the
-  same `-e ENV` as this session's, if it has one); the host also shows
-  them a notification saying so, once the file is written, but it may be
-  missed. It builds the image (packages are built before anything is
-  written: a list that does not build is left pending) and offers
-  `caboose restart`, which ends this session: nothing proposed
-  is in effect before that. A tool installed this way whose settings
-  should last needs a `[[keep]]` entry too (above), in the same restart.
-
-## The sandbox itself is just another repo
-
-The project that defines this container — image, entrypoint, host launcher —
-is an ordinary repo, and from in here it is:
-
-    @@CABOOSE_DIR@@
-
-**If asked to fix, change or improve the sandbox, container, image or host
-launcher** (as opposed to whatever project is under work), that is where the
-changes go. It carries its own CLAUDE.md with the rest — notably that most of
-it only takes effect after a rebuild, run *on the host*.
-
-Host launcher commands, all run from a host terminal rather than in here:
-`caboose doctor`, `status`, `restart`, `stop`, `shell`, `logs`, `build`,
-`check-image`, `version`, `update`, `prune`, `detach`, `sync`, `env`, `help`.
-An install made by `install.sh` keeps itself up to date; a newer launcher
-works on with this container until `caboose restart` moves it onto a new
-image.
-`caboose doctor` is the one to point someone at when the sandbox itself
-seems wrong: it lists each problem with the command that fixes it.
-`caboose claude ARGS` passes ARGS to `claude`; nothing else reaches it, and
-`caboose --help` lists the rest. `caboose --env NAME` (or
-`CABOOSE_ENV`) picks an environment: a separate caboose, with its own
-container, image, data and Claude login, so sessions in another
-environment are not in this container and not in the fleet roster.
+caboose-propose, caboose-persist and caboose-troubleshoot hold the
+procedures. If one is not among your skills, read
+`/etc/claude-code/.claude/skills/<name>/SKILL.md`.

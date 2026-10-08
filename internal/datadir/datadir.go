@@ -1,7 +1,7 @@
 // Package datadir prepares the host-side data dir that the container
 // bind-mounts piece by piece: its layout, the sandbox's git config and
-// caboose's instructions to the sandbox's sessions, Claude Code's managed
-// CLAUDE.md (ManagedDir).
+// caboose's instructions and skills for the sandbox's sessions, Claude Code's
+// managed CLAUDE.md and skills (ManagedDir).
 //
 // What the sandbox keeps of its home is under home/, at its path under ~:
 // home/.claude is ~/.claude, home/.config/git is ~/.config/git. Which of
@@ -23,7 +23,6 @@
 package datadir
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -32,6 +31,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/nofollow"
@@ -97,15 +97,20 @@ const SyncDir = "sync"
 
 // ManagedDir is Claude Code's managed settings directory as the sandbox has
 // it (ManagedTarget), which holds caboose's instructions to every session
-// (ManagedInstructions) and nothing else. Mounted read-only, the one mount
+// (ManagedInstructions) and skills (ManagedSkills) and nothing else. Mounted read-only, the one mount
 // of the data dir the sandbox cannot write: the instructions are caboose's,
 // and the sandbox's ~/.claude/CLAUDE.md stays the user's own. Created here
 // for the reason SyncDir is.
 const ManagedDir = "claude-code"
 
 // ManagedInstructions is the CLAUDE.md in ManagedDir, written by
-// InstallInstructions on every launch.
+// InstallManaged on every launch.
 const ManagedInstructions = ManagedDir + "/CLAUDE.md"
+
+// ManagedSkills is where Claude Code looks for managed skills, inside
+// ManagedDir: one directory per skill, each with a SKILL.md. InstallManaged
+// owns everything under it.
+const ManagedSkills = ManagedDir + "/.claude/skills"
 
 // ManagedTarget is where the sandbox has ManagedDir: where Claude Code on
 // Linux looks for its managed policy, whose CLAUDE.md it reads before the
@@ -329,66 +334,8 @@ func WriteInPlace(path string, data []byte) error {
 	return f.Close()
 }
 
-// Placeholder is what InstallInstructions replaces in sandbox/CLAUDE.md with
-// InstructionsLocation.
-const Placeholder = "@@CABOOSE_DIR@@"
-
-// RootsPlaceholder is what InstallInstructions replaces in sandbox/CLAUDE.md
-// with where each repo root is mounted (DescribeMounts). The file is
-// installed for everyone, so it cannot name one person's layout.
-const RootsPlaceholder = "@@CABOOSE_ROOTS@@"
-
-// HostExecPlaceholder is what InstallInstructions replaces in
-// sandbox/CLAUDE.md with whether, and how, a session runs commands on the
-// host (HostExecInstructions).
-const HostExecPlaceholder = "@@CABOOSE_HOST_EXEC@@"
-
-// HostExecInstructions is what replaces @@CABOOSE_HOST_EXEC@@: with
-// host_exec on, how to run a command on the host; off, that it is off and
-// whose it is to turn on.
-func HostExecInstructions(on bool) string {
-	if !on {
-		return "Running commands on the host is off in this environment: it is `host_exec` in the host's\n" +
-			"`config.toml`, which is the user's to change."
-	}
-	return "This environment runs commands on the host: `caboose-agent host CMD ARGS` runs CMD there, as\n" +
-		"the user, in the host directory matching the current one, which must be under `/work`\n" +
-		"(`-C DIR` names another). There is no shell (`caboose-agent host sh -c '...'` for shell\n" +
-		"syntax) and no terminal; stdin, stdout, stderr and the exit status come back. So what has to\n" +
-		"run on the host -- its docker, a build only it can do, a look at its files -- can be run from\n" +
-		"here, rather than asking the user to run it."
-}
-
 // UpstreamURL is where the sandbox is edited when no checkout can be found.
 const UpstreamURL = "https://github.com/bfreis/caboose"
-
-// InstructionsLocation is what replaces @@CABOOSE_DIR@@: wherever the
-// container can see the caboose checkout, so the installed copy can point at
-// it without a hardcoded username -- and says plainly when it is not mounted
-// at all, since an agent inside should then say so rather than go looking.
-//
-// checkout is the host path of the checkout this launcher came from, or ""
-// when there is none (an installed binary: install.sh, go install); roots are
-// the physical host paths mounted into the container, and where.
-func InstructionsLocation(checkout string, roots []config.Root) string {
-	if checkout == "" {
-		// An installed launcher has no checkout of its own, but a clone of
-		// the source can still sit under a root, and an agent told "not
-		// mounted" would decline to edit what it can.
-		if clone := FindClone(roots); clone != "" {
-			if p, ok := config.ContainerPath(roots, clone); ok {
-				return p + "   (a clone of the source, under the roots; this launcher is an installed release, so a change there reaches this sandbox only through a release)"
-			}
-		}
-		return "NOT MOUNTED — this launcher is an installed binary, not a checkout. The source is " +
-			UpstreamURL + ": changes are made there (or in a clone of it on the host), not from in here"
-	}
-	if p, ok := config.ContainerPath(roots, checkout); ok {
-		return p
-	}
-	return "NOT MOUNTED — its checkout, " + checkout + ", is outside every root (" + config.DescribeRoots(roots) +
-		"), so it is edited from the host, not from in here"
-}
 
 // Module is caboose's module path, which a clone's go.mod names.
 const Module = "github.com/bfreis/caboose"
@@ -401,7 +348,7 @@ var (
 )
 
 // FindClone is the host path of a clone of caboose's source under the
-// roots, or "": a repository (a directory with .git or .jj) whose go.mod
+// roots, or "" (one whose path is not cleanPath is not a candidate): a repository (a directory with .git or .jj) whose go.mod
 // declares Module, at most cloneDepth below a root. A repository is
 // checked and never descended into, hidden directories and symlinks are
 // skipped, and the search gives up after cloneDirs directories, so a large
@@ -432,7 +379,7 @@ func FindClone(roots []config.Root) string {
 			}
 		}
 		if repo {
-			if declaresModule(filepath.Join(d.path, "go.mod")) {
+			if cleanPath(d.path) && declaresModule(filepath.Join(d.path, "go.mod")) {
 				return d.path
 			}
 			continue
@@ -447,6 +394,22 @@ func FindClone(roots []config.Root) string {
 		}
 	}
 	return ""
+}
+
+// cleanPath is whether p is fit to be written into the instructions: the
+// sandbox chooses a clone's name, and it goes into a read-only file every
+// session reads. Printable characters only, no backtick (it would end the
+// Markdown code span a path is written in) and no "@@".
+func cleanPath(p string) bool {
+	if strings.Contains(p, "@@") || strings.Contains(p, "`") {
+		return false
+	}
+	for _, r := range p {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // declaresModule is whether path is a regular file, not a symlink, whose
@@ -476,73 +439,6 @@ func DescribeMounts(roots []config.Root) string {
 		parts = append(parts, "`"+r.Host+"` at `"+r.Container+"`")
 	}
 	return strings.Join(parts, ", ")
-}
-
-// ExpandInstructions fills in sandbox/CLAUDE.md's placeholders. hostExec
-// is host_exec, as the launch that installs it reads it.
-func ExpandInstructions(src []byte, checkout string, roots []config.Root, hostExec bool) []byte {
-	return []byte(strings.NewReplacer(
-		Placeholder, InstructionsLocation(checkout, roots),
-		RootsPlaceholder, DescribeMounts(roots),
-		HostExecPlaceholder, HostExecInstructions(hostExec),
-	).Replace(string(src)))
-}
-
-// placeholderPattern matches anything shaped like a placeholder.
-var placeholderPattern = regexp.MustCompile(`@@[A-Z][A-Z0-9_]*@@`)
-
-// UnknownPlaceholders lists what still looks like a placeholder in
-// ExpandInstructions output, i.e. ones this launcher does not know how to
-// fill. A checkout's sandbox/CLAUDE.md can be newer than the launcher built
-// from it -- pulled, but not rebuilt -- and a placeholder added since would
-// otherwise be installed literally.
-func UnknownPlaceholders(expanded []byte) []string {
-	var names []string
-	seen := map[string]bool{}
-	for _, m := range placeholderPattern.FindAll(expanded, -1) {
-		if !seen[string(m)] {
-			seen[string(m)] = true
-			names = append(names, string(m))
-		}
-	}
-	return names
-}
-
-// InstallInstructions installs the sandbox-wide CLAUDE.md as
-// dataDir/ManagedInstructions, expanded by ExpandInstructions, and reports
-// whether it had to write.
-//
-// The data dir sits outside any checkout, so the CLAUDE.md the sandbox reads
-// is tracked at sandbox/CLAUDE.md and copied in from here. The launcher is
-// the only part of this that sees both the checkout and the data dir, and
-// running it per launch rather than per container start means an edit to the
-// tracked file reaches the next session without a caboose restart.
-//
-// Written in place and only when it changed: the destination is inside a
-// directory mount, so the inode trap of a single-file mount does not apply
-// here -- but a rewrite in place is still the one that cannot surprise a
-// live session.
-//
-// The sandbox has ManagedDir read-only, so nothing in it is the
-// container's; it is still reached through internal/nofollow, as every
-// file of the data dir a launch writes is, so that a link found there
-// (nofollow.ErrNotPlain) is left alone rather than written through.
-func InstallInstructions(src []byte, checkout string, roots []config.Root, hostExec bool, dataDir string) (bool, error) {
-	if err := os.MkdirAll(filepath.Join(dataDir, ManagedDir), 0o755); err != nil {
-		return false, err
-	}
-	d := nofollow.Dir(dataDir)
-	want := ExpandInstructions(src, checkout, roots, hostExec)
-	have, _, err := d.ReadFile(ManagedInstructions)
-	switch {
-	case err == nil && bytes.Equal(have, want):
-		return false, nil
-	case err == nil:
-		err = d.WriteInPlace(ManagedInstructions, want)
-	case errors.Is(err, fs.ErrNotExist):
-		err = d.WriteFile(ManagedInstructions, want, 0o644)
-	}
-	return err == nil, err
 }
 
 // LoggedIn reports whether the data dir holds a Claude login: Credentials

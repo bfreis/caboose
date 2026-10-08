@@ -15,7 +15,6 @@ import (
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
-	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/version"
 )
@@ -199,7 +198,7 @@ func makeCheckout(t *testing.T, module string) string {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("// c\nmodule "+module+"\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, assets.SandboxInstructionsPath), []byte("live @@CABOOSE_DIR@@\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, assets.SandboxInstructionsPath), []byte("live @@CABOOSE_SOURCE@@\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -240,53 +239,6 @@ func TestCheckoutDiscovery(t *testing.T) {
 	}
 	if got := FindCheckout(link); got != want {
 		t.Errorf("FindCheckout(symlink) = %q, want %q", got, want)
-	}
-}
-
-// TestInstallWithoutCheckout is the sandbox CLAUDE.md as an installed binary
-// writes it: from the embedded copy, pointing upstream, with every
-// placeholder filled in.
-func TestInstallWithoutCheckout(t *testing.T) {
-	src, err := SandboxInstructions("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := t.TempDir()
-	if _, err := datadir.InstallInstructions(src, "", []config.Root{{Host: "/home/u/src", Container: "/work"}}, false, data); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(filepath.Join(data, datadir.ManagedInstructions))
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(b)
-	for _, want := range []string{datadir.UpstreamURL, "NOT MOUNTED", "`/home/u/src` at `/work`"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("installed CLAUDE.md lacks %q", want)
-		}
-	}
-	// No placeholder left, and no one's layout: only the root given above.
-	for _, bad := range []string{"@@", "~/dev", "/Users/"} {
-		if strings.Contains(got, bad) {
-			t.Errorf("installed CLAUDE.md still has %q", bad)
-		}
-	}
-}
-
-func TestSandboxInstructionsSource(t *testing.T) {
-	good := makeCheckout(t, ModulePath)
-	b, err := SandboxInstructions(good)
-	if err != nil || string(b) != "live @@CABOOSE_DIR@@\n" {
-		t.Errorf("checkout copy: %q %v", b, err)
-	}
-	emb, _ := assets.SandboxInstructions()
-	b, err = SandboxInstructions("")
-	if err != nil || !bytes.Equal(b, emb) {
-		t.Errorf("no checkout should use the embedded copy: %v", err)
-	}
-	b, _ = SandboxInstructions(t.TempDir())
-	if !bytes.Equal(b, emb) {
-		t.Error("an unreadable checkout copy should fall back to the embedded one")
 	}
 }
 
@@ -457,52 +409,6 @@ func TestCreateContainerMounts(t *testing.T) {
 			// Each root at /work/<name>, whatever its host path.
 			if w := []backend.Mount{mount(tmp+"/dev", "/work/dev"), mount(tmp+"/w", "/work/w")}; !reflect.DeepEqual(rootMounts, w) {
 				t.Errorf("root mounts = %v, want %v", rootMounts, w)
-			}
-		})
-	}
-}
-
-// A checkout newer than the launcher -- pulled, not rebuilt -- can carry a
-// placeholder this binary cannot fill. Its own copy goes in instead, with a
-// note, rather than @@SOMETHING@@ reaching every session literally; a copy
-// it can fill is still installed from the checkout.
-func TestSyncFallsBackOnUnknownPlaceholder(t *testing.T) {
-	for _, tc := range []struct {
-		name, checkout string
-		embedded       bool
-	}{
-		{"unknown placeholder", "live @@CABOOSE_DIR@@ @@CABOOSE_FROM_THE_FUTURE@@\n", true},
-		{"known placeholders", "live @@CABOOSE_DIR@@ in @@CABOOSE_ROOTS@@\n", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			checkout := makeCheckout(t, ModulePath)
-			if err := os.WriteFile(filepath.Join(checkout, assets.SandboxInstructionsPath), []byte(tc.checkout), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			data := t.TempDir()
-			var errb bytes.Buffer
-			a := &App{Cfg: &config.Config{Roots: []config.Root{{Host: "/r", Container: "/work"}}, DataDir: data},
-				Docker: &docker.CLI{Path: "false"}, Checkout: checkout, Stderr: &errb}
-			if err := a.syncSandboxInstructions(); err != nil {
-				t.Fatal(err)
-			}
-			got, err := os.ReadFile(filepath.Join(data, datadir.ManagedInstructions))
-			if err != nil {
-				t.Fatal(err)
-			}
-			src := []byte(tc.checkout)
-			if tc.embedded {
-				src, _ = assets.SandboxInstructions()
-			}
-			if want := datadir.ExpandInstructions(src, checkout, []config.Root{{Host: "/r", Container: "/work"}}, false); !bytes.Equal(got, want) {
-				t.Errorf("installed:\n%s\nwant:\n%s", got, want)
-			}
-			if strings.Contains(string(got), "@@") {
-				t.Errorf("a placeholder was installed: %s", got)
-			}
-			note := strings.Contains(errb.String(), "uses placeholders this launcher doesn't know (@@CABOOSE_FROM_THE_FUTURE@@)")
-			if note != tc.embedded || (tc.embedded && !strings.Contains(errb.String(), "make launcher")) {
-				t.Errorf("stderr:\n%s", errb.String())
 			}
 		})
 	}

@@ -78,7 +78,7 @@ func TestInstalledBinary(t *testing.T) {
 		t.Error("a launch wrote ~/.claude/CLAUDE.md")
 	}
 	md := string(b)
-	for _, want := range []string{datadir.UpstreamURL, "NOT MOUNTED", "`" + root + "`"} {
+	for _, want := range []string{datadir.UpstreamURL, "`" + root + "`"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("installed CLAUDE.md lacks %q", want)
 		}

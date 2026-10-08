@@ -166,6 +166,15 @@ func SandboxInstructions() ([]byte, error) {
 	return fs.ReadFile(caboose.Files, SandboxInstructionsPath)
 }
 
+// SandboxSkillsPath is where the sandbox-wide skills sit, both in the
+// embedded FS and in a checkout: one directory per skill.
+const SandboxSkillsPath = "sandbox/skills"
+
+// SandboxSkills returns the embedded copy of sandbox/skills, rooted there.
+func SandboxSkills() (fs.FS, error) {
+	return fs.Sub(caboose.Files, SandboxSkillsPath)
+}
+
 // WriteLayerContext writes the layer's build context into dir, which should
 // be a fresh, empty directory.
 func WriteLayerContext(dir string) error {

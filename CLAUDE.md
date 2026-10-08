@@ -3,7 +3,8 @@
 This repo defines the Docker sandbox that Claude Code sessions run inside — so
 a session working on it is running in the very container it builds. What that
 means day to day is in caboose's managed instructions, installed read-only
-at `/etc/claude-code/CLAUDE.md`, whose source is `sandbox/CLAUDE.md` here.
+at `/etc/claude-code/CLAUDE.md` (with managed skills beside it), whose source is
+`sandbox/CLAUDE.md` and `sandbox/skills/` here.
 
 ## Changes here need a rebuild, and it has to happen on the host
 
@@ -14,7 +15,7 @@ at `/etc/claude-code/CLAUDE.md`, whose source is `sandbox/CLAUDE.md` here.
 package groups (`internal/apkobuild/pkgset/packages.toml`) decide an apko
 base's packages. The launcher is a
 Go binary, `./caboose`, built from `cmd/` and `internal/` and gitignored, with those
-files, the seed `Dockerfile`, `sandbox/CLAUDE.md` and `imagecheck.sh` embedded in it; the bind
+files, the seed `Dockerfile`, `sandbox/CLAUDE.md`, `sandbox/skills` and `imagecheck.sh` embedded in it; the bind
 mounts it sets up are fixed when the container is created. None of it is
 read live, so an edit alone changes nothing:
 
@@ -90,11 +91,16 @@ either: it is a Mac binary beside the launcher, which only `make vmm` on
 a Mac builds and signs (the Makefile refuses anywhere else), so a change
 to it needs that, and a VM restarted with it.
 
-`sandbox/CLAUDE.md` is the exception: a launcher run from a checkout copies
-it into the data dir's `claude-code/CLAUDE.md` on every start, which the
-sandbox has read-only as Claude Code's managed `/etc/claude-code/CLAUDE.md`,
-so the next session picks it up with no rebuild and no restart. An
-installed binary uses the copy embedded in it instead.
+`sandbox/CLAUDE.md` and `sandbox/skills/` are the exception: a launcher run
+from a checkout expands them on every start into the data dir's
+`claude-code/` (`CLAUDE.md` and `.claude/skills/`), which the sandbox has
+read-only as Claude Code's managed `/etc/claude-code`, so the next session
+picks them up with no rebuild and no restart. An installed binary uses the
+copies embedded in it instead. A checkout's set that the launcher
+cannot use is refused as a whole and the embedded one is installed, with a
+note: a file that is a link, not plain or over the limits (fix it in the
+checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
+`./caboose`). The managed files are read through `internal/nofollow`, bounded.
 
 ## Layout
 
@@ -138,7 +144,7 @@ installed binary uses the copy embedded in it instead.
 | `install.sh` | the one-line install, POSIX sh: the latest release (or `CABOOSE_VERSION`), checked against `checksums.txt`, into the layout `internal/selfupdate` keeps, then `caboose setup`; tested by `install_test.go` against a fake release host |
 | `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `CABOOSE_HOME/versions/<tag>` and the `~/.local/bin/caboose` link (the only thing of an install outside `CABOOSE_HOME`), `update.json` and its lock; `releasetest` serves fake releases |
 | `.github/workflows` | `ci.yml` (gofmt, vet, test, shellcheck); `release.yml` (goreleaser on a `v*` tag) |
-| `sandbox/CLAUDE.md` | caboose's instructions to every session, installed as the sandbox's managed, read-only `/etc/claude-code/CLAUDE.md` |
+| `sandbox/CLAUDE.md`, `sandbox/skills/` | caboose's instructions to every session, a template, and its managed skills (`caboose-propose`, `caboose-persist`, `caboose-troubleshoot`), expanded per launch (`internal/datadir/instructions.go`) and installed read-only under `/etc/claude-code` |
 | `README.md`, `docs/`, `CONTRIBUTING.md` | a short README (logo in `docs/assets/`, badges, links); the user docs, one file per topic; building and testing caboose |
 | `tests/run.sh` | integration suite; drives the real launcher against a real container |
 | `tests/byo/` | bring-your-own-image suite (`make test-byo`): Debian and Alpine test bases as ref profiles, one shared throwaway data dir, stock images the check must refuse, and a dockerfile profile's dir (`envs/<env>/dockerfile/default`) built from the seed with the off section (`tests/byo/seed` prints it) |
@@ -498,12 +504,19 @@ outside the repo.
   an old mtime.
 - **`sandbox/CLAUDE.md` is sandbox-wide.** It is read by every session in
   every project, so project-specific instructions — including everything in
-  this file — do not belong there. It also ships to every user, so it names
-  no one's paths: the launcher fills in `@@CABOOSE_DIR@@` and
-  `@@CABOOSE_ROOTS@@` at install time (`internal/datadir`).
+  this file — do not belong there. Keep it to what is true in every project
+  and short, since it loads into every session; a procedure goes in a skill
+  (`sandbox/skills/<name>/SKILL.md`). It ships to every user, most with an
+  installed release and no source: write for them, name no one's paths, and
+  give no rebuild path unless `@@IF source=checkout@@`. The launcher
+  expands placeholders (`@@CABOOSE_*@@`) and `@@IF`/`@@ELSE`/`@@END@@`
+  blocks from the running sandbox's facts (`datadir.Facts`, built by
+  `instructionFacts`): `internal/datadir/instructions.go` lists them. Maintainer
+  notes belong in this file, not there.
 - **caboose's instructions are Claude Code's managed CLAUDE.md, and
-  `~/.claude/CLAUDE.md` is the user's.** A launch writes the filled-in
-  `sandbox/CLAUDE.md` to the data dir's `claude-code/`
+  `~/.claude/CLAUDE.md` is the user's.** A launch writes the expanded
+  `sandbox/CLAUDE.md` and skills (managed skills, at
+  `.claude/skills/<name>/SKILL.md`; stale ones pruned) to the data dir's `claude-code/`
   (`datadir.ManagedDir`), beside `home/` and in no other mount, which the
   sandbox has at `/etc/claude-code` (`datadir.ManagedTarget`), the one
   mount of the data dir that is read-only (`backend.Mount.ReadOnly`) under

@@ -25,6 +25,7 @@ import (
 	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/tty"
+	"github.com/bfreis/caboose/internal/version"
 )
 
 // ReadyMarker is the file the entrypoint creates once Claude Code is usable.
@@ -296,36 +297,72 @@ func (a *App) noteSetup() {
 // instructions: Claude Code's managed CLAUDE.md.
 const managedInstructionsInside = datadir.ManagedTarget + "/CLAUDE.md"
 
-// syncSandboxInstructions writes caboose's instructions to every session,
-// sandbox/CLAUDE.md filled in, into the data dir's ManagedDir, which the
-// sandbox has read-only at datadir.ManagedTarget: Claude Code reads it
-// before the user's ~/.claude/CLAUDE.md, which caboose never writes.
-func (a *App) syncSandboxInstructions() error {
-	src, err := SandboxInstructions(a.Checkout)
-	if err != nil {
-		return nil // nothing to install, as when the tracked file is missing
+// instructionFacts is what the instructions are filled in from: the running
+// sandbox's isolation and profile where it has them (it may predate the
+// config), else the configuration's; the image is always the configured
+// one, which is what a proposal changes. A sandbox that is not
+// there, or whose labels cannot be read, is the configuration's too.
+func (a *App) instructionFacts() datadir.Facts {
+	f := datadir.Facts{
+		Env:          a.Cfg.Env,
+		Isolation:    isolationOf(a.Cfg),
+		Profile:      profileLabel(a.Cfg),
+		Image:        a.Cfg.ImageProfile.Kind, // the configured profile: what proposals change
+		ImageProfile: a.Cfg.ImageProfile.String(),
+		Version:      version.Get().Version,
+		Checkout:     a.Checkout,
+		Roots:        a.visibleRoots(),
+		HostExec:     a.Cfg.HostExec,
 	}
-	// The roots the container really has, as for containerDir: the file
-	// describes what is visible from inside, which a root changed since
-	// creation does not alter.
-	roots := a.visibleRoots()
-	hostExec := a.Cfg.HostExec
-	// The checkout's copy wins so that an edit needs no rebuild -- but the
-	// placeholders are this binary's to fill, and a pull can bring a copy
-	// with one it predates. Installing @@SOMETHING@@ literally would mislead
-	// every session, so this binary's own copy, which it can fill, goes in
-	// instead until the launcher is rebuilt.
-	if a.Checkout != "" {
-		if unknown := datadir.UnknownPlaceholders(datadir.ExpandInstructions(src, a.Checkout, roots, hostExec)); len(unknown) > 0 {
-			if embedded, err := assets.SandboxInstructions(); err == nil {
-				a.Note("%s in the checkout uses placeholders this launcher doesn't know (%s);",
-					assets.SandboxInstructionsPath, strings.Join(unknown, ", "))
-				a.Note("installing the copy built into it instead. Rebuild it: make launcher (on the host).")
-				src = embedded
-			}
+	if labels, err := a.box().Labels(); err == nil {
+		if v := labels[assets.LabelIsolation]; v != "" {
+			f.Isolation = v
+		}
+		if v := labels[assets.LabelProfile]; v != "" {
+			f.Profile = v
 		}
 	}
-	changed, err := datadir.InstallInstructions(src, a.Checkout, roots, hostExec, a.Cfg.DataDir)
+	return f.Resolve()
+}
+
+// syncSandboxInstructions writes caboose's instructions and skills to every
+// session -- sandbox/CLAUDE.md and sandbox/skills, filled in -- into the
+// data dir's ManagedDir, which the sandbox has read-only at
+// datadir.ManagedTarget: Claude Code reads them before the user's
+// ~/.claude/CLAUDE.md, which caboose never writes.
+func (a *App) syncSandboxInstructions() error {
+	facts := a.instructionFacts()
+	// The checkout's files win so that an edit needs no rebuild -- but the
+	// placeholders and directives are this binary's to fill, and a pull can
+	// bring files with one it predates. Installing @@SOMETHING@@ literally
+	// would mislead every session, so this binary's own set, which it can
+	// fill, goes in instead (all of it, so that CLAUDE.md and the skills
+	// never disagree) until the launcher is rebuilt.
+	var files map[string][]byte
+	if a.Checkout != "" {
+		set, err := SandboxFiles(a.Checkout)
+		if err != nil {
+			a.Note("the checkout's sandbox files are refused: %v;", err)
+			a.Note("remove or fix them in the checkout. Installing the copy built into this launcher instead.")
+		} else if files, err = datadir.ExpandTree(set, facts); err != nil {
+			files = nil
+			a.Note("the checkout's sandbox files cannot be filled in by this launcher: %v;", err)
+			a.Note("the checkout's instructions and this launcher differ: rebuild the launcher (make launcher, on the host) or update the checkout.")
+			a.Note("Installing the copy built into this launcher instead.")
+		}
+	}
+	if files == nil {
+		embedded, err := EmbeddedSandboxFiles()
+		if err != nil {
+			return nil // nothing to install, as when the tracked file is missing
+		}
+		if files, err = datadir.ExpandTree(embedded, facts); err != nil {
+			a.Note("caboose's instructions cannot be filled in: %v", err)
+			a.Note("this is a bug in this launcher; what is installed stays as it is. Update caboose.")
+			return nil
+		}
+	}
+	changed, err := datadir.InstallManaged(files, a.Cfg.DataDir)
 	if errors.Is(err, nofollow.ErrNotPlain) {
 		a.Note("not installing caboose's instructions: %v; delete it and relaunch", err)
 		return nil
@@ -334,8 +371,8 @@ func (a *App) syncSandboxInstructions() error {
 		return Die("installing caboose's instructions: %v", err)
 	}
 	if changed {
-		a.Note("installed caboose's instructions into %s (%s in the %s, read-only)",
-			filepath.Join(a.Cfg.DataDir, datadir.ManagedInstructions), managedInstructionsInside, a.noun())
+		a.Note("installed caboose's instructions and skills into %s (%s in the %s, read-only)",
+			filepath.Join(a.Cfg.DataDir, datadir.ManagedDir), datadir.ManagedTarget, a.noun())
 	}
 	return nil
 }

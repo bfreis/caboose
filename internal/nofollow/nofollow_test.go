@@ -73,6 +73,37 @@ func TestReadFile(t *testing.T) {
 	}
 }
 
+func TestReadFileMax(t *testing.T) {
+	top, _ := layout(t)
+	for max, ok := range map[int64]bool{4: false, 5: true, 6: true} {
+		data, _, err := Dir(top).ReadFileMax("a/b/f", max)
+		if ok != (err == nil) || (ok && string(data) != "plain") || (!ok && !errors.Is(err, ErrTooLarge)) {
+			t.Errorf("max %d: %q, %v", max, data, err)
+		}
+	}
+	// A sparse file far over the limit is refused by its size, unread.
+	big := filepath.Join(top, "big")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1 << 40); err != nil {
+		t.Skip("no sparse files here:", err)
+	}
+	f.Close()
+	if _, _, err := Dir(top).ReadFileMax("big", 1<<20); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("sparse: %v", err)
+	}
+	// Links are refused as ReadFile refuses them.
+	symlink(t, filepath.Join(top, "secret"), filepath.Join(top, "ln"))
+	if _, _, err := Dir(top).ReadFileMax("ln", 100); !errors.Is(err, ErrNotPlain) {
+		t.Errorf("link: %v", err)
+	}
+	if _, _, err := Dir(top).ReadFileMax("a/b/missing", 100); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing: %v", err)
+	}
+}
+
 // Every way to reach a secret: a symlinked file, a symlinked directory on
 // the way (both staying inside top, which os.Root alone would follow), and
 // a hard link.

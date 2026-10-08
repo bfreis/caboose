@@ -68,7 +68,8 @@ type stateFile struct {
 
 const stateHeader = `# Written by caboose on the host, at every launch and after 'caboose apply':
 # what a proposal is made against. Changing it here changes nothing; see
-# /etc/claude-code/CLAUDE.md for how to propose a change.
+# /etc/claude-code/.claude/skills/caboose-propose/SKILL.md for how to
+# propose a change.
 #
 # image: the image profile the sandbox is built from, "<kind>.<name>".
 # What a proposal can change in it depends on the kind:

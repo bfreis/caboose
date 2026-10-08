@@ -264,6 +264,10 @@ vm_group() {
     # What the launcher wrote, kept here: a write that got through changes
     # the host's copy and the VM's view alike, so they are no proof.
     cp "$VM_DATA/claude-code/CLAUDE.md" "$VM_WORK/claude-md.written"
+    check "and so are its skills" 0 \
+        "$(vsh 'cat /etc/claude-code/.claude/skills/caboose-propose/SKILL.md' | cmp -s - "$VM_DATA/claude-code/.claude/skills/caboose-propose/SKILL.md"; echo $?)"
+    check 'with nothing under /etc/claude-code left unexpanded' 0 \
+        "$(vsh 'grep -rc "@@" /etc/claude-code' | grep -vc ':0$')"
     check 'and root in the guest cannot write them' 1 \
         "$(vsh 'echo x >> /etc/claude-code/CLAUDE.md 2>/dev/null && echo 0 || echo 1')"
     # Root in the guest has the syscalls; the default image has no mount
@@ -615,8 +619,22 @@ inside=/etc/claude-code/CLAUDE.md
 check 'the tracked CLAUDE.md was installed' 0 "$(exists "$installed")"
 check 'the container has it at /etc/claude-code' 0 \
     "$(docker exec "$CONTAINER" test -f "$inside"; echo $?)"
-check 'the placeholder was substituted' 0 \
-    "$(docker exec "$CONTAINER" grep -c '@@CABOOSE_DIR@@' "$inside" 2>/dev/null || true)"
+# Its @@IF blocks and placeholders were expanded: nothing under
+# /etc/claude-code keeps an @@, and no directive line survives.
+check 'no placeholder or directive is left under /etc/claude-code' 0 \
+    "$(docker exec "$CONTAINER" grep -rc '@@' /etc/claude-code 2>/dev/null | grep -vc ':0$')"
+check 'the conditionals were resolved for the container isolation' 0 \
+    "$(docker exec "$CONTAINER" grep -c '^[[:space:]]*@@\(IF\|ELSE\|END\)' "$inside" 2>/dev/null || true)"
+# The managed skills come with it, byte for byte.
+skill_installed="$DATA_DIR/claude-code/.claude/skills/caboose-propose/SKILL.md"
+skill_inside=/etc/claude-code/.claude/skills/caboose-propose/SKILL.md
+check 'the caboose-propose skill was installed' 0 "$(exists "$skill_installed")"
+check 'the container has it at /etc/claude-code' 0 \
+    "$(docker exec "$CONTAINER" test -f "$skill_inside"; echo $?)"
+check 'as the launcher wrote it' 0 \
+    "$(docker exec "$CONTAINER" cat "$skill_inside" 2>/dev/null | cmp -s - "$skill_installed"; echo $?)"
+check 'and the agent cannot write it' 1 \
+    "$(docker exec "$CONTAINER" sh -c "echo x >> $skill_inside" >/dev/null 2>&1 && echo 0 || echo 1)"
 check 'the agent cannot write it' 1 \
     "$(docker exec "$CONTAINER" sh -c "echo x >> $inside" >/dev/null 2>&1 && echo 0 || echo 1)"
 check 'nor root in the container' 1 \
@@ -1389,6 +1407,10 @@ if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; th
     check 'that user writes a 600 file in ~/.claude' ok \
         "$(cexec sh -c 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
     check "caboose's instructions are there" 0 "$(cexec test -f /etc/claude-code/CLAUDE.md; echo $?)"
+    check "and so are its skills, as the launcher wrote them" 0 \
+        "$(cexec cat /etc/claude-code/.claude/skills/caboose-propose/SKILL.md | cmp -s - "$DATA_DIR/claude-code/.claude/skills/caboose-propose/SKILL.md"; echo $?)"
+    check 'with nothing under /etc/claude-code left unexpanded' 0 \
+        "$(cexec grep -rc '@@' /etc/claude-code | grep -vc ':0$')"
     check 'and that user cannot write them' 1 \
         "$(docker exec "$CONTAINER" sh -c 'echo x >> /etc/claude-code/CLAUDE.md' >/dev/null 2>&1 && echo 0 || echo 1)"
     check 'nor can root under gVisor' 1 \

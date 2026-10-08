@@ -9,7 +9,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
@@ -185,94 +184,6 @@ func TestKeptDirsArePrivate(t *testing.T) {
 	}
 	if m := perm(t, gh); m != 0o750 {
 		t.Errorf("an existing gh dir was re-moded to %v", m)
-	}
-}
-
-func TestInstructionsLocation(t *testing.T) {
-	one := []config.Root{{Host: "/h/dev", Container: "/work"}}
-	if got := InstructionsLocation("/h/dev/caboose", one); got != "/work/caboose" {
-		t.Errorf("inside: %q", got)
-	}
-	if got := InstructionsLocation("/h/dev", one); got != "/work" {
-		t.Errorf("at root: %q", got)
-	}
-	if got := InstructionsLocation("/h/c", []config.Root{{Host: "/", Container: "/work"}}); got != "/work/h/c" {
-		t.Errorf("under a root of /: %q", got)
-	}
-	several := []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "dev", Host: "/h/dev", Container: "/work/dev"}}
-	if got := InstructionsLocation("/h/dev/caboose", several); got != "/work/dev/caboose" {
-		t.Errorf("under a named root: %q", got)
-	}
-	if got, want := InstructionsLocation("/h/devx/caboose", one),
-		"NOT MOUNTED — its checkout, /h/devx/caboose, is outside every root (/h/dev at /work), "+
-			"so it is edited from the host, not from in here"; got != want {
-		t.Errorf("outside: %q", got)
-	}
-	if got, want := InstructionsLocation("", one),
-		"NOT MOUNTED — this launcher is an installed binary, not a checkout. The source is "+
-			"https://github.com/bfreis/caboose: changes are made there (or in a clone of it on the host), "+
-			"not from in here"; got != want {
-		t.Errorf("no checkout: %q", got)
-	}
-}
-
-// caboose's instructions go into the managed dir, never into ~/.claude:
-// the sandbox's ~/.claude/CLAUDE.md is the user's.
-func TestInstallInstructions(t *testing.T) {
-	dir := t.TempDir()
-	src := []byte("see @@CABOOSE_DIR@@ and @@CABOOSE_DIR@@/x | & \\1 in @@CABOOSE_ROOTS@@\n")
-	r := []config.Root{{Host: "/r", Container: "/work"}}
-	changed, err := InstallInstructions(src, "/r/a|b&c", r, false, dir)
-	if err != nil || !changed {
-		t.Fatalf("changed=%v err=%v", changed, err)
-	}
-	dst := filepath.Join(dir, ManagedInstructions)
-	if got, want := read(t, dst), "see /work/a|b&c and /work/a|b&c/x | & \\1 in `/r` at `/work`\n"; got != want {
-		t.Errorf("installed %q, want %q", got, want)
-	}
-	if _, err := os.Lstat(filepath.Join(dir, ClaudeDir)); err == nil {
-		t.Error("installing made ~/.claude, which is the user's")
-	}
-
-	// Unchanged: not written at all.
-	old := time.Unix(1_000_000, 0)
-	if err := os.Chtimes(dst, old, old); err != nil {
-		t.Fatal(err)
-	}
-	ino := inode(t, dst)
-	changed, err = InstallInstructions(src, "/r/a|b&c", r, false, dir)
-	if err != nil || changed {
-		t.Fatalf("second install: changed=%v err=%v", changed, err)
-	}
-	if fi, _ := os.Stat(dst); !fi.ModTime().Equal(old) {
-		t.Error("an unchanged file was rewritten")
-	}
-
-	// Changed: rewritten in place.
-	changed, err = InstallInstructions([]byte("new @@CABOOSE_DIR@@\n"), "/p/q", []config.Root{{Host: "/p", Container: "/work"}}, false, dir)
-	if err != nil || !changed {
-		t.Fatalf("edit: changed=%v err=%v", changed, err)
-	}
-	if read(t, dst) != "new /work/q\n" || inode(t, dst) != ino {
-		t.Error("edit was not written in place")
-	}
-}
-
-// A user's own ~/.claude/CLAUDE.md is left as it is.
-func TestInstallInstructionsLeavesTheUsers(t *testing.T) {
-	dir := t.TempDir()
-	if err := EnsureLayout(dir, defKeep()); err != nil {
-		t.Fatal(err)
-	}
-	mine := filepath.Join(dir, ClaudeDir, "CLAUDE.md")
-	if err := os.WriteFile(mine, []byte("mine\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := InstallInstructions([]byte("caboose's\n"), "", []config.Root{{Host: "/r", Container: "/work"}}, false, dir); err != nil {
-		t.Fatal(err)
-	}
-	if read(t, mine) != "mine\n" || read(t, filepath.Join(dir, ManagedInstructions)) != "caboose's\n" {
-		t.Errorf("user's %q, caboose's %q", read(t, mine), read(t, filepath.Join(dir, ManagedInstructions)))
 	}
 }
 
@@ -536,7 +447,7 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 	if err := WriteSandboxGit(dir, &fakeGit{}, []Change{{Key: "user.name", Value: "Me"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallInstructions([]byte("x"), "", []config.Root{{Host: "/r", Container: "/work"}}, false, dir); err != nil {
+	if _, err := InstallManaged(map[string][]byte{"CLAUDE.md": []byte("x")}, dir); err != nil {
 		t.Fatal(err)
 	}
 	for _, d := range append([]string{"."}, Machinery...) {
@@ -568,65 +479,6 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 	}
 	if m := perm(t, p); m != 0o664 {
 		t.Errorf("WriteInPlace mode %v, want 0664", m)
-	}
-}
-
-func TestUnknownPlaceholders(t *testing.T) {
-	if got := UnknownPlaceholders(ExpandInstructions([]byte("@@CABOOSE_DIR@@ @@CABOOSE_ROOTS@@ a@@b @@x@@\n"), "/p", []config.Root{{Host: "/p", Container: "/work"}}, false)); got != nil {
-		t.Errorf("known placeholders reported: %q", got)
-	}
-	got := UnknownPlaceholders([]byte("@@CABOOSE_NEW@@ and @@CABOOSE_NEW@@, @@OTHER_2@@"))
-	if want := []string{"@@CABOOSE_NEW@@", "@@OTHER_2@@"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// Every root is listed with where the container has it.
-func TestExpandInstructionsRoots(t *testing.T) {
-	src := []byte("mounted: @@CABOOSE_ROOTS@@.\n")
-	for want, roots := range map[string][]config.Root{
-		"mounted: `/` at `/work`.\n":      {{Host: "/", Container: "/work"}},
-		"mounted: `/h/dev` at `/work`.\n": {{Host: "/h/dev", Container: "/work"}},
-		"mounted: `/a` at `/work/a`, `/h/dev` at `/work/dev`.\n": {
-			{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "dev", Host: "/h/dev", Container: "/work/dev"}},
-	} {
-		if got := string(ExpandInstructions(src, "", roots, false)); got != want {
-			t.Errorf("%+v: %q, want %q", roots, got, want)
-		}
-	}
-}
-
-// host_exec on says how to run a command on the host; off, that it is off
-// and the user's to turn on. Either way the placeholder is gone, and a
-// change of it rewrites the installed file.
-func TestExpandInstructionsHostExec(t *testing.T) {
-	src := []byte("before\n\n@@CABOOSE_HOST_EXEC@@\n")
-	roots := []config.Root{{Host: "/h/dev", Container: "/work"}}
-	on := string(ExpandInstructions(src, "", roots, true))
-	for _, want := range []string{"caboose-agent host CMD ARGS", "under `/work`", "sh -c", "no terminal", "exit status"} {
-		if !strings.Contains(on, want) {
-			t.Errorf("on: no %q in\n%s", want, on)
-		}
-	}
-	off := string(ExpandInstructions(src, "", roots, false))
-	if !strings.Contains(off, "is off in this environment") || !strings.Contains(off, "`host_exec`") || strings.Contains(off, "caboose-agent host") {
-		t.Errorf("off:\n%s", off)
-	}
-	for _, got := range []string{on, off} {
-		if u := UnknownPlaceholders([]byte(got)); u != nil || strings.Contains(got, HostExecPlaceholder) {
-			t.Errorf("left %q in\n%s", u, got)
-		}
-	}
-	dir := t.TempDir()
-	if changed, err := InstallInstructions(src, "", roots, false, dir); !changed || err != nil {
-		t.Fatalf("first install: %v %v", changed, err)
-	}
-	if changed, err := InstallInstructions(src, "", roots, true, dir); !changed || err != nil {
-		t.Fatalf("turning it on: %v %v", changed, err)
-	}
-	b, err := os.ReadFile(filepath.Join(dir, ManagedInstructions))
-	if err != nil || string(b) != on {
-		t.Fatalf("installed %q %v, want the on text", b, err)
 	}
 }
 
@@ -811,8 +663,8 @@ func TestFindClone(t *testing.T) {
 	if got := FindClone(roots); got != want {
 		t.Fatalf("FindClone %q, want %q", got, want)
 	}
-	if got := InstructionsLocation("", roots); !strings.HasPrefix(got, "/work/me/caboose   (a clone of the source") {
-		t.Errorf("InstructionsLocation %q", got)
+	if f := (Facts{Roots: roots}).Resolve(); f.sourceKind != SourceClone || f.source != "/work/me/caboose" {
+		t.Errorf("source %q %q", f.sourceKind, f.source)
 	}
 	// A budget spent before the clone is reached gives up.
 	defer func(n int) { cloneDirs = n }(cloneDirs)

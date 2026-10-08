@@ -93,13 +93,16 @@ func TestWriteContextsWriteOnlyTheirFiles(t *testing.T) {
 	}
 }
 
-func TestSandboxInstructionsHasPlaceholder(t *testing.T) {
-	b, err := SandboxInstructions()
+func TestSandboxFilesEmbedded(t *testing.T) {
+	if b, err := SandboxInstructions(); err != nil || len(b) == 0 {
+		t.Errorf("sandbox/CLAUDE.md: %d bytes, %v", len(b), err)
+	}
+	skills, err := SandboxSkills()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(b, []byte("@@CABOOSE_DIR@@")) {
-		t.Error("embedded sandbox/CLAUDE.md lost its @@CABOOSE_DIR@@ placeholder")
+	if b, err := fs.ReadFile(skills, "caboose-propose/SKILL.md"); err != nil || len(b) == 0 {
+		t.Errorf("sandbox/skills/caboose-propose/SKILL.md: %d bytes, %v", len(b), err)
 	}
 }
 

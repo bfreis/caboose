@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/nofollow"
 )
 
@@ -25,8 +24,7 @@ func hostFile(t *testing.T, data string) string {
 	return p
 }
 
-func TestInstallInstructionsNeverFollowsLinks(t *testing.T) {
-	roots := []config.Root{{Host: "/r", Container: "/work"}}
+func TestInstallManagedNeverFollowsLinks(t *testing.T) {
 	for name, plant := range map[string]func(t *testing.T, dir, dst string) string{
 		"symlink": func(t *testing.T, dir, dst string) string {
 			host := hostFile(t, "host file\n")
@@ -52,9 +50,9 @@ func TestInstallInstructionsNeverFollowsLinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			target := plant(t, dir, filepath.Join(dir, ManagedInstructions))
-			changed, err := InstallInstructions([]byte("instructions\n"), "", roots, false, dir)
+			changed, err := InstallManaged(map[string][]byte{"CLAUDE.md": []byte("instructions\n")}, dir)
 			if changed || !errors.Is(err, nofollow.ErrNotPlain) {
-				t.Errorf("InstallInstructions = %v, %v; want ErrNotPlain", changed, err)
+				t.Errorf("InstallManaged = %v, %v; want ErrNotPlain", changed, err)
 			}
 			if got := read(t, target); got != "host file\n" {
 				t.Errorf("the linked file is now %q", got)

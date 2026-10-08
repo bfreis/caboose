@@ -11,7 +11,7 @@ import "embed"
 // Files holds the images' build inputs -- the Dockerfile a dockerfile image
 // profile's dir is seeded with, and the layer built on every base
 // (layer.Dockerfile and the files it COPYs) --
-// the sandbox-wide CLAUDE.md, and the image probe that caboose check-image runs
+// the sandbox-wide CLAUDE.md and skills, and the image probe that caboose check-image runs
 // (imagecheck.sh, which is not part of any image: internal/assets'
 // BaseContext and LayerContext decide what is).
 //
@@ -22,5 +22,5 @@ import "embed"
 // `caboose build`, which keeps the allowlist property .dockerignore gave
 // the checkout-based build: nothing unlisted can drift into the context.
 //
-//go:embed Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md imagecheck.sh agent-bin
+//go:embed Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md sandbox/skills imagecheck.sh agent-bin
 var Files embed.FS
