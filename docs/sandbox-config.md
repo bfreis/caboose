@@ -175,14 +175,11 @@ with a sync remote set, when it has a root the list lacks.
 
 ```toml
 format = 1      # this file's structure
-defaults = 1    # the caboose defaults it was written from
 ```
 
-When a newer caboose adds a default, `caboose doctor` says so, and
-`caboose sandbox-config update` offers each one; the file is never changed
-without asking. A file of a newer `format` than a caboose reads is not used:
-that caboose keeps using the last copy it could read, syncs nothing, and
-says `caboose update`.
+A file of a newer `format` than a caboose reads is not used: that caboose
+keeps using the last copy it could read, syncs nothing, and says
+`caboose update`.
 
 ## When something is wrong with it
 

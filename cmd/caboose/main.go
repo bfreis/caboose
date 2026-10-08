@@ -154,8 +154,6 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		err = app.Shell(inv.Args)
 	case "sync":
 		err = app.Sync(inv.Args)
-	case "sandbox-config":
-		err = app.SandboxConfig(inv.Args)
 	default:
 		// No command, or claude: its arguments are claude's.
 		err = app.Attach(inv.Args)

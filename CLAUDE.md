@@ -343,10 +343,10 @@ outside the repo.
   in `config.toml`, in its table, and nowhere else: `CABOOSE_` variables
   name where things live (`CABOOSE_ENV`, `CABOOSE_HOME`,
   `CABOOSE_DATA_DIR`, `CABOOSE_SESSION`) or are two strict booleans
-  (`CABOOSE_FORCE`, `CABOOSE_NO_AUTO_UPDATE`), and one that was a setting
-  is refused when set, with where it went (`config.Moved`, which also
-  refuses the old flat keys). The file is read as tables: a key or table
-  it does not know is an error naming it, and each isolation kind
+  (`CABOOSE_FORCE`, `CABOOSE_NO_AUTO_UPDATE`). An old layout leaves no
+  trace: no table of moved keys or variables, no hint for an old key,
+  which is an unknown key like any other. The file is read as tables: a
+  key or table it does not know is an error naming it, and each isolation kind
   (`[container.NAME]`, `[gvisor.NAME]`, `[vm.NAME]`) has its own keys
   (`profileKeys`), so a key a kind lacks cannot be written; there is no
   inheritance between profiles.

@@ -174,33 +174,6 @@ func TestConfigFileRefuses(t *testing.T) {
 	}
 }
 
-// A file in the first, flat layout fails, naming the key, saying the
-// layout changed, where the key went, and where it is documented.
-func TestOldLayoutRefused(t *testing.T) {
-	for body, want := range map[string]string{
-		`repo_root = "~/src"`:            "repo_root is not a setting any more: config.toml's layout changed, and it is now a [roots] table",
-		`no_tmux = true`:                 "it is now tmux in [session], true or false",
-		`docker_run_args = ["--init"]`:   "now run_args in a [container.NAME] or [gvisor.NAME] profile",
-		`vm_cpus = 4`:                    "now cpus in a [vm.NAME] profile",
-		`egress_proxy = "off"`:           "now egress in a [vm.NAME] profile",
-		`image = "x"`:                    "the image is named after the environment",
-		"format = 1\nbase_image = \"x\"": "now base in [image]",
-	} {
-		_, err := load(t, body)
-		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "(see docs/configuration.md)") {
-			t.Errorf("%s: %v", body, err)
-		}
-	}
-	for _, m := range Moved {
-		if m.Key == "" {
-			continue
-		}
-		if _, err := load(t, m.Key+" = 1"); err == nil || !strings.Contains(err.Error(), m.Key+" is not a setting any more") {
-			t.Errorf("%s: %v", m.Key, err)
-		}
-	}
-}
-
 // [roots] mounts each root at /work/<name>, in name order, or at the path
 // its long form names; a ~ in one is the home dir.
 func TestConfigFileRoots(t *testing.T) {

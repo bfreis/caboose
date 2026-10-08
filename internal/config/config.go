@@ -243,17 +243,8 @@ func Machine(getenv Env) (*Config, error) {
 }
 
 // readVariables reads the variables that are not an environment's
-// settings, refusing one that was a setting.
+// settings.
 func (c *Config) readVariables() error {
-	for _, m := range Moved {
-		if c.Getenv(m.Variable) != "" {
-			where := "it is " + m.Now + " in config.toml"
-			if strings.HasPrefix(m.Now, "nothing") {
-				where = "it is " + m.Now
-			}
-			return fmt.Errorf("%s is set, and caboose no longer reads it: %s (see %s). Unset it", m.Variable, where, ConfigDoc)
-		}
-	}
 	var err error
 	c.Session = c.Getenv("CABOOSE_SESSION")
 	if c.Force, err = EnvBool(c.Getenv, "CABOOSE_FORCE"); err != nil {

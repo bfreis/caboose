@@ -1219,15 +1219,9 @@ group 'config.toml'
 # What a launch refuses, and says to do. Each swaps the environment's
 # config.toml (or sets a variable) for one command, which only reads.
 cfg_run() { (cd "$ROOT" && "$CC" status 2>&1 </dev/null); }
-out="$(cd "$ROOT" && CABOOSE_ISOLATION=gvisor "$CC" status 2>&1 </dev/null)"
-check 'a variable that was a setting is refused' 1 "$(printf '%s\n' "$out" | grep -c 'caboose no longer reads it')"
-check 'and its hint names the setting' 1 "$(printf '%s\n' "$out" | grep -c 'docs/configuration.md')"
 out="$(cd "$ROOT" && CABOOSE_FORCE=maybe "$CC" status 2>&1 </dev/null)"
 check 'a boolean variable that is none is refused, naming it' 1 "$(printf '%s\n' "$out" | grep -c 'CABOOSE_FORCE')"
 save_config
-printf 'format = 1\nrepo_root = "~/dev"\n' > "$ENV_CFG"
-out="$(cfg_run)"
-check 'a key of the flat layout is refused, saying the layout changed' 1 "$(printf '%s\n' "$out" | grep -c 'layout changed')"
 printf 'format = 1\n\n[container.a]\n\n[gvisor.b]\n' > "$ENV_CFG"
 out="$(cfg_run)"
 check 'several profiles and no isolation is refused, listing them' 1 \

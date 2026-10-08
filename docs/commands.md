@@ -21,7 +21,6 @@
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |
 | `caboose sync add PATH`, `caboose sync rm PATH` | make a path of the sandbox's home sync, or stop it, in the sandbox config |
-| `caboose sandbox-config update` | bring the sandbox config up to this caboose: its format, and the defaults added since it was written |
 | `caboose logs` | the sandbox's supervisor log (under `vm`, the VM's console; `--tail N`) |
 | `caboose shell` | a bash prompt inside the sandbox; `-c CMD` runs CMD, with a terminal only when caboose has one, so it works from a script |
 | `caboose env [list]` | list the [environments](configuration.md#environments) |

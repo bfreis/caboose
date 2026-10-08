@@ -425,35 +425,6 @@ func TestImageDir(t *testing.T) {
 	}
 }
 
-// A variable that was a setting is refused, naming where the setting is
-// now; Machine refuses it too.
-func TestMovedVariables(t *testing.T) {
-	for _, tc := range []struct{ name, want string }{
-		{"CABOOSE_REPO_ROOT", "a [roots] table"},
-		{"CABOOSE_IMAGE", "named after the environment"},
-		{"CABOOSE_NO_TMUX", "tmux in [session]"},
-		{"CABOOSE_DOCKER_RUN_ARGS", "run_args in a [container.NAME] or [gvisor.NAME] profile"},
-		{"CABOOSE_ISOLATION", "isolation, naming a profile"},
-		{"CABOOSE_PROJECT", "run caboose in the project's directory"},
-	} {
-		env := envOf(map[string]string{"HOME": "/h", tc.name: "x"})
-		_, err := Load(env, fakeFS{}, "")
-		if err == nil || !strings.Contains(err.Error(), tc.name+" is set, and caboose no longer reads it") ||
-			!strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), ConfigDoc) {
-			t.Errorf("%s: %v", tc.name, err)
-		}
-		if _, err := Machine(env); err == nil {
-			t.Errorf("%s: Machine took it", tc.name)
-		}
-	}
-	// Every moved key has a place, and every one is refused in the file.
-	for _, m := range Moved {
-		if m.Now == "" || !strings.HasPrefix(m.Variable, "CABOOSE_") {
-			t.Errorf("%+v", m)
-		}
-	}
-}
-
 // The boolean variables take one spelling set, strictly.
 func TestEnvBool(t *testing.T) {
 	for v, want := range map[string]bool{"": false, "0": false, "false": false, "No": false, "OFF": false,

@@ -161,10 +161,6 @@ func ParseFile(path string, data []byte) (*File, error) {
 	}
 	for _, k := range slices.Sorted(maps.Keys(raw)) {
 		v := raw[k]
-		if _, table := v.(map[string]any); !table && slices.ContainsFunc(Moved, func(m movedSetting) bool { return m.Key == k }) {
-			// image and container were keys of the flat layout.
-			return nil, fail("%s", unknownKey("", k))
-		}
 		switch {
 		case k == rootsKey:
 			roots, err := readRoots(v)
@@ -295,19 +291,8 @@ func displayKey(key string) string {
 }
 
 // unknownKey is the error for key in table ("" for the top level): the
-// keys there are, or, for a key of caboose's first, flat layout, where it
-// went.
+// keys there are.
 func unknownKey(table, key string) string {
-	if table == "" {
-		for _, m := range Moved {
-			if m.Key == key {
-				return fmt.Sprintf("%s is not a setting any more: config.toml's layout changed, and it is now %s (see %s)", key, m.Now, ConfigDoc)
-			}
-		}
-		if slices.Contains(Kinds, key) || key == rootsKey || tables[key] != nil {
-			return fmt.Sprintf("%s must be a table", key)
-		}
-	}
 	var known []string
 	if table == "" {
 		for k := range tables[""] {
@@ -339,39 +324,6 @@ func unknownKey(table, key string) string {
 	}
 	return fmt.Sprintf("unknown %s %s (known: %s; see %s, or 'caboose update' if this caboose predates it)", where, key, strings.Join(known, ", "), ConfigDoc)
 }
-
-// Moved are the settings of caboose's first, flat config.toml, and the
-// CABOOSE_ variables that went with them, with where each is now. A file
-// that still has one, or a shell that still sets one, is refused with
-// this, never read.
-var Moved = []movedSetting{
-	{"repo_root", "CABOOSE_REPO_ROOT", "a [roots] table, each root by name"},
-	{"image", "CABOOSE_IMAGE", "nothing: the image is named after the environment, caboose:<env>"},
-	{"container", "CABOOSE_CONTAINER", "nothing: the container is named after the environment, caboose-<env>"},
-	{"base_image", "CABOOSE_BASE_IMAGE", "base in [image]"},
-	{"no_auto_build", "CABOOSE_NO_AUTO_BUILD", "auto_build in [image], true or false"},
-	{"keep_versions", "CABOOSE_KEEP_VERSIONS", "keep_versions in [session]"},
-	{"ready_timeout", "CABOOSE_READY_TIMEOUT", "ready_timeout in [session]"},
-	{"tz", "CABOOSE_TZ", "tz in [session]"},
-	{"hostname", "CABOOSE_HOSTNAME", "hostname in [session]"},
-	{"no_tmux", "CABOOSE_NO_TMUX", "tmux in [session], true or false"},
-	{"auto_sync", "CABOOSE_AUTO_SYNC", "auto_sync in [session]"},
-	{"forward_ports", "CABOOSE_FORWARD_PORTS", "forward_ports in [link]"},
-	{"open_urls", "CABOOSE_OPEN_URLS", "open_urls in [link]"},
-	{"ssh_agent", "CABOOSE_SSH_AGENT", "ssh_agent in [link]"},
-	{"host_exec", "CABOOSE_HOST_EXEC", "host_exec in [link]"},
-	{"docker_sock", "CABOOSE_DOCKER_SOCK", "engine_socket in a [container.NAME] or [gvisor.NAME] profile, true or false"},
-	{"docker_run_args", "CABOOSE_DOCKER_RUN_ARGS", "run_args in a [container.NAME] or [gvisor.NAME] profile"},
-	{"vm_cpus", "CABOOSE_VM_CPUS", "cpus in a [vm.NAME] profile"},
-	{"vm_memory", "CABOOSE_VM_MEMORY", "memory in a [vm.NAME] profile"},
-	{"egress_proxy", "CABOOSE_EGRESS_PROXY", "egress in a [vm.NAME] profile, true or false"},
-	{"egress_ports", "CABOOSE_EGRESS_PORTS", "egress_ports in a [vm.NAME] profile"},
-	{"egress_allow", "CABOOSE_EGRESS_ALLOW", "egress_allow in a [vm.NAME] profile"},
-	{"", "CABOOSE_ISOLATION", "isolation, naming a profile"},
-	{"", "CABOOSE_PROJECT", "nothing: run caboose in the project's directory"},
-}
-
-type movedSetting struct{ Key, Variable, Now string }
 
 // readRoots reads the [roots] table: at least one entry, each a host path
 // by a name, or the long form, a table of exactly host and path.

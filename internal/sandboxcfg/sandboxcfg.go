@@ -34,12 +34,8 @@ const (
 	HomePath = "~/" + Rel
 
 	// Format is the structure this caboose reads and writes. A file of a
-	// newer one is refused whole (ErrNewerFormat); an older one is brought
-	// up to it by Update.
+	// newer one is refused whole (ErrNewerFormat).
 	Format = 1
-	// DefaultsVersion is the version of Default this caboose writes. A file
-	// written from an older one is offered what was added since (Update).
-	DefaultsVersion = 1
 
 	// MaxSize is the largest sandbox config read.
 	MaxSize = 256 << 10
@@ -125,10 +121,9 @@ type Keep struct {
 
 // Config is a sandbox config, checked.
 type Config struct {
-	// Format and Defaults are the file's, as written; a file that omits
-	// them is taken as current.
-	Format   int
-	Defaults int
+	// Format is the file's, as written; a file that omits it is taken as
+	// current.
+	Format int
 	// Roots are the paths in the sandbox of the roots the projects expect:
 	// Claude Code keys a project's state by its path, so a machine that
 	// mounts no root there never reads it.
@@ -184,7 +179,7 @@ func Parse(data []byte) (*Config, error) {
 	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("not valid TOML: %v", err)
 	}
-	c := &Config{Format: Format, Defaults: DefaultsVersion}
+	c := &Config{Format: Format}
 	for _, k := range sortedKeys(raw) {
 		v := raw[k]
 		switch k {
@@ -198,13 +193,6 @@ func Parse(data []byte) (*Config, error) {
 				return nil, fmt.Errorf("%w: it is format %d, and this caboose reads up to %d", ErrNewerFormat, n, Format)
 			}
 			c.Format = int(n)
-		case "defaults":
-			n, ok := v.(int64)
-			if !ok || n < 0 {
-				c.problem("defaults must be a whole number; taken as %d", DefaultsVersion)
-				continue
-			}
-			c.Defaults = int(n)
 		case "roots":
 			c.Roots = c.parseRoots(v)
 		case "keep":

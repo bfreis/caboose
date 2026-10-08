@@ -161,13 +161,6 @@ while a session is running (CABOOSE_FORCE=1 overrides).
 'status' shows what a sync would send and take, changing nothing. 'add
 PATH' makes a path of the sandbox's home (~/...) sync, keeping it too when
 nothing keeps it yet; 'rm PATH' stops a rule, leaving the files.`},
-	{Name: "sandbox-config", Usage: "update", Args: ownArgs,
-		Summary: "bring the sandbox config up to this caboose",
-		Help: `Brings ~/.config/caboose/sandbox.toml -- what the sandbox keeps across
-restarts, and what of it syncs -- up to this caboose: its format, then
-each default added since it was written, offered one by one. Writes it
-from the defaults when there is none. A change to what is kept takes
-effect at the next 'caboose restart'.`},
 	{Name: "env", Usage: "[list]", Args: ownArgs,
 		Summary: "list environments ('caboose -e NAME setup' makes one)"},
 	{Name: "help", Usage: "[COMMAND]", Args: ownArgs,

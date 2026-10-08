@@ -21,8 +21,8 @@ func TestDefault(t *testing.T) {
 	if len(c.Problems) > 0 {
 		t.Errorf("problems in the defaults: %q", c.Problems)
 	}
-	if c.Format != Format || c.Defaults != DefaultsVersion || !slices.Equal(c.Roots, []string{"/work/dev", "/opt/oss"}) {
-		t.Errorf("format %d, defaults %d, roots %q", c.Format, c.Defaults, c.Roots)
+	if c.Format != Format || !slices.Equal(c.Roots, []string{"/work/dev", "/opt/oss"}) {
+		t.Errorf("format %d, roots %q", c.Format, c.Roots)
 	}
 	var rels []string
 	for _, k := range c.Keep {
@@ -379,50 +379,5 @@ func TestAddAndRemoveSync(t *testing.T) {
 	}
 	if _, _, err := RemoveSync(base, "~/.cargo"); !errors.Is(err, ErrNotSynced) {
 		t.Errorf("not synced: %v", err)
-	}
-}
-
-func TestStamp(t *testing.T) {
-	out := string(Stamp([]byte("# c\nformat = 1    # the structure\n\n[[keep]]\npath = \"~/.x\"\n"), 1, 3))
-	want := "# c\ndefaults = 3\nformat = 1    # the structure\n\n[[keep]]\npath = \"~/.x\"\n"
-	if out != want {
-		t.Errorf("Stamp:\n%s\nwant:\n%s", out, want)
-	}
-	c := mustParse(t, out)
-	if c.Defaults != 3 || c.Format != 1 {
-		t.Errorf("read back %d %d", c.Format, c.Defaults)
-	}
-	d := string(Stamp(Default(nil), Format, DefaultsVersion))
-	if d != string(Default(nil)) {
-		t.Errorf("restamping the defaults changed them:\n%s", d)
-	}
-}
-
-// The mechanism for a later bump works though nothing is registered now:
-// an Addition of a newer defaults version is pending for a file written
-// from the first, unless the file lists its path, and a migration brings
-// an older format up.
-func TestBumpMechanism(t *testing.T) {
-	oldAdd, oldMig := Additions, migrations
-	t.Cleanup(func() { Additions, migrations = oldAdd, oldMig })
-	Additions = []Addition{{Version: DefaultsVersion + 1, Path: "~/.foo", Summary: "foo", Text: "[[keep]]\npath = \"~/.foo\"\n"}}
-	c, err := Parse(Default(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	pending := Pending(c)
-	if len(pending) != 1 || pending[0].Path != "~/.foo" {
-		t.Fatalf("pending %+v", pending)
-	}
-	data := Append(Default(nil), pending[0])
-	if c, err = Parse(data); err != nil || len(Pending(c)) != 0 {
-		t.Errorf("after appending: %v %+v", err, Pending(c))
-	}
-	if _, err := Migrate([]byte("x"), 0); err == nil {
-		t.Error("migrated with no step")
-	}
-	migrations = map[int]func([]byte) ([]byte, error){0: func(b []byte) ([]byte, error) { return append(b, 'y'), nil }}
-	if got, err := Migrate([]byte("x"), 0); err != nil || string(got) != "xy" {
-		t.Errorf("migrate: %q %v", got, err)
 	}
 }

@@ -257,3 +257,5 @@ func RemoveSync(data []byte, p string) (out []byte, msg string, err error) {
 	}
 	return out, msg, nil
 }
+
+var headerRE = regexp.MustCompile(`^\s*\[`)

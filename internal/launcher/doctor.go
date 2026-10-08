@@ -356,22 +356,6 @@ func (a *App) doctorSandbox(c *checkup) {
 				"it over the old one fails there ('Device or resource busy'); keep its directory instead when it has one of its own", k.Rel)
 		}
 	}
-	if sb.Err == nil && !sb.Absent {
-		pending := sandboxcfg.Pending(sb.Config)
-		switch {
-		case sb.Format < sandboxcfg.Format:
-			c.note("keep", "the sandbox config is format %d, and this caboose writes %d; '%s' brings it up to date",
-				sb.Format, sandboxcfg.Format, envCommand(a.Cfg.Env, "sandbox-config update"))
-		case len(pending) > 0:
-			var what []string
-			for _, p := range pending {
-				what = append(what, p.Summary)
-			}
-			c.note("keep", "%s since the sandbox config was written (%s); '%s' offers %s",
-				plural(len(pending), "a new default", fmt.Sprintf("%d new defaults", len(pending))), strings.Join(what, "; "),
-				envCommand(a.Cfg.Env, "sandbox-config update"), plural(len(pending), "it", "them"))
-		}
-	}
 	have := a.rootPaths()
 	for _, r := range sb.Roots {
 		if !slices.Contains(have, r) {

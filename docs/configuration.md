@@ -9,10 +9,6 @@ file does not know is an error naming the file and the key. What the sandbox
 keeps of its home, and what of that syncs, is not here: it is the
 [sandbox config](sandbox-config.md), the sandbox's own.
 
-A setting that an older caboose read from a variable, or from another place
-in the file, is refused where it is found, with a hint saying where it
-lives now.
-
 ```toml
 format = 1
 isolation = "gvisor.default"       # which profile; needed only when several are defined
@@ -140,10 +136,7 @@ Most of what a variable once set is in the file now. These remain:
 | `CABOOSE_FORCE` | `false` | skip the question before a command ends running sessions (`restart`, `stop`, `prune`, `sync`); see [commands](commands.md) |
 
 The two booleans take `true`, `false`, `1`, `0`, `yes`, `no`, `on` or `off`
-in any case, and anything else is an error naming the variable. A variable
-caboose no longer reads (`CABOOSE_ISOLATION`, `CABOOSE_DOCKER_RUN_ARGS`,
-`CABOOSE_REPO_ROOT`, ...) is refused when set, with the place in
-`config.toml` it moved to: unset it.
+in any case, and anything else is an error naming the variable.
 
 A container defaults to UTC, so the launcher detects the host's zone name
 (from `$TZ`, else `/etc/localtime`) and applies it two ways: container-wide

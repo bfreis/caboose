@@ -20,9 +20,9 @@ import (
 )
 
 // The sandbox config's own commands: caboose sync add/rm, which edit its
-// sync rules, caboose sync status, and caboose sandbox-config update. They
-// run on the host, on the data dir's copy of ~/.config/caboose/sandbox.toml;
-// a session edits the same file from inside.
+// sync rules, and caboose sync status. They run on the host, on the data
+// dir's copy of ~/.config/caboose/sandbox.toml; a session edits the same
+// file from inside.
 
 // readSandboxFile is the sandbox config's text as the file has it, or the
 // defaults when there is none (absent set).
@@ -215,72 +215,6 @@ func (a *App) localPending() (*syncagent.Status, error) {
 		Sandbox: sb, Roots: a.rootPaths(),
 	}
 	return syncagent.PendingStatus(s)
-}
-
-// SandboxConfig is caboose sandbox-config update: the sandbox config brought
-// up to this caboose -- its format, then each default added since it was
-// written, offered one by one -- or written, when there is none.
-func (a *App) SandboxConfig(args []string) error {
-	if len(args) != 1 || args[0] != "update" {
-		return Die("usage: caboose sandbox-config update")
-	}
-	data, absent, err := a.readSandboxFile()
-	if err != nil {
-		return Die("%v", err)
-	}
-	if absent {
-		if err := a.writeSandboxFile(data); err != nil {
-			return Die("%v", err)
-		}
-		a.Note("wrote the sandbox config, %s, from this caboose's defaults", sandboxcfg.HomePath)
-		return nil
-	}
-	c, err := sandboxcfg.Parse(data)
-	switch {
-	case errors.Is(err, sandboxcfg.ErrNewerFormat):
-		return Die("%s: %v; 'caboose update' installs a caboose that reads it", sandboxcfg.HomePath, err)
-	case err != nil:
-		return Die("%s: %v; fix it first", sandboxcfg.HomePath, err)
-	}
-	out := data
-	if c.Format < sandboxcfg.Format {
-		if out, err = sandboxcfg.Migrate(out, c.Format); err != nil {
-			return Die("%s: %v", sandboxcfg.HomePath, err)
-		}
-		a.Note("brought the sandbox config from format %d to %d", c.Format, sandboxcfg.Format)
-	}
-	if pending := sandboxcfg.Pending(c); len(pending) > 0 {
-		term, err := a.openTerminal()
-		if err != nil {
-			return Die("there %s to offer, and no terminal to ask on (%v); run it in one", plural(len(pending), "is a new default", fmt.Sprintf("are %d new defaults", len(pending))), err)
-		}
-		defer term.Close()
-		p := a.newSetupPrompter(term)
-		for _, add := range pending {
-			p.say("%s", add.Summary)
-			p.say("%s", add.Text)
-			yes, err := p.yesNo("Add it?", true)
-			if err != nil {
-				return err
-			}
-			if yes {
-				out = sandboxcfg.Append(out, add)
-			}
-		}
-	}
-	out = sandboxcfg.Stamp(out, sandboxcfg.Format, sandboxcfg.DefaultsVersion)
-	if string(out) == string(data) {
-		a.Note("the sandbox config is up to date")
-		return nil
-	}
-	if _, err := sandboxcfg.Parse(out); err != nil {
-		return Die("the updated sandbox config would not parse (%v); nothing was written", err)
-	}
-	if err := a.writeSandboxFile(out); err != nil {
-		return Die("%v", err)
-	}
-	a.Note("updated %s; a new keep entry takes effect at the next 'caboose restart'", sandboxcfg.HomePath)
-	return nil
 }
 
 // afterSync is what follows a sync that went through: when it changed the
