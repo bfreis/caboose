@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/session"
 	"github.com/bfreis/caboose/internal/tty"
 )
@@ -535,5 +537,56 @@ func TestShellHasATerminalOnlyOnOne(t *testing.T) {
 				t.Errorf("ran %d commands, want 2", len(ran))
 			}
 		})
+	}
+}
+
+// A sandbox created without caboose's instructions mounted is told apart
+// from one that has them, under every isolation: a launch and status
+// warn, saying the restart that mounts them (doctor's problem is
+// cmd/caboose's TestDoctorInstructionsUnmounted). A launch writes them all
+// the same, and leaves ~/.claude/CLAUDE.md, the user's, alone.
+func TestInstructionsUnmounted(t *testing.T) {
+	for _, iso := range isolations {
+		for _, has := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/mounted=%v", iso, has), func(t *testing.T) {
+				b := newBoxApp(t, iso, runningBox(iso))
+				b.box.SandboxMounts = []backend.Mount{mount(b.tmp, "/work")}
+				if has {
+					b.box.SandboxMounts = append(b.box.SandboxMounts,
+						mount(filepath.Join(b.data, datadir.ManagedDir), datadir.ManagedTarget))
+				}
+				mine := filepath.Join(b.data, datadir.ClaudeDir, "CLAUDE.md")
+				if err := os.MkdirAll(filepath.Dir(mine), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(mine, []byte("mine\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				warning := "caboose: the " + b.noun() + " does not mount caboose's instructions at /etc/claude-code, so its sessions do not get them.\n" +
+					"caboose: run 'caboose restart' to mount them (this kills running sessions).\n"
+				if err := b.ensureRunning(false); err != nil {
+					t.Fatal(err)
+				}
+				_, errs := b.said()
+				if strings.Contains(errs, warning) == has {
+					t.Errorf("launch, mounted %v:\n%s", has, errs)
+				}
+				if got, err := os.ReadFile(mine); err != nil || string(got) != "mine\n" {
+					t.Errorf("~/.claude/CLAUDE.md is now %q, %v", got, err)
+				}
+				if _, err := os.Stat(filepath.Join(b.data, datadir.ManagedInstructions)); err != nil {
+					t.Errorf("instructions not written: %v", err)
+				}
+				if d := b.instructionsDrift(); (d == "") != has {
+					t.Errorf("drift %q", d)
+				}
+				if err := b.Status(); err != nil {
+					t.Fatal(err)
+				}
+				if _, errs := b.said(); strings.Contains(errs, warning) == has {
+					t.Errorf("status, mounted %v:\n%s", has, errs)
+				}
+			})
+		}
 	}
 }

@@ -255,7 +255,7 @@ func TestInstallWithoutCheckout(t *testing.T) {
 	if _, err := datadir.InstallInstructions(src, "", []config.Root{{Host: "/home/u/src", Container: "/work"}}, false, data); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(data, datadir.ClaudeDir, "CLAUDE.md"))
+	b, err := os.ReadFile(filepath.Join(data, datadir.ManagedInstructions))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,6 +400,11 @@ func TestCreateContainerMounts(t *testing.T) {
 				if kinds[m.Source] == "MISSING" {
 					t.Errorf("mount source missing at creation: %+v", m)
 				}
+				// caboose's instructions alone are read-only: the
+				// sandbox reads them, and writes everything else.
+				if m.ReadOnly != (m.Target == datadir.ManagedTarget) {
+					t.Errorf("%s: read-only %v", m.Target, m.ReadOnly)
+				}
 				if strings.HasPrefix(m.Target, "/work") {
 					rootMounts = append(rootMounts, m)
 				}
@@ -422,6 +427,7 @@ func TestCreateContainerMounts(t *testing.T) {
 				"/home/agent/.config/caboose":     "dir home/.config/caboose",
 				"/home/agent/.aws":                "dir home/.aws",
 				"/home/agent/.config/foo":         "dir home/.config/foo",
+				"/etc/claude-code":                "dir claude-code",
 			}
 			for dst, w := range want {
 				if got[dst] != w {
@@ -435,8 +441,8 @@ func TestCreateContainerMounts(t *testing.T) {
 			// keep entry may not name: sandboxcfg.Reserved has to keep up with
 			// this function.
 			for dst, w := range got {
-				rel := strings.TrimPrefix(dst, config.ContainerHome+"/")
-				if strings.Contains(w, " home/") {
+				rel, inHome := strings.CutPrefix(dst, config.ContainerHome+"/")
+				if strings.Contains(w, " home/") || !inHome {
 					continue
 				}
 				if !slices.Contains(sandboxcfg.Reserved, rel) {
@@ -480,7 +486,7 @@ func TestSyncFallsBackOnUnknownPlaceholder(t *testing.T) {
 			if err := a.syncSandboxInstructions(); err != nil {
 				t.Fatal(err)
 			}
-			got, err := os.ReadFile(filepath.Join(data, datadir.ClaudeDir, "CLAUDE.md"))
+			got, err := os.ReadFile(filepath.Join(data, datadir.ManagedInstructions))
 			if err != nil {
 				t.Fatal(err)
 			}

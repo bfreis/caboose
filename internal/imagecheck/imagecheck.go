@@ -174,6 +174,9 @@ type requirement struct {
 	// setup: grouped into the checklist's "user" line: what the layer's
 	// user setup edits and creates.
 	setup bool
+	// unmetAs is what Problems calls it unmet, for a requirement that is
+	// an absence; "" for "missing".
+	unmetAs string
 }
 
 // requirements is the order the checklist and Problems follow.
@@ -210,6 +213,8 @@ var requirements = []requirement{
 	{name: "etc:passwd", label: "/etc/passwd", setup: true, why: "the derived layer adds the agent user to it, in place"},
 	{name: "etc:group", label: "/etc/group", setup: true, why: "the derived layer adds agent's group to it, in place"},
 	{name: "home", label: "/home/agent", setup: true, why: "the derived layer makes it agent's home, with the bind mounts' mountpoints in it"},
+	{name: "etc:claude-code", label: "/etc/claude-code", unmetAs: "present", why: "caboose mounts its own instructions there, read-only, as Claude Code's managed policy; " +
+		"an image's own managed Claude Code policy would be hidden"},
 	{name: "tic", label: "tic", optional: true, why: "compiles the host terminal's terminfo when the image lacks it; without it TERM falls back"},
 }
 
@@ -247,7 +252,7 @@ func (r *Report) Problems() []string {
 		if !bad {
 			continue
 		}
-		state := "missing"
+		state := or(req.unmetAs, "missing")
 		if c.Detail != "" {
 			state += " (" + c.Detail + ")"
 		}
@@ -360,6 +365,11 @@ func (r *Report) Checklist() []Row {
 		rows = append(rows, Row{"user", "ok", Met})
 	} else {
 		rows = append(rows, Row{"user", "unusable: " + strings.Join(setup, ", "), Unmet})
+	}
+	if c, bad := r.unmet(byName("etc:claude-code")); bad {
+		rows = append(rows, Row{"policy", "unusable" + detail(c) + ": caboose mounts its instructions there", Unmet})
+	} else {
+		rows = append(rows, Row{"policy", "ok (no /etc/claude-code)", Met})
 	}
 	if c, bad := r.unmet(byName("tic")); bad {
 		rows = append(rows, Row{"tic", "missing (optional)", Noted})

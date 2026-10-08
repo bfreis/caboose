@@ -571,3 +571,47 @@ func TestProbeEngine(t *testing.T) {
 		t.Errorf("odd dockerd: ok %v missing %q version %q", r.OK(), r.EngineMissing(), r.EngineVersion)
 	}
 }
+
+// Anything at /etc/claude-code fails the image, since caboose mounts its
+// instructions over it: a directory (an organization's managed policy), a
+// file, or a symlink, each said as what it is.
+func TestProbeManagedPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(t *testing.T, f *fakeImage)
+		detail string // "" when the image passes
+	}{
+		{"absent", func(*testing.T, *fakeImage) {}, ""},
+		{"a directory", func(_ *testing.T, f *fakeImage) { f.file("etc/claude-code/managed-settings.json", "{}") }, "/etc/claude-code is a directory"},
+		{"a file", func(_ *testing.T, f *fakeImage) { f.file("etc/claude-code", "") }, "/etc/claude-code is a file"},
+		{"a symlink", func(t *testing.T, f *fakeImage) {
+			if err := os.Symlink("/nowhere", filepath.Join(f.root, "etc/claude-code")); err != nil {
+				t.Fatal(err)
+			}
+		}, "/etc/claude-code is a symlink"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t)
+			tc.setup(t, f)
+			r := f.probe(1000, 1000)
+			c, ok := r.Check("etc:claude-code")
+			if !ok || c.OK != (tc.detail == "") || (tc.detail != "" && c.Detail != tc.detail) {
+				t.Fatalf("%+v (reported %v)", c, ok)
+			}
+			ps := r.Problems()
+			if tc.detail == "" {
+				if len(ps) != 0 {
+					t.Errorf("problems %q", ps)
+				}
+				return
+			}
+			want := "/etc/claude-code: present (" + tc.detail + ") -- caboose mounts its own instructions there"
+			if len(ps) != 1 || !strings.HasPrefix(ps[0], want) || !strings.Contains(ps[0], "would be hidden") {
+				t.Errorf("problems %q, want one starting %q", ps, want)
+			}
+			if !slices.Contains(r.Checklist(), Row{"policy", "unusable (" + tc.detail + "): caboose mounts its instructions there", Unmet}) {
+				t.Errorf("checklist %+v", r.Checklist())
+			}
+		})
+	}
+}

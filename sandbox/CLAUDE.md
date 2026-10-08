@@ -1,8 +1,11 @@
 # Running inside the caboose sandbox
 
-> This file is a copy, installed by the host launcher on every start — edits
-> to *it* are overwritten at the next launch. **Edit the tracked original**,
-> `sandbox/CLAUDE.md` in the caboose repo (path below).
+> These are caboose's managed instructions, installed read-only at
+> `/etc/claude-code/CLAUDE.md`, where Claude Code reads them before any
+> other CLAUDE.md. The host launcher regenerates them on every launch from
+> the tracked original, `sandbox/CLAUDE.md` in the caboose repo (path
+> below): **edit that**, never this copy. `~/.claude/CLAUDE.md` is the
+> user's own, and caboose never writes it.
 >
 > Keep this file to what is true in *every* project. Anything about how the
 > sandbox itself is built or changed belongs in that repo's own CLAUDE.md.

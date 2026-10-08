@@ -333,7 +333,7 @@ func configure(m vm.Machine) (objc.ID, error) {
 			if _, err := os.Stat(s.Path); err != nil {
 				return 0, err
 			}
-			d := class("VZSharedDirectory").Send(sel("alloc")).Send(sel("initWithURL:readOnly:"), fileURL(s.Path), false)
+			d := class("VZSharedDirectory").Send(sel("alloc")).Send(sel("initWithURL:readOnly:"), fileURL(s.Path), s.ReadOnly)
 			dirs.Send(sel("setObject:forKey:"), d, nsstring(s.Name))
 		}
 		share := class("VZMultipleDirectoryShare").Send(sel("alloc")).Send(sel("initWithDirectories:"), dirs)

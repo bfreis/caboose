@@ -33,6 +33,7 @@ case "$CC" in /*) ;; *) CC="$ROOT/$CC" ;; esac
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n'   "$1"; fail=$((fail + 1)); }
+skip() { printf '  \033[33mSKIP\033[0m %s\n'   "$1"; }
 check() { # check <description> <expected> <actual>
     if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; printf '        expected: %s\n        actual:   %s\n' "$2" "$3"; fi
 }
@@ -258,6 +259,64 @@ vm_group() {
         "$(cat "$VM_PROJ/caboose-test-root" 2>/dev/null)"
     echo 'from the host' > "$VM_PROJ/caboose-test-host"
     check 'and one the host writes there is in the VM' 'from the host' "$(vsh 'cat /work/proj/caboose-test-host')"
+    check "caboose's instructions are in the VM, as the launcher wrote them" 0 \
+        "$(vsh 'cat /etc/claude-code/CLAUDE.md' | cmp -s - "$VM_DATA/claude-code/CLAUDE.md"; echo $?)"
+    # What the launcher wrote, kept here: a write that got through changes
+    # the host's copy and the VM's view alike, so they are no proof.
+    cp "$VM_DATA/claude-code/CLAUDE.md" "$VM_WORK/claude-md.written"
+    check 'and root in the guest cannot write them' 1 \
+        "$(vsh 'echo x >> /etc/claude-code/CLAUDE.md 2>/dev/null && echo 0 || echo 1')"
+    # Root in the guest has the syscalls; the default image has no mount
+    # binary, so python3 makes them (ctypes), and says what each returned:
+    # a remount that failed protects nothing, and is no pass.
+    local py r has_py=0
+    [ "$(vsh 'command -v python3 >/dev/null && echo yes')" = yes ] && has_py=1
+    if [ "$has_py" = 1 ]; then
+        # mount(NULL, dir, NULL, MS_REMOUNT|MS_BIND, NULL): the bind writable.
+        py='import ctypes, os
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.mount(None, b"/etc/claude-code", None, 32 | 4096, None) != 0:
+    print("remount failed: " + os.strerror(ctypes.get_errno()))
+else:
+    try:
+        with open("/etc/claude-code/CLAUDE.md", "a") as f:
+            f.write("x\n")
+        print("written")
+    except OSError as e:
+        print("refused: " + e.strerror)'
+        r="$(vsh "python3 -c '$py'")"
+        case "$r" in
+            refused:*) ok "nor write them once it remounted the bind writable: the Mac refuses ($r)" ;;
+            'remount failed:'*) skip "root in the guest could not remount the bind writable ($r), so the Mac's refusal is untried" ;;
+            *) bad 'nor write them once it remounted the bind writable'; printf '        actual:   %s\n' "$r" ;;
+        esac
+    else
+        skip "the image has no python3: root's remount and unmount of the instructions are untried"
+    fi
+    check 'which leaves them as the launcher wrote them' 0 \
+        "$(cmp -s "$VM_WORK/claude-md.written" "$VM_DATA/claude-code/CLAUDE.md"; echo $?)"
+    if [ "$has_py" = 1 ]; then
+        # umount2(dir, MNT_DETACH), then a file of its own on the guest's
+        # disk: that hides caboose's for this VM, and must not reach the host.
+        cp "$VM_DATA/claude-code/CLAUDE.md" "$VM_WORK/claude-md.before"
+        py='import ctypes, os
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.umount2(b"/etc/claude-code", 2) != 0:
+    print("umount failed: " + os.strerror(ctypes.get_errno()))
+else:
+    with open("/etc/claude-code/CLAUDE.md", "w") as f:
+        f.write("caboose-test shadow\n")
+    print(open("/etc/claude-code/CLAUDE.md").read().strip())'
+        r="$(vsh "python3 -c '$py'")"
+        case "$r" in
+            'caboose-test shadow')
+                ok 'root in the guest can unmount them and write its own, in this VM only'
+                check "and the host's copy is left as the launcher wrote it" 0 \
+                    "$(cmp -s "$VM_WORK/claude-md.before" "$VM_DATA/claude-code/CLAUDE.md"; echo $?)" ;;
+            'umount failed:'*) skip "root in the guest could not unmount them ($r)" ;;
+            *) bad 'root in the guest unmounts them and writes its own'; printf '        actual:   %s\n' "$r" ;;
+        esac
+    fi
     vsh 'echo kept > ~/.claude/caboose-test-keep' >/dev/null
     check 'what the VM writes to a kept path is in the data dir' kept \
         "$(cat "$VM_DATA/home/.claude/caboose-test-keep" 2>/dev/null)"
@@ -417,12 +476,37 @@ read_paths
 # pointing at a decoy. Same for the tracked CLAUDE.md, which one test edits.
 ORIGINAL_LINK="$(readlink "$BIN/claude" 2>/dev/null || true)"
 CLAUDE_MD_BACKUP=""
+# The sandbox's ~/.claude/CLAUDE.md, which one test replaces with a
+# sentinel: USERS_MD is set while it does, USERS_MD_BACKUP is where what was
+# there was moved ("" for nothing), in USERS_MD_DIR, a host temp dir. The
+# file is in a dir the container can write, so it is only ever moved, never
+# opened: a link put there is replaced or removed, never followed.
+USERS_MD=""
+USERS_MD_BACKUP=""
+USERS_MD_DIR=""
+restore_users_md() {
+    [ -n "$USERS_MD" ] || return 0
+    if [ -d "$USERS_MD" ] && [ ! -L "$USERS_MD" ]; then
+        printf '  caboose-test: %s became a directory; the original is left in %s\n' "$USERS_MD" "$USERS_MD_DIR" >&2
+    elif [ -n "$USERS_MD_BACKUP" ]; then
+        # Moved only if it got there: an exit before the move leaves it.
+        if [ -e "$USERS_MD_BACKUP" ] || [ -L "$USERS_MD_BACKUP" ]; then
+            mv -f "$USERS_MD_BACKUP" "$USERS_MD"
+        fi
+        rmdir "$USERS_MD_DIR" 2>/dev/null
+    else
+        rm -f "$USERS_MD"
+        rmdir "$USERS_MD_DIR" 2>/dev/null
+    fi
+    USERS_MD=""; USERS_MD_BACKUP=""; USERS_MD_DIR=""
+}
 restore() {
     if [ -n "$CLAUDE_MD_BACKUP" ] && [ -f "$CLAUDE_MD_BACKUP" ]; then
         cat "$CLAUDE_MD_BACKUP" > "$ROOT/sandbox/CLAUDE.md"
         rm -f "$CLAUDE_MD_BACKUP"
         CLAUDE_MD_BACKUP=""
     fi
+    restore_users_md
     [ -n "$ORIGINAL_LINK" ] && ln -sfn "$ORIGINAL_LINK" "$BIN/claude"
     find "$VERSIONS" -maxdepth 1 -name '0.0.*' -delete 2>/dev/null
     if [ -n "$ORIGINAL_LINK" ] && [ ! -e "$VERSIONS/$(basename "$ORIGINAL_LINK")" ]; then
@@ -521,13 +605,26 @@ check 'caboose-agent is in the image, for this architecture' 0 \
     "$(docker exec "$CONTAINER" /usr/local/bin/caboose-agent --help >/dev/null 2>&1; echo $?)"
 
 group 'sandbox instructions'
-# The launcher -- not the entrypoint, and not a bind mount -- installs the
-# tracked CLAUDE.md, substituting the one placeholder in it. A stale copy or a
-# surviving @@...@@ both point the agent at a path that does not exist.
-installed="$HOME_DIR/.claude/CLAUDE.md"
+# The launcher -- not the entrypoint -- writes the tracked CLAUDE.md, its
+# placeholders substituted, into the data dir's claude-code/, which the
+# container has read-only at /etc/claude-code: Claude Code's managed
+# CLAUDE.md, read before the user's. A stale copy or a surviving @@...@@
+# both point the agent at a path that does not exist.
+installed="$DATA_DIR/claude-code/CLAUDE.md"
+inside=/etc/claude-code/CLAUDE.md
 check 'the tracked CLAUDE.md was installed' 0 "$(exists "$installed")"
+check 'the container has it at /etc/claude-code' 0 \
+    "$(docker exec "$CONTAINER" test -f "$inside"; echo $?)"
 check 'the placeholder was substituted' 0 \
-    "$(grep -c '@@CABOOSE_DIR@@' "$installed" 2>/dev/null || true)"
+    "$(docker exec "$CONTAINER" grep -c '@@CABOOSE_DIR@@' "$inside" 2>/dev/null || true)"
+check 'the agent cannot write it' 1 \
+    "$(docker exec "$CONTAINER" sh -c "echo x >> $inside" >/dev/null 2>&1 && echo 0 || echo 1)"
+check 'nor root in the container' 1 \
+    "$(docker exec -u 0 "$CONTAINER" sh -c "echo x >> $inside" >/dev/null 2>&1 && echo 0 || echo 1)"
+check 'nor add a file beside it' 1 \
+    "$(docker exec -u 0 "$CONTAINER" sh -c ': > /etc/claude-code/managed-settings.json' >/dev/null 2>&1 && echo 0 || echo 1)"
+check 'which leaves it as the launcher wrote it' 0 \
+    "$(docker exec "$CONTAINER" cat "$inside" 2>/dev/null | cmp -s - "$installed"; echo $?)"
 # Where the container has this checkout: its place under whichever root
 # status lists as holding it.
 checkout_in_container=""
@@ -537,25 +634,46 @@ while IFS= read -r line; do
 done < <("$CC" status 2>/dev/null | grep '^root      : ')
 check 'the checkout is under a root' 1 "$([ -n "$checkout_in_container" ] && echo 1 || echo 0)"
 check 'it names this checkout at its container path' 0 \
-    "$(grep -qF "$checkout_in_container" "$installed" 2>/dev/null; echo $?)"
+    "$(docker exec "$CONTAINER" grep -qF "$checkout_in_container" "$inside" 2>/dev/null; echo $?)"
 check 'which is where the container has it' 0 \
     "$(docker exec "$CONTAINER" test -f "$checkout_in_container/tests/run.sh"; echo $?)"
 
 # Installing per launch rather than per container start is the point: an edit
 # has to reach the next session without a restart. shell is a launch
 # path that needs no tty to have already done the work (it fails at the final
-# docker exec here, which is fine -- the sync happens before that).
+# docker exec here, which is fine -- the sync happens before that). The
+# sandbox's ~/.claude/CLAUDE.md is the user's: a launch leaves it alone,
+# so a sentinel stands in for it, and whatever was there comes back after.
+# A link there is not the user's file to test with: that check is skipped.
+users_md_check=1
+if [ -L "$HOME_DIR/.claude/CLAUDE.md" ]; then
+    users_md_check=0
+else
+    USERS_MD_DIR="$(mktemp -d)"
+    if [ -e "$HOME_DIR/.claude/CLAUDE.md" ]; then USERS_MD_BACKUP="$USERS_MD_DIR/backup"; fi
+    USERS_MD="$HOME_DIR/.claude/CLAUDE.md"
+    if [ -n "$USERS_MD_BACKUP" ]; then mv -f "$USERS_MD" "$USERS_MD_BACKUP"; fi
+    printf 'caboose-test sentinel\n' > "$USERS_MD_DIR/sentinel"
+    mv -f "$USERS_MD_DIR/sentinel" "$USERS_MD"
+fi
 CLAUDE_MD_BACKUP="$(mktemp)"
 cat "$ROOT/sandbox/CLAUDE.md" > "$CLAUDE_MD_BACKUP"
 printf '\n<!-- canary -->\n' >> "$ROOT/sandbox/CLAUDE.md"
 (cd "$ROOT" && "$CC" shell -c true) >/dev/null 2>&1
 check 'an edit is installed on the next launch, without a restart' 0 \
-    "$(grep -qF '<!-- canary -->' "$installed" 2>/dev/null; echo $?)"
+    "$(docker exec "$CONTAINER" grep -qF '<!-- canary -->' "$inside" 2>/dev/null; echo $?)"
+if [ "$users_md_check" = 1 ]; then
+    check "and the user's ~/.claude/CLAUDE.md is left as it was" 'caboose-test sentinel' \
+        "$(docker exec "$CONTAINER" cat /home/agent/.claude/CLAUDE.md 2>/dev/null | tr -d '\r')"
+else
+    skip "~/.claude/CLAUDE.md in the data dir is a symlink: not checking that a launch leaves it, so nothing follows it"
+fi
 cat "$CLAUDE_MD_BACKUP" > "$ROOT/sandbox/CLAUDE.md"
 rm -f "$CLAUDE_MD_BACKUP"; CLAUDE_MD_BACKUP=""
 (cd "$ROOT" && "$CC" shell -c true) >/dev/null 2>&1
 check 'and reverting it is picked up just as fast' 1 \
-    "$(grep -qF '<!-- canary -->' "$installed" 2>/dev/null; echo $?)"
+    "$(docker exec "$CONTAINER" grep -qF '<!-- canary -->' "$inside" 2>/dev/null; echo $?)"
+restore_users_md
 
 group 'tool config lives in the data dir'
 # git, jj and gh save their config by writing a temp file and renaming it
@@ -1270,6 +1388,11 @@ if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; th
     check 'it runs as the user its label says' "$want_uid" "$(cexec id -u)"
     check 'that user writes a 600 file in ~/.claude' ok \
         "$(cexec sh -c 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
+    check "caboose's instructions are there" 0 "$(cexec test -f /etc/claude-code/CLAUDE.md; echo $?)"
+    check 'and that user cannot write them' 1 \
+        "$(docker exec "$CONTAINER" sh -c 'echo x >> /etc/claude-code/CLAUDE.md' >/dev/null 2>&1 && echo 0 || echo 1)"
+    check 'nor can root under gVisor' 1 \
+        "$(docker exec -u 0 "$CONTAINER" sh -c 'echo x >> /etc/claude-code/CLAUDE.md' >/dev/null 2>&1 && echo 0 || echo 1)"
     check 'doctor names the isolation' 'gvisor (runsc)' \
         "$(cd "$ROOT" && "$CC" doctor --offline 2>/dev/null | sed -n 's/^  ✓ isolation  *//p')"
     restore_config

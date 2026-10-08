@@ -38,7 +38,11 @@ func RunArgv(name string, s Spec) []string {
 		argv = append(argv, "-e", e)
 	}
 	for _, m := range s.Mounts {
-		argv = append(argv, "-v", m.Source+":"+m.Target)
+		v := m.Source + ":" + m.Target
+		if m.ReadOnly {
+			v += ":ro"
+		}
+		argv = append(argv, "-v", v)
 	}
 	for _, v := range s.Volumes {
 		argv = append(argv, "-v", name+"-"+v.Name+":"+v.Target)

@@ -66,6 +66,9 @@ type GuestMount struct {
 	// Path is within the share, "" for its root.
 	Path   string `json:"path,omitempty"`
 	Target string `json:"target"`
+	// ReadOnly binds it read-only, over a share directory the host
+	// already serves read-only.
+	ReadOnly bool `json:"read_only,omitempty"`
 }
 
 // GuestDisk is one of the VM's disks, mounted at Target.

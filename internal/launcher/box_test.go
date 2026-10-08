@@ -13,6 +13,7 @@ import (
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
 )
 
@@ -173,11 +174,13 @@ func runningBox(iso string) *backendtest.Fake {
 }
 
 // mountLocal gives b's sandbox local (data-dir-relative) at ~/.local/bin,
-// and b's root at /work, as a container created by this launcher has.
+// b's root at /work and caboose's instructions, as a container created by
+// this launcher has.
 func (b *boxApp) mountLocal(local string) {
 	b.box.SandboxMounts = append(b.box.SandboxMounts,
 		mount(filepath.Join(b.data, local, "bin"), "/home/agent/.local/bin"),
-		mount(b.tmp, "/work"))
+		mount(b.tmp, "/work"),
+		backend.Mount{Source: filepath.Join(b.data, datadir.ManagedDir), Target: datadir.ManagedTarget, ReadOnly: true})
 }
 
 func mount(src, dst string) backend.Mount { return backend.Mount{Source: src, Target: dst} }

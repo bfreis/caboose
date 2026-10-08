@@ -1,6 +1,7 @@
 // Package datadir prepares the host-side data dir that the container
-// bind-mounts piece by piece: its layout, the sandbox's git config and the
-// installed sandbox CLAUDE.md.
+// bind-mounts piece by piece: its layout, the sandbox's git config and
+// caboose's instructions to the sandbox's sessions, Claude Code's managed
+// CLAUDE.md (ManagedDir).
 //
 // What the sandbox keeps of its home is under home/, at its path under ~:
 // home/.claude is ~/.claude, home/.config/git is ~/.config/git. Which of
@@ -94,6 +95,25 @@ const ProposalsDir = "proposals"
 // bind-mount source docker has to create itself is root's on a Linux host.
 const SyncDir = "sync"
 
+// ManagedDir is Claude Code's managed settings directory as the sandbox has
+// it (ManagedTarget), which holds caboose's instructions to every session
+// (ManagedInstructions) and nothing else. Mounted read-only, the one mount
+// of the data dir the sandbox cannot write: the instructions are caboose's,
+// and the sandbox's ~/.claude/CLAUDE.md stays the user's own. Created here
+// for the reason SyncDir is.
+const ManagedDir = "claude-code"
+
+// ManagedInstructions is the CLAUDE.md in ManagedDir, written by
+// InstallInstructions on every launch.
+const ManagedInstructions = ManagedDir + "/CLAUDE.md"
+
+// ManagedTarget is where the sandbox has ManagedDir: where Claude Code on
+// Linux looks for its managed policy, whose CLAUDE.md it reads before the
+// user's and the project's, and which no setting excludes. A directory
+// mount, so that a file the image has there cannot mix with caboose's (the
+// image check refuses a base that has one at all).
+const ManagedTarget = "/etc/claude-code"
+
 // Machinery are the directories caboose mounts for itself, beside HomeDir.
 var Machinery = []string{SyncDir, ProposalsDir}
 
@@ -129,6 +149,11 @@ func EnsureLayout(dir string, keep []sandboxcfg.Keep) error {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o777); err != nil {
 			return err
 		}
+	}
+	// Readable by every user the sandbox may run as, writable by none of
+	// them: the mount is read-only anyway.
+	if err := os.MkdirAll(filepath.Join(dir, ManagedDir), 0o755); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, HomeDir), 0o700); err != nil {
 		return err
@@ -483,8 +508,8 @@ func UnknownPlaceholders(expanded []byte) []string {
 	return names
 }
 
-// InstallInstructions installs the sandbox-wide CLAUDE.md into
-// dataDir/home/.claude/CLAUDE.md, expanded by ExpandInstructions, and reports
+// InstallInstructions installs the sandbox-wide CLAUDE.md as
+// dataDir/ManagedInstructions, expanded by ExpandInstructions, and reports
 // whether it had to write.
 //
 // The data dir sits outside any checkout, so the CLAUDE.md the sandbox reads
@@ -498,27 +523,24 @@ func UnknownPlaceholders(expanded []byte) []string {
 // here -- but a rewrite in place is still the one that cannot surprise a
 // live session.
 //
-// The container writes .claude, so the file is reached through
-// internal/nofollow: were it a symlink (or a hard link), a plain write would
-// put the instructions over whatever host file it names. Such a file is
-// nofollow.ErrNotPlain, and left alone.
+// The sandbox has ManagedDir read-only, so nothing in it is the
+// container's; it is still reached through internal/nofollow, as every
+// file of the data dir a launch writes is, so that a link found there
+// (nofollow.ErrNotPlain) is left alone rather than written through.
 func InstallInstructions(src []byte, checkout string, roots []config.Root, hostExec bool, dataDir string) (bool, error) {
-	// .claude itself is the container's mount point, in the host's own
-	// data dir: nothing inside can replace it.
-	if err := os.MkdirAll(filepath.Join(dataDir, ClaudeDir), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dataDir, ManagedDir), 0o755); err != nil {
 		return false, err
 	}
-	const dst = ClaudeDir + "/CLAUDE.md"
 	d := nofollow.Dir(dataDir)
 	want := ExpandInstructions(src, checkout, roots, hostExec)
-	have, _, err := d.ReadFile(dst)
+	have, _, err := d.ReadFile(ManagedInstructions)
 	switch {
 	case err == nil && bytes.Equal(have, want):
 		return false, nil
 	case err == nil:
-		err = d.WriteInPlace(dst, want)
+		err = d.WriteInPlace(ManagedInstructions, want)
 	case errors.Is(err, fs.ErrNotExist):
-		err = d.WriteFile(dst, want, 0o666)
+		err = d.WriteFile(ManagedInstructions, want, 0o644)
 	}
 	return err == nil, err
 }

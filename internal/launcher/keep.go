@@ -204,3 +204,31 @@ func (a *App) warnIfKeepDrifted() {
 		a.Note("run 'caboose restart' to remount (this kills running sessions).")
 	}
 }
+
+// instructionsDrift says that the sandbox lacks caboose's instructions,
+// datadir.ManagedTarget, which every sandbox this launcher creates mounts,
+// or "" when it has them (or cannot be asked). Mounts are fixed at
+// creation, so only a restart gives a sandbox that lacks them caboose's
+// instructions; until then its sessions read the user's CLAUDE.md alone.
+func (a *App) instructionsDrift() string {
+	mounts, err := a.box().Mounts()
+	if err != nil || len(mounts) == 0 {
+		return ""
+	}
+	for _, m := range mounts {
+		if filepath.Clean(m.Target) == datadir.ManagedTarget {
+			return ""
+		}
+	}
+	return fmt.Sprintf("the %s does not mount caboose's instructions at %s, so its sessions do not get them", a.noun(), datadir.ManagedTarget)
+}
+
+// warnIfInstructionsUnmounted says when the sandbox lacks caboose's
+// instructions. Only a warning, as for the keep entries: the fix, a
+// restart, kills sessions.
+func (a *App) warnIfInstructionsUnmounted() {
+	if d := a.instructionsDrift(); d != "" {
+		a.Note("%s.", d)
+		a.Note("run 'caboose restart' to mount them (this kills running sessions).")
+	}
+}

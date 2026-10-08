@@ -151,6 +151,7 @@ func (a *App) Status() error {
 	}
 	a.warnIfImageDrifted()
 	a.warnIfKeepDrifted()
+	a.warnIfInstructionsUnmounted()
 	a.warnIfRunArgsDrifted()
 	a.warnIfIsolationDrifted()
 	a.warnIfEgressDrifted()

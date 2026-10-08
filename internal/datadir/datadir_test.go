@@ -81,7 +81,7 @@ func TestEnsureLayout(t *testing.T) {
 	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range append([]string{HomeDir, ClaudeDir, CabooseConfig, SSHDir, Home(".config/gh"), Home(".config/jj")}, Machinery...) {
+	for _, d := range append([]string{HomeDir, ClaudeDir, CabooseConfig, SSHDir, Home(".config/gh"), Home(".config/jj"), ManagedDir}, Machinery...) {
 		if fi, err := os.Stat(filepath.Join(dir, d)); err != nil || !fi.IsDir() {
 			t.Errorf("%s is not a directory", d)
 		}
@@ -216,6 +216,8 @@ func TestInstructionsLocation(t *testing.T) {
 	}
 }
 
+// caboose's instructions go into the managed dir, never into ~/.claude:
+// the sandbox's ~/.claude/CLAUDE.md is the user's.
 func TestInstallInstructions(t *testing.T) {
 	dir := t.TempDir()
 	src := []byte("see @@CABOOSE_DIR@@ and @@CABOOSE_DIR@@/x | & \\1 in @@CABOOSE_ROOTS@@\n")
@@ -224,9 +226,12 @@ func TestInstallInstructions(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	dst := filepath.Join(dir, ClaudeDir, "CLAUDE.md")
+	dst := filepath.Join(dir, ManagedInstructions)
 	if got, want := read(t, dst), "see /work/a|b&c and /work/a|b&c/x | & \\1 in `/r` at `/work`\n"; got != want {
 		t.Errorf("installed %q, want %q", got, want)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ClaudeDir)); err == nil {
+		t.Error("installing made ~/.claude, which is the user's")
 	}
 
 	// Unchanged: not written at all.
@@ -250,6 +255,24 @@ func TestInstallInstructions(t *testing.T) {
 	}
 	if read(t, dst) != "new /work/q\n" || inode(t, dst) != ino {
 		t.Error("edit was not written in place")
+	}
+}
+
+// A user's own ~/.claude/CLAUDE.md is left as it is.
+func TestInstallInstructionsLeavesTheUsers(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureLayout(dir, defKeep()); err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(dir, ClaudeDir, "CLAUDE.md")
+	if err := os.WriteFile(mine, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallInstructions([]byte("caboose's\n"), "", []config.Root{{Host: "/r", Container: "/work"}}, false, dir); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, mine) != "mine\n" || read(t, filepath.Join(dir, ManagedInstructions)) != "caboose's\n" {
+		t.Errorf("user's %q, caboose's %q", read(t, mine), read(t, filepath.Join(dir, ManagedInstructions)))
 	}
 }
 
@@ -526,7 +549,14 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 			t.Errorf("%s: mode %v, want 0700", d, m)
 		}
 	}
-	for _, f := range []string{ClaudeDir + "/CLAUDE.md", ClaudeJSON, GitConfig} {
+	// What every user the sandbox runs as reads: readable by all.
+	if m := perm(t, filepath.Join(dir, ManagedDir)); m != 0o755 {
+		t.Errorf("%s: mode %v, want 0755", ManagedDir, m)
+	}
+	if m := perm(t, filepath.Join(dir, ManagedInstructions)); m != 0o644 {
+		t.Errorf("%s: mode %v, want 0644", ManagedInstructions, m)
+	}
+	for _, f := range []string{ClaudeJSON, GitConfig} {
 		if m := perm(t, filepath.Join(dir, f)); m != 0o664 {
 			t.Errorf("%s: mode %v, want 0664", f, m)
 		}
@@ -594,7 +624,7 @@ func TestExpandInstructionsHostExec(t *testing.T) {
 	if changed, err := InstallInstructions(src, "", roots, true, dir); !changed || err != nil {
 		t.Fatalf("turning it on: %v %v", changed, err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, ClaudeDir, "CLAUDE.md"))
+	b, err := os.ReadFile(filepath.Join(dir, ManagedInstructions))
 	if err != nil || string(b) != on {
 		t.Fatalf("installed %q %v, want the on text", b, err)
 	}

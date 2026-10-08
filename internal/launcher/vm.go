@@ -15,6 +15,8 @@ import (
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
+	"github.com/bfreis/caboose/internal/version"
 	"github.com/bfreis/caboose/internal/vm"
 )
 
@@ -304,7 +306,24 @@ func (h *vmHost) StartVMM(dir vm.Dir) error {
 	if err != nil {
 		return err
 	}
+	h.a.noteVMMVersion(f.VMM)
 	return h.a.startVMM(f.VMM, dir)
+}
+
+// noteVMMVersion says, as a VM boots, when caboose-vmm is not this
+// caboose's own version: an older one ignores a share's ReadOnly, so the
+// Mac does not refuse the guest's writes to caboose's instructions. It
+// never stops the boot (a matching caboose-vmm may need signing the user
+// cannot do yet), and a check that fails says only what it could not
+// tell; the check bounds itself (vmmCheckTimeout).
+func (a *App) noteVMMVersion(path string) {
+	v := a.checkVMM(path)
+	mine := version.Get().Version
+	if v.Check.Version == mine {
+		return
+	}
+	a.Note("caboose-vmm is %s and this caboose %s, so read-only mounts (caboose's instructions at %s) are not enforced by the Mac until they match: %s",
+		or(v.Check.Version, "of an unknown version"), mine, datadir.ManagedTarget, a.vmmFix())
 }
 
 // doctorVM is doctorIsolation under vm: the files it runs, caboose-vmm's

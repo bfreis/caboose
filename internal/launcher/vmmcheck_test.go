@@ -9,6 +9,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/version"
+	"github.com/bfreis/caboose/internal/vm"
 )
 
 // fakeVMM is a caboose-vmm that runs script as sh.
@@ -112,5 +113,52 @@ func TestMacOSMajor(t *testing.T) {
 		if got := macOSMajor(in); got != want {
 			t.Errorf("%q: %d", in, got)
 		}
+	}
+}
+
+// Booting a VM checks caboose-vmm: one of another version (an older one
+// ignores read-only shares) is a note, with the fix, and the VM boots
+// anyway; so does one whose check fails; one of this version is quiet.
+func TestStartVMMNotesVersion(t *testing.T) {
+	old := vmmCheckTimeout
+	vmmCheckTimeout = 2 * time.Second
+	t.Cleanup(func() { vmmCheckTimeout = old })
+	for _, tc := range []struct {
+		name, check, note string // note "" means quiet
+	}{
+		{"same", "printf '%s' '" + checkOut() + "'", ""},
+		{"older", "printf '%s' '" + checkOut("version=v0.2.2") + "'", "caboose-vmm is v0.2.2 and this caboose " + version.Get().Version},
+		{"no check", "echo 'usage: caboose-vmm DIR' >&2; exit 2", "caboose-vmm is of an unknown version"},
+		{"hung", "exec sleep 30", "caboose-vmm is of an unknown version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			booted := filepath.Join(t.TempDir(), "booted")
+			p := fakeVMM(t, `if [ "$1" = --check ]; then `+tc.check+`; exit 0; fi; touch '`+booted+`'`)
+			var stderr strings.Builder
+			a := &App{Cfg: &config.Config{}, Stderr: &stderr}
+			a.vmFiles = func() (vmFiles, error) { return vmFiles{Arch: "arm64", VMM: p}, nil }
+			if err := (&vmHost{a: a}).StartVMM(vm.Dir(filepath.Join(t.TempDir(), "vm"))); err != nil {
+				t.Fatal(err)
+			}
+			got := stderr.String()
+			if tc.note == "" {
+				if got != "" {
+					t.Errorf("a matching caboose-vmm said %q", got)
+				}
+			} else if !strings.Contains(got, tc.note) || !strings.Contains(got, "read-only mounts (caboose's instructions at /etc/claude-code) are not enforced") ||
+				!strings.Contains(got, "reinstall caboose") || strings.Count(got, "\n") != 1 {
+				t.Errorf("note %q, want one line with %q and the fix", got, tc.note)
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if _, err := os.Stat(booted); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the VM was not booted")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
 	}
 }

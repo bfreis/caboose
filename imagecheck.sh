@@ -346,6 +346,21 @@ else
     echo "ok home /home/agent (created by the layer)"
 fi
 
+# --- Claude Code's managed policy ----------------------------------------
+#
+# The sandbox mounts caboose's instructions over /etc/claude-code, Claude
+# Code's managed settings directory, so anything the image has there would
+# be hidden. Only its absence is ok; what is there, if anything, is said.
+if [ -L "$R/etc/claude-code" ]; then
+    echo "missing etc:claude-code /etc/claude-code is a symlink"
+elif [ -d "$R/etc/claude-code" ]; then
+    echo "missing etc:claude-code /etc/claude-code is a directory"
+elif [ -e "$R/etc/claude-code" ]; then
+    echo "missing etc:claude-code /etc/claude-code is a file"
+else
+    echo "ok etc:claude-code absent"
+fi
+
 # --- CA certificates and reachability ------------------------------------
 #
 # Kept apart, so a build machine with no network does not read as an image

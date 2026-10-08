@@ -86,10 +86,17 @@ type Spec struct {
 }
 
 // Mount is one host path mounted into the sandbox. A Mount from Mounts
-// names the host path as the backend recorded it.
+// names the host path as the backend recorded it, and leaves ReadOnly
+// false whatever it was created with.
 type Mount struct {
 	Source string // on the host
 	Target string // in the sandbox
+	// ReadOnly mounts it so that nothing in the sandbox can write it, its
+	// root included: docker's :ro, and under vm a read-only directory of
+	// the share, bound read-only in the guest. Under vm the guest's root
+	// can still unmount or cover it, for the running VM only: the host's
+	// files stay as they are.
+	ReadOnly bool
 }
 
 // Volume is one of the sandbox's own filesystems, by name, at Target.

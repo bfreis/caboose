@@ -26,6 +26,7 @@ ok tool:chown /usr/bin/chown
 ok etc:passwd /etc/passwd
 ok etc:group /etc/group
 ok home /home/agent (created by the layer)
+ok etc:claude-code absent
 info libc glibc
 ok libc glibc /lib/aarch64-linux-gnu/libc.so.6
 info arch aarch64

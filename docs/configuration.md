@@ -232,7 +232,8 @@ docker would take the next argument as another flag's value. Refused:
   caboose's own (`dev.bfreis.caboose.*`);
 - a `--volume`, `--mount` or `--tmpfs` at, inside or around one of
   caboose's mounts (the roots under `/work`, the kept parts of the home,
-  Claude Code's install), or over the agent's home itself.
+  Claude Code's install, caboose's instructions at `/etc/claude-code`), or
+  over the agent's home itself.
 
 A refused argument stops the launch that would create the container, and
 `caboose restart` before it removes the old one; `caboose doctor` names

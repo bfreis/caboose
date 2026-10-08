@@ -215,10 +215,19 @@ func mergeEnv(base, over []string) []string {
 // virtio-fs share is a directory, so a file is mounted from its own
 // directory, shared whole (a kept file entry's is the data dir's home/,
 // which holds only what is kept). A source that does not exist is made a
-// directory, as docker run -v does.
+// directory, as docker run -v does. A read-only mount is a read-only
+// directory of the share, and is bound read-only too: the host refuses its
+// writes, so the guest's root cannot make it writable by remounting. That
+// holds only while no writable share reaches the same files, so a
+// read-only mount whose directory is, is inside, or holds a writable
+// mount's is refused.
 func planShares(ms []Mount) ([]vm.Share, []agentproto.GuestMount, error) {
 	var shares []vm.Share
-	names := map[string]string{}
+	type key struct {
+		dir string
+		ro  bool
+	}
+	names := map[key]string{}
 	var mounts []agentproto.GuestMount
 	for _, m := range ms {
 		if !filepath.IsAbs(m.Source) {
@@ -237,15 +246,34 @@ func planShares(ms []Mount) ([]vm.Share, []agentproto.GuestMount, error) {
 		if !fi.IsDir() {
 			dir, file = filepath.Dir(src), filepath.Base(src)
 		}
-		name, ok := names[dir]
+		k := key{dir, m.ReadOnly}
+		name, ok := names[k]
 		if !ok {
 			name = "m" + strconv.Itoa(len(shares))
-			names[dir] = name
-			shares = append(shares, vm.Share{Name: name, Path: dir})
+			names[k] = name
+			shares = append(shares, vm.Share{Name: name, Path: dir, ReadOnly: m.ReadOnly})
 		}
-		mounts = append(mounts, agentproto.GuestMount{Tag: vm.ShareTag, Path: path.Join(name, file), Target: m.Target})
+		mounts = append(mounts, agentproto.GuestMount{Tag: vm.ShareTag, Path: path.Join(name, file), Target: m.Target, ReadOnly: m.ReadOnly})
+	}
+	for _, ro := range shares {
+		if !ro.ReadOnly {
+			continue
+		}
+		for _, rw := range shares {
+			if !rw.ReadOnly && (within(ro.Path, rw.Path) || within(rw.Path, ro.Path)) {
+				return nil, nil, fmt.Errorf("read-only mount source %s overlaps the writable mount source %s: the guest could write it through that one", ro.Path, rw.Path)
+			}
+		}
 	}
 	return shares, mounts, nil
+}
+
+// within reports whether dir is base or inside it; both are clean.
+func within(dir, base string) bool {
+	if dir == base || base == "/" {
+		return true
+	}
+	return strings.HasPrefix(dir, base+"/")
 }
 
 // Start boots the recorded VM: a new scratch disk, its volumes' disks

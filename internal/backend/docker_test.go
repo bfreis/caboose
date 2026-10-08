@@ -74,7 +74,7 @@ func TestRunArgv(t *testing.T) {
 	got := RunArgv("box", Spec{
 		Image: "img", Cmd: []string{"--cc-supervise"}, Hostname: "caboose",
 		Env:     []string{"A=1"},
-		Mounts:  []Mount{{Source: "/h", Target: "/work"}},
+		Mounts:  []Mount{{Source: "/h", Target: "/work"}, {Source: "/m", Target: "/etc/m", ReadOnly: true}},
 		Volumes: []Volume{{Name: "docker", Target: "/var/lib/docker"}},
 		Groups:  []string{"999"},
 		Runtime: "runsc", User: "0:0",
@@ -82,7 +82,7 @@ func TestRunArgv(t *testing.T) {
 		RunArgs: []string{"--cpus=2"},
 	})
 	want := []string{"run", "-d", "--name", "box", "--hostname", "caboose", "--restart", "unless-stopped", "--init",
-		"-e", "A=1", "-v", "/h:/work", "-v", "box-docker:/var/lib/docker", "--group-add", "999", "--runtime", "runsc", "--user", "0:0",
+		"-e", "A=1", "-v", "/h:/work", "-v", "/m:/etc/m:ro", "-v", "box-docker:/var/lib/docker", "--group-add", "999", "--runtime", "runsc", "--user", "0:0",
 		"--label", "k=v", "--cpus=2", "img", "--cc-supervise"}
 	if !slices.Equal(got, want) {
 		t.Errorf("\n got %q\nwant %q", got, want)

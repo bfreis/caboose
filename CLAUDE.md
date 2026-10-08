@@ -2,8 +2,8 @@
 
 This repo defines the Docker sandbox that Claude Code sessions run inside — so
 a session working on it is running in the very container it builds. What that
-means day to day is in the installed `~/.claude/CLAUDE.md`, whose source is
-`sandbox/CLAUDE.md` here.
+means day to day is in caboose's managed instructions, installed read-only
+at `/etc/claude-code/CLAUDE.md`, whose source is `sandbox/CLAUDE.md` here.
 
 ## Changes here need a rebuild, and it has to happen on the host
 
@@ -91,9 +91,10 @@ a Mac builds and signs (the Makefile refuses anywhere else), so a change
 to it needs that, and a VM restarted with it.
 
 `sandbox/CLAUDE.md` is the exception: a launcher run from a checkout copies
-it into the data dir's `home/.claude/CLAUDE.md` on every start, so the next session
-picks it up with no rebuild and no restart. An installed binary uses the copy
-embedded in it instead.
+it into the data dir's `claude-code/CLAUDE.md` on every start, which the
+sandbox has read-only as Claude Code's managed `/etc/claude-code/CLAUDE.md`,
+so the next session picks it up with no rebuild and no restart. An
+installed binary uses the copy embedded in it instead.
 
 ## Layout
 
@@ -137,7 +138,7 @@ embedded in it instead.
 | `install.sh` | the one-line install, POSIX sh: the latest release (or `CABOOSE_VERSION`), checked against `checksums.txt`, into the layout `internal/selfupdate` keeps, then `caboose setup`; tested by `install_test.go` against a fake release host |
 | `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `CABOOSE_HOME/versions/<tag>` and the `~/.local/bin/caboose` link (the only thing of an install outside `CABOOSE_HOME`), `update.json` and its lock; `releasetest` serves fake releases |
 | `.github/workflows` | `ci.yml` (gofmt, vet, test, shellcheck); `release.yml` (goreleaser on a `v*` tag) |
-| `sandbox/CLAUDE.md` | the global CLAUDE.md installed into the sandbox |
+| `sandbox/CLAUDE.md` | caboose's instructions to every session, installed as the sandbox's managed, read-only `/etc/claude-code/CLAUDE.md` |
 | `README.md`, `docs/`, `CONTRIBUTING.md` | a short README (logo in `docs/assets/`, badges, links); the user docs, one file per topic; building and testing caboose |
 | `tests/run.sh` | integration suite; drives the real launcher against a real container |
 | `tests/byo/` | bring-your-own-image suite (`make test-byo`): Debian and Alpine test bases as ref profiles, one shared throwaway data dir, stock images the check must refuse, and a dockerfile profile's dir (`envs/<env>/dockerfile/default`) built from the seed with the off section (`tests/byo/seed` prints it) |
@@ -304,7 +305,8 @@ outside the repo.
   docker takes the last of a single-value flag, so `checkRunArgs`
   (`internal/launcher/runargs.go`) refuses the flags caboose sets or
   depends on, its variables and labels, and mounts over its own (read off
-  the `-v`/`-e` it built). A new flag caboose passes at `docker run` goes
+  the `-v`/`-e` it built, plus `/work` and `datadir.ManagedTarget`,
+  refused even with none built). A new flag caboose passes at `docker run` goes
   in `ownedFlags` there. The container is labelled with them
   (`assets.LabelRunArgs`, set even when empty) to tell when a restart is
   due.
@@ -499,3 +501,23 @@ outside the repo.
   this file — do not belong there. It also ships to every user, so it names
   no one's paths: the launcher fills in `@@CABOOSE_DIR@@` and
   `@@CABOOSE_ROOTS@@` at install time (`internal/datadir`).
+- **caboose's instructions are Claude Code's managed CLAUDE.md, and
+  `~/.claude/CLAUDE.md` is the user's.** A launch writes the filled-in
+  `sandbox/CLAUDE.md` to the data dir's `claude-code/`
+  (`datadir.ManagedDir`), beside `home/` and in no other mount, which the
+  sandbox has at `/etc/claude-code` (`datadir.ManagedTarget`), the one
+  mount of the data dir that is read-only (`backend.Mount.ReadOnly`) under
+  every isolation: docker's `:ro` under runc and gVisor, and under vm a
+  read-only directory of the virtio-fs share (`vm.Share.ReadOnly`, so the
+  host refuses the writes and the guest's root cannot remount it
+  writable), bound read-only in the guest too. That protects the host's
+  copy, and under docker and gVisor the mount itself; under vm the guest's
+  root (CAP_SYS_ADMIN) can still unmount or cover the mount for the
+  running VM, until the next boot -- never claim more. The Mac refuses only
+  through a share no writable one overlaps (`planShares` refuses an
+  overlap) and a `caboose-vmm` that knows `ReadOnly`: an older one ignores
+  it, so starting a VM checks the vmm's version and notes a mismatch
+  (`noteVMMVersion`), without refusing to boot. Never write anything of
+  caboose's into `~/.claude/CLAUDE.md`. The image check refuses a base with
+  anything at `/etc/claude-code`, which the mount would hide; a container
+  without the mount is told to `caboose restart` (`instructionsDrift`).

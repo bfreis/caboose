@@ -40,6 +40,7 @@ sandbox's own git, jj, gh and ssh config — lives in the environment's data dir
 | `<data>/local/<platform>/cache/claude` | `~/.cache/claude` (update staging) |
 | `<data>/sync` | `~/.caboose-sync` ([`caboose sync`](sync.md)'s git repo) |
 | `<data>/proposals` | `~/.caboose-proposals` (sessions' [proposals](proposals.md) for `caboose apply`) |
+| `<data>/claude-code` | `/etc/claude-code`, read-only (caboose's instructions to every session, below) |
 
 Deleting the container loses nothing; deleting this directory is a fresh
 install, login included.
@@ -87,11 +88,23 @@ is created, so a change needs `caboose restart`. The sandbox config is the
 sandbox's own: a session may add an entry itself, no proposal needed, since
 what is kept lives in the data dir, never at the host's own `~/.aws`.
 
-The launcher also installs a global `CLAUDE.md` into `<data>/home/.claude/` on
-every launch, telling every session in the sandbox what it is running in. It
-comes from `sandbox/CLAUDE.md` — the checkout's copy when the launcher runs
-from one, else the copy embedded in the binary — with where the roots are
-mounted and the location of caboose's own source filled in.
+The launcher also writes caboose's instructions, a `CLAUDE.md` telling every
+session in the sandbox what it is running in, into `<data>/claude-code/` on
+every launch. The sandbox has that directory read-only at `/etc/claude-code`,
+Claude Code's managed policy directory on Linux, so every session reads
+`/etc/claude-code/CLAUDE.md` before the user's and the project's. Nothing
+inside can change the host's copy. Under docker and gVisor the mount cannot be
+changed from inside either; under vm, root in the guest can unmount or cover
+it for the running VM only, and the next boot (or launch) brings caboose's
+back. Under vm, the Mac refuses writes to the mount only when `caboose-vmm` is
+the same version as `caboose`: a VM that boots with a different one says so.
+It comes from `sandbox/CLAUDE.md` — the checkout's copy
+when the launcher runs from one, else the copy embedded in the binary — with
+where the roots are mounted and the location of caboose's own source filled
+in. The sandbox's `~/.claude/CLAUDE.md` is yours: caboose never writes it.
+An edit to the instructions reaches the next session with no restart; the
+mount itself is made when the container is created, so a container without
+it needs `caboose restart`, which a launch and `caboose doctor` say.
 
 ## tmux is configured to be invisible
 

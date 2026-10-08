@@ -16,7 +16,7 @@ var tools = []string{
 	"ok tool:mkdir /usr/bin/mkdir", "ok tool:chmod /usr/bin/chmod", "ok tool:cut /usr/bin/cut",
 	"ok tool:sed /usr/bin/sed", "ok tool:tr /usr/bin/tr", "ok tool:grep /usr/bin/grep",
 	"ok tool:head /usr/bin/head", "ok tool:sha256sum /usr/bin/sha256sum", "ok tool:chown /usr/bin/chown",
-	"ok etc:passwd /etc/passwd", "ok etc:group /etc/group", "ok home /home/agent (created by the layer)",
+	"ok etc:passwd /etc/passwd", "ok etc:group /etc/group", "ok home /home/agent (created by the layer)", "ok etc:claude-code absent",
 }
 
 func probeOut(lines ...[]string) string {
@@ -260,6 +260,7 @@ libstdc++: missing (no libstdc++.so.6)
 ripgrep: missing
 tools: ok
 user: ok
+policy: ok (no /etc/claude-code)
 tic: missing (optional)
 uid: 1000 (free)
 gid: 1000 (free)
@@ -271,7 +272,7 @@ network: warning: https://claude.ai not checked: no curl; https://downloads.clau
 	got := rows(nodeImage)
 	for _, w := range []string{
 		"bash: ok (/usr/bin/bash)\n",
-		"libc: glibc\nplatform: linux-x64\ntools: ok\nuser: ok\ntic: ok (/usr/bin/tic)\n",
+		"libc: glibc\nplatform: linux-x64\ntools: ok\nuser: ok\npolicy: ok (no /etc/claude-code)\ntic: ok (/usr/bin/tic)\n",
 		"uid: 1000 (held by user 'node'; the layer takes it over as agent)\n",
 		"gid: 1000 (held by group 'node'; the layer makes it agent's group, as it is)\n",
 		"agent: the image already has user agent (uid 1001) and group agent (gid 1001)\n",

@@ -240,8 +240,8 @@ work on, a dependency's install script -- can run anything on this machine
 as you: read your files, use your SSH agent and your logins, change what
 they like. It is meant for an environment whose point is a separate Claude
 login, tools or network, not containment. `caboose doctor` and `caboose
-status` say when it is on. Sessions read whether it is on in their
-`CLAUDE.md`, which a launch rewrites, so a session started before a change
+status` say when it is on. Sessions read whether it is on in caboose's
+instructions (`/etc/claude-code/CLAUDE.md`), which a launch rewrites, so a session started before a change
 still describes it as it was; the link itself follows `config.toml` within
 seconds, as above.
 

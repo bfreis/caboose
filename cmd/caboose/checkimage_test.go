@@ -33,6 +33,7 @@ ok tool:chown /usr/bin/chown
 ok etc:passwd /etc/passwd
 ok etc:group /etc/group
 ok home /home/agent (created by the layer)
+ok etc:claude-code absent
 `
 	probeComplete = `probe 1
 ok sh /bin/sh
@@ -123,6 +124,7 @@ func TestCheckImageComplete(t *testing.T) {
   ✓ platform  linux-arm64
   ✓ tools     ok
   ✓ user      ok
+  ✓ policy    ok (no /etc/claude-code)
   ✓ tic       ok (/usr/bin/tic)
   ✓ uid       1000 (held by user 'ubuntu'; the layer takes it over as agent)
   ✓ gid       1000 (held by group 'ubuntu'; the layer makes it agent's group, as it is)
@@ -172,6 +174,7 @@ func TestCheckImageBareAlpine(t *testing.T) {
   ✗ ripgrep    missing
   ✓ tools      ok
   ✓ user       ok
+  ✓ policy     ok (no /etc/claude-code)
   ! tic        missing (optional)
   ✓ uid        1000 (free)
   ✓ gid        1000 (free)

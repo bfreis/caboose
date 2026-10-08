@@ -56,10 +56,13 @@ func TestCheckRunArgs(t *testing.T) {
 		"--volume=/x:/":                       "would hide the agent's home",
 		"--volume=/x:/home/agent/.claude/y":   "overlaps /home/agent/.claude",
 		"--volume=/x:/home/agent/.local":      "overlaps /home/agent/.local/bin",
-		"--mount=type=bind,src=/x,target=/run/agent.sock": "overlaps /run/agent.sock",
-		"--tmpfs=/home/agent/.claude":                     "overlaps /home/agent/.claude",
-		"--volume=/x:/home":                               "would hide the agent's home",
-		"--volume=/x:/home/agent/":                        "would hide the agent's home",
+		"--mount=type=bind,src=/x,target=/run/agent.sock":         "overlaps /run/agent.sock",
+		"--tmpfs=/home/agent/.claude":                             "overlaps /home/agent/.claude",
+		"--volume=/x:/home":                                       "would hide the agent's home",
+		"--volume=/x:/home/agent/":                                "would hide the agent's home",
+		"--volume=/x:/etc/claude-code:ro":                         "overlaps /etc/claude-code",
+		"--mount=type=bind,src=/x,dst=/etc/claude-code/CLAUDE.md": "overlaps /etc/claude-code",
+		"--tmpfs=/etc":                                            "overlaps /etc/claude-code",
 	} {
 		err := checkRunArgs([]string{"--dns=1.1.1.1", arg}, testOwnArgs, roots)
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "'"+arg+"'") {
@@ -72,6 +75,9 @@ func TestCheckRunArgs(t *testing.T) {
 	}
 	if err := checkRunArgs([]string{"--volume=/x:/work/dev/y"}, nil, roots); err == nil {
 		t.Error("a mount inside a root: not refused")
+	}
+	if err := checkRunArgs([]string{"--volume=/x:/etc/claude-code"}, nil, roots); err == nil {
+		t.Error("a mount over caboose's instructions, without own arguments: not refused")
 	}
 }
 
@@ -139,7 +145,7 @@ func TestCreateContainerRunArgs(t *testing.T) {
 
 // A refused argument creates nothing, and says where it came from.
 func TestCreateContainerRefusesRunArgs(t *testing.T) {
-	for _, arg := range []string{"--name=x", "--volume=/x:/home/agent/.claude"} {
+	for _, arg := range []string{"--name=x", "--volume=/x:/home/agent/.claude", "--volume=/x:/etc/claude-code"} {
 		a, log, _ := runFake(t, []string{arg})
 		err := a.createContainer(false)
 		if err == nil || !strings.Contains(err.Error(), "'"+arg+"'") || !strings.Contains(err.Error(), "(run_args in [container.default] of /e/config.toml)") {

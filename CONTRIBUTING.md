@@ -62,7 +62,8 @@ environment onto it. A launcher change takes effect
 on the next run, but anything it decides at container creation — mounts,
 environment — needs `make restart` too. `sandbox/CLAUDE.md` is the
 exception: a launcher run from the checkout reads it from there on every
-launch, so an edit reaches the next session with no rebuild. Its
+launch and writes it to the sandbox's read-only `/etc/claude-code/CLAUDE.md`,
+so an edit reaches the next session with no rebuild. Its
 placeholders are the launcher's to fill in, though: after pulling, rebuild
 `./caboose` (`make launcher`, on the host), or a placeholder newer than the
 binary can go unexpanded.
@@ -151,7 +152,7 @@ again: `rm caboose-vmm` first.
 | `.goreleaser.yaml`, `.github/workflows/` | release build; CI |
 | `macsign.sh` | signs the darwin binaries, ad-hoc or with a Developer ID, and notarizes them (goreleaser, `make vmm`) |
 | `CLAUDE.md` | instructions for a session working on *this repo* |
-| `sandbox/CLAUDE.md` | the global CLAUDE.md installed into the sandbox, for *every* project |
+| `sandbox/CLAUDE.md` | caboose's instructions, installed read-only as the sandbox's managed `/etc/claude-code/CLAUDE.md`, for *every* project |
 | `tests/run.sh` | integration suite |
 | `tests/byo/` | bring-your-own-image suite and its test images (`make test-byo`) |
 

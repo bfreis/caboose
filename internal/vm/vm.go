@@ -79,10 +79,13 @@ type Disk struct {
 }
 
 // Share is one host directory in the share, at Name in the guest's mount
-// of it.
+// of it. A ReadOnly one is refused every write by the host's side of the
+// share, whatever the guest mounts it as, by a caboose-vmm that knows the
+// field (an older one ignores it).
 type Share struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 // Mount is one of the launcher's mounts, as it asked for it.

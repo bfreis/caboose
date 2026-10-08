@@ -9,6 +9,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/datadir"
 )
 
 // The user's own `docker run` arguments (config.RunArgs) go in after
@@ -72,9 +73,11 @@ const labelPrefix = "dev.bfreis.caboose."
 // own are caboose's own arguments as createContainer builds them (-v
 // SRC:DST, -e NAME=VALUE), whose mount targets and variables are caboose's
 // too; with none (doctor, restart before it removes anything), what is
-// checked is what does not depend on them, and the roots.
+// checked is what does not depend on them, and the roots. caboose's
+// instructions (datadir.ManagedTarget) are always its own: a mount over
+// them would hand the sandbox instructions of its own choosing.
 func checkRunArgs(args, own []string, roots []config.Root) error {
-	targets := []string{config.WorkDir}
+	targets := []string{config.WorkDir, datadir.ManagedTarget}
 	for _, r := range roots {
 		targets = append(targets, r.Container)
 	}

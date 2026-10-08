@@ -20,6 +20,7 @@ func TestPlanMounts(t *testing.T) {
 		{Tag: "work", Target: "/work"},
 		{Tag: "data", Path: "home/.claude", Target: "/home/agent/.claude"},
 		{Tag: "data", Path: "home/.claude.json", Target: "/home/agent/.claude.json"},
+		{Tag: "data", Path: "claude-code", Target: "/etc/claude-code", ReadOnly: true},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -28,16 +29,17 @@ func TestPlanMounts(t *testing.T) {
 		t.Errorf("tags %q", tags)
 	}
 	want := []bind{
-		{sharesDir + "/work", "/work"},
-		{sharesDir + "/data/home/.claude", "/home/agent/.claude"},
-		{sharesDir + "/data/home/.claude.json", "/home/agent/.claude.json"},
+		{sharesDir + "/work", "/work", false},
+		{sharesDir + "/data/home/.claude", "/home/agent/.claude", false},
+		{sharesDir + "/data/home/.claude.json", "/home/agent/.claude.json", false},
+		{sharesDir + "/data/claude-code", "/etc/claude-code", true},
 	}
 	if len(binds) != len(want) {
-		t.Fatalf("binds %q", binds)
+		t.Fatalf("binds %+v", binds)
 	}
 	for i := range want {
 		if binds[i] != want[i] {
-			t.Errorf("bind %d: %q, want %q", i, binds[i], want[i])
+			t.Errorf("bind %d: %+v, want %+v", i, binds[i], want[i])
 		}
 	}
 	for _, bad := range []agentproto.GuestMount{

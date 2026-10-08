@@ -34,6 +34,7 @@ func doctorBox(t *testing.T, home string, over ...string) string {
 	for _, rel := range []string{".claude", ".claude.json", ".config/caboose", ".config/git", ".config/jj", ".config/gh", ".ssh"} {
 		fmt.Fprintf(&keeps, "/home/agent/%s\t%s\n", rel, filepath.Join(data, "home", rel))
 	}
+	fmt.Fprintf(&keeps, "/etc/claude-code\t%s\n", filepath.Join(data, "claude-code"))
 	return strings.Join(over, "\n") + `
 case "$1" in version) exit 0 ;; esac
 ` + imageLabels(defaultLabels("v1")) + "\n" + imageIDIs("sha:1") + "\n" + containerRunning + `
@@ -200,6 +201,13 @@ func TestDoctorHealthy(t *testing.T) {
 	home, log := doctorEnv(t)
 	setUp(t, home)
 	loggedIn(t, home)
+	managed := filepath.Join(home, ".caboose", "envs", "default", "data", "claude-code")
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed, "CLAUDE.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	code, out, errOut := runIt("doctor", "--offline")
 	if code != 0 || errOut != "" {
 		t.Fatalf("exit %d, stderr %q; stdout:\n%s", code, errOut, out)
@@ -401,20 +409,54 @@ func TestDoctorAgent(t *testing.T) {
 
 func TestDoctorLinkWhereALaunchWrites(t *testing.T) {
 	home, _ := doctorEnv(t)
-	claude := filepath.Join(home, ".caboose", "envs", "default", "data", "home", ".claude")
-	if err := os.MkdirAll(claude, 0o755); err != nil {
+	git := filepath.Join(home, ".caboose", "envs", "default", "data", "home", ".config", "git")
+	if err := os.MkdirAll(git, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(home, "elsewhere"), filepath.Join(claude, "CLAUDE.md")); err != nil {
+	if err := os.Symlink(filepath.Join(home, "elsewhere"), filepath.Join(git, "config")); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(home, ".caboose", "envs", "default", "data", "claude-code")
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "elsewhere"), filepath.Join(managed, "CLAUDE.md")); err != nil {
 		t.Fatal(err)
 	}
 	code, out, _ := runIt("doctor", "--offline")
-	if code != 1 || row(out, "data dir", "problem: ~/.claude/CLAUDE.md is a symlink or a hard link") == "" ||
-		!fixFor(out, "data dir", "remove it from inside: caboose shell, then rm ~/.claude/CLAUDE.md") {
+	if code != 1 || row(out, "data dir", "problem: ~/.config/git/config is a symlink or a hard link") == "" ||
+		!fixFor(out, "data dir", "remove it from inside: caboose shell, then rm ~/.config/git/config") {
 		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if row(out, "instructions", "problem: "+filepath.Join(managed, "CLAUDE.md")+" is a symlink or a hard link") == "" ||
+		!fixFor(out, "instructions", "rm "+filepath.Join(managed, "CLAUDE.md")+" on this machine") {
+		t.Fatalf("instructions:\n%s", out)
 	}
 	if _, err := os.Lstat(filepath.Join(home, "elsewhere")); err == nil {
 		t.Error("doctor wrote through the link")
+	}
+}
+
+// doctor names caboose's instructions where a launch writes them, and
+// where the sandbox reads them.
+func TestDoctorInstructions(t *testing.T) {
+	home, _ := doctorEnv(t)
+	managed := filepath.Join(home, ".caboose", "envs", "default", "data", "claude-code")
+	_, out, _ := runIt("doctor", "--offline")
+	if row(out, "instructions", "note: caboose's instructions are not written yet; the next launch writes them to "+
+		filepath.Join(managed, "CLAUDE.md")+" (/etc/claude-code/CLAUDE.md in the container, read-only)") == "" {
+		t.Fatalf("none yet:\n%s", out)
+	}
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed, "CLAUDE.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ = runIt("doctor", "--offline")
+	if row(out, "instructions", filepath.Join(managed, "CLAUDE.md")+
+		", which the container reads, read-only, as Claude Code's managed /etc/claude-code/CLAUDE.md") == "" {
+		t.Fatalf("written:\n%s", out)
 	}
 }
 
@@ -532,5 +574,18 @@ func TestDoctorSSHKey(t *testing.T) {
 	})
 	if strings.Contains(out, "known_hosts)") {
 		t.Errorf("known_hosts named as a key:\n%s", out)
+	}
+}
+
+// A container created without caboose's instructions is a problem, whose
+// fix is the restart that mounts them.
+func TestDoctorInstructionsUnmounted(t *testing.T) {
+	doctorEnv(t, `case "$*" in
+  "inspect --type=container caboose-default --format "*) printf '/work/dev\t/nowhere\n'; exit 0 ;;
+esac`)
+	code, out, _ := runIt("doctor", "--offline")
+	if code != 1 || row(out, "instructions", "problem: the container does not mount caboose's instructions at /etc/claude-code, so its sessions do not get them") == "" ||
+		!fixFor(out, "instructions", "caboose restart") {
+		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }

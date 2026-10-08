@@ -292,6 +292,14 @@ func (a *App) noteSetup() {
 	}
 }
 
+// managedInstructionsInside is where the sandbox reads caboose's
+// instructions: Claude Code's managed CLAUDE.md.
+const managedInstructionsInside = datadir.ManagedTarget + "/CLAUDE.md"
+
+// syncSandboxInstructions writes caboose's instructions to every session,
+// sandbox/CLAUDE.md filled in, into the data dir's ManagedDir, which the
+// sandbox has read-only at datadir.ManagedTarget: Claude Code reads it
+// before the user's ~/.claude/CLAUDE.md, which caboose never writes.
 func (a *App) syncSandboxInstructions() error {
 	src, err := SandboxInstructions(a.Checkout)
 	if err != nil {
@@ -319,14 +327,15 @@ func (a *App) syncSandboxInstructions() error {
 	}
 	changed, err := datadir.InstallInstructions(src, a.Checkout, roots, hostExec, a.Cfg.DataDir)
 	if errors.Is(err, nofollow.ErrNotPlain) {
-		a.Note("not installing sandbox CLAUDE.md: %v; delete it and relaunch", err)
+		a.Note("not installing caboose's instructions: %v; delete it and relaunch", err)
 		return nil
 	}
 	if err != nil {
-		return Die("installing sandbox CLAUDE.md: %v", err)
+		return Die("installing caboose's instructions: %v", err)
 	}
 	if changed {
-		a.Note("installed sandbox CLAUDE.md into %s/%s/CLAUDE.md", a.Cfg.DataDir, datadir.ClaudeDir)
+		a.Note("installed caboose's instructions into %s (%s in the %s, read-only)",
+			filepath.Join(a.Cfg.DataDir, datadir.ManagedInstructions), managedInstructionsInside, a.noun())
 	}
 	return nil
 }
@@ -451,6 +460,10 @@ func (a *App) createContainer(mayBuild bool) error {
 		backend.Mount{Source: d + "/" + datadir.SyncDir, Target: statesync.ContainerDir},
 		// Where sessions propose what only the host can change (apply.go).
 		backend.Mount{Source: d + "/" + datadir.ProposalsDir, Target: proposal.ContainerDir},
+		// caboose's instructions, as Claude Code's managed CLAUDE.md:
+		// read-only, so they stay caboose's and ~/.claude/CLAUDE.md the
+		// user's (syncSandboxInstructions).
+		backend.Mount{Source: d + "/" + datadir.ManagedDir, Target: datadir.ManagedTarget, ReadOnly: true},
 	)
 	// Each root at a path of its own that is the same on every machine:
 	// /work/<name> (config.WorkDir), or its long form's, and labelled so
@@ -756,6 +769,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		}
 		a.warnIfRootsDrifted()
 		a.warnIfKeepDrifted()
+		a.warnIfInstructionsUnmounted()
 		a.warnIfRunArgsDrifted()
 		a.warnIfIsolationDrifted()
 		a.warnIfEgressDrifted()

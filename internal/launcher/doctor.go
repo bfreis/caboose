@@ -3,6 +3,7 @@ package launcher
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -383,7 +384,6 @@ func (a *App) doctorSandbox(c *checkup) {
 // sandboxWrites are the files in the data dir every launch writes, which
 // it refuses to write through a link, with where the sandbox sees them.
 var sandboxWrites = []struct{ rel, inside string }{
-	{datadir.ClaudeDir + "/CLAUDE.md", "~/.claude/CLAUDE.md"},
 	{datadir.GitConfig, "~/.config/git/config"},
 }
 
@@ -398,6 +398,20 @@ func (a *App) doctorDataDir(c *checkup) {
 			c.problem("data dir", "remove it from inside: caboose shell, then rm "+f.inside+"; the next launch writes it again",
 				"%s is a symlink or a hard link, or is reached through one; a launch never writes through those, so it is not kept up to date", f.inside)
 		}
+	}
+	// caboose's instructions, which the sandbox reads and cannot write.
+	host := filepath.Join(cfg.DataDir, datadir.ManagedInstructions)
+	switch _, _, err := d.ReadFile(datadir.ManagedInstructions); {
+	case err == nil:
+		c.ok("instructions", "%s, which the %s reads, read-only, as Claude Code's managed %s", host, a.noun(), managedInstructionsInside)
+	case errors.Is(err, fs.ErrNotExist):
+		c.note("instructions", "caboose's instructions are not written yet; the next launch writes them to %s (%s in the %s, read-only)",
+			host, managedInstructionsInside, a.noun())
+	case errors.Is(err, nofollow.ErrNotPlain):
+		c.problem("instructions", "rm "+host+" on this machine; the next launch writes it again",
+			"%s is a symlink or a hard link, or is reached through one; a launch never writes through those, so it is not kept up to date", host)
+	default:
+		c.unchecked("instructions", "%v", err)
 	}
 	// Keys belong on the host, reaching the sandbox through the agent.
 	if keys, err := datadir.PrivateKeysIn(cfg.DataDir); err == nil && len(keys) > 0 {
@@ -507,6 +521,9 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	}
 	if d := a.keepDrift(); d != "" {
 		c.problem("keep", "caboose restart"+endsSessions, "the %s %s", noun, d)
+	}
+	if d := a.instructionsDrift(); d != "" {
+		c.problem("instructions", "caboose restart"+endsSessions, "%s", d)
 	}
 	if d := a.runArgsDrift(); d != "" {
 		c.problem("run args", "caboose restart"+endsSessions, "%s", d)

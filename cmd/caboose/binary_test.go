@@ -63,14 +63,19 @@ func TestInstalledBinary(t *testing.T) {
 		return code, out.String()
 	}
 
-	// An attach gets as far as installing the sandbox CLAUDE.md before the
-	// (fake, failing) docker stops it.
+	// An attach gets as far as installing caboose's instructions before
+	// the (fake, failing) docker stops it: as the managed CLAUDE.md, never
+	// into ~/.claude, which is the user's.
 	if code, out := runBin(project, "claude", "--version"); code == 0 {
 		t.Errorf("attach succeeded against a failing docker:\n%s", out)
 	}
-	b, err := os.ReadFile(filepath.Join(home, ".caboose", "envs", "default", "data", "home", ".claude", "CLAUDE.md"))
+	data := filepath.Join(home, ".caboose", "envs", "default", "data")
+	b, err := os.ReadFile(filepath.Join(data, "claude-code", "CLAUDE.md"))
 	if err != nil {
-		t.Fatalf("sandbox CLAUDE.md not installed: %v", err)
+		t.Fatalf("caboose's instructions not installed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(data, "home", ".claude", "CLAUDE.md")); err == nil {
+		t.Error("a launch wrote ~/.claude/CLAUDE.md")
 	}
 	md := string(b)
 	for _, want := range []string{datadir.UpstreamURL, "NOT MOUNTED", "`" + root + "`"} {

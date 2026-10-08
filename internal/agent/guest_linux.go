@@ -447,8 +447,11 @@ func leasedAddr(server net.IP) (net.IP, net.HardwareAddr, error) {
 	return nil, nil, fmt.Errorf("no interface on the subnet of %v", server)
 }
 
-// bind is one mount of a share's directory at a target.
-type bind struct{ source, target string }
+// bind is one mount of a share's directory at a target, read-only or not.
+type bind struct {
+	source, target string
+	readOnly       bool
+}
 
 // planMounts checks the boot spec's mounts, and returns the shares to
 // mount and the binds to make of them, in order.
@@ -468,7 +471,7 @@ func planMounts(ms []agentproto.GuestMount) (tags []string, binds []bind, err er
 			seen[gm.Tag] = true
 			tags = append(tags, gm.Tag)
 		}
-		binds = append(binds, bind{source: filepath.Join(sharesDir, gm.Tag, gm.Path), target: gm.Target})
+		binds = append(binds, bind{source: filepath.Join(sharesDir, gm.Tag, gm.Path), target: gm.Target, readOnly: gm.ReadOnly})
 	}
 	return tags, binds, nil
 }
@@ -503,6 +506,12 @@ func mountShares(tags []string, binds []bind) error {
 		}
 		if err := unix.Mount(b.source, b.target, "", unix.MS_BIND, ""); err != nil {
 			return fmt.Errorf("mounting %s at %s: %w", b.source, b.target, err)
+		}
+		// A bind takes no flags of its own until it is remounted.
+		if b.readOnly {
+			if err := unix.Mount("", b.target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
+				return fmt.Errorf("making %s read-only: %w", b.target, err)
+			}
 		}
 	}
 	return nil

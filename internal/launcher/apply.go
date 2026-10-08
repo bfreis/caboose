@@ -57,7 +57,7 @@ func (a *App) Apply() error {
 		return Die("reading %s: %v", filepath.Join(c.DataDir, proposal.Dir), err)
 	}
 	if len(entries) == 0 {
-		a.Note("no pending proposals. A session proposes a change by writing one into %s (see ~/.claude/CLAUDE.md in the sandbox).", proposal.ContainerDir)
+		a.Note("no pending proposals. A session proposes a change by writing one into %s (see /etc/claude-code/CLAUDE.md in the sandbox).", proposal.ContainerDir)
 		return nil
 	}
 	term, err := a.openTerminal()

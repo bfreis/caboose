@@ -51,7 +51,7 @@ func TestInstallInstructionsNeverFollowsLinks(t *testing.T) {
 			if err := EnsureLayout(dir, defKeep()); err != nil {
 				t.Fatal(err)
 			}
-			target := plant(t, dir, filepath.Join(dir, ClaudeDir, "CLAUDE.md"))
+			target := plant(t, dir, filepath.Join(dir, ManagedInstructions))
 			changed, err := InstallInstructions([]byte("instructions\n"), "", roots, false, dir)
 			if changed || !errors.Is(err, nofollow.ErrNotPlain) {
 				t.Errorf("InstallInstructions = %v, %v; want ErrNotPlain", changed, err)
