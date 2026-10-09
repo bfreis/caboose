@@ -227,7 +227,10 @@ group at another GID that nothing uses is then dropped; otherwise an
 it. Your UID or GID being 0 is refused: caboose must not run as root, and
 the layer would take over the image's root user. It sets `HOME`, puts
 `~/.local/bin` first on `PATH`, sets `LANG=C.UTF-8` unless the base sets
-its own, and replaces the base's entrypoint and `CMD`. On musl the container is created with
+its own, sets `BROWSER` the same way, and replaces the base's entrypoint
+and `CMD`. `BROWSER` names the `xdg-open` the layer puts in
+`/usr/local/bin`, next to `caboose-agent` (replacing a base's own there),
+which opens http(s) URLs in the host's browser. On musl the container is created with
 `USE_BUILTIN_RIPGREP=0`, so Claude Code uses the image's `rg`.
 
 ## Checking an image

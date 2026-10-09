@@ -474,9 +474,10 @@ format = 1    # this file's structure
 
 #[link]
 # Which ports listening in the sandbox are forwarded to the same port on
-# this machine's localhost: ports and "a-b" ranges; [] for none. A running
-# link rereads this file when it changes.
-#forward_ports = ["3000-3999", 5173, "8000-8999"]
+# this machine's localhost, while they listen: ports and "a-b" ranges; []
+# for none. 32768-60999 is where a login's loopback callback listens. A
+# running link rereads this file when it changes.
+#forward_ports = ["3000-3999", 5173, "8000-8999", "32768-60999"]
 # Whether the sandbox may open URLs in this machine's browser: "ask" (a
 # dialog each time), "allow" or "off".
 #open_urls = "ask"

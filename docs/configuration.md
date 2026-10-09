@@ -67,7 +67,7 @@ is `name = "host path"`, or a table with `host` and `path`.
 
 | Key | Default | |
 |---|---|---|
-| `forward_ports` | `["3000-3999", 5173, "8000-8999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost: integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. See [the host link](host-link.md#ports) |
+| `forward_ports` | `["3000-3999", 5173, "8000-8999", "32768-60999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, while they listen (the last range is where a login's loopback callback listens): integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. See [the host link](host-link.md#ports) |
 | `open_urls` | `"ask"` | whether the sandbox may open URLs in your browser: `"ask"`, `"allow"` or `"off"`; see [the host link](host-link.md#urls-and-notifications) |
 | `ssh_agent` | the agent `ssh` here would use | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead. See [SSH agent](ssh.md) |
 | `host_exec` | `false` | let sessions run commands on this machine, as you, through the link (`caboose-agent host CMD`). **Sessions, and whatever steers them (a web page, a repo they work on), can then run anything on this machine as you**: meant for an environment whose point is a separate login or tools, not containment. See [the host link](host-link.md#host-commands) |

@@ -48,6 +48,13 @@ COPY layer-user.sh /usr/local/lib/caboose/layer-user.sh
 ARG TARGETARCH
 COPY agent-bin/caboose-agent-linux-${TARGETARCH} /usr/local/bin/caboose-agent
 
+# The sandbox has no display, so a real xdg-open from the base (in /usr/bin)
+# would fall back to a text browser in here. This one hands an http(s) URL to
+# caboose-agent, and so to the host's browser. /usr/local/bin comes before
+# /usr/bin on the usual PATH, so it wins on purpose; a base's own
+# /usr/local/bin/xdg-open is replaced, like caboose-agent.
+COPY xdg-open.sh /usr/local/bin/xdg-open
+
 # The shell.d loader, which the ~/.bashrc layer-user.sh sets up sources.
 COPY shellrc.bash /usr/local/lib/caboose/shellrc.bash
 RUN ["/bin/sh", "-c", "exec /bin/sh /usr/local/lib/caboose/layer-user.sh \"$CABOOSE_UID\" \"$CABOOSE_GID\""]
@@ -88,6 +95,12 @@ ENV PATH=/home/agent/.local/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin
 # UTF-8 whatever LANG says. A base that sets LANG keeps its own: the
 # substitution sees the base's environment.
 ENV LANG=${LANG:-C.UTF-8}
+
+# gh and Go's pkg/browser look for xdg-open on PATH; Python's webbrowser reads
+# BROWSER; npm's `open` runs its own bundled xdg-open, which with no desktop
+# falls back to $BROWSER. All of them end in the host's browser. A base that
+# sets BROWSER keeps its own, as with LANG.
+ENV BROWSER=${BROWSER:-/usr/local/bin/xdg-open}
 
 USER agent
 WORKDIR /work

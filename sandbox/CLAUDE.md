@@ -79,11 +79,13 @@ skill for that.
 
 - A server listening in here is forwarded to the same port on the host's
   `localhost` if `forward_ports` (in `[link]` of the host's `config.toml`)
-  allows it; by default 3000-3999, 5173 and 8000-8999. Tell the user to open
+  allows it; by default 3000-3999, 5173, 8000-8999 and 32768-60999 (where a
+  login's loopback callback listens). Tell the user to open
   `http://localhost:PORT`. `caboose-agent ports` lists what listens and what
   is forwarded.
 - `caboose-agent open URL` opens an http(s) URL in the user's browser
-  (usually after a dialog); `caboose-agent notify TEXT` shows a notification.
+  (usually after a dialog), and so do `xdg-open` and `$BROWSER`, which
+  login flows use; `caboose-agent notify TEXT` shows a notification.
 @@IF hostexec=on@@
 - Host commands are on: `caboose-agent host CMD ARGS` runs CMD on the host,
   as the user, in the host directory of the current one, which must be under

@@ -61,7 +61,7 @@ func TestWriteContextsWriteOnlyTheirFiles(t *testing.T) {
 		write func(string) error
 		want  string
 	}{
-		{WriteLayerContext, "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf"},
+		{WriteLayerContext, "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf xdg-open.sh"},
 	} {
 		dir := t.TempDir()
 		if err := tc.write(dir); err != nil {
@@ -84,12 +84,14 @@ func TestWriteContextsWriteOnlyTheirFiles(t *testing.T) {
 	if err := WriteLayerContext(dir); err != nil {
 		t.Fatal(err)
 	}
-	fi, err := os.Stat(filepath.Join(dir, "entrypoint.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm()&0o100 == 0 {
-		t.Errorf("entrypoint.sh is not executable: %v", fi.Mode())
+	for _, name := range []string{"entrypoint.sh", "xdg-open.sh"} {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm()&0o100 == 0 {
+			t.Errorf("%s is not executable: %v", name, fi.Mode())
+		}
 	}
 }
 

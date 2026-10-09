@@ -139,7 +139,7 @@ func TestBuildOnDockerfile(t *testing.T) {
 	if bs[1].argv != want {
 		t.Errorf("layer build\n%s\nwant\n%s", bs[1].argv, want)
 	}
-	if bs[1].context != "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf" {
+	if bs[1].context != "agent-bin entrypoint.sh layer-user.sh layer.Dockerfile shellrc.bash tmux.conf xdg-open.sh" {
 		t.Errorf("layer context held %q", bs[1].context)
 	}
 	if _, err := os.Stat(filepath.Join(imageDir(home), "Dockerfile")); err != nil {

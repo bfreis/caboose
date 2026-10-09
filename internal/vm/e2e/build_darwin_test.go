@@ -150,6 +150,12 @@ func TestBuild(t *testing.T) {
 	if got := out("sh", "-c", "test -x /usr/local/bin/caboose-entrypoint && test -x /usr/local/bin/caboose-agent && echo yes"); got != "yes" {
 		t.Errorf("the entrypoint and agent: %q", got)
 	}
+	if got := out("sh", "-c", "test -x /usr/local/bin/xdg-open && command -v xdg-open && echo $BROWSER"); got != "/usr/local/bin/xdg-open\n/usr/local/bin/xdg-open" {
+		t.Errorf("xdg-open and BROWSER: %q", got)
+	}
+	if got := out("sh", "-c", "xdg-open /etc/passwd 2>&1; echo $?"); !strings.Contains(got, "is a file") || !strings.HasSuffix(got, "\n1") {
+		t.Errorf("xdg-open of a file: %q", got)
+	}
 	if got := out("sh", "-c", "echo $PATH"); !strings.HasPrefix(got, "/home/agent/.local/bin:") {
 		t.Errorf("PATH %q", got)
 	}

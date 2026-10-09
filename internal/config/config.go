@@ -633,8 +633,11 @@ var envName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 func ValidEnv(name string) bool { return envName.MatchString(name) }
 
 // DefaultForwardPorts are the ports forwarded when forward_ports is not
-// set: the ranges dev servers tend to use.
-const DefaultForwardPorts = "3000-3999 5173 8000-8999"
+// set: the ranges dev servers tend to use, and Linux's ephemeral range,
+// where a login's loopback callback (http://127.0.0.1:PORT/callback)
+// listens. A port forwards only while it listens in the sandbox, so the
+// range opens nothing on the host until a program binds one of them.
+const DefaultForwardPorts = "3000-3999 5173 8000-8999 32768-60999"
 
 // DefaultEgressPorts are the ports the outbound proxy reaches when
 // egress_ports is not set: ssh (git), http and https.

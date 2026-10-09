@@ -8,7 +8,7 @@ at `/etc/claude-code/CLAUDE.md` (with managed skills beside it), whose source is
 
 ## Changes here need a rebuild, and it has to happen on the host
 
-`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
+`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `xdg-open.sh`,
 `tmux.conf`, `shellrc.bash` and `caboose-agent` (built from
 `cmd/caboose-agent`, `internal/agent` and `internal/agentproto` into
 `agent-bin/` by `make agent`) are baked into the image, and caboose's
@@ -41,7 +41,7 @@ the checkout — a stale `./caboose` would build the old image.
 
 A running container cannot rebuild the image it runs from, and the launcher
 cannot run in here -- so whenever you touch
-`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`,
+`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `xdg-open.sh`,
 `tmux.conf`, `shellrc.bash`, `packages.toml`, the agent's or the launcher's Go code, **say that a host
 terminal has to run `make build && make restart`** to try it (in the `dev`
 environment; the sandbox you are in moves only with a release), or `make
@@ -113,6 +113,7 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `layer.Dockerfile` | the layer built on every base: the agent user, its home, the entrypoint, `tmux.conf`, `HOME`/`PATH`/`LANG` |
 | `layer-user.sh` | the layer's user setup, POSIX sh editing /etc/passwd, group, shadow directly; tested by `layeruser_test.go` |
 | `entrypoint.sh` | container entrypoint; points root's home at `HOME`, and its shell at bash, when it runs as root (vm, some gVisor), bootstraps Claude Code, clears stale session state, prunes versions, runs the user's `start.d` in the background, idles under tini |
+| `xdg-open.sh` | the sandbox's `xdg-open`, at `/usr/local/bin/xdg-open` (with `BROWSER` set to it): runs `caboose-agent xdg-open`, which refuses anything but an http(s) URL and hands that to `open`. It wins over a base's `/usr/bin/xdg-open` on purpose, and exists only in the image: nothing of the host's or the agent's Go code runs or reads it |
 | `shellrc.bash` | the `shell.d` loader every interactive bash sources, through the line `layer-user.sh` adds to `~/.bashrc`; tested by `shellrc_test.go` |
 | `tmux.conf` | tmux configuration baked into the image, set up to own no keys |
 | `imagecheck.sh` | the image probe, POSIX sh, run by `caboose check-image` and before every layer build; reports facts only, embedded but in no image |

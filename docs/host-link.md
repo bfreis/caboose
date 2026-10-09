@@ -37,13 +37,24 @@ one that `forward_ports` (in `[link]`) allows is forwarded to the same port on t
 machine's `127.0.0.1`, while it keeps listening; a port already in use here
 is skipped. A server bound only to `127.0.0.1` in the sandbox, as many dev
 servers are by default, is forwarded too: the agent connects to it on the
-container's own loopback.
+container's own loopback. Nothing listens on this machine for a port
+nothing listens on in the sandbox, so a wide range costs nothing until a
+program binds one of its ports.
 
 ```toml
 [link]
-forward_ports = ["3000-3999", 5173, "8000-8999"]   # the default
-forward_ports = []                                 # forward nothing
+forward_ports = ["3000-3999", 5173, "8000-8999", "32768-60999"]   # the default
+forward_ports = []                                                # forward nothing
 ```
+
+The last range is Linux's ephemeral one, where a program listens when it
+asks for any free port, as a login does for its loopback callback
+(`redirect_uri=http://127.0.0.1:37959/callback`): the browser on this
+machine is sent there, and finds the sandbox. It also forwards whatever
+else listens there, test servers and debuggers included, while it does.
+Under gVisor the sandbox picks such ports from 16000-65535 instead, so a
+callback below 32768 or above 60999 is not forwarded unless you add those
+ports; under docker and vm it is Linux's range.
 
 `caboose-agent ports`, in the sandbox, lists what listens and what came of
 each: forwarded, not in `forward_ports`, or in use on the host.
@@ -55,6 +66,18 @@ browser. With `open_urls = "ask"`, the default, a dialog shows the URL and
 asks first; `"allow"` opens without asking, `"off"` refuses every URL. Any
 other scheme, a URL with a user or password in it, or one holding
 unprintable characters is refused whatever the setting.
+
+Programs open a browser the usual way, and it ends there. The layer puts
+an `xdg-open` in `/usr/local/bin` and sets `BROWSER` to it, so `gh`, Go's
+`pkg/browser`, Python's `webbrowser` and npm's `open` all reach
+`caboose-agent open`, and a login flow opens your browser. The sandbox has no
+display, so this one is meant to win over a base's own `xdg-open` in
+`/usr/bin`, which would start a text browser in the terminal; one in
+`/usr/local/bin` is replaced, like `caboose-agent`. A file path or a URL
+that is not `http` or `https` is refused with exit 1, as `caboose-agent open`
+refuses it; a host that refuses, or none linked, exits 4. A login that
+sends the browser back to a loopback port reaches the sandbox through the
+ephemeral range in `forward_ports` ([Ports](#ports)).
 
 `caboose-agent notify [-t TITLE] TEXT` shows a notification. The text is
 made printable and cut short first.
@@ -255,7 +278,8 @@ sandbox is:
   nothing else on your network reaches them; at most 64 ports at once;
 - a forwarded port can squat one of your own services' ports while that
   service is down: a program here connecting to it would talk to the
-  sandbox. Keep `forward_ports` to the ranges you use for development;
+  sandbox. Keep `forward_ports` to the ranges you use for development,
+  and the ephemeral range if you log in from the sandbox;
 - requests are rate-limited, a URL opens only as the setting says, and a
   dialog is one at a time;
 - the protocol is framed and bounded: a frame over 64KiB, a stream past

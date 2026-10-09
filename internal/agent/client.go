@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -58,9 +59,27 @@ func ask(socket string, m agentproto.Message) (agentproto.Message, error) {
 	return r, nil
 }
 
-// Open asks the host to open url in its browser.
-func Open(socket, url string) error {
-	_, err := ask(socket, agentproto.Message{Op: agentproto.OpOpen, URL: url})
+// checkBrowserURL refuses what the host's browser would not open: anything
+// but an http(s) URL with a host. The host decides again; this says why
+// before asking, and calls a path what it is, since that is what a program
+// handing a file to xdg-open means.
+func checkBrowserURL(arg string) error {
+	const only = "in the caboose sandbox only http(s) URLs open, in the host's browser; "
+	u, err := url.Parse(arg)
+	switch {
+	case err != nil || u.Scheme == "":
+		return fmt.Errorf(only+"%q is a file", printable(arg))
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf(only+"%q has the scheme %s", printable(arg), printable(u.Scheme))
+	case u.Hostname() == "":
+		return fmt.Errorf(only+"%q has no host", printable(arg))
+	}
+	return nil
+}
+
+// Open asks the host to open u in its browser.
+func Open(socket, u string) error {
+	_, err := ask(socket, agentproto.Message{Op: agentproto.OpOpen, URL: u})
 	return err
 }
 
@@ -310,6 +329,8 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		_, _ = io.WriteString(stderr, `usage: caboose-agent COMMAND
 
   open URL            open an http(s) URL in the host's browser
+  xdg-open URL        the same, with xdg-open's exit statuses (the sandbox's
+                      xdg-open, and $BROWSER, run it); refuses files
   notify [-t TITLE] TEXT
                       show a notification on the host
   ports               what listens in the sandbox, and what the host forwards
@@ -340,7 +361,11 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		if len(rest) != 1 {
 			return usage()
 		}
-		err = Open(SocketPath, rest[0])
+		if err = checkBrowserURL(rest[0]); err == nil {
+			err = Open(SocketPath, rest[0])
+		}
+	case "xdg-open":
+		return xdgOpen(SocketPath, rest, stdout, stderr)
 	case "notify":
 		title := "caboose"
 		if len(rest) >= 2 && rest[0] == "-t" {
@@ -412,6 +437,29 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 	if err != nil {
 		fmt.Fprintf(stderr, "caboose-agent: %v\n", err)
 		return 1
+	}
+	return 0
+}
+
+// xdgOpen is the sandbox's xdg-open (xdg-open.sh runs it), exiting as the
+// freedesktop tool does for the programs that call it: 1 for a usage error
+// or an argument it cannot open, 4 for an action that failed.
+func xdgOpen(socket string, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Fprintln(stdout, "usage: xdg-open URL\n\nOpens an http(s) URL in the host's browser, through the caboose link.")
+		return 0
+	}
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: xdg-open URL")
+		return 1
+	}
+	if err := checkBrowserURL(args[0]); err != nil {
+		fmt.Fprintf(stderr, "xdg-open: %v\n", err)
+		return 1
+	}
+	if err := Open(socket, args[0]); err != nil {
+		fmt.Fprintf(stderr, "xdg-open: %v\n", err)
+		return 4
 	}
 	return 0
 }

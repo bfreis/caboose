@@ -19,7 +19,7 @@ CC       := ./$(LAUNCHER)
 # here is what makes that automatic. Test files do not reach the binary.
 GO_SRC   := go.mod $(wildcard go.sum) \
             $(shell find . -name '*.go' -not -name '*_test.go' -not -path './.*')
-EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh tmux.conf shellrc.bash sandbox/CLAUDE.md $(shell find sandbox/skills -type f -not -path '*/.*' -not -path '*/_*') imagecheck.sh \
+EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh xdg-open.sh tmux.conf shellrc.bash sandbox/CLAUDE.md $(shell find sandbox/skills -type f -not -path '*/.*' -not -path '*/_*') imagecheck.sh \
             internal/apkobuild/pkgset/packages.toml
 GO_LDFLAGS ?=
 
@@ -373,12 +373,12 @@ lint:
 	@set -e; for f in entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh; do \
 	    bash -n "$$f" && echo "  ok  $$f"; \
 	  done; \
-	  for f in imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run; do \
+	  for f in imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run; do \
 	    sh -n "$$f" && echo "  ok  $$f"; \
 	  done; \
 	  command -v shellcheck >/dev/null 2>&1 || { \
 	    echo "  !!  shellcheck is not installed: https://github.com/koalaman/shellcheck#installing"; exit 1; }; \
-	  shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
+	  shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
 	    && echo "  ok  shellcheck"; \
 	  unformatted="$$(gofmt -l $$(go list -f '{{.Dir}}' ./...))"; \
 	  if [ -n "$$unformatted" ]; then \
