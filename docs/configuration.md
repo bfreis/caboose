@@ -362,6 +362,22 @@ enough for the VM's socket (macOS allows 103 bytes); `caboose doctor`
 says when it is not. Where caboose would say "container" -- `caboose
 status`, `version`, `doctor`, `stop`, `restart` -- it says "VM".
 
+### Large repos: the Mac's file limit and slow git
+
+These are measured on a Mac with 64 GB, under `vm`, with the roots shared over virtiofs.
+
+**The file limit.** The Mac's Virtualization process holds one open file, so one pinned vnode, for every file and directory the guest kernel has cached from the shares, and releases it only when the guest drops it from its cache. Dropping the guest's caches (`echo 2 > /proc/sys/vm/drop_caches`, in the sandbox) took the count from about 28,000 to 198; a `find` over 35,000 entries took it back to about 25,000. macOS's default `kern.maxvnodes` was 263,168. A VM whose sessions walked a repo of several hundred thousand files, worktrees included, held 130,000 to 200,000 files open, and with a second VM the Mac ran out: `Too many open files in system` for every process on it, so git and new processes fail.
+
+The fix is a larger limit. `sudo sysctl kern.maxvnodes=1048576` applies at once and resets at reboot. `caboose setup isolation` offers to make it stick when `vm` is chosen and the limit is lower: it shows a LaunchDaemon, `/Library/LaunchDaemons/dev.caboose.maxvnodes.plist`, that runs that command at boot, and the `sudo` commands that install and load it, and runs them only after you say yes (sudo asks for your password). `caboose doctor` reports a lower limit under `vm`. Under `vm`, the [host link](host-link.md) checks about once a minute how many files the VM's Virtualization process holds open; past half of `kern.maxvnodes` it shows a notification, once per crossing, and again past 80%, and logs it in `link.log`. Meanwhile, `sync; echo 2 > /proc/sys/vm/drop_caches` in the sandbox lets the Mac release files at once, at the price of the guest re-reading what it needs again. I have not checked whether Docker Desktop's or OrbStack's file sharing pins the Mac's vnodes the same way.
+
+**Worktrees.** A worktree placed inside the repo's directory adds its whole tree to what a walk of the repo caches. Keep worktrees outside it (and outside the roots, if the sandbox need not see them).
+
+**git on both sides.** The Mac and the VM see different inode, device, uid and gid numbers for the same file: only size and times match. With git's default `core.checkStat`, each side finds every index entry changed after the other wrote the index, re-reads and re-hashes every file (in the VM, over virtiofs, minutes on several hundred thousand files), and writes the index back with its own numbers. `git config core.checkStat minimal` in the repo (set it on the Mac; the repo's config applies on both sides) stops that: a VM run after a Mac write went from a full re-hash to 0.05 s, and the Mac kept its fsmonitor speed. The cost: git no longer compares inode, device or owner, so an edit that keeps a file's size and lands in the same second as the previous change can be missed until something else touches the file.
+
+**fsmonitor.** `core.fsmonitor` cannot work in the VM: git says `remote repository ... is incompatible with fsmonitor` and checks every file, about 0.3 ms each when cold over virtiofs. Whatever the Mac's fsmonitor saves, the VM does not get.
+
+**Claude Code's start.** It runs `git status` when a session starts and waits for it. On a large repo that can be minutes in the VM. `"includeGitInstructions": false` in the sandbox's `~/.claude/settings.json` (or `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`) skips it, at the price of the git instructions and git snapshot in Claude Code's system prompt. caboose does not set it.
+
 ## Roots
 
 The sandbox mounts the host directories you name in `[roots]`, each at

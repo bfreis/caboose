@@ -243,6 +243,7 @@ func (a *App) doctorIsolation(c *checkup) {
 	if a.isVM() {
 		a.doctorVM(c)
 		a.doctorEgress(c)
+		a.doctorMaxVnodes(c)
 		return
 	}
 	have, err := a.engineRuntimes()

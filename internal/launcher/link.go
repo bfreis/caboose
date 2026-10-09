@@ -275,7 +275,8 @@ func lockLink(dataDir string) (func(), error) {
 // stops the running one and starts another in the background, for
 // settings a launch would not notice changed. The running one rereads
 // config.toml itself when it changes, tells of new proposals
-// (watchProposals), and checks those for packages (checkProposals).
+// (watchProposals), checks those for packages (checkProposals), and,
+// under vm, warns when the VM holds many of the Mac's vnodes (watchVnodes).
 func (a *App) Link(args []string) error {
 	background, restart := false, false
 	for _, arg := range args {
@@ -332,6 +333,7 @@ func (a *App) Link(args []string) error {
 	go r.watchConfig(stop)
 	go r.watchProposals(stop)
 	go r.checkProposals(stop)
+	go r.watchVnodes(stop)
 	return r.run(background)
 }
 

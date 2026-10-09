@@ -308,3 +308,73 @@ func TestEntrypointRootHome(t *testing.T) {
 		})
 	}
 }
+
+// A stop runs `claude daemon stop --any` when a supervisor's lock is
+// there, carries on past its failure, and kills it when it hangs, so the
+// stop still ends within docker's and the vm guest's ten seconds.
+func TestEntrypointStopAgents(t *testing.T) {
+	needBash(t)
+	script := "set -euo pipefail\nlog() { printf 'caboose: %s\\n' \"$*\" >&2; }\n" +
+		"CLAUDE_BIN=\"$HOME/.local/bin/claude\"\nDAEMON_STOP_WAIT=1\n" +
+		entrypointFunc(t, "stop_claude_agents") + "stop_claude_agents\necho done\n"
+	const said = "caboose: stopping Claude Code's background agents\n"
+	const failed = "caboose: claude daemon stop did not finish cleanly; its agents may show as failed\n"
+	for _, tc := range []struct {
+		name, body string
+		lock, ran  bool
+		want       string
+		slowerThan time.Duration
+	}{
+		{"stopped", "exit 0", true, true, said, 0},
+		{"no supervisor", "exit 0", false, false, "", 0},
+		{"failed", "exit 3", true, true, said + failed, 0},
+		// exec, so the kill reaches the sleep: no child holds the output.
+		{"hangs", "exec sleep 30", true, true, said + failed, time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			bin := filepath.Join(home, ".local/bin")
+			if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			args := filepath.Join(home, "args")
+			stub := "#!/bin/sh\necho \"$*\" > '" + args + "'\n" + tc.body + "\n"
+			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(stub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.lock {
+				if err := os.WriteFile(filepath.Join(home, ".claude/daemon.lock"), []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr strings.Builder
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Env = append(os.Environ(), "HOME="+home)
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			start := time.Now()
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("stop_claude_agents: %v\n%s", err, stderr.String())
+			}
+			d := time.Since(start)
+			if stdout.String() != "done\n" {
+				t.Errorf("stdout %q: it did not carry on", stdout.String())
+			}
+			if stderr.String() != tc.want {
+				t.Errorf("said %q, want %q", stderr.String(), tc.want)
+			}
+			got, err := os.ReadFile(args)
+			if tc.ran && string(got) != "daemon stop --any\n" {
+				t.Errorf("claude ran with %q (%v)", got, err)
+			}
+			if !tc.ran && err == nil {
+				t.Errorf("claude ran with no supervisor's lock: %q", got)
+			}
+			if d < tc.slowerThan || d > 5*time.Second {
+				t.Errorf("took %v", d)
+			}
+		})
+	}
+}

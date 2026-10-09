@@ -164,6 +164,9 @@ func (a *App) setupIsolation(p *prompter) error {
 			}
 		}
 	}
+	if err := a.offerMaxVnodes(p, choice); err != nil {
+		return err
+	}
 	if rt := a.runtimeGone(); rt != "" {
 		if choice == isolationGVisor && !gv {
 			p.warn("The container was created under %s, which docker no longer has, so it cannot start; "+

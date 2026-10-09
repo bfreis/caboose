@@ -5,7 +5,8 @@
 #       PID 1 of the long-lived container. Bootstraps Claude Code into the
 #       bind-mounted ~/.local if it isn't there, clears runtime state left
 #       behind by a previous container, signals readiness, then idles so the
-#       container outlives any individual session.
+#       container outlives any individual session. On a stop, it stops
+#       Claude Code's background agents before it exits.
 #
 #   caboose-entrypoint --cc-start
 #       Runs ~/.config/caboose/start.d, as the supervisor does once it is
@@ -97,6 +98,31 @@ clear_stale_runtime_state() {
     if [ "$n" -gt 0 ]; then
         log "cleared $n stale session/daemon file(s) from a previous container"
     fi
+}
+
+# A stop that only signals Claude Code's background agents leaves their jobs
+# "failed" in `claude agents`: a TERMed worker records nothing, and the
+# supervisor exits without stopping its workers. `claude daemon stop` stops
+# them the way the agents view shows as "stopped", so the supervisor's TERM
+# runs it first, when a supervisor's lock says one may be running. Best
+# effort, and bounded: a stop gives the entrypoint ten seconds (docker
+# stop's default, and the vm guest's wait for it), so after
+# DAEMON_STOP_WAIT seconds it is killed, and a failure only means the
+# agents show "failed" as before. The watchdog's sleep gets none of the
+# entrypoint's streams, so once the watchdog is killed, nothing reading
+# them waits on a sleep left behind.
+DAEMON_STOP_WAIT=8
+stop_claude_agents() {
+    [ -e "$HOME/.claude/daemon.lock" ] && [ -x "$CLAUDE_BIN" ] || return 0
+    log "stopping Claude Code's background agents"
+    "$CLAUDE_BIN" daemon stop --any </dev/null >&2 &
+    local pid=$! watchdog
+    ( sleep "$DAEMON_STOP_WAIT" </dev/null >/dev/null 2>&1; kill "$pid" 2>/dev/null ) &
+    watchdog=$!
+    if ! wait "$pid"; then
+        log "claude daemon stop did not finish cleanly; its agents may show as failed"
+    fi
+    kill "$watchdog" 2>/dev/null || true
 }
 
 # Under vm, and under gVisor where the agent cannot write its mounts, the
@@ -312,8 +338,9 @@ case "${1:-}" in
         log "ready — $("$CLAUDE_BIN" --version 2>/dev/null || echo 'claude version unknown')"
         run_start_scripts &
         # No `exec`: a bare `sleep` as PID 1 ignores SIGTERM, making
-        # `docker stop` wait out its full timeout before SIGKILL. Trap it.
-        trap 'exit 0' TERM INT
+        # `docker stop` wait out its full timeout before SIGKILL. Trap it,
+        # stopping Claude Code's background agents on the way out.
+        trap 'stop_claude_agents; exit 0' TERM INT
         while :; do sleep 86400 & wait $! || true; done
         ;;
     *)

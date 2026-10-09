@@ -1,6 +1,6 @@
 ---
 name: caboose-troubleshoot
-description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, or work that stalled while the Mac slept. Explains causes per isolation and what the user runs on the host.
+description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac. Explains causes per isolation and what the user runs on the host.
 ---
 
 # When the sandbox misbehaves
@@ -135,6 +135,54 @@ There is no daemon in here. A docker CLI talks to nothing unless the profile
 sets `engine_socket = true`, which mounts the host engine's socket and makes
 the sandbox root-equivalent on the host: the user's decision, never a casual
 fix.
+@@END@@
+
+@@IF isolation=vm@@
+
+## Slow git, hung starts, "Too many open files in system" (vm)
+
+The Mac's Virtualization process holds one open file for every file and
+directory the VM has cached from the shares, until the VM drops it from its
+cache. A VM that walks a large repo (and its worktrees) can use up the Mac's
+`kern.maxvnodes`, after which every process on the Mac fails with `Too many
+open files in system`. Separately, git on the Mac and git in here see
+different inode, owner and device numbers for the same file, so each side
+re-hashes the whole repo after the other wrote the index.
+
+Diagnose, read-only:
+
+- `caboose-agent host /usr/sbin/sysctl kern.maxvnodes kern.num_vnodes` (needs
+  `host_exec`): the limit, and how many vnodes the Mac uses now. The limit
+  defaults to 263168 on a Mac with 64 GB; a count near it is the problem.
+- On the Mac, `lsof -p <pid> | wc -l` for the Virtualization process (the
+  `com.apple.Virtualization.VirtualMachine` one) is the files the VM holds.
+- `git status` slow in here but quick on the Mac, and quick again right after
+  one in here: the index ping-pong.
+
+Relief you can apply: `sync; echo 2 > /proc/sys/vm/drop_caches`, as root in
+here. The Mac releases the files at once; the cost is that the VM re-reads
+what it needs, so the next walk of the repo is slow again.
+
+What the user runs on the host:
+
+- `sudo sysctl kern.maxvnodes=1048576` raises the limit until the Mac
+  reboots; `caboose@@CABOOSE_ENV_FLAG@@ setup isolation` offers a LaunchDaemon that keeps it, after
+  showing it. `caboose@@CABOOSE_ENV_FLAG@@ doctor` reports a lower limit.
+- `git config core.checkStat minimal` in the repo, run on the Mac (the
+  setting applies on both sides), ends the ping-pong. It makes git stop
+  comparing inode, device and owner, so an edit that keeps the file's size
+  and lands in the same second as the last change can be missed until
+  something touches the file.
+- Worktrees inside the repo's directory multiply what the VM caches: keep
+  them outside it. `core.fsmonitor` cannot work in here (git calls the
+  repository incompatible and checks every file).
+- Claude Code waits for a `git status` at the start of a session. The user
+  can skip it with `"includeGitInstructions": false` in this sandbox's
+  `~/.claude/settings.json` (or `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`), at
+  the price of the git instructions and snapshot in the system prompt.
+
+The link also warns by notification when the VM holds over half of
+`kern.maxvnodes`, and again over 80%; `link.log` has it.
 @@END@@
 
 ## Stalls

@@ -52,7 +52,8 @@ already running ignores them, and says so.`},
 		Summary: "set up the environment (creating it, after asking)",
 		Help: `Asks for what the defaults do not know, on the terminal, each question
 showing what is there now as its default: the roots, what the sandbox
-is built on, what isolates it (and, on OrbStack, getting gVisor's runsc),
+is built on, what isolates it (and, on OrbStack, getting gVisor's runsc; under
+vm on a Mac, raising kern.maxvnodes),
 its git identity and commit signing, and whether and where to sync. Naming
 SECTIONs -- roots, image, isolation, git, sync -- asks only those. A
 whole run also brings the sandbox up and ends at the Claude login. Only
