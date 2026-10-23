@@ -1,7 +1,6 @@
 package conformance
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -189,23 +188,4 @@ func WriteResults(path, text string) error {
 		return err
 	}
 	return f.Close()
-}
-
-// ExitCode is the command's exit status: 2 when the envelope refused, 1
-// when any check was a FAIL or an ERROR or the run ended early, else 0
-// (PASS, GAP, SKIP and INFO only).
-func ExitCode(results []Result, runErr error) int {
-	var ref *RefusalError
-	if errors.As(runErr, &ref) {
-		return ExitRefused
-	}
-	if runErr != nil {
-		return 1
-	}
-	for _, r := range results {
-		if r.Status == Fail || r.Status == Error {
-			return 1
-		}
-	}
-	return 0
 }

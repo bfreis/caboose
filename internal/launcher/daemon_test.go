@@ -173,11 +173,16 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 			for _, m := range spec.Mounts {
 				sources = append(sources, filepath.Clean(m.Source))
 			}
-			shares, err := backend.SharePaths(spec.Mounts)
+			// A VM shares each mount's source, or a file's directory,
+			// and everything under it is the guest's to reach.
+			shares, err := backend.PlanShares(spec.Mounts)
 			if err != nil {
 				t.Errorf("the vm backend's shares: %v", err)
 			}
-			for _, src := range append(sources, shares...) {
+			for _, s := range shares {
+				sources = append(sources, s.Path)
+			}
+			for _, src := range sources {
 				for _, d := range daemon.Dirs(b.tmp) {
 					if config.Within(src, d) || config.Within(d, src) {
 						t.Errorf("%s is mounted or shared, and reaches the daemon directory %s", src, d)

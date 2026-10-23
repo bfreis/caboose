@@ -45,9 +45,6 @@ type CLI struct {
 	Host string
 }
 
-// New returns a CLI for the docker on $PATH.
-func New() *CLI { return &CLI{Path: "docker"} }
-
 // cmd is docker with args, the pinned endpoint first when there is one.
 func (c *CLI) cmd(args ...string) *exec.Cmd {
 	if c.Host != "" {

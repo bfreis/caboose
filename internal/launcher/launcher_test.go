@@ -441,7 +441,7 @@ func TestCreateContainerMounts(t *testing.T) {
 			}
 			// The same mounts as a VM shares them: the read-only root holds
 			// writable parts, which is allowed, and they come after it.
-			if _, err := backend.SharePaths(spec.Mounts); err != nil {
+			if _, err := backend.PlanShares(spec.Mounts); err != nil {
 				t.Errorf("a VM could not share these mounts: %v", err)
 			}
 			// And read back as the sandbox has them.

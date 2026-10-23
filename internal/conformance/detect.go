@@ -108,9 +108,6 @@ func detectSandbox(ds []Detector) error {
 	return nil
 }
 
-// LinuxNote is what the results file says of a Linux host.
-const LinuxNote = "Linux hosts are untested"
-
 // checkPlatform refuses every platform but darwin and linux.
 func checkPlatform(goos string) error {
 	switch goos {

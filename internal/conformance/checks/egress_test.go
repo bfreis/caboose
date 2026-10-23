@@ -307,8 +307,8 @@ func TestEgressNoVacuousPass(t *testing.T) {
 			// A host without the egress calls, or without any.
 			e := newEgress(t, w.hostWorld)
 			for name, env := range map[string]c.Env{
-				"no egress calls": c.NewEnv(e, e.Link, e, e, w.iso, w.trust),
-				"no host calls":   c.NewEnv(e, e.Fake, e, e, w.iso, w.trust),
+				"no egress calls": c.NewEnv(e, e.Link, e, w.iso, w.trust),
+				"no host calls":   c.NewEnv(e, e.Fake, e, w.iso, w.trust),
 			} {
 				if got := hostRunIn(t, e.Link, env, []c.Check{ck})[ck.ID]; got.Status != c.Error {
 					t.Errorf("%v %s with %s: %s (%s), want ERROR", w.hostWorld, ck.ID, name, got.Status, got.Reason)
@@ -381,7 +381,7 @@ func TestEgressTargetsAreTheSuites(t *testing.T) {
 				e := newEgress(t, w.hostWorld)
 				e.Break(m)
 				r := &egressRecording{Egress: e}
-				hostRunIn(t, e.Link, c.NewEnv(r, r, r, r, w.iso, w.trust), []c.Check{ck})
+				hostRunIn(t, e.Link, c.NewEnv(r, r, r, w.iso, w.trust), []c.Check{ck})
 				allowed := map[string]bool{}
 				var ports []int
 				for _, l := range e.Listeners() {
@@ -456,7 +456,7 @@ func TestEgressRefusesAForeignListener(t *testing.T) {
 			}
 			e := newEgress(t, w.hostWorld)
 			f := foreignEgress{e}
-			got := hostRunIn(t, e.Link, c.NewEnv(e, f, e, e, w.iso, w.trust), []c.Check{ck})[ck.ID]
+			got := hostRunIn(t, e.Link, c.NewEnv(e, f, e, w.iso, w.trust), []c.Check{ck})[ck.ID]
 			if got.Status != c.Error {
 				t.Errorf("%v %s with a foreign listener: %s (%s), want ERROR", w.hostWorld, ck.ID, got.Status, got.Reason)
 			}

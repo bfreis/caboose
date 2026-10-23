@@ -372,7 +372,7 @@ func confExecute(ctx context.Context, g *conformance.Guard, drv confDriver, envi
 	}
 	noSandbox := o.trust == config.TrustHostile && o.isolation != config.KindVM
 	if noSandbox {
-		env := conformance.NewEnv(confNoSandbox{}, drv.Host(), confClock{}, nil, o.isolation, o.trust)
+		env := conformance.NewEnv(confNoSandbox{}, drv.Host(), confClock{}, o.isolation, o.trust)
 		r := &conformance.Runner{Env: confBaseEnvelope{g}, Wipe: false}
 		return conformance.RunChecks(ctx, r, run, env)
 	}
@@ -385,7 +385,7 @@ func confExecute(ctx context.Context, g *conformance.Guard, drv confDriver, envi
 	if _, err := g.Pin(ctx); err != nil {
 		return nil, nil, err
 	}
-	env := conformance.NewEnv(drv.Sandbox(), drv.Host(), confClock{}, nil, o.isolation, o.trust)
+	env := conformance.NewEnv(drv.Sandbox(), drv.Host(), confClock{}, o.isolation, o.trust)
 	r := &conformance.Runner{Env: g, Wipe: !o.skipWipe, Restart: drv.Restart}
 	return conformance.RunChecks(ctx, r, run, env)
 }

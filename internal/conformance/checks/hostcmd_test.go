@@ -320,7 +320,7 @@ func TestHostNoVacuousPass(t *testing.T) {
 		// A host without the calls: every check is an ERROR.
 		for _, ck := range ForRun(w.iso, w.trust) {
 			l := newLink(t, w)
-			env := c.NewEnv(l, l.Fake, l, l, w.iso, w.trust)
+			env := c.NewEnv(l, l.Fake, l, w.iso, w.trust)
 			if got := hostRunIn(t, l, env, []c.Check{ck})[ck.ID]; got.Status != c.Error {
 				t.Errorf("%v %s with no host calls: %s (%s), want ERROR", w, ck.ID, got.Status, got.Reason)
 			}
@@ -367,7 +367,7 @@ func TestH6NeedsTheStubToHear(t *testing.T) {
 	w := hostWorld{"vm", c.TrustFallible}
 	l := newLink(t, w)
 	d := deafStubs{l}
-	env := c.NewEnv(d, d, d, d, w.iso, w.trust)
+	env := c.NewEnv(d, d, d, w.iso, w.trust)
 	if got := hostRunIn(t, l, env, []c.Check{h6()})["H6"]; got.Status != c.Error || !strings.Contains(got.Reason, "stub") {
 		t.Errorf("H6 with a deaf stub: %s %s, want an ERROR naming the stub", got.Status, got.Reason)
 	}
@@ -398,7 +398,7 @@ func TestT2RestoresTheConfig(t *testing.T) {
 	}
 	l = newLink(t, w)
 	s := &stuckTrust{Link: l}
-	env := c.NewEnv(s, s, s, s, w.iso, w.trust)
+	env := c.NewEnv(s, s, s, w.iso, w.trust)
 	if got := hostRunIn(t, l, env, []c.Check{t2()})["T2"]; got.Status != c.Error || !strings.Contains(got.Reason, "config.toml") {
 		t.Errorf("T2 that cannot restore: %s %s, want an ERROR naming config.toml", got.Status, got.Reason)
 	}
@@ -437,7 +437,7 @@ func TestHostCommandsAreLiteral(t *testing.T) {
 			l := newLink(t, w)
 			l.Break(m)
 			r := &recording{Link: l}
-			env := c.NewEnv(r, r, r, r, w.iso, w.trust)
+			env := c.NewEnv(r, r, r, w.iso, w.trust)
 			hostRunIn(t, l, env, ForRun(w.iso, w.trust))
 			for _, argv := range r.sent {
 				body, ok := c.Unwrap(argv)

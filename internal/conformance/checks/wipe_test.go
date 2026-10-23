@@ -87,7 +87,7 @@ func TestR14FailsItsMutants(t *testing.T) {
 
 func TestR14SkippedWithoutTheWipe(t *testing.T) {
 	f := world(t, isoVM)
-	env := c.NewEnv(f, f, f, f, isoVM, "fallible")
+	env := c.NewEnv(f, f, f, isoVM, "fallible")
 	r := &c.Runner{Env: &fake.Envelope{F: f}, Wipe: false, Restart: f.Restart}
 	res, _, err := c.RunChecks(context.Background(), r, []c.Check{anchor("files"), byID(t, "R14")}, env)
 	if err != nil {
@@ -203,7 +203,7 @@ func TestR14ChangeDuringRestartFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := c.NewEnv(f, f, f, f, isoContainer, "fallible")
+	env := c.NewEnv(f, f, f, isoContainer, "fallible")
 	restart := func(ctx context.Context) error {
 		if err := f.Restart(ctx); err != nil {
 			return err
@@ -226,7 +226,7 @@ func TestR14ChangeDuringRestartFails(t *testing.T) {
 // during R14's restart.
 func runFaulted(t *testing.T, f *fake.Fake, fault func(), before ...c.Check) []c.Result {
 	t.Helper()
-	env := c.NewEnv(f, f, f, f, isoContainer, "fallible")
+	env := c.NewEnv(f, f, f, isoContainer, "fallible")
 	restart := func(ctx context.Context) error {
 		if err := f.Restart(ctx); err != nil {
 			return err

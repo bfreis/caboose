@@ -326,7 +326,7 @@ func (h runHost) Canaries() []Canary { return h.cans }
 
 func (g *gatedRecorder) sealedEnv(class Class, wipe bool) Env {
 	h := runHost{nonce: "0011aabb" + strings.Repeat("0", 24), cans: []Canary{{Role: "managed", Rel: "data/claude-code/conf-0011aabb-managed"}}}
-	e := NewEnv(g, h, nil, nil, config.KindContainer, config.TrustFallible)
+	e := NewEnv(g, h, nil, config.KindContainer, config.TrustFallible)
 	e.seal = &seal{id: "X", class: class, wipe: wipe}
 	return e
 }

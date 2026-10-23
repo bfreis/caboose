@@ -224,6 +224,11 @@ func TestSandboxFilesRefusesWhatItCannotTrust(t *testing.T) {
 		"symlinked skills dir": func(co string) {
 			os.Symlink(outside, filepath.Join(co, assets.SandboxSkillsPath))
 		},
+		"symlinked CLAUDE.md": func(co string) {
+			p := filepath.Join(co, assets.SandboxInstructionsPath)
+			os.Remove(p)
+			os.Symlink(secret, p)
+		},
 		"too many files": func(co string) {
 			for i := 0; i <= maxSkillFiles; i++ {
 				writeFile(t, filepath.Join(co, assets.SandboxSkillsPath, "one", strings.Repeat("a", i+1)), "x")
@@ -240,16 +245,6 @@ func TestSandboxFilesRefusesWhatItCannotTrust(t *testing.T) {
 				t.Errorf("used it: %d files", len(got))
 			}
 		})
-	}
-
-	// A symlinked CLAUDE.md is not followed either: the embedded copy.
-	co := makeCheckout(t, ModulePath)
-	p := filepath.Join(co, assets.SandboxInstructionsPath)
-	os.Remove(p)
-	os.Symlink(secret, p)
-	emb, _ := assets.SandboxInstructions()
-	if b, _ := SandboxInstructions(co); !bytes.Equal(b, emb) {
-		t.Errorf("followed a link: %q", b)
 	}
 }
 

@@ -175,7 +175,7 @@ func TestBuild(t *testing.T) {
 	if r.BaseID != "sha256:caboose-base" || r.ImageID != "sha256:caboose" || r.Base != "caboose-base" {
 		t.Errorf("result %+v", r)
 	}
-	wantCfg := Config{User: "agent", Env: []string{"PATH=/bin"}, Entrypoint: []string{"/usr/local/bin/caboose-entrypoint"}, WorkingDir: "/work"}
+	wantCfg := Config{Env: []string{"PATH=/bin"}, Entrypoint: []string{"/usr/local/bin/caboose-entrypoint"}}
 	if !reflect.DeepEqual(r.Config, wantCfg) {
 		t.Errorf("config %+v", r.Config)
 	}

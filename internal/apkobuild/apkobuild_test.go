@@ -4,10 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	pkglock "chainguard.dev/apko/pkg/lock"
+
+	"github.com/bfreis/caboose/internal/apkobuild/pkgset"
 )
 
 func TestGroups(t *testing.T) {
@@ -33,7 +34,7 @@ func TestGroups(t *testing.T) {
 			}
 		}
 		for _, p := range g.Packages {
-			if err := CheckName(p); err != nil {
+			if err := pkgset.CheckName(p); err != nil {
 				t.Errorf("group %q: %v", g.Name, err)
 			}
 			if prev, ok := pkgs[p]; ok {
@@ -66,22 +67,6 @@ func TestGroupsAreCopies(t *testing.T) {
 	Groups()[0].Packages[0] = "changed"
 	if Required()[0] == "changed" {
 		t.Error("Groups exposes its own storage")
-	}
-}
-
-func TestCheckName(t *testing.T) {
-	for _, ok := range []string{"a", "bash", "python-3.13", "libstdc++", "a_b", "9p", strings.Repeat("a", 128)} {
-		if err := CheckName(ok); err != nil {
-			t.Errorf("CheckName(%q) = %v", ok, err)
-		}
-	}
-	for _, bad := range []string{"", "-a", ".a", "_a", "+a", "A", "a b", "a/b", "a=1", "a\x00", "é", strings.Repeat("a", 129)} {
-		if err := CheckName(bad); err == nil {
-			t.Errorf("CheckName(%q) passed", bad)
-		}
-	}
-	if err := CheckName("Bad"); err == nil || !strings.Contains(err.Error(), `"Bad"`) {
-		t.Errorf("error does not quote the name: %v", err)
 	}
 }
 

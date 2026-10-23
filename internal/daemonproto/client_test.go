@@ -74,7 +74,7 @@ func newFake(t *testing.T, handle func(*Conn)) *fakeServer {
 // reply until the client goes.
 func serve(reply func(c *Conn, req *Frame) bool) func(*Conn) {
 	return func(c *Conn) {
-		if _, _, err := ServerHandshake(c, "v9", time.Second); err != nil {
+		if _, _, err := ServerHandshake(c, "v9", ProtocolVersion, time.Second); err != nil {
 			return
 		}
 		for {
@@ -168,14 +168,15 @@ func TestClientCalls(t *testing.T) {
 	}
 }
 
-func TestClientSkipsEvents(t *testing.T) {
+// A frame of a type the protocol does not have ends the call.
+func TestClientRefusesUnknownFrame(t *testing.T) {
 	s := newFake(t, serve(func(c *Conn, req *Frame) bool {
-		_ = c.Write(&Frame{Type: TypeEvent, Event: "tick"}, time.Second)
+		_, _ = c.Raw().Write([]byte(`{"type":"event","event":"tick"}` + "\n"))
 		f, _ := Result(req.ID, nil)
 		return c.Write(f, time.Second) == nil
 	}))
-	if err := dial(t, s).Ping(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := dial(t, s).Ping(context.Background()); Kind(err) != KindBadFrame {
+		t.Errorf("got %v", err)
 	}
 }
 
@@ -267,7 +268,7 @@ func TestPeerSendsGarbage(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newFake(t, func(c *Conn) {
-				if _, _, err := ServerHandshake(c, "v9", time.Second); err != nil {
+				if _, _, err := ServerHandshake(c, "v9", ProtocolVersion, time.Second); err != nil {
 					return
 				}
 				if _, err := c.Read(time.Second); err != nil {
@@ -318,7 +319,7 @@ func rawHandshakeAs(t *testing.T, kind string, serverProto, protocol int) (compa
 	var cmp Compat
 	go func() {
 		defer srv.Close()
-		_, c, err := serverHandshake(NewConn(srv), "v9", serverProto, time.Second)
+		_, c, err := ServerHandshake(NewConn(srv), "v9", serverProto, time.Second)
 		cmp = c
 		res <- err
 	}()
@@ -362,7 +363,7 @@ func TestVersionSkew(t *testing.T) {
 func TestDialAgainstOtherProtocols(t *testing.T) {
 	handler := func(proto int) func(*Conn) {
 		return func(c *Conn) {
-			if _, _, err := serverHandshake(c, "vX", proto, time.Second); err != nil {
+			if _, _, err := ServerHandshake(c, "vX", proto, time.Second); err != nil {
 				return
 			}
 			for {
@@ -410,7 +411,7 @@ func TestServerRefusesBadFirstFrame(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				defer srv.Close()
-				_, _, err := ServerHandshake(NewConn(srv), "v9", time.Second)
+				_, _, err := ServerHandshake(NewConn(srv), "v9", ProtocolVersion, time.Second)
 				done <- err
 			}()
 			go func() { _, _ = cli.Write([]byte(first)) }()
@@ -430,26 +431,9 @@ func TestServerHandshakeTimeout(t *testing.T) {
 	defer cli.Close()
 	defer srv.Close()
 	start := time.Now()
-	_, _, err := ServerHandshake(NewConn(srv), "v9", 100*time.Millisecond)
+	_, _, err := ServerHandshake(NewConn(srv), "v9", ProtocolVersion, 100*time.Millisecond)
 	if err == nil || time.Since(start) > 2*time.Second {
 		t.Errorf("%v after %v", err, time.Since(start))
-	}
-}
-
-func TestEventFloodCannotStretchACall(t *testing.T) {
-	s := newFake(t, serve(func(c *Conn, req *Frame) bool {
-		for c.Write(&Frame{Type: TypeEvent, Event: "tick"}, time.Second) == nil {
-		}
-		return false
-	}))
-	c := dial(t, s)
-	start := time.Now()
-	err := c.Ping(context.Background())
-	if k := Kind(err); k != KindBadFrame && k != KindTimeout {
-		t.Errorf("got %v", err)
-	}
-	if time.Since(start) > 3*time.Second {
-		t.Errorf("took %v", time.Since(start))
 	}
 }
 

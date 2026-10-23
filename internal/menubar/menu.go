@@ -426,39 +426,3 @@ func group(n int) string {
 	}
 	return b.String()
 }
-
-// Dump is the menu as text, one item a line, indented by depth: what the
-// tests compare against golden files.
-func Dump(m Menu) string {
-	var b strings.Builder
-	var walk func(items []Item, depth int)
-	walk = func(items []Item, depth int) {
-		for _, it := range items {
-			b.WriteString(strings.Repeat("  ", depth))
-			if it.Separator {
-				b.WriteString("----\n")
-				continue
-			}
-			b.WriteString(it.Title)
-			var flags []string
-			if it.Info {
-				flags = append(flags, "info")
-			} else if !it.Enabled {
-				flags = append(flags, "disabled")
-			}
-			if it.Checked {
-				flags = append(flags, "checked")
-			}
-			if it.ID != "" {
-				flags = append(flags, "id="+it.ID)
-			}
-			if len(flags) > 0 {
-				b.WriteString("  [" + strings.Join(flags, " ") + "]")
-			}
-			b.WriteString("\n")
-			walk(it.Children, depth+1)
-		}
-	}
-	walk(m.Items, 0)
-	return b.String()
-}

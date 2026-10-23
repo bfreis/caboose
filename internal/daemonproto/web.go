@@ -100,12 +100,6 @@ func WebProof(token, origin, nonce string) string {
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
-// WebProofEqual reports whether mac is WebProof(token, origin, nonce), in
-// constant time.
-func WebProofEqual(mac, token, origin, nonce string) bool {
-	return hmac.Equal([]byte(mac), []byte(WebProof(token, origin, nonce)))
-}
-
 // WebParams are web's params.
 type WebParams struct {
 	// Rotate replaces the token with a new one, which takes effect at

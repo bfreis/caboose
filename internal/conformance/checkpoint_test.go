@@ -132,7 +132,7 @@ func TestFindNames(t *testing.T) {
 
 func TestCheckpointOpsNeedTheEnvelope(t *testing.T) {
 	r := newRig(t, "container")
-	env := NewEnv(nil, &GuardHost{G: r.g}, nil, nil, "container", "fallible")
+	env := NewEnv(nil, &GuardHost{G: r.g}, nil, "container", "fallible")
 	if _, err := env.CheckpointOps(); !errors.Is(err, ErrNoEnvelope) {
 		t.Errorf("outside the envelope: %v", err)
 	}

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
 func (m *machine) pending() *Pending {
@@ -41,7 +43,7 @@ func TestPendingAgainstTheLastSync(t *testing.T) {
 		t.Fatalf("before the first sync: changed %v, deleted %v", p.Changed, p.Deleted)
 	}
 	a.sync()
-	if p := a.pending(); p.Any() {
+	if p := a.pending(); p.any() {
 		t.Fatalf("right after a sync: changed %v, deleted %v", p.Changed, p.Deleted)
 	}
 
@@ -60,11 +62,11 @@ func TestPendingAgainstTheLastSync(t *testing.T) {
 	}
 	p := a.pending()
 	wantChanged := []string{
-		"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/MEMORY.md",
-		"home/.claude/projects/" + ProjectKey("/work/q") + "/memory/new.md",
+		"home/.claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/MEMORY.md",
+		"home/.claude/projects/" + sandboxcfg.ProjectKey("/work/q") + "/memory/new.md",
 		"home/.claude/skills/s/run.sh",
 	}
-	wantDeleted := []string{"home/.claude/projects/" + ProjectKey("/work/p") + "/memory/gone.md"}
+	wantDeleted := []string{"home/.claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/gone.md"}
 	if !reflect.DeepEqual(p.Changed, wantChanged) || !reflect.DeepEqual(p.Deleted, wantDeleted) {
 		t.Fatalf("changed %v, deleted %v; want %v, %v", p.Changed, p.Deleted, wantChanged, wantDeleted)
 	}
@@ -111,7 +113,7 @@ func TestPendingKeepsWhatItCannotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := a.pending()
-	if p.Any() || len(p.Export.Refused) != 1 {
+	if p.any() || len(p.Export.Refused) != 1 {
 		t.Fatalf("changed %v, deleted %v, refused %v", p.Changed, p.Deleted, p.Export.Refused)
 	}
 }
@@ -286,3 +288,6 @@ func TestIncomingOnAMachineThatJustJoined(t *testing.T) {
 		t.Fatalf("taken %v, want %v", taken, want)
 	}
 }
+
+// any reports whether anything is waiting to be sent.
+func (p *Pending) any() bool { return len(p.Changed)+len(p.Deleted) > 0 }

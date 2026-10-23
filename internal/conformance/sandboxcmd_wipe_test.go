@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func TestWipeOnlyThroughWipe(t *testing.T) {
 	if len(g.plain)+len(g.gated) != 0 {
 		t.Errorf("ran %q / %q", g.plain, g.gated)
 	}
-	if _, err := NewEnv(g, runHost{nonce: "0011aabb"}, nil, nil, config.KindContainer, config.TrustFallible).Wipe(ctx); err == nil {
+	if _, err := NewEnv(g, runHost{nonce: "0011aabb"}, nil, config.KindContainer, config.TrustFallible).Wipe(ctx); err == nil {
 		t.Error("Wipe ran outside the runner")
 	}
 	d := g.sealedEnv(Destructive, true)
@@ -103,4 +104,12 @@ func TestWipeOnlyThroughWipe(t *testing.T) {
 	if len(g.gated) != 1 || len(g.plain) != 0 || !strings.Contains(g.gated[0], "rm -rf /work/conf-0011aabb-ro /work/conf-0011aabb-dev") {
 		t.Errorf("the wipe went %q / %q", g.plain, g.gated)
 	}
+}
+
+// ShellOf runs another command through sh -c, to exercise the nested form.
+func ShellOf(c Cmd) (Cmd, error) {
+	if !c.valid() || c.wipe || strings.Contains(c.body, "'") {
+		return Cmd{}, errors.New("conformance: nothing to nest")
+	}
+	return Cmd{body: "sh -c '" + c.body + "'", destructive: c.destructive}, nil
 }

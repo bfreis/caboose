@@ -63,8 +63,6 @@ type Client struct {
 	daemon Frame
 }
 
-const maxSkippedEvents = 16
-
 func deadlineOf(ctx context.Context) time.Time {
 	d, _ := ctx.Deadline()
 	return d
@@ -173,42 +171,33 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 	if err := c.conn.WriteBy(req, by); err != nil {
 		return c.fail(ctx, err, "sending "+method)
 	}
-	for skipped := 0; ; {
-		f, err := c.conn.ReadBy(by)
-		if err != nil {
-			return c.fail(ctx, err, "waiting for the answer to "+method)
+	f, err := c.conn.ReadBy(by)
+	if err != nil {
+		return c.fail(ctx, err, "waiting for the answer to "+method)
+	}
+	if err := ctx.Err(); err != nil {
+		return c.fail(ctx, err, "waiting for the answer to "+method)
+	}
+	switch {
+	case f.Type != TypeResponse || (f.ID != req.ID && f.ID != 0):
+		return c.poison(NewError(KindBadFrame, "unexpected %s (id %d) while waiting for the answer to %s", f.Type, f.ID, method))
+	case f.Error != nil:
+		if f.ID == 0 {
+			c.poison(nil)
 		}
-		if err := ctx.Err(); err != nil {
-			return c.fail(ctx, err, "waiting for the answer to "+method)
+		return f.Error
+	}
+	if result != nil {
+		if err := unmarshal(f.Result, result); err != nil {
+			return c.poison(NewError(KindBadFrame, "the result of %s: %v", method, err))
 		}
-		switch {
-		case f.Type == TypeEvent:
-			// Protocol 1 has no subscription, so events are not expected;
-			// a few are tolerated, a stream of them is a misbehaving peer.
-			if skipped++; skipped > maxSkippedEvents {
-				return c.poison(NewError(KindBadFrame, "too many events while waiting for the answer to %s", method))
-			}
-			continue
-		case f.Type != TypeResponse || (f.ID != req.ID && f.ID != 0):
-			return c.poison(NewError(KindBadFrame, "unexpected %s (id %d) while waiting for the answer to %s", f.Type, f.ID, method))
-		case f.Error != nil:
-			if f.ID == 0 {
-				c.poison(nil)
-			}
-			return f.Error
-		}
-		if result != nil {
-			if err := unmarshal(f.Result, result); err != nil {
+		if v, ok := result.(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
 				return c.poison(NewError(KindBadFrame, "the result of %s: %v", method, err))
 			}
-			if v, ok := result.(interface{ Validate() error }); ok {
-				if err := v.Validate(); err != nil {
-					return c.poison(NewError(KindBadFrame, "the result of %s: %v", method, err))
-				}
-			}
 		}
-		return nil
 	}
+	return nil
 }
 
 func (c *Client) poison(e *Error) error {

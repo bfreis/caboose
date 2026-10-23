@@ -492,7 +492,7 @@ func TestDoctorSync(t *testing.T) {
 	if code, _, errOut := runIt("sync", "--remote", remote); code != 0 {
 		t.Fatalf("sync: exit %d: %s", code, errOut)
 	}
-	mem := filepath.Join(data, "home", ".claude", "projects", statesync.ProjectKey("/work/dev/proj"), "memory", "MEMORY.md")
+	mem := filepath.Join(data, "home", ".claude", "projects", sandboxcfg.ProjectKey("/work/dev/proj"), "memory", "MEMORY.md")
 	if err := os.MkdirAll(filepath.Dir(mem), 0o755); err != nil {
 		t.Fatal(err)
 	}

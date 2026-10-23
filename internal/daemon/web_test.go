@@ -141,11 +141,11 @@ func TestWebTokenMade(t *testing.T) {
 	if r, err := c.Web(t.Context(), daemonproto.WebParams{}); err != nil || r.CodeURL != "" || !r.Listening {
 		t.Errorf("web with no code: %+v %v", r, err)
 	}
-	if !s.web.check(tok) {
+	if !daemonproto.TokenEqual(tok, s.web.current()) {
 		t.Error("the token refused")
 	}
 	for _, bad := range []string{"", tok[:42], tok + "x", "x" + tok[1:], strings.ToUpper(tok)} {
-		if bad != tok && s.web.check(bad) {
+		if bad != tok && daemonproto.TokenEqual(bad, s.web.current()) {
 			t.Errorf("%q taken", bad)
 		}
 	}
@@ -186,21 +186,16 @@ func TestWebTokenRotation(t *testing.T) {
 	s, stop := webDaemon(t, h, lg)
 	c := dialAs(t, h.dir, daemonproto.ClientCLI, 0)
 	old := tokenOf(t, s, webOf(t, c, false))
-	nonce := strings.Repeat("A", 43)
-	oldProof, _ := s.web.proof("http://127.0.0.1:0", nonce)
 	r := webOf(t, c, true)
 	tok := tokenOf(t, s, r)
 	if tok == "" || tok == old {
 		t.Fatalf("rotated to %q from %q", tok, old)
 	}
-	if s.web.check(old) {
+	if daemonproto.TokenEqual(old, s.web.current()) {
 		t.Error("the old token still taken")
 	}
-	if !s.web.check(tok) {
+	if !daemonproto.TokenEqual(tok, s.web.current()) {
 		t.Error("the new token refused")
-	}
-	if p, ok := s.web.proof("http://127.0.0.1:0", nonce); !ok || p == oldProof || p != daemonproto.WebProof(tok, "http://127.0.0.1:0", nonce) {
-		t.Error("the proof did not move to the new token")
 	}
 	if readTokenFile(t, h) != tok {
 		t.Error("the file does not hold the new token")
@@ -297,7 +292,7 @@ func TestWebTokenUntrustedFileReplaced(t *testing.T) {
 			if readTokenFile(t, h) != tok {
 				t.Error("the file does not hold the new token")
 			}
-			if s.web.check(planted) {
+			if daemonproto.TokenEqual(planted, s.web.current()) {
 				t.Error("the planted token taken")
 			}
 			out := lg.String()
@@ -340,12 +335,9 @@ func TestWebTokenUnavailable(t *testing.T) {
 		t.Fatal("a token")
 	}
 	for _, got := range []string{"", strings.Repeat("A", 43)} {
-		if s.web.check(got) {
+		if daemonproto.TokenEqual(got, s.web.current()) {
 			t.Errorf("%q taken with no token", got)
 		}
-	}
-	if _, ok := s.web.proof("http://127.0.0.1:0", strings.Repeat("A", 43)); ok {
-		t.Error("a proof with no token")
 	}
 	c := dialAs(t, h.dir, daemonproto.ClientCLI, 0)
 	r := webOf(t, c, false)
@@ -380,7 +372,7 @@ func TestWebRotationAfterNoTokenServes(t *testing.T) {
 	if r.CodeURL == "" || tokenOf(t, s, r) != tok || strings.Contains(r.Error, "token") {
 		t.Errorf("rotate: %+v", r)
 	}
-	if !s.web.check(tok) {
+	if !daemonproto.TokenEqual(tok, s.web.current()) {
 		t.Error("the new token is not taken")
 	}
 	waitFor(t, 5*time.Second, "the page is served", func() bool { return s.web.state().Listening })
@@ -421,7 +413,7 @@ func TestWebRotationFailureKeepsTheToken(t *testing.T) {
 	if err := os.Chmod(h.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if s.web.current() != old || !s.web.check(old) || readTokenFile(t, h) != old {
+	if s.web.current() != old || !daemonproto.TokenEqual(old, s.web.current()) || readTokenFile(t, h) != old {
 		t.Error("the old token did not stay")
 	}
 	if strings.Contains(lg.String(), old) || strings.Contains(err.Error(), old) {
@@ -626,30 +618,6 @@ func TestWebAddrLoopbackOnly(t *testing.T) {
 	r := webOf(t, c, false)
 	if r.URL != "" || r.CodeURL != "" || !strings.Contains(r.Error, "loopback") {
 		t.Errorf("web: %+v", r)
-	}
-}
-
-// The proof is the token's MAC of the origin and the nonce, and refuses a
-// nonce of the wrong form.
-func TestWebProof(t *testing.T) {
-	h := newHarness(t)
-	s, _ := webDaemon(t, h, &syncLog{})
-	tok := s.web.current()
-	n1, n2 := strings.Repeat("a", 43), strings.Repeat("b", 43)
-	p1, ok := s.web.proof("http://127.0.0.1:7171", n1)
-	if !ok || p1 != daemonproto.WebProof(tok, "http://127.0.0.1:7171", n1) {
-		t.Fatal("proof")
-	}
-	if p2, _ := s.web.proof("http://127.0.0.1:7171", n2); p2 == p1 {
-		t.Error("the proof does not bind the nonce")
-	}
-	if p3, _ := s.web.proof("http://127.0.0.1:7172", n1); p3 == p1 {
-		t.Error("the proof does not bind the origin")
-	}
-	for _, n := range []string{"", n1[:42], n1 + "a", n1[:42] + "=", n1[:42] + "/"} {
-		if _, ok := s.web.proof("http://127.0.0.1:7171", n); ok {
-			t.Errorf("nonce %q taken", n)
-		}
 	}
 }
 

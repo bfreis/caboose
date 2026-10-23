@@ -317,9 +317,6 @@ func TestStrayWriteEndsTheRun(t *testing.T) {
 	if st, _ := statusOf(res, "F2"); st != c.Skip {
 		t.Errorf("the next check: %s, want SKIP", st)
 	}
-	if c.ExitCode(res, err) != 1 {
-		t.Error("exit status")
-	}
 }
 
 func asTouched(err error, out **c.TouchedError) bool {

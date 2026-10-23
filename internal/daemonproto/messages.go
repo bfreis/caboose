@@ -18,11 +18,6 @@ const (
 	MethodStopLink    = "stop_link"
 	MethodStop        = "stop"
 	MethodReplace     = "replace"
-
-	// MethodSubscribe is reserved for the web page and the app: the daemon
-	// will then send event frames. Protocol 1 answers it with
-	// KindUnknownMethod.
-	MethodSubscribe = "subscribe"
 )
 
 // Error kinds. A kind is part of the protocol: callers branch on it, the

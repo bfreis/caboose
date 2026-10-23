@@ -30,7 +30,6 @@ export const BUSY_SUSPECT_ROUNDS = 5;
 // proof and its call, and the next proof then fails.
 export const REFUSED_ROUNDS = 2;
 
-const envNameRe = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 // The pages a fragment's to= may name.
 const toRe = /^(requests|proposals|requests\/[a-z0-9][a-z0-9_-]{0,31}|env\/[a-z0-9][a-z0-9_-]{0,31})$/;
 const codeFragRe = /^#code=([^&]*)(?:&to=([^&]*))?$/;
@@ -121,42 +120,6 @@ export function busyText(rounds, host) {
 // The page's states, other than "ok", each with what it says.
 const STATES = ["starting", "ok", "no_token", "squatter", "busy", "down", "no_crypto"];
 
-function title(route) {
-  if (route === null) return "No such page";
-  switch (route.page) {
-    case "overview":
-      return "Overview";
-    case "requests":
-      return route.env === null ? "Requests" : "Requests of " + route.env;
-    case "proposals":
-      return "Proposals";
-    case "env":
-      return "Environment " + route.env;
-    case "doctor":
-      return "Doctor of " + route.env;
-  }
-  return "No such page";
-}
-
-// placeholderPage is what each route shows until its page is built: its
-// title, and for the overview the environments status names.
-export const placeholderPage = {
-  render(ctx) {
-    const body = [];
-    if (ctx.route?.page === "overview" && ctx.status !== null) {
-      const items = ctx.status.envs.map((e) => {
-        const name = typeof e?.name === "string" ? e.name : "";
-        const label = envNameRe.test(name) ? navLink("#/env/" + name, name) : sandboxText(name);
-        const pending = Number.isSafeInteger(e?.pending) && e.pending > 0 ? ": " + e.pending + " pending" : "";
-        return el("li", null, label, pending);
-      });
-      body.push(el("ul", null, items));
-    }
-    body.push(el("p", null, "This page is not built yet: use ", el("code", null, "caboose requests"), " and ", el("code", null, "caboose apply"), " in a terminal."));
-    return { title: title(ctx.route), body };
-  },
-};
-
 function statusShape(s) {
   return s !== null && typeof s === "object" && Array.isArray(s.envs) && s.daemon !== null && typeof s.daemon === "object";
 }
@@ -169,7 +132,7 @@ function statusShape(s) {
 //   page      {render(ctx) -> {title, body}, calls?(ctx) -> [{key,
 //             method, params, every}], onPending?(env, n)}
 export function createApp(deps) {
-  const { win, doc, page = placeholderPage } = deps;
+  const { win, doc, page } = deps;
   useDocument(doc);
   const api = createApi({ fetch: deps.fetch, origin: win.location.origin, crypto: deps.crypto });
   const store = tokenStore(deps.storage);

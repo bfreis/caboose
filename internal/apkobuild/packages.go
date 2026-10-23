@@ -26,6 +26,3 @@ func Required() []string { return pkgset.Required() }
 // DefaultPackages returns the packages of the required group and of every
 // default group.
 func DefaultPackages() []string { return pkgset.DefaultPackages() }
-
-// CheckName reports why s is not an apk package name.
-func CheckName(s string) error { return pkgset.CheckName(s) }

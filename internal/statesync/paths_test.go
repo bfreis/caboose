@@ -6,15 +6,6 @@ import (
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
-func TestProjectKeyMatchesClaudeCode(t *testing.T) {
-	// Shaped as Claude Code writes them: a '.' in a user name becomes '-'
-	// like every other character that is not a letter or a digit.
-	got := ProjectKey("/work/you.me/caboose")
-	if want := "-work-you-me-caboose"; got != want {
-		t.Errorf("ProjectKey = %q, want %q", got, want)
-	}
-}
-
 func TestLiveTarget(t *testing.T) {
 	c, err := sandboxcfg.Parse(sandboxcfg.Default([]string{"/work", "/opt/x"}))
 	if err != nil {

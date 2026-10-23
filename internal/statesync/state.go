@@ -27,9 +27,6 @@ type Pending struct {
 	Export *Export
 }
 
-// Any reports whether anything is waiting to be sent.
-func (p *Pending) Any() bool { return len(p.Changed)+len(p.Deleted) > 0 }
-
 // Pending compares the live home with the sync repo's work tree. The
 // caller holds the lock, so no sync is rewriting the work tree meanwhile.
 // Both are read without following a link: a work tree path that is not a

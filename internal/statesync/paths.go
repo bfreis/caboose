@@ -37,10 +37,6 @@ import (
 // ~/<rel> is RepoHome+<rel> there, the same on every machine.
 const RepoHome = "home/"
 
-// ProjectKey is the directory name Claude Code keeps a project's state
-// under, for a cwd (sandboxcfg.ProjectKey).
-func ProjectKey(cwd string) string { return sandboxcfg.ProjectKey(cwd) }
-
 // Target is where a repo path lives on this machine, and how it syncs.
 type Target struct {
 	// Rel is the path relative to the home, slash-separated.

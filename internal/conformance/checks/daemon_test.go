@@ -391,7 +391,7 @@ func TestDaemonStubsMissingSendsNothing(t *testing.T) {
 	d := newDaemon(t, w)
 	d.SetStubsMissing(true)
 	r := &recordingD{daemonModel: d}
-	daemonRunIn(t, d, c.NewEnv(r, r, r, r, w.iso, w.trust), DaemonChecks())
+	daemonRunIn(t, d, c.NewEnv(r, r, r, w.iso, w.trust), DaemonChecks())
 	if len(r.sent) != 0 {
 		t.Errorf("%d commands sent without the stubs: %q", len(r.sent), r.sent[0])
 	}
@@ -437,7 +437,7 @@ func TestD2ProbesOnlyFoundSockets(t *testing.T) {
 		d := newDaemon(t, w)
 		d.Break(m)
 		r := &recordingD{daemonModel: d}
-		daemonRunIn(t, d, c.NewEnv(r, r, r, r, w.iso, w.trust), []c.Check{daemonByID("D2")})
+		daemonRunIn(t, d, c.NewEnv(r, r, r, w.iso, w.trust), []c.Check{daemonByID("D2")})
 		daemonFlag := regexp.MustCompile(`--daemon '([^']+)'`)
 		var tried []string
 		for _, b := range r.bodies(t) {
@@ -467,7 +467,7 @@ func TestD2ReadsTheMounts(t *testing.T) {
 	w := hostWorld{"container", c.TrustFallible}
 	d := newDaemon(t, w)
 	m := mountsDaemonDir{d}
-	got, _ := daemonRunIn(t, d, c.NewEnv(m, d, d, d, w.iso, w.trust), []c.Check{daemonByID("D2")})
+	got, _ := daemonRunIn(t, d, c.NewEnv(m, d, d, w.iso, w.trust), []c.Check{daemonByID("D2")})
 	if r := got["D2"]; r.Status != c.Fail || !strings.Contains(r.Reason, "daemon's directory") {
 		t.Errorf("D2 with B/home mounted: %s %s", r.Status, r.Reason)
 	}
@@ -480,14 +480,14 @@ func TestD4AndD7SendNothingUnsafe(t *testing.T) {
 	d := newDaemon(t, w)
 	d.SetFault(fake.UINotOwned)
 	r := &recordingD{daemonModel: d}
-	daemonRunIn(t, d, c.NewEnv(r, r, r, r, w.iso, w.trust), []c.Check{daemonByID("D4")})
+	daemonRunIn(t, d, c.NewEnv(r, r, r, w.iso, w.trust), []c.Check{daemonByID("D4")})
 	if len(r.sent) != 0 {
 		t.Errorf("D4 sent %d commands to a port not the throwaway daemon's", len(r.sent))
 	}
 	d = newDaemon(t, w)
 	d.SetFault(fake.StubOpenerDeaf)
 	r = &recordingD{daemonModel: d}
-	daemonRunIn(t, d, c.NewEnv(r, r, r, r, w.iso, w.trust), []c.Check{daemonByID("D7")})
+	daemonRunIn(t, d, c.NewEnv(r, r, r, w.iso, w.trust), []c.Check{daemonByID("D7")})
 	if b := r.bodies(t); len(b) != 1 || !strings.Contains(b[0], harmlessURL) {
 		t.Errorf("D7 sent %q with a deaf stub", b)
 	}
@@ -500,7 +500,7 @@ func TestD7SkipsUnderHostile(t *testing.T) {
 	w := hostWorld{"vm", c.TrustHostile}
 	d := newDaemon(t, w)
 	r := &recordingD{daemonModel: d}
-	got, _ := daemonRunIn(t, d, c.NewEnv(r, r, r, r, w.iso, w.trust), []c.Check{daemonByID("D7")})
+	got, _ := daemonRunIn(t, d, c.NewEnv(r, r, r, w.iso, w.trust), []c.Check{daemonByID("D7")})
 	if res := got["D7"]; res.Status != c.Skip || !strings.Contains(res.Reason, "hostile") {
 		t.Errorf("D7 under hostile: %s %s", res.Status, res.Reason)
 	}
@@ -546,7 +546,7 @@ func TestDaemonCommandsAreLiteral(t *testing.T) {
 			d := newDaemon(t, w)
 			d.Break(m)
 			r := &recordingD{daemonModel: d}
-			daemonRunIn(t, d, c.NewEnv(r, r, r, r, w.iso, w.trust), DaemonChecks())
+			daemonRunIn(t, d, c.NewEnv(r, r, r, w.iso, w.trust), DaemonChecks())
 			for _, b := range r.bodies(t) {
 				sent[b] = true
 			}

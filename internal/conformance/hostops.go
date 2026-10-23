@@ -202,21 +202,3 @@ func AliasScript(name, outDir string) (string, error) {
 	}
 	return "", fmt.Errorf("conformance: no alias %q in the suite", name)
 }
-
-// HostWrites are the sandbox's own files the host checks append to, as
-// paths relative to the environment's data dir (Guard.DataRel, whose home/
-// the sandbox has as its home and whose proposals/ and sync/ it has at
-// ~/.caboose-proposals and ~/.caboose-sync): the post-check walk must
-// allow them to change, since they are no canaries. productWritten covers
-// each (a test holds it to that).
-func HostWrites(n8 string) ([]string, error) {
-	if !n8Re.MatchString(n8) {
-		return nil, errors.New("conformance: not a nonce")
-	}
-	p := "conf-" + n8 + "-"
-	return []string{
-		"home/.config/caboose/sandbox.toml",
-		"proposals/" + p + "alias.toml", "proposals/" + p + "trust.toml",
-		"sync/" + p + "alias.toml", "sync/" + p + "trust.toml",
-	}, nil
-}

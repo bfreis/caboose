@@ -151,7 +151,7 @@ func (k *Checkpoints) SetCkptFault(f CkptFault) { k.mu.Lock(); k.cfault[f] = tru
 
 // Env is a conformance.Env over the model.
 func (k *Checkpoints) Env(isolation, trust string) conformance.Env {
-	return conformance.NewEnv(k, k, k, k, isolation, trust)
+	return conformance.NewEnv(k, k, k, isolation, trust)
 }
 
 func (k *Checkpoints) StubsInPlace() error {

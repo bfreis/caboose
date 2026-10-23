@@ -11,9 +11,7 @@
 //
 // A conversation starts with a hello from each side. Requests carry an id,
 // and the daemon answers with a response carrying the same id, either a
-// result or an error with a stable kind. Event frames are reserved for the
-// daemon to send after a subscription; no version of the protocol sends one
-// yet, and a client skips any it receives.
+// result or an error with a stable kind.
 package daemonproto
 
 import (
@@ -42,7 +40,7 @@ const (
 	// held to it.
 	MaxSocketPath = 103
 
-	maxName    = 64   // a version, method, event or kind
+	maxName    = 64   // a version, method or kind
 	maxMessage = 4096 // an error's human message
 )
 
@@ -51,7 +49,6 @@ const (
 	TypeHello    = "hello"
 	TypeRequest  = "request"
 	TypeResponse = "response"
-	TypeEvent    = "event"
 )
 
 // Client kinds a hello may name.
@@ -82,10 +79,6 @@ type Frame struct {
 	// daemon refusing the connection itself.
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *Error          `json:"error,omitempty"`
-
-	// event
-	Event string          `json:"event,omitempty"`
-	Data  json.RawMessage `json:"data,omitempty"`
 }
 
 // ClientDaemon is what the daemon's own hello names as its kind.
@@ -160,10 +153,9 @@ func (f *Frame) Validate() error {
 	hello := has(f.Protocol != 0, f.Version != "", f.Client != "")
 	req := has(f.Method != "", !isNull(f.Params))
 	resp := has(!isNull(f.Result), f.Error != nil)
-	event := has(f.Event != "", !isNull(f.Data))
 	switch f.Type {
 	case TypeHello:
-		if has(f.ID != 0, req, resp, event) {
+		if has(f.ID != 0, req, resp) {
 			return bad("hello with other fields")
 		}
 		if f.Protocol < 1 {
@@ -181,7 +173,7 @@ func (f *Frame) Validate() error {
 			return bad("unknown client kind")
 		}
 	case TypeRequest:
-		if has(hello, resp, event) {
+		if has(hello, resp) {
 			return bad("request with other fields")
 		}
 		if f.ID == 0 {
@@ -192,7 +184,7 @@ func (f *Frame) Validate() error {
 		}
 		return checkObject("params", f.Params)
 	case TypeResponse:
-		if has(hello, req, event) {
+		if has(hello, req) {
 			return bad("response with other fields")
 		}
 		if (f.Error != nil) == !isNull(f.Result) {
@@ -205,14 +197,6 @@ func (f *Frame) Validate() error {
 			return bad("result without an id")
 		}
 		return checkObject("result", f.Result)
-	case TypeEvent:
-		if has(hello, req, resp, f.ID != 0) {
-			return bad("event with other fields")
-		}
-		if len(f.Event) > maxName || !nameRe.MatchString(f.Event) {
-			return bad("bad event name")
-		}
-		return checkObject("data", f.Data)
 	default:
 		return bad("unknown frame type")
 	}
@@ -240,9 +224,6 @@ func Decode(line []byte) (*Frame, error) {
 	}
 	if isNull(f.Result) {
 		f.Result = nil
-	}
-	if isNull(f.Data) {
-		f.Data = nil
 	}
 	if err := f.Validate(); err != nil {
 		return nil, err

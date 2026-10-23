@@ -226,13 +226,14 @@ func TestSyncShowsTheSandboxsWordsPrintable(t *testing.T) {
 	}
 }
 
-// A sandbox whose caboose-agent predates the sync running there is told
-// apart from a sync that failed: caboose restart is what fixes it.
+// A sandbox whose caboose-agent speaks another version of the sync's
+// protocol is told apart from a sync that failed: caboose restart is what
+// fixes it.
 func TestSyncInAnOldSandbox(t *testing.T) {
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
 			b := syncBox(t, iso, func(string) *exec.Cmd {
-				return backendtest.Reply("", "usage: caboose-agent COMMAND\n\n  open URL ...\n", 2)
+				return backendtest.Reply(`{"type":"hello","version":99}`+"\n", "", 0)
 			})
 			err := b.Sync(nil)
 			if err == nil || !strings.Contains(err.Error(), "cannot run this one's sync; run 'caboose restart'") {

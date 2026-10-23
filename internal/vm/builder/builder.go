@@ -406,13 +406,12 @@ func orDiscard(w io.Writer) io.Writer {
 }
 
 // Config is what the guest that boots an image needs of its config, which
-// only docker can read.
+// only docker can read. The rest of docker's config is not read: the guest
+// runs the sandbox as root, whatever the image's USER.
 type Config struct {
-	User       string
 	Env        []string
 	Entrypoint []string
 	Cmd        []string
-	WorkingDir string
 }
 
 // Inspect is image's ID and config.

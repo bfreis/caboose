@@ -2,7 +2,6 @@ package conformance_test
 
 import (
 	"context"
-	"errors"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -193,7 +192,7 @@ func TestResultsHoldNoPlantedStrings(t *testing.T) {
 		}
 		return real()
 	}}
-	e := c.NewEnv(sb, f, f, f, isoContainer, "fallible")
+	e := c.NewEnv(sb, f, f, isoContainer, "fallible")
 	checks := refusals()[:1]
 	res, col, err := c.RunChecks(context.Background(), &c.Runner{Env: env, Wipe: true}, checks, e)
 	if err != nil {
@@ -243,31 +242,5 @@ func TestWriteResultsExclusive(t *testing.T) {
 	}
 	if err := c.WriteResults(dir+"/../"+filepath.Base(dir)+"/y", "x"); err == nil {
 		t.Error("an unclean path was accepted")
-	}
-}
-
-func TestExitCode(t *testing.T) {
-	ok := []c.Result{{ID: "a", Outcome: c.Outcome{Status: c.Pass}}, {ID: "b", Outcome: c.Outcome{Status: c.Gap}},
-		{ID: "c", Outcome: c.Outcome{Status: c.Skip}}, {ID: "d", Outcome: c.Outcome{Status: c.Info}}}
-	with := func(st c.Status) []c.Result {
-		return append(append([]c.Result{}, ok...), c.Result{ID: "e", Outcome: c.Outcome{Status: st}})
-	}
-	for name, tc := range map[string]struct {
-		res  []c.Result
-		err  error
-		want int
-	}{
-		"all fine":     {ok, nil, 0},
-		"none":         {nil, nil, 0},
-		"a FAIL":       {with(c.Fail), nil, 1},
-		"an ERROR":     {with(c.Error), nil, 1},
-		"ended early":  {ok, errors.New("x"), 1},
-		"touched":      {ok, &c.TouchedError{Paths: []string{"x"}}, 1},
-		"refused":      {nil, &c.RefusalError{Item: "i", Err: errors.New("x")}, 2},
-		"refused late": {with(c.Fail), &c.RefusalError{Item: "i", Err: errors.New("x")}, 2},
-	} {
-		if got := c.ExitCode(tc.res, tc.err); got != tc.want {
-			t.Errorf("%s: %d, want %d", name, got, tc.want)
-		}
 	}
 }

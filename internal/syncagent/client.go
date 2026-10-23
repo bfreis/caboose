@@ -49,8 +49,9 @@ type Result struct {
 }
 
 var (
-	// ErrOldAgent is a sandbox whose caboose-agent cannot run the sync
-	// this caboose asks for: an image from an older (or newer) caboose.
+	// ErrOldAgent is a sandbox whose caboose-agent speaks another
+	// version of the sync's protocol: an image from an older (or newer)
+	// caboose.
 	ErrOldAgent = errors.New("the sandbox's caboose-agent does not run this caboose's sync")
 	// ErrInterrupted is a run interrupted on the host: the sync in the
 	// sandbox was told to stop, and does, finishing an apply under way.
@@ -150,9 +151,6 @@ func Run(cmd *exec.Cmd, req Request, h Handler, show io.Writer) (*Result, error)
 	case stopped != nil:
 		return nil, stopped
 	case errors.Is(convErr, errNoHello):
-		if strings.Contains(g.kept.String(), "usage: caboose-agent") {
-			return nil, ErrOldAgent
-		}
 		return nil, fmt.Errorf("the sync did not start in the sandbox: %s", why(g.kept.String(), waitErr))
 	case convErr != nil:
 		return nil, convErr

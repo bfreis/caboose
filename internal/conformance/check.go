@@ -57,11 +57,6 @@ type Listener interface {
 	Close() error
 }
 
-// Net opens loopback listeners.
-type Net interface {
-	Listen(ctx context.Context) (Listener, error)
-}
-
 // seal marks an Env as made by Steps for one check.
 type seal struct {
 	id    string
@@ -76,14 +71,13 @@ type Env struct {
 	sandbox          Sandbox
 	host             Host
 	clock            Clock
-	net              Net
 	isolation, trust string
 	seal             *seal
 }
 
 // NewEnv bundles the interfaces. It is not usable until Steps seals it.
-func NewEnv(sb Sandbox, h Host, c Clock, n Net, isolation, trust string) Env {
-	return Env{sandbox: sb, host: h, clock: c, net: n, isolation: isolation, trust: trust}
+func NewEnv(sb Sandbox, h Host, c Clock, isolation, trust string) Env {
+	return Env{sandbox: sb, host: h, clock: c, isolation: isolation, trust: trust}
 }
 
 func (e Env) Isolation() string { return e.isolation }
@@ -261,16 +255,6 @@ func (e Env) Now() time.Time {
 		return time.Time{}
 	}
 	return e.clock.Now()
-}
-
-func (e Env) Listen(ctx context.Context) (Listener, error) {
-	if err := e.sealed(); err != nil {
-		return nil, err
-	}
-	if e.net == nil {
-		return nil, fmt.Errorf("conformance: no network")
-	}
-	return e.net.Listen(ctx)
 }
 
 // CheckResult is what a check returns.

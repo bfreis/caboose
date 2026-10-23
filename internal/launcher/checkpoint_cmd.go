@@ -28,7 +28,7 @@ type checkpointOpts struct {
 	// lockWait is how long create waits for the store's lock; 0 is the
 	// store's default.
 	lockWait time.Duration
-	// take carries Take's test switches; restore carries Restore's.
+	// take carries TakeLocked's test switches; restore carries Restore's.
 	take    checkpoint.TakeOptions
 	restore checkpoint.RestoreOptions
 	// restored, when set, is given what checkpoint.Restore returned, as

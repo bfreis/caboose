@@ -89,9 +89,6 @@ func TestMethodTableAllowlist(t *testing.T) {
 			t.Errorf("%s is listed but not in the table", name)
 		}
 	}
-	if got[daemonproto.MethodSubscribe] {
-		t.Error("subscribe is reserved: not in the table")
-	}
 }
 
 // counting services: each records that it was reached.
@@ -213,7 +210,7 @@ func TestWebCallsOnlyItsAllowlist(t *testing.T) {
 			t.Errorf("%s from the web reached a service", m.name)
 		}
 	}
-	for _, name := range []string{daemonproto.MethodSubscribe, "web_token", "frobnicate", "Ping", ""} {
+	for _, name := range []string{"subscribe", "web_token", "frobnicate", "Ping", ""} {
 		if _, e := s.callWeb(t.Context(), name, nil); webKind(e) != daemonproto.KindUnknownMethod {
 			t.Errorf("%q from the web: %v", name, e)
 		}
@@ -242,8 +239,8 @@ func TestWebCallsOnlyItsAllowlist(t *testing.T) {
 			t.Errorf("%s from the cli: %v", m.name, err)
 		}
 	}
-	if err := c.Call(t.Context(), daemonproto.MethodSubscribe, nil, nil); daemonproto.Kind(err) != daemonproto.KindUnknownMethod {
-		t.Errorf("subscribe: %v", err)
+	if err := c.Call(t.Context(), "frobnicate", nil, nil); daemonproto.Kind(err) != daemonproto.KindUnknownMethod {
+		t.Errorf("frobnicate: %v", err)
 	}
 }
 

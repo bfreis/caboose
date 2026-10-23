@@ -87,7 +87,7 @@ func TestRefusalHostReadBackErrorIsError(t *testing.T) {
 	for from, name := range map[int]string{4: "the protected canary's read-back", 3: "the allowed canary's read-back"} {
 		f, env := newWorld(t, isoContainer)
 		h := &failingSnapshot{Fake: f, from: from}
-		e := c.NewEnv(f, h, f, f, isoContainer, "fallible")
+		e := c.NewEnv(f, h, f, isoContainer, "fallible")
 		res, _, err := c.RunChecks(context.Background(), &c.Runner{Env: env, Wipe: true}, refusals()[:1], e)
 		if err != nil {
 			t.Fatal(err)

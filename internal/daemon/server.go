@@ -687,7 +687,7 @@ func (s *server) serve(c *net.UnixConn) {
 	defer s.detachApp(cp)
 	conn := daemonproto.NewConn(c)
 	proto := s.protocol()
-	hello, cmp, err := daemonproto.ServerHandshakeProtocol(conn, s.opts.Version, proto, helloTimeout)
+	hello, cmp, err := daemonproto.ServerHandshake(conn, s.opts.Version, proto, helloTimeout)
 	if err != nil {
 		s.log.Printf("a client's hello: %v", err)
 		return

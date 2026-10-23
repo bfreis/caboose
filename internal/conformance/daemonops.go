@@ -176,15 +176,3 @@ func (e Env) DaemonOps() (DaemonOps, error) {
 	}
 	return ops, nil
 }
-
-// DaemonHostWrites are the sandbox's own files the daemon checks write,
-// as paths relative to the data dir (Guard.DataRel), beside HostWrites: the post-check walk must
-// allow them to change. The broker's requests.json and decisions.log
-// change too, as the daemon checks file requests.
-func DaemonHostWrites(n8 string) ([]string, error) {
-	if !n8Re.MatchString(n8) {
-		return nil, errors.New("conformance: not a nonce")
-	}
-	p := "conf-" + n8 + "-"
-	return []string{"home/.config/caboose/sandbox.toml", "proposals/" + p + "answer.toml", "proposals/" + p + "widen.toml"}, nil
-}

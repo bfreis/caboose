@@ -73,8 +73,7 @@ type Fake struct {
 	// rec is the host's record of each canary path, as the real guard
 	// keeps it: as made, then as each post-check found the paths of the
 	// check it was handed to.
-	rec      map[string]record
-	listener int
+	rec map[string]record
 }
 
 // New is a world with the two roots, the writable part and canary/, as
@@ -1234,25 +1233,13 @@ func (f *Fake) CanaryPaths() []string {
 	return out
 }
 
-// Clock and Net.
+// Clock.
 
 func (f *Fake) Now() time.Time { return time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC) }
 
-type listener struct{ closed bool }
-
-func (l *listener) Addr() string  { return "127.0.0.1:0" }
-func (l *listener) Accepted() int { return 0 }
-func (l *listener) Close() error  { l.closed = true; return nil }
-func (f *Fake) Listen(context.Context) (conformance.Listener, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.listener++
-	return &listener{}, nil
-}
-
 // Env is a conformance.Env over the fake.
 func (f *Fake) Env(isolation, trust string) conformance.Env {
-	return conformance.NewEnv(f, f, f, f, isolation, trust)
+	return conformance.NewEnv(f, f, f, isolation, trust)
 }
 
 // AddPlainFiles puts n files that are no canary below dir, as a git

@@ -429,3 +429,10 @@ func TestAttentionSlowErrorKeepsLastAnswer(t *testing.T) {
 		t.Errorf("an error dropped the answer: %s", kinds(st.items()))
 	}
 }
+
+// pollSlow runs the two slow polls, which the daemon runs on loops of their
+// own, one after the other: a test's one step for both.
+func (a *attentionState) pollSlow(ctx context.Context) {
+	a.pollImages(ctx)
+	a.pollUpdate(ctx)
+}

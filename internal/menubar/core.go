@@ -309,15 +309,6 @@ func (c *Core) done() {
 	c.mu.Unlock()
 }
 
-// waitIdle waits until no event is queued and no worker runs: for tests.
-func (c *Core) waitIdle() {
-	c.mu.Lock()
-	for c.work > 0 {
-		c.idle.Wait()
-	}
-	c.mu.Unlock()
-}
-
 // spawn runs f in a worker; then posts its result, which the loop runs.
 func (c *Core) spawn(f func() func()) {
 	c.mu.Lock()

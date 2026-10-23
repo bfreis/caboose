@@ -60,7 +60,6 @@ func AppendProc(p SPath) (Cmd, error) {
 
 var (
 	OpRmdir        = opOf("rmdir", Rmdir)
-	OpRename       = opOf("rename", Rename)
 	OpAppendDotDot = opOf("append-dotdot", AppendDotDot)
 	OpAppendProc   = opOf("append-proc", AppendProc)
 )

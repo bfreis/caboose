@@ -84,7 +84,7 @@ func TestDoctorSyncBothWays(t *testing.T) {
 	}
 	head := here.git("rev-parse", "HEAD")
 	c := here.doctorSync("")
-	key := statesync.ProjectKey("/work/dev/p")
+	key := sandboxcfg.ProjectKey("/work/dev/p")
 	wantLines(t, c,
 		"  ! sync  2 changes here not sent yet (home/.claude/projects/"+key+"/memory/mine.md, home/.claude/projects/"+key+
 			"/memory/more.md); 'caboose sync' syncs",
@@ -120,9 +120,9 @@ func TestDoctorSyncManyChanges(t *testing.T) {
 		here.write(filepath.Join(here.data, memRel("p", f)), f)
 	}
 	wantLines(t, here.doctorSync("--offline"),
-		"  ! sync  5 changes here not sent yet (home/.claude/projects/"+statesync.ProjectKey("/work/dev/p")+
-			"/memory/a.md, home/.claude/projects/"+statesync.ProjectKey("/work/dev/p")+"/memory/b.md, home/.claude/projects/"+
-			statesync.ProjectKey("/work/dev/p")+"/memory/c.md, and 2 more); the next launch with nothing running syncs, or 'caboose sync'",
+		"  ! sync  5 changes here not sent yet (home/.claude/projects/"+sandboxcfg.ProjectKey("/work/dev/p")+
+			"/memory/a.md, home/.claude/projects/"+sandboxcfg.ProjectKey("/work/dev/p")+"/memory/b.md, home/.claude/projects/"+
+			sandboxcfg.ProjectKey("/work/dev/p")+"/memory/c.md, and 2 more); the next launch with nothing running syncs, or 'caboose sync'",
 		"  – sync  not checked: the remote: --offline")
 	if here.ranGit() {
 		t.Error("ran git offline")
@@ -202,9 +202,9 @@ func TestDoctorSyncSecretsAndLinks(t *testing.T) {
 	c := here.doctorSync("--offline")
 	wantLines(t, c,
 		"  ✗ sync  refusing to sync; these look like they hold a credential: home/.claude/projects/"+
-			statesync.ProjectKey("/work/dev/p")+"/memory/leak.md (remove it and sync again; nothing was committed)",
+			sandboxcfg.ProjectKey("/work/dev/p")+"/memory/leak.md (remove it and sync again; nothing was committed)",
 		"  ! sync  not synced, being symlinks or hard links (never followed): ~/.claude/projects/"+
-			statesync.ProjectKey("/work/dev/q")+"/memory")
+			sandboxcfg.ProjectKey("/work/dev/q")+"/memory")
 }
 
 func TestDoctorSyncWhileSyncing(t *testing.T) {

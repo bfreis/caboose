@@ -227,21 +227,6 @@ func TestAgentDaemonBuilders(t *testing.T) {
 	}
 }
 
-func TestDaemonHostWrites(t *testing.T) {
-	if _, err := DaemonHostWrites("x"); err == nil {
-		t.Error("a bad nonce accepted")
-	}
-	w, err := DaemonHostWrites(dN8)
-	if err != nil || len(w) != 3 {
-		t.Fatalf("%v %v", w, err)
-	}
-	for _, p := range w {
-		if strings.Contains(p, "..") || strings.HasPrefix(p, "/") {
-			t.Errorf("%q", p)
-		}
-	}
-}
-
 // SameSocket, run by a real shell: a socket and a path through a link to
 // its directory are the same file, another socket is not, and a path that
 // is no socket (gone since it was found) prints SocketGone alone.

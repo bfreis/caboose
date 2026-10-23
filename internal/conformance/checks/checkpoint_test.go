@@ -290,11 +290,11 @@ func TestCheckpointNoVacuousPass(t *testing.T) {
 		}
 		// A host without the checkpoint calls, or without the host calls.
 		k := newCkpt(t, w)
-		if got := ckptRunIn(t, k, c.NewEnv(k, k.Link, k, k, w.iso, w.trust), []c.Check{ck})[ck.ID]; got.Status != c.Error {
+		if got := ckptRunIn(t, k, c.NewEnv(k, k.Link, k, w.iso, w.trust), []c.Check{ck})[ck.ID]; got.Status != c.Error {
 			t.Errorf("%s with no checkpoint calls: %s (%s)", ck.ID, got.Status, got.Reason)
 		}
 		k = newCkpt(t, w)
-		if got := ckptRunIn(t, k, c.NewEnv(k, k.Fake, k, k, w.iso, w.trust), []c.Check{ck})[ck.ID]; got.Status != c.Error {
+		if got := ckptRunIn(t, k, c.NewEnv(k, k.Fake, k, w.iso, w.trust), []c.Check{ck})[ck.ID]; got.Status != c.Error {
 			t.Errorf("%s with no host calls: %s (%s)", ck.ID, got.Status, got.Reason)
 		}
 	}
@@ -363,7 +363,7 @@ func TestCheckpointCommandsAreLiteral(t *testing.T) {
 			k := newCkpt(t, w)
 			k.Break(m)
 			r := &recordingCkpt{Checkpoints: k}
-			ckptRunIn(t, k, c.NewEnv(r, r, r, r, w.iso, w.trust), CheckpointChecks())
+			ckptRunIn(t, k, c.NewEnv(r, r, r, w.iso, w.trust), CheckpointChecks())
 			for _, argv := range r.sent {
 				body, ok := c.Unwrap(argv)
 				if !ok {

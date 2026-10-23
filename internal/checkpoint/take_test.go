@@ -586,3 +586,14 @@ func TestShrank(t *testing.T) {
 		}
 	}
 }
+
+// Take takes a checkpoint of src for reason: it takes the store's lock
+// (waiting as Store.Lock does) and calls TakeLocked.
+func Take(ctx context.Context, s *Store, src Source, reason string, o TakeOptions) (TakeResult, error) {
+	l, err := s.Lock(ctx, 0)
+	if err != nil {
+		return TakeResult{}, err
+	}
+	defer l.Unlock()
+	return TakeLocked(ctx, l, s, src, reason, o)
+}

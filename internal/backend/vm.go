@@ -211,21 +211,6 @@ func mergeEnv(base, over []string) []string {
 	return out
 }
 
-// SharePaths are the host directories a VM created with mounts ms shares
-// with its guest: each mount's source, or a file's directory. Everything
-// under them is the guest's to reach.
-func SharePaths(ms []Mount) ([]string, error) {
-	shares, _, err := planShares(ms)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, len(shares))
-	for i, s := range shares {
-		paths[i] = s.Path
-	}
-	return paths, nil
-}
-
 // PlanShares are the shares a VM created from mounts ms is given: what its
 // machine.json must say, which the conformance suite's audit compares.
 func PlanShares(ms []Mount) ([]vm.Share, error) {

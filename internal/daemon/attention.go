@@ -98,13 +98,6 @@ func (a *attentionState) pollCheap(ctx context.Context) {
 	a.rebuild()
 }
 
-// pollSlow computes the slow kinds that are due: the environments' images,
-// then the update.
-func (a *attentionState) pollSlow(ctx context.Context) {
-	a.pollImages(ctx)
-	a.pollUpdate(ctx)
-}
-
 // askBounded calls fn with a context that ends after attentionSlowTimeout
 // and returns when fn does or that context ends, whichever is first: a
 // source that ignores its context is left behind, and holds nothing up.

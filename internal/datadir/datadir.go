@@ -42,22 +42,17 @@ import (
 // its path under ~.
 const HomeDir = "home"
 
-// Home is home-relative path rel's place in the data dir.
-func Home(rel string) string { return HomeDir + "/" + rel }
-
 // Paths in the data dir, under HomeDir, that caboose itself reads or
 // writes. Each is in a Required keep entry, or in one of the defaults.
 const (
 	// ClaudeDir is ~/.claude.
 	ClaudeDir = HomeDir + "/.claude"
-	// ClaudeJSON is ~/.claude.json, a single-file mount.
-	ClaudeJSON = HomeDir + "/.claude.json"
 	// Credentials is Claude Code's login: ~/.claude/.credentials.json
 	// inside the container, where it is kept in a file rather than a
 	// keychain.
 	Credentials = ClaudeDir + "/.credentials.json"
 	// CabooseConfig is the sandbox's ~/.config/caboose, the user's own
-	// configuration of it: the sandbox config, StartDir and ShellDir.
+	// configuration of it: the sandbox config, StartDir and shell.d.
 	// Written from both sides -- by hand on the host, or by a session --
 	// so the host only ever reads it through nofollow.
 	CabooseConfig = HomeDir + "/.config/caboose"
@@ -66,12 +61,8 @@ const (
 	// StartDir holds the scripts the entrypoint runs at container start,
 	// in name order (run_start_scripts in entrypoint.sh).
 	StartDir = CabooseConfig + "/start.d"
-	// ShellDir holds what every interactive bash reads (shellrc.bash).
-	ShellDir = CabooseConfig + "/shell.d"
 	// GitConfig is the sandbox's global git config, ~/.config/git/config.
 	GitConfig = HomeDir + "/.config/git/config"
-	// JJConfig is the sandbox's user-level jj config.
-	JJConfig = HomeDir + "/.config/jj/config.toml"
 	// SSHDir is the sandbox's ~/.ssh: its known_hosts and its own config.
 	// ssh refuses a ~/.ssh others can write, and every kept directory is
 	// created 0700. Private keys do not belong here -- they stay on the

@@ -95,15 +95,15 @@ func TestTokenEqual(t *testing.T) {
 	}
 }
 
-// The compare is constant time: TokenEqual and WebProofEqual compare the
-// secret only through crypto/subtle or hmac.Equal, never with == or a
-// byte compare that stops at the first difference.
+// The compare is constant time: TokenEqual compares the secret only
+// through crypto/subtle, never with == or a byte compare that stops at the
+// first difference.
 func TestTokenCompareIsConstantTime(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "web.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"TokenEqual": "subtle.ConstantTimeCompare", "WebProofEqual": "hmac.Equal"}
+	want := map[string]string{"TokenEqual": "subtle.ConstantTimeCompare"}
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
 		if !ok || want[fn.Name.Name] == "" {
@@ -178,9 +178,6 @@ func TestWebProof(t *testing.T) {
 	if ref := base64.RawURLEncoding.EncodeToString(m.Sum(nil)); got != ref {
 		t.Errorf("proof %q, reference %q", got, ref)
 	}
-	if !WebProofEqual(got, testToken, origin, nonce) {
-		t.Error("WebProofEqual refused the proof")
-	}
 	// Each input changes it.
 	other := map[string]string{
 		"nonce":  WebProof(testToken, origin, strings.Repeat("m", 43)),
@@ -193,12 +190,6 @@ func TestWebProof(t *testing.T) {
 		if p == got {
 			t.Errorf("the proof does not change with the %s", what)
 		}
-		if WebProofEqual(p, testToken, origin, nonce) {
-			t.Errorf("WebProofEqual took the proof of another %s", what)
-		}
-	}
-	if WebProofEqual(got[:42], testToken, origin, nonce) || WebProofEqual("", testToken, origin, nonce) {
-		t.Error("WebProofEqual took a cut proof")
 	}
 }
 

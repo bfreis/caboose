@@ -148,3 +148,14 @@ func TestDetailsAndDoctorSingleFlight(t *testing.T) {
 		})
 	}
 }
+
+// callers is how many calls the run under way for key answers, 0 when
+// none runs.
+func (f *flights[T]) callers(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if fl := f.run[key]; fl != nil {
+		return fl.callers
+	}
+	return 0
+}

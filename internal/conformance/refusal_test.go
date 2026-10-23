@@ -28,7 +28,7 @@ func runRefusal(t *testing.T, mut fake.Mutant, ck c.Check, script func(n int, ar
 	f, env := newWorld(t, isoContainer)
 	f.Break(mut)
 	sb := &scripted{Fake: f, script: script}
-	e := c.NewEnv(sb, f, f, f, isoContainer, "fallible")
+	e := c.NewEnv(sb, f, f, isoContainer, "fallible")
 	r := &c.Runner{Env: env, Wipe: true}
 	res, _, err := c.RunChecks(context.Background(), r, []c.Check{ck}, e)
 	if err != nil {

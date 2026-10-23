@@ -306,7 +306,7 @@ func DaemonOn(l *Link) (*Daemon, DaemonDirs) {
 
 // Env is a conformance.Env over the Daemon.
 func (d *Daemon) Env(isolation, trust string) conformance.Env {
-	return conformance.NewEnv(d, d, d, d, isolation, trust)
+	return conformance.NewEnv(d, d, d, isolation, trust)
 }
 
 // SetFault turns fault f on; ProbeMissing takes the probe away.

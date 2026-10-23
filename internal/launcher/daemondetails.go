@@ -380,17 +380,6 @@ type flight[T any] struct {
 	callers int
 }
 
-// callers is how many calls the run under way for key answers, 0 when
-// none runs.
-func (f *flights[T]) callers(key string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if fl := f.run[key]; fl != nil {
-		return fl.callers
-	}
-	return 0
-}
-
 // do is work's answer for key, from the run under way or a new one; ctx
 // ending first is ctx's error, and the run goes on without this caller.
 func (f *flights[T]) do(ctx context.Context, key string, work func() (T, error)) (T, error) {

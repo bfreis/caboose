@@ -5,11 +5,49 @@ import { webcrypto } from "node:crypto";
 import { CODE, Clock, FakeDaemon, crypto as trackedCrypto, FakeDocument, FakeStorage, FakeWindow, elements, json, mac, settle, texts, token } from "./fakes.test.mjs";
 import { ApiError, createApi, proofMAC } from "./api.mjs";
 import { BUSY_MAX_MS, BUSY_MIN_MS, BUSY_SUSPECT_ROUNDS, POLL_MS, REFUSED_ROUNDS, SLOW_MS, STORAGE_KEY, createApp, parseFragment, tokenStore } from "./app.mjs";
-import { IDS } from "./dom.mjs";
+import { IDS, el, navLink, sandboxText } from "./dom.mjs";
 
 const T = token("a"); // the daemon's token
 const OLD = token("b"); // another, stored by an earlier visit
 const ORIGIN = "http://127.0.0.1:7171";
+
+// stubPage is the page of a test that names none: its route's title, and
+// for the overview the environments status names, as links where a name
+// can be one.
+const envNameRe = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+function stubTitle(route) {
+  if (route === null) return "No such page";
+  switch (route.page) {
+    case "overview":
+      return "Overview";
+    case "requests":
+      return route.env === null ? "Requests" : "Requests of " + route.env;
+    case "proposals":
+      return "Proposals";
+    case "env":
+      return "Environment " + route.env;
+    case "doctor":
+      return "Doctor of " + route.env;
+  }
+  return "No such page";
+}
+const stubPage = {
+  render(ctx) {
+    const route = ctx.route;
+    const title = stubTitle(route);
+    const body = [];
+    if (route?.page === "overview" && ctx.status !== null) {
+      const items = ctx.status.envs.map((e) => {
+        const name = typeof e?.name === "string" ? e.name : "";
+        const label = envNameRe.test(name) ? navLink("#/env/" + name, name) : sandboxText(name);
+        const pending = Number.isSafeInteger(e?.pending) && e.pending > 0 ? ": " + e.pending + " pending" : "";
+        return el("li", null, label, pending);
+      });
+      body.push(el("ul", null, items));
+    }
+    return { title, body };
+  },
+};
 
 // live is the app of the test running: one test's app never outlives it,
 // since every app draws into the document dom.mjs was last given.
@@ -35,7 +73,7 @@ function setup(o = {}) {
     now: clock.now,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
-    page: o.page,
+    page: o.page ?? stubPage,
   });
   live = app;
   const main = () => texts(doc.getElementById(IDS.main)).join("");
@@ -743,6 +781,7 @@ function twoTabs(o) {
       now: clock.now,
       setTimeout: clock.setTimeout,
       clearTimeout: clock.clearTimeout,
+      page: stubPage,
     });
   const hooks = { afterProof: null };
   const a = tab(async (url, init) => {

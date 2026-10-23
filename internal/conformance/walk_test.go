@@ -90,16 +90,17 @@ func TestPostCheckProductPaths(t *testing.T) {
 	} {
 		w.write(p, "product")
 	}
-	n8 := w.g.Nonce8()
-	hw, err := HostWrites(n8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dw, err := DaemonHostWrites(n8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range append(hw, dw...) {
+	// The sandbox's own files the host and daemon checks write, relative
+	// to the data dir (whose home/ the sandbox has as its home, and whose
+	// proposals/ and sync/ it has at ~/.caboose-proposals and
+	// ~/.caboose-sync): no canaries, so the walk lets them change.
+	n := "conf-" + w.g.Nonce8() + "-"
+	for _, p := range []string{
+		"home/.config/caboose/sandbox.toml",
+		"proposals/" + n + "alias.toml", "proposals/" + n + "trust.toml",
+		"proposals/" + n + "answer.toml", "proposals/" + n + "widen.toml",
+		"sync/" + n + "alias.toml", "sync/" + n + "trust.toml",
+	} {
 		w.write(w.g.DataRel()+"/"+p, "the host checks'")
 	}
 	if _, err := w.g.PostCheck(w.before, nil); err != nil {

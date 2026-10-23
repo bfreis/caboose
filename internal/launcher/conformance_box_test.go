@@ -143,7 +143,7 @@ func TestConfBoxTargetsTheSuitesSandbox(t *testing.T) {
 			}
 			return conformance.CheckResult{Status: conformance.Pass}
 		}}
-	env := conformance.NewEnv(p.box, h, confClock{}, nil, config.KindContainer, config.TrustFallible)
+	env := conformance.NewEnv(p.box, h, confClock{}, config.KindContainer, config.TrustFallible)
 	res, _, err := conformance.RunChecks(context.Background(), &conformance.Runner{Env: p.g, Wipe: true}, []conformance.Check{read, rm, wipe}, env)
 	if err != nil {
 		t.Fatal(err)

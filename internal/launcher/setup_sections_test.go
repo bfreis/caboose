@@ -10,6 +10,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 )
 
@@ -369,7 +370,7 @@ exit 1
 func TestSetupSyncSetsTheRemote(t *testing.T) {
 	e, remote := syncSetupEnv(t)
 	e.writeConfig("")
-	mem := filepath.Join(e.a.Cfg.DataDir, datadir.ClaudeDir, "projects", statesync.ProjectKey("/work/dev/proj"), "memory")
+	mem := filepath.Join(e.a.Cfg.DataDir, datadir.ClaudeDir, "projects", sandboxcfg.ProjectKey("/work/dev/proj"), "memory")
 	if err := os.MkdirAll(mem, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +391,7 @@ func TestSetupSyncSetsTheRemote(t *testing.T) {
 	if e.file().Vals["session.auto_sync"] != true {
 		t.Error("auto_sync not written")
 	}
-	got, err := exec.Command("git", "--git-dir", remote, "show", "main:home/.claude/projects/"+statesync.ProjectKey("/work/dev/proj")+"/memory/m.md").CombinedOutput()
+	got, err := exec.Command("git", "--git-dir", remote, "show", "main:home/.claude/projects/"+sandboxcfg.ProjectKey("/work/dev/proj")+"/memory/m.md").CombinedOutput()
 	if err != nil || string(got) != "a fact\n" {
 		t.Errorf("the remote holds %q (%v)", got, err)
 	}

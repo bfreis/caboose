@@ -28,7 +28,6 @@ func TestRoundTrip(t *testing.T) {
 		mustResult(t, 8, nil),
 		Failure(9, NewError(KindUnknownEnv, "no environment %q", "x")),
 		Failure(0, NewError(KindProtocolMismatch, "old")),
-		{Type: TypeEvent, Event: "link_changed", Data: json.RawMessage(`{"env":"foo"}`)},
 	}
 	var buf bytes.Buffer
 	for _, f := range frames {
@@ -81,13 +80,13 @@ func TestErrorKindsRoundTrip(t *testing.T) {
 func TestOversizeRefused(t *testing.T) {
 	big := strings.Repeat("a", MaxLine)
 	// Reader: a line over the bound is refused without being read to its end.
-	r := NewReader(strings.NewReader(`{"type":"event","event":"x","data":{"k":"` + big + "\"}}\n"))
+	r := NewReader(strings.NewReader(`{"type":"request","id":1,"method":"ping","params":{"k":"` + big + "\"}}\n"))
 	if _, err := r.Read(); !errors.Is(err, ErrLineTooLong) {
 		t.Errorf("oversize line: %v", err)
 	}
 	// Exactly at the bound is fine; one byte more is not.
 	pad := func(n int) []byte {
-		prefix := `{"type":"event","event":"x","data":{"k":"`
+		prefix := `{"type":"request","id":1,"method":"ping","params":{"k":"`
 		suffix := `"}}`
 		return []byte(prefix + strings.Repeat("a", n-len(prefix)-len(suffix)) + suffix)
 	}
@@ -98,7 +97,7 @@ func TestOversizeRefused(t *testing.T) {
 		t.Errorf("over the bound: %v", err)
 	}
 	// Encode refuses to send one.
-	f := &Frame{Type: TypeEvent, Event: "x", Data: json.RawMessage(`{"k":"` + big + `"}`)}
+	f := &Frame{Type: TypeRequest, ID: 1, Method: "ping", Params: json.RawMessage(`{"k":"` + big + `"}`)}
 	if _, err := Encode(f); !errors.Is(err, ErrLineTooLong) {
 		t.Errorf("encode oversize: %v", err)
 	}
@@ -191,8 +190,7 @@ func TestGarbledRefused(t *testing.T) {
 		"error bad kind":     `{"type":"response","id":1,"error":{"kind":"Bad Kind","message":""}}`,
 		"error ctl message":  `{"type":"response","id":1,"error":{"kind":"busy","message":"a\nb"}}`,
 		"error bidi message": `{"type":"response","id":1,"error":{"kind":"busy","message":"a\u202eb"}}`,
-		"event bad name":     `{"type":"event","event":"X"}`,
-		"event with id":      `{"type":"event","event":"x","id":1}`,
+		"event":              `{"type":"event","event":"x"}`,
 		"id wrong type":      `{"type":"request","id":"1","method":"ping"}`,
 		"negative id":        `{"type":"request","id":-1,"method":"ping"}`,
 	} {

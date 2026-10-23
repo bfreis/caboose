@@ -177,7 +177,7 @@ func NewLink(n8, isolation, trust string) (*Link, error) {
 
 // Env is a conformance.Env over the Link.
 func (l *Link) Env(isolation, trust string) conformance.Env {
-	return conformance.NewEnv(l, l, l, l, isolation, trust)
+	return conformance.NewEnv(l, l, l, isolation, trust)
 }
 
 // Faults.

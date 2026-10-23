@@ -90,22 +90,6 @@ func (w *webState) current() string {
 	return w.token
 }
 
-// check reports whether got is the token, in constant time. With no token,
-// nothing is.
-func (w *webState) check(got string) bool {
-	return daemonproto.TokenEqual(got, w.current())
-}
-
-// proof is the page's proof for origin and nonce (daemonproto.WebProof),
-// and false for a nonce of the wrong form or when there is no token.
-func (w *webState) proof(origin, nonce string) (string, bool) {
-	tok := w.current()
-	if !daemonproto.ValidToken(tok) || !daemonproto.ValidNonce(nonce) {
-		return "", false
-	}
-	return daemonproto.WebProof(tok, origin, nonce), true
-}
-
 // mintLocked makes a one-time code good for daemonproto.CodeTTL, dropping
 // the expired ones and, past maxCodes, the oldest. Called under mu.
 func (w *webState) mintLocked() (string, error) {

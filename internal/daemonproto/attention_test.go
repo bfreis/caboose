@@ -37,14 +37,6 @@ func TestAttentionValidate(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	for _, k := range AttentionKinds() {
-		if _, known := attentionKinds[k]; !known {
-			t.Errorf("kind %s missing from the table", k)
-		}
-	}
-	if len(AttentionKinds()) != len(attentionKinds) {
-		t.Error("the kinds list and table differ")
-	}
 }
 
 func TestAttentionInStatus(t *testing.T) {

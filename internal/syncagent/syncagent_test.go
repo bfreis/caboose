@@ -139,7 +139,7 @@ func newRemote(t *testing.T) string {
 }
 
 func mem(file string) string {
-	return ".claude/projects/" + statesync.ProjectKey("/work/p") + "/memory/" + file
+	return ".claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/" + file
 }
 
 // A sync run through the protocol: the repo set up and the remote set as
@@ -305,20 +305,14 @@ func TestAskpassRefusedFails(t *testing.T) {
 	}
 }
 
-// An agent from an older image does not know the sync at all; one of
-// another protocol version says so in its hello. Either is told apart
-// from a sync that failed, so the host can say to restart.
+// An agent of another protocol version says so in its hello, and is told
+// apart from a sync that failed, so the host can say to restart.
 func TestRunTellsAnOldAgent(t *testing.T) {
-	for name, script := range map[string]string{
-		"unknown command": `echo "usage: caboose-agent COMMAND" >&2; exit 2`,
-		"other version":   `echo '{"type":"hello","version":99}'; head -n 1 >/dev/null`,
-	} {
-		_, err := Run(exec.Command("sh", "-c", script), Request{Mounted: []string{}}, Handler{}, nil)
-		if !errors.Is(err, ErrOldAgent) {
-			t.Errorf("%s: %v", name, err)
-		}
+	_, err := Run(exec.Command("sh", "-c", `echo '{"type":"hello","version":99}'; head -n 1 >/dev/null`), Request{Mounted: []string{}}, Handler{}, nil)
+	if !errors.Is(err, ErrOldAgent) {
+		t.Errorf("other version: %v", err)
 	}
-	_, err := Run(exec.Command("sh", "-c", `echo boom >&2; exit 1`), Request{}, Handler{}, nil)
+	_, err = Run(exec.Command("sh", "-c", `echo boom >&2; exit 1`), Request{}, Handler{}, nil)
 	if err == nil || errors.Is(err, ErrOldAgent) || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("a failure: %v", err)
 	}
@@ -539,14 +533,15 @@ func TestAskpassStopsWithASilentClient(t *testing.T) {
 	}
 }
 
-// The host's end: an old agent's usage text is not shown; a reply too
-// long to send fails the run rather than leave both ends waiting; and no
-// more than MaxAsks prompts reach the person.
+// The host's end: what an agent says before its hello is not shown, but
+// told in the error; a reply too long to send fails the run rather than
+// leave both ends waiting; and no more than MaxAsks prompts reach the
+// person.
 func TestRunEdges(t *testing.T) {
 	var shown bytes.Buffer
 	_, err := Run(exec.Command("sh", "-c", `echo "usage: caboose-agent COMMAND" >&2; exit 2`), Request{}, Handler{}, &shown)
-	if !errors.Is(err, ErrOldAgent) || shown.Len() > 0 {
-		t.Errorf("old agent: %v, showed %q", err, shown.String())
+	if err == nil || !strings.Contains(err.Error(), "did not start") || !strings.Contains(err.Error(), "usage: caboose-agent") || shown.Len() > 0 {
+		t.Errorf("no hello: %v, showed %q", err, shown.String())
 	}
 
 	hello := `echo '{"type":"hello","version":1}'; read req; `

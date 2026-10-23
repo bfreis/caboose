@@ -9,6 +9,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/launcher"
 	"github.com/bfreis/caboose/internal/nodocker"
+	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/syncagent"
 )
@@ -111,7 +112,7 @@ func mountedHere(git, data string) string {
 func TestSyncCommand(t *testing.T) {
 	data, remote, git := syncEnv(t, mountedHere)
 	// The project's key as the sandbox has it: under /work, whatever HOME is.
-	key := statesync.ProjectKey("/work/dev/proj")
+	key := sandboxcfg.ProjectKey("/work/dev/proj")
 	mem := filepath.Join(data, "home", ".claude", "projects", key, "memory")
 	if err := os.MkdirAll(mem, 0o755); err != nil {
 		t.Fatal(err)

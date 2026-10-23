@@ -83,7 +83,7 @@ var testRoots = []string{"/work"}
 // mem is the data dir path of a project's memory file, rel being the
 // project's path under /work -- the same on every machine.
 func mem(rel, file string) string {
-	return ".claude/projects/" + ProjectKey("/work/"+rel) + "/memory/" + file
+	return ".claude/projects/" + sandboxcfg.ProjectKey("/work/"+rel) + "/memory/" + file
 }
 
 // write, read and exists take a path relative to the home, as the
@@ -171,7 +171,7 @@ func TestSyncAcrossMachines(t *testing.T) {
 	// Not synced: the credential, transcripts, history, a project outside
 	// /work.
 	a.write(".claude/.credentials.json", `{"claudeAiOauth":{}}`)
-	a.write(".claude/projects/"+ProjectKey("/work/bfreis/caboose")+"/s.jsonl", "{}\n")
+	a.write(".claude/projects/"+sandboxcfg.ProjectKey("/work/bfreis/caboose")+"/s.jsonl", "{}\n")
 	a.write(".claude/history.jsonl", "{}\n")
 	a.write(".claude/projects/-home-agent/memory/x.md", "outside\n")
 	a.write(".claude/skills/synced/acct_org/docx/SKILL.md", "Claude Code's cache\n")
@@ -590,16 +590,16 @@ func TestSyncRefusesLinksInTheDataDir(t *testing.T) {
 	}
 	a.write(".claude/skills/real/SKILL.md", "real\n")
 	link(filepath.Dir(outside), ".claude/skills/linked")
-	if err := os.MkdirAll(dir(".claude/projects/"+ProjectKey("/work/q")), 0o777); err != nil {
+	if err := os.MkdirAll(dir(".claude/projects/"+sandboxcfg.ProjectKey("/work/q")), 0o777); err != nil {
 		t.Fatal(err)
 	}
-	link("../"+ProjectKey("/work/p")+"/memory", ".claude/projects/"+ProjectKey("/work/q")+"/memory")
+	link("../"+sandboxcfg.ProjectKey("/work/p")+"/memory", ".claude/projects/"+sandboxcfg.ProjectKey("/work/q")+"/memory")
 	r := a.sync()
 	want := []string{
-		".claude/projects/" + ProjectKey("/work/p") + "/memory/hard.md",
-		".claude/projects/" + ProjectKey("/work/p") + "/memory/kept.md",
-		".claude/projects/" + ProjectKey("/work/p") + "/memory/outside.md",
-		".claude/projects/" + ProjectKey("/work/q") + "/memory",
+		".claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/hard.md",
+		".claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/kept.md",
+		".claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/outside.md",
+		".claude/projects/" + sandboxcfg.ProjectKey("/work/q") + "/memory",
 		".claude/skills/linked",
 	}
 	if !reflect.DeepEqual(r.Refused, want) {
@@ -708,7 +708,7 @@ func TestSyncIgnoresRemoteSymlinks(t *testing.T) {
 		t.Fatalf("clone: %v\n%s", err, out)
 	}
 	blob := gitIn(clone, target, "hash-object", "-w", "--stdin")
-	for _, p := range []string{"home/.claude/settings.json", RepoHome + ".claude/projects/" + ProjectKey("/work/p") + "/memory/link.md"} {
+	for _, p := range []string{"home/.claude/settings.json", RepoHome + ".claude/projects/" + sandboxcfg.ProjectKey("/work/p") + "/memory/link.md"} {
 		gitIn(clone, "", "update-index", "--add", "--cacheinfo", "120000,"+blob+","+p)
 	}
 	gitIn(clone, "", "commit", "-q", "-m", "links")
@@ -896,7 +896,9 @@ func TestSyncFollowsTheRoots(t *testing.T) {
 	b := newMachine(t, "beta", remote)
 	a.s.Roots, a.s.Sandbox = []string{"/opt/x", "/work/dev"}, nil
 	b.s.Roots, b.s.Sandbox = []string{"/work/dev"}, nil
-	memory := func(project string) string { return ".claude/projects/" + ProjectKey(project) + "/memory/m.md" }
+	memory := func(project string) string {
+		return ".claude/projects/" + sandboxcfg.ProjectKey(project) + "/memory/m.md"
+	}
 	synced := []string{memory("/opt/x"), memory("/opt/x/app"), memory("/work/dev/p")}
 	left := []string{memory("/opt/xy/app"), memory("/workspace/p"), memory("/work/other"), memory("/work")}
 	for _, p := range append(slices.Clone(synced), left...) {

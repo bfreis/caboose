@@ -85,21 +85,6 @@ const (
 	maxSkillDepth   = 4
 )
 
-// SandboxInstructions returns the sandbox CLAUDE.md to install: the
-// checkout's tracked copy when there is a checkout, read fresh on every
-// launch so an edit reaches the next session with no rebuild, and the copy
-// embedded at build time otherwise. The checkout is under a root the
-// sandbox can write, so nothing in it is read through a link, or past
-// maxSkillBytes.
-func SandboxInstructions(checkout string) ([]byte, error) {
-	if checkout != "" {
-		if b, _, err := nofollow.Dir(checkout).ReadFileMax(assets.SandboxInstructionsPath, maxSkillBytes); err == nil {
-			return b, nil
-		}
-	}
-	return assets.SandboxInstructions()
-}
-
 // managedPath is where a file of sandbox/skills goes, relative to
 // datadir.ManagedDir.
 func managedPath(rel string) string { return ".claude/skills/" + rel }

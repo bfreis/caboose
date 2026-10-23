@@ -14,6 +14,15 @@ import (
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 )
 
+// Paths in the data dir the tests look at.
+const (
+	claudeJSON = HomeDir + "/.claude.json"
+	jjConfig   = HomeDir + "/.config/jj/config.toml"
+)
+
+// inHome is home-relative path rel's place in the data dir.
+func inHome(rel string) string { return HomeDir + "/" + rel }
+
 func inode(t *testing.T, p string) uint64 {
 	t.Helper()
 	fi, err := os.Stat(p)
@@ -69,7 +78,7 @@ func defKeep() []sandboxcfg.Keep {
 
 func TestEnsureLayout(t *testing.T) {
 	dir := t.TempDir()
-	keep := filepath.Join(dir, ClaudeJSON)
+	keep := filepath.Join(dir, claudeJSON)
 	if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +89,12 @@ func TestEnsureLayout(t *testing.T) {
 	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range append([]string{HomeDir, ClaudeDir, CabooseConfig, SSHDir, Home(".config/gh"), Home(".config/jj"), ManagedDir}, Machinery...) {
+	for _, d := range append([]string{HomeDir, ClaudeDir, CabooseConfig, SSHDir, inHome(".config/gh"), inHome(".config/jj"), ManagedDir}, Machinery...) {
 		if fi, err := os.Stat(filepath.Join(dir, d)); err != nil || !fi.IsDir() {
 			t.Errorf("%s is not a directory", d)
 		}
 	}
-	for _, f := range []string{ClaudeJSON, GitConfig} {
+	for _, f := range []string{claudeJSON, GitConfig} {
 		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || !fi.Mode().IsRegular() {
 			t.Errorf("%s is not a regular file", f)
 		}
@@ -100,7 +109,7 @@ func TestEnsureLayout(t *testing.T) {
 	}
 	// No git config means git would write ~/.gitconfig instead, outside
 	// every mount. jj creates its own, so an empty one is not planted.
-	if _, err := os.Stat(filepath.Join(dir, JJConfig)); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, jjConfig)); err == nil {
 		t.Error("an empty jj config.toml was created")
 	}
 	// A user's entries, a file one included.
@@ -111,10 +120,10 @@ func TestEnsureLayout(t *testing.T) {
 	if err := EnsureLayout(dir, c.Keep); err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(filepath.Join(dir, Home(".cargo"))); err != nil || !fi.IsDir() {
+	if fi, err := os.Stat(filepath.Join(dir, inHome(".cargo"))); err != nil || !fi.IsDir() {
 		t.Errorf("~/.cargo: %v", err)
 	}
-	if fi, err := os.Stat(filepath.Join(dir, Home(".npmrc"))); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
+	if fi, err := os.Stat(filepath.Join(dir, inHome(".npmrc"))); err != nil || !fi.Mode().IsRegular() || fi.Size() != 0 {
 		t.Errorf("~/.npmrc: %v", err)
 	}
 }
@@ -128,7 +137,7 @@ func TestEnsureLayoutSeedsClaudeJSON(t *testing.T) {
 	if err := EnsureLayout(dir, defKeep()); err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(dir, ClaudeJSON)
+	p := filepath.Join(dir, claudeJSON)
 	if got := read(t, p); got != "{}\n" {
 		t.Errorf("new .claude.json = %q, want %q", got, "{}\n")
 	}
@@ -175,7 +184,7 @@ func TestKeptDirsArePrivate(t *testing.T) {
 			t.Errorf("%s: mode %v, want 0700", k.Rel, m)
 		}
 	}
-	gh := filepath.Join(dir, Home(".config/gh"))
+	gh := filepath.Join(dir, inHome(".config/gh"))
 	if err := os.Chmod(gh, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +386,7 @@ func TestRealGitUsesXDGConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Stands in for the directory bind mount.
-	if err := os.Symlink(filepath.Join(data, Home(".config/git")), filepath.Join(home, ".config/git")); err != nil {
+	if err := os.Symlink(filepath.Join(data, inHome(".config/git")), filepath.Join(home, ".config/git")); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -401,7 +410,7 @@ func TestRealGitUsesXDGConfig(t *testing.T) {
 // existing file for writing, and neither may EnsureLayout.
 func TestEnsureLayoutReadOnlyFiles(t *testing.T) {
 	dir := t.TempDir()
-	files := []string{ClaudeJSON, GitConfig}
+	files := []string{claudeJSON, GitConfig}
 	for _, f := range files {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o777); err != nil {
 			t.Fatal(err)
@@ -455,7 +464,7 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 			t.Errorf("%s: mode %v, want 0775", d, m)
 		}
 	}
-	for _, d := range []string{HomeDir, ClaudeDir, Home(".config")} {
+	for _, d := range []string{HomeDir, ClaudeDir, inHome(".config")} {
 		if m := perm(t, filepath.Join(dir, d)); m != 0o700 {
 			t.Errorf("%s: mode %v, want 0700", d, m)
 		}
@@ -467,7 +476,7 @@ func TestCreatedModesFollowUmask(t *testing.T) {
 	if m := perm(t, filepath.Join(dir, ManagedInstructions)); m != 0o644 {
 		t.Errorf("%s: mode %v, want 0644", ManagedInstructions, m)
 	}
-	for _, f := range []string{ClaudeJSON, GitConfig} {
+	for _, f := range []string{claudeJSON, GitConfig} {
 		if m := perm(t, filepath.Join(dir, f)); m != 0o664 {
 			t.Errorf("%s: mode %v, want 0664", f, m)
 		}

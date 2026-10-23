@@ -587,7 +587,7 @@ func fakeDaemon(t *testing.T, accept bool) string {
 		c := daemonproto.NewConn(nc)
 		defer c.Close()
 		if accept {
-			_, _, _ = daemonproto.ServerHandshake(c, "test", 3*time.Second)
+			_, _, _ = daemonproto.ServerHandshake(c, "test", daemonproto.ProtocolVersion, 3*time.Second)
 			return
 		}
 		if _, err := c.Read(3 * time.Second); err != nil {

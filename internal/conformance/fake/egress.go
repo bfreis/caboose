@@ -162,7 +162,7 @@ func NewEgress(n8, isolation, trust string, hosts []string) (*Egress, error) {
 
 // Env is a conformance.Env over the Egress.
 func (e *Egress) Env(isolation, trust string) conformance.Env {
-	return conformance.NewEnv(e, e, e, e, isolation, trust)
+	return conformance.NewEnv(e, e, e, isolation, trust)
 }
 
 func (e *Egress) fault(f Fault) bool {

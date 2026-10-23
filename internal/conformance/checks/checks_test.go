@@ -64,7 +64,7 @@ func anchor(group string) c.Check {
 // runWith runs checks (after a harmless first step) in the model through
 // sb, which may wrap it.
 func runWith(f *fake.Fake, sb c.Sandbox, iso string, cks ...c.Check) ([]c.Result, *c.Collector) {
-	env := c.NewEnv(sb, f, f, f, iso, "fallible")
+	env := c.NewEnv(sb, f, f, iso, "fallible")
 	r := &c.Runner{Env: &fake.Envelope{F: f}, Wipe: true, Restart: f.Restart}
 	// A failed destructive check ends the run with an error; the results
 	// are still there.

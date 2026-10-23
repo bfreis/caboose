@@ -42,27 +42,18 @@ func (c *Conn) setDeadline(set func(time.Time) error, d time.Duration) {
 	}
 }
 
-// ServerHandshake is the daemon's side of the hello. It waits at most d for
-// the client's hello, answers with the daemon's own, and reports how the
-// client's protocol compares. A client that does not open with a valid hello
-// (a hello naming the kind daemon or web included: those are the daemon's
-// own hello's and its own web page's) is refused with KindBadRequest; one
-// on an older protocol gets the daemon's hello (so it can say what it met)
-// and then KindProtocolMismatch, and an error is returned for both. A client on a newer protocol is let through
+// ServerHandshake is the daemon's side of the hello, claiming protocol
+// proto (the daemon passes the one it serves, ProtocolVersion unless it was
+// told otherwise). It waits at most d for the client's hello, answers with
+// the daemon's own, and reports how the client's protocol compares. A client
+// that does not open with a valid hello (a hello naming the kind daemon or
+// web included: those are the daemon's own hello's and its own web page's)
+// is refused with KindBadRequest; one on an older protocol gets the daemon's
+// hello (so it can say what it met) and then KindProtocolMismatch, and an
+// error is returned for both. A client on a newer protocol is let through
 // with CompatClientNewer: the daemon should serve it only ping, status,
 // stop and replace, and expects a replace.
-func ServerHandshake(c *Conn, daemonVersion string, d time.Duration) (*Frame, Compat, error) {
-	return serverHandshake(c, daemonVersion, ProtocolVersion, d)
-}
-
-// ServerHandshakeProtocol is ServerHandshake claiming protocol proto
-// rather than ProtocolVersion: for tests that play a daemon of another
-// protocol.
-func ServerHandshakeProtocol(c *Conn, daemonVersion string, proto int, d time.Duration) (*Frame, Compat, error) {
-	return serverHandshake(c, daemonVersion, proto, d)
-}
-
-func serverHandshake(c *Conn, daemonVersion string, proto int, d time.Duration) (*Frame, Compat, error) {
+func ServerHandshake(c *Conn, daemonVersion string, proto int, d time.Duration) (*Frame, Compat, error) {
 	hello, err := c.Read(d)
 	switch {
 	case err != nil:

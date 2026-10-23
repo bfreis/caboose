@@ -119,7 +119,6 @@ func Truncate(p SPath) (Cmd, error) { return build(false, "truncate -s 0 %s", p)
 func Touch(p SPath) (Cmd, error)    { return build(false, "touch %s", p) }
 func Chmod(p SPath) (Cmd, error)    { return build(false, "chmod 600 %s", p) }
 func Read(p SPath) (Cmd, error)     { return build(false, "cat %s", p) }
-func List(p SPath) (Cmd, error)     { return build(false, "find %s", p) }
 
 func Remove(p SPath) (Cmd, error)     { return build(true, "rm %s", p) }
 func RemoveTree(p SPath) (Cmd, error) { return build(true, "rm -r %s", p) }
@@ -187,14 +186,6 @@ func AppendThrough(target, scratch SPath) (Cmd, error) {
 // UmountThenAppend unmounts mp and then appends to p.
 func UmountThenAppend(mp, p SPath) (Cmd, error) {
 	return build(true, "umount %s && echo x >> %s", mp, p)
-}
-
-// ShellOf runs another command through sh -c, to exercise the nested form.
-func ShellOf(c Cmd) (Cmd, error) {
-	if !c.valid() || c.wipe || strings.Contains(c.body, "'") {
-		return Cmd{}, errors.New("conformance: nothing to nest")
-	}
-	return Cmd{body: "sh -c '" + c.body + "'", destructive: c.destructive}, nil
 }
 
 // ErrNoEnvelope is what a check gets when it runs outside the runner.

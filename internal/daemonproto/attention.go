@@ -1,6 +1,8 @@
 package daemonproto
 
 import (
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -36,10 +38,9 @@ var attentionKinds = map[string]bool{
 	AttentionUpdate:     true,
 }
 
-// AttentionKinds are the kinds an item may have.
+// AttentionKinds are the kinds an item may have, sorted.
 func AttentionKinds() []string {
-	return []string{AttentionRequests, AttentionProposals, AttentionLinkFailed, AttentionVnodes,
-		AttentionCheckpoint, AttentionImageStale, AttentionUpdate}
+	return slices.Sorted(maps.Keys(attentionKinds))
 }
 
 // AttentionItem is one thing that needs the user.

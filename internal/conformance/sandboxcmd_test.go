@@ -34,7 +34,7 @@ func allCommands(t *testing.T) []c.Cmd {
 	}
 	for _, role := range []string{"ro-file", "wr-file", "parent-file", "ro-dir", "wr-dir", "ro-tree", "wr-tree"} {
 		p := path(role)
-		for _, b := range []func(c.SPath) (c.Cmd, error){c.Append, c.Truncate, c.Touch, c.Chmod, c.Read, c.List, c.Remove, c.RemoveTree} {
+		for _, b := range []func(c.SPath) (c.Cmd, error){c.Append, c.Truncate, c.Touch, c.Chmod, c.Read, c.Remove, c.RemoveTree} {
 			add(b(p))
 		}
 	}
