@@ -227,7 +227,19 @@ jobs:
             echo "::error::notarizing Caboose.app: $status"
             exit 1
           fi
-          xcrun stapler staple "$app"
+          # Stapling fetches the ticket from Apple, a request a dropped
+          # connection fails (NSURLErrorDomain -1005, exit 68), and a ticket
+          # just accepted may take a moment to be served: tried again.
+          i=1
+          until xcrun stapler staple "$app"; do
+            if [ "$i" -ge 5 ]; then
+              echo "::error::stapling Caboose.app failed $i times"
+              exit 1
+            fi
+            echo "stapling failed (try $i of 5); again in 30 s"
+            i=$((i + 1))
+            sleep 30
+          done
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
 
