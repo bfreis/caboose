@@ -67,6 +67,8 @@ func byOf(who string) (string, error) {
 		return broker.ByCLI, nil
 	case daemonproto.ClientWeb:
 		return broker.ByWeb, nil
+	case daemonproto.ClientApp:
+		return broker.ByApp, nil
 	}
 	return "", daemonproto.NewError(daemonproto.KindNotAllowed, "a %s client may not answer", daemonproto.Text(who, 16))
 }

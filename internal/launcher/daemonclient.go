@@ -135,8 +135,14 @@ func (a *App) servedByDaemon() bool {
 // answers); one failure is said once, with the command that fixes it. A
 // command run with CABOOSE_DATA_DIR set keeps its link in a detached
 // helper of its own (startDetachedLink): the daemon never reads that
-// variable.
+// variable. The App a daemon's job runs on has the daemon's links in
+// its own process (linkHook): dialling the daemon's socket from inside
+// the daemon could start a second one, or wait on itself.
 func (a *App) startLink() {
+	if a.linkHook != nil {
+		a.linkHook()
+		return
+	}
 	if !a.servedByDaemon() {
 		a.startDetachedLink()
 		return

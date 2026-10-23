@@ -11,10 +11,14 @@ import (
 )
 
 func TestParseMounts(t *testing.T) {
-	got := ParseMounts("/home/agent/.claude\t/h/.caboose/.claude\n/work/h/dev\t/h/dev\n")
+	got := ParseMounts("/home/agent/.claude\t/h/.caboose/.claude\n/work/h/dev\t/h/dev\tbind\t\n" +
+		"/var/lib/docker\t/var/lib/docker/volumes/v/_data\tvolume\tv\n/t\t/a\tb\tbind\t\n")
 	want := []Mount{
-		{"/home/agent/.claude", "/h/.caboose/.claude"},
-		{"/work/h/dev", "/h/dev"},
+		{Destination: "/home/agent/.claude", Source: "/h/.caboose/.claude"},
+		{Destination: "/work/h/dev", Source: "/h/dev", Type: "bind"},
+		{Destination: "/var/lib/docker", Source: "/var/lib/docker/volumes/v/_data", Type: "volume", Name: "v"},
+		// A tab in a source stays in it.
+		{Destination: "/t", Source: "/a\tb", Type: "bind"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v", got)
@@ -168,5 +172,68 @@ func TestBuildTurnsOffDefaultAttestations(t *testing.T) {
 	}
 	if got := out.String(); got != "build -t x . 1\n" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestInspectVolume(t *testing.T) {
+	c := fakeDocker(t, `[ "$1 $2 $3 $4 $5" = "volume inspect --format {{json .}} --" ] || exit 9
+echo '{"Name":"v","Driver":"local","Mountpoint":"/var/lib/docker/volumes/v/_data","Options":{"device":"/x","o":"bind","type":"none"}}'`)
+	v, exists, err := c.InspectVolume("v")
+	if err != nil || !exists || v.Driver != "local" || !reflect.DeepEqual(v.Options, map[string]string{"device": "/x", "o": "bind", "type": "none"}) {
+		t.Errorf("present: %+v %v %v", v, exists, err)
+	}
+	c = fakeDocker(t, `echo '{"Name":"v","Driver":"local","Options":null}'`)
+	if v, exists, err := c.InspectVolume("v"); err != nil || !exists || v.Driver != "local" || v.Options != nil {
+		t.Errorf("no options: %+v %v %v", v, exists, err)
+	}
+	// The engine answers and lists no such volume: absent.
+	c = fakeDocker(t, `case "$1 $2" in
+  "version "*) exit 0 ;;
+  "volume ls") printf 'other\nv2\n'; exit 0 ;;
+esac
+echo "Error response from daemon: get v: no such volume" >&2; exit 1`)
+	if _, exists, err := c.InspectVolume("v"); err != nil || exists {
+		t.Errorf("absent: %v %v", exists, err)
+	}
+	// Unlisted, but inspect fails for another reason (a driver plugin
+	// down can leave its volumes out of the listing): an error.
+	c = fakeDocker(t, `case "$1 $2" in
+  "version "*) exit 0 ;;
+  "volume ls") printf 'other\n'; exit 0 ;;
+esac
+echo "Error response from daemon: plugin not found" >&2; exit 1`)
+	if _, _, err := c.InspectVolume("v"); err == nil || IsUnreachable(err) {
+		t.Errorf("unlisted, other failure: %v", err)
+	}
+	// Listed, yet not inspected: an error.
+	c = fakeDocker(t, `case "$1 $2" in
+  "version "*) exit 0 ;;
+  "volume ls") printf 'v\n'; exit 0 ;;
+esac
+exit 1`)
+	if _, _, err := c.InspectVolume("v"); err == nil || IsUnreachable(err) {
+		t.Errorf("listed but failing: %v", err)
+	}
+	// No listing either: an error.
+	c = fakeDocker(t, `[ "$1" = version ] && exit 0; exit 1`)
+	if _, _, err := c.InspectVolume("v"); err == nil || IsUnreachable(err) {
+		t.Errorf("listing fails: %v", err)
+	}
+	// No engine: unreachable.
+	c = &CLI{Path: "false"}
+	if _, exists, err := c.InspectVolume("v"); exists || !IsUnreachable(err) {
+		t.Errorf("unreachable: %v %v", exists, err)
+	}
+	// Output that is no volume's: an error.
+	c = fakeDocker(t, `echo 'not json'`)
+	if _, _, err := c.InspectVolume("v"); err == nil {
+		t.Error("unparsable output read")
+	}
+	// A name that is no volume's never reaches docker.
+	c = fakeDocker(t, `exit 0`)
+	for _, n := range []string{"", "-x", "--help", ".v", "a/b", "a:b", "a b"} {
+		if _, _, err := c.InspectVolume(n); err == nil {
+			t.Errorf("%q inspected", n)
+		}
 	}
 }

@@ -299,21 +299,24 @@ func ParseLabels(out string) (map[string]string, error) {
 	return labels, nil
 }
 
-// Mount is one bind mount of a container.
-type Mount struct{ Destination, Source string }
+// Mount is one mount of a container: Type is the engine's ("bind",
+// "volume", "tmpfs", ...), and Name a volume's name ("" for the rest).
+type Mount struct{ Destination, Source, Type, Name string }
 
 // Mounts lists the container's mounts; an error means it could not be
 // inspected, typically because it does not exist yet.
 func (c *CLI) Mounts(name string) ([]Mount, error) {
 	out, err := c.Output("inspect", "--type=container", name,
-		"--format", `{{range .Mounts}}{{.Destination}}{{"\t"}}{{.Source}}{{"\n"}}{{end}}`)
+		"--format", `{{range .Mounts}}{{.Destination}}{{"\t"}}{{.Source}}{{"\t"}}{{.Type}}{{"\t"}}{{.Name}}{{"\n"}}{{end}}`)
 	if err != nil {
 		return nil, err
 	}
 	return ParseMounts(out), nil
 }
 
-// ParseMounts parses "destination<TAB>source" lines.
+// ParseMounts parses "destination<TAB>source<TAB>type<TAB>name" lines,
+// and "destination<TAB>source" ones, which leave Type and Name empty.
+// The type and the name hold no tab, so they are read from the end.
 //
 // On a Mac, Docker Desktop records most bind-mount sources as its VM sees
 // them, /Users/u/dev as /host_mnt/Users/u/dev, and some as they were given:
@@ -326,7 +329,74 @@ func ParseMounts(out string) []Mount {
 			continue
 		}
 		dest, src, _ := strings.Cut(line, "\t")
-		ms = append(ms, Mount{Destination: dest, Source: HostSource(src)})
+		var typ, name string
+		if strings.Count(src, "\t") >= 2 {
+			i := strings.LastIndex(src, "\t")
+			src, name = src[:i], src[i+1:]
+			i = strings.LastIndex(src, "\t")
+			src, typ = src[:i], src[i+1:]
+		}
+		ms = append(ms, Mount{Destination: dest, Source: HostSource(src), Type: typ, Name: name})
 	}
 	return ms
+}
+
+// Volume is what the engine says of a volume: its driver and the
+// driver's options, nil for none.
+type Volume struct {
+	Driver  string
+	Options map[string]string
+}
+
+// InspectVolume is what the engine says of the volume name. exists is
+// false, with no error, when the engine answers, lists no volume by
+// that name and its inspect says there is no such volume; an engine
+// that does not answer is an error IsUnreachable tells, and anything else it says is an error too, as is a name that
+// is no volume's (ValidVolumeName), which is never handed to docker.
+func (c *CLI) InspectVolume(name string) (v Volume, exists bool, err error) {
+	if !ValidVolumeName(name) {
+		return Volume{}, false, fmt.Errorf("%q is no volume's name", name)
+	}
+	out, err := c.Output("volume", "inspect", "--format", "{{json .}}", "--", name)
+	if err != nil {
+		if c.Quiet("version") != nil {
+			return Volume{}, false, unreachable{fmt.Errorf("docker volume inspect %s: %w", name, err)}
+		}
+		ls, lerr := c.Output("volume", "ls", "--quiet")
+		if lerr != nil {
+			return Volume{}, false, fmt.Errorf("docker volume inspect %s: %w; listing volumes: %v", name, err, lerr)
+		}
+		for _, n := range strings.Split(ls, "\n") {
+			if strings.TrimSpace(n) == name {
+				return Volume{}, true, fmt.Errorf("docker volume inspect %s: %w", name, err)
+			}
+		}
+		// Unlisted is absent only when inspect also said so: a volume
+		// whose driver plugin is down can be left out of the listing.
+		if !strings.Contains(strings.ToLower(err.Error()), "no such volume") {
+			return Volume{}, false, fmt.Errorf("docker volume inspect %s: %w", name, err)
+		}
+		return Volume{}, false, nil
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		return Volume{}, true, fmt.Errorf("docker volume inspect %s: parsing %q: %v", name, out, err)
+	}
+	return v, true, nil
+}
+
+// ValidVolumeName reports whether name is one the engine gives a volume:
+// a letter or digit, then letters, digits, '_', '.' or '-'.
+func ValidVolumeName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case i > 0 && (r == '_' || r == '.' || r == '-'):
+		default:
+			return false
+		}
+	}
+	return true
 }

@@ -8,6 +8,7 @@
 | `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root), and apply them; see [Proposals](proposals.md) |
 | `caboose requests [--all]` | what the sandbox asked for and waits on: URLs to open, connections through the `vm` proxy, runs of an alias whose `policy` is `"ask"`; `requests show N`, `requests approve N [--for 8h \| --always]`, `requests deny N` answer them |
 | `caboose ui [requests \| proposals \| ENV] [--print] [--new-token]` | open caboose's [web page](web-ui.md) in your browser, through the daemon; `--print` prints the address instead (it opens the page once, within 60 s), `--new-token` replaces the page's token first |
+| `caboose app [--selftest]` | macOS: the [menu-bar app](menu-bar-app.md), which Caboose.app runs when opened (`make app` puts it in `CABOOSE_HOME/app-dev`); `--selftest` checks the classes and selectors it uses and exits; it refuses to run from a place any sandbox reaches; elsewhere it says to use `caboose ui` |
 | `caboose grants [revoke ID]` | the timed and once grants in force, with the time each has left; `revoke ID` ends one |
 | `caboose permissions` | what this environment's sandbox may do now: trust, roots, aliases, host exec, URLs, outbound rules, grants, how many Claude Code sessions run in it and how many lack caboose's mod, and, when the sandbox was created with other roots, writable parts or trust than `config.toml` now gives, that those take effect at `caboose -e NAME restart` |
 | `caboose checkpoint list [PATH\|KEY] [--json]` | the [checkpoints](checkpoints.md) of the `[checkpoints]` paths: whether each path is copied now, and its checkpoints, newest first |
@@ -79,6 +80,8 @@ the sessions they are about to kill and ask first. `CABOOSE_FORCE=1` (or `true`)
 prompt; without a tty they refuse rather than assume. `caboose prune
 --docker` asks the same way, with or without sessions, since what it
 deletes cannot come back, and lists those stopping a running VM ends.
+The daemon's stop and restart, for a client that asked you itself, ask
+nothing more (see [the host link](host-link.md#the-daemon)).
 
 Sessions are per project and per terminal: a second `caboose` in the same
 repo while the first is attached gets `<project>-2`. `caboose --session

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bfreis/caboose/internal/appbundle"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/daemonproto"
@@ -75,8 +76,9 @@ func (a *App) now() time.Time {
 }
 
 // installed says how this caboose was installed. A release build is one
-// whose version is a release tag, and which is not next to a checkout (a
-// make build of a tagged commit is stamped with the tag).
+// whose version is a release tag, which is not next to a checkout (a
+// make build of a tagged commit is stamped with the tag), and which is
+// not the copy in a checkout's Caboose.app (make app), whatever its stamp.
 func (a *App) installed() install {
 	exe, err := a.executable()
 	if err != nil {
@@ -84,7 +86,7 @@ func (a *App) installed() install {
 	}
 	in := install{exe: exe}
 	switch {
-	case !release(currentVersion()) || a.Checkout != "":
+	case !release(currentVersion()) || a.Checkout != "" || appbundle.InCheckoutBundle(exe, appbundle.ReadPlist):
 		in.kind = installDev
 	case a.Cfg.Home == "":
 		in.kind = installOther

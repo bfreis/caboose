@@ -224,7 +224,7 @@ type RequestView struct {
 	Created   time.Time `json:"created"`
 	Expires   time.Time `json:"expires,omitzero"`
 	DecidedAt time.Time `json:"decided_at,omitzero"`
-	// DecidedBy is who answered: "cli" or "web" (the kind of
+	// DecidedBy is who answered: "cli", "web" or "app" (the kind of
 	// client the answer came through, which the daemon sets, never the
 	// answer), "dialog" (the URL dialog) or "expiry".
 	DecidedBy string `json:"decided_by,omitempty"`

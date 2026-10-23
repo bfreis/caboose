@@ -80,7 +80,8 @@ builds.
 
 The [web page](web-ui.md) applies a packages proposal too, alone or with
 a root, with **Build and apply**: the daemon builds the image as a job of
-the environment's (one at a time: another meanwhile is refused as busy) and the page shows its last lines as it goes. As `apply` does, it
+the environment's (one at a time: a stop or restart meanwhile is refused
+as busy) and the page shows its last lines as it goes. As `apply` does, it
 writes nothing unless the image builds; once it has, it plans the proposal
 again and writes it only if it still shows what you confirmed and the
 profile's packages in `config.toml` did not change while the image was

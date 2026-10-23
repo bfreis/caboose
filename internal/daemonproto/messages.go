@@ -19,7 +19,7 @@ const (
 	MethodStop        = "stop"
 	MethodReplace     = "replace"
 
-	// MethodSubscribe is reserved for the web page: the daemon
+	// MethodSubscribe is reserved for the web page and the app: the daemon
 	// will then send event frames. Protocol 1 answers it with
 	// KindUnknownMethod.
 	MethodSubscribe = "subscribe"
@@ -220,7 +220,7 @@ func (p *ReplaceParams) Validate() error {
 type ReplaceResult struct {
 	Exiting   bool `json:"exiting"`
 	HostExecs int  `json:"host_execs,omitempty"` // commands and jobs together
-	// Jobs is how many of HostExecs are jobs (a proposal's apply).
+	// Jobs is how many of HostExecs are jobs (stop, restart, apply).
 	Jobs int `json:"jobs,omitempty"`
 	// Current is set when the daemon is already the version asked for, or
 	// a newer one: it does nothing.
@@ -258,7 +258,7 @@ type DaemonInfo struct {
 	Dev       bool      `json:"dev,omitempty"` // a checkout's build, with a directory of its own
 	Dir       string    `json:"dir,omitempty"`
 	HostExecs int       `json:"host_execs"` // host-exec commands running, jobs included
-	// Jobs is how many of HostExecs are jobs (a proposal's apply), which
+	// Jobs is how many of HostExecs are jobs (stop, restart, apply), which
 	// a daemon's shutdown neither ends nor waits for.
 	Jobs int `json:"jobs,omitempty"`
 	// Replacing is set while a replace waits for the host-exec commands
@@ -271,6 +271,9 @@ type DaemonInfo struct {
 	// Web is the web page's state, never its token; absent when the
 	// daemon serves no page.
 	Web *WebState `json:"web,omitempty"`
+	// App is the attached menu-bar app ({attached: false} while none
+	// is); absent from a daemon that predates it.
+	App *AppInfo `json:"app,omitempty"`
 }
 
 // EnvStatus is the state of one environment the daemon knows.
@@ -299,9 +302,9 @@ type EnvStatus struct {
 	// Checkpoints is the environment's checkpoint schedule; absent while
 	// the daemon runs none for it.
 	Checkpoints *CheckpointStatus `json:"checkpoints,omitempty"`
-	// Job is the environment's latest job (a proposal applied with its
-	// build): while it runs, and for JobKept after it ended; absent
-	// otherwise.
+	// Job is the environment's latest job (a stop, a restart, or a
+	// proposal applied with its build): while it runs, and for JobKept
+	// after it ended; absent otherwise.
 	Job *JobInfo `json:"job,omitempty"`
 }
 
@@ -312,6 +315,9 @@ const JobKept = 10 * time.Minute
 type StatusResult struct {
 	Daemon DaemonInfo  `json:"daemon"`
 	Envs   []EnvStatus `json:"envs"`
+	// Attention is what needs the user, newest first, at most
+	// MaxAttention, as the daemon last computed it.
+	Attention []AttentionItem `json:"attention"`
 }
 
 // Link actions, as a LinkResult reports them.
@@ -340,7 +346,7 @@ func (s *StatusResult) Validate() error {
 			return err
 		}
 	}
-	return nil
+	return validateAttention(s.Attention)
 }
 
 // Validate checks the strings of a link result.
@@ -357,6 +363,11 @@ func (d *DaemonInfo) validate() error {
 	}
 	if d.Web != nil {
 		if err := d.Web.validate(); err != nil {
+			return err
+		}
+	}
+	if d.App != nil {
+		if err := d.App.validate(); err != nil {
 			return err
 		}
 	}

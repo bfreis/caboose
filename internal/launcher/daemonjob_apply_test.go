@@ -343,6 +343,9 @@ func TestDaemonBuildJobRefusals(t *testing.T) {
 	if _, err := w.start(v.File, v.Hash, ""); daemonproto.Kind(err) != daemonproto.KindBusy {
 		t.Errorf("a second build: %v", err)
 	}
+	if _, err := w.l.StartJob(t.Context(), daemonproto.JobRestart, "alpha"); daemonproto.Kind(err) != daemonproto.KindBusy || !strings.Contains(err.Error(), "apply") {
+		t.Errorf("a restart: %v", err)
+	}
 	close(w.hold)
 	if got := w.wait(); got.State != daemonproto.JobDone {
 		t.Errorf("%+v", got)

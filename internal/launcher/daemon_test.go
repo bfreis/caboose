@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/appbundle"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/checkpoint"
@@ -144,7 +145,7 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// The daemon's jobs' log, beside them.
+			// The daemon's stop and restart jobs' log, beside them.
 			jobsLog := filepath.Join(envDir, jobsLogFile)
 			if err := os.WriteFile(jobsLog, nil, 0o600); err != nil {
 				t.Fatal(err)
@@ -156,6 +157,13 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				t.Fatal(err)
 			}
 			private = append(private, store)
+			// make app's bundle, which the host runs, at every login once
+			// it is a login item.
+			bundleDir := filepath.Dir(appbundle.CheckoutPath(b.tmp))
+			if err := os.MkdirAll(filepath.Join(appbundle.CheckoutPath(b.tmp), "Contents", "MacOS"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			private = append(private, bundleDir)
 			private = append(private, tokens...)
 			if err := b.createContainer(false); err != nil {
 				t.Fatalf("createContainer: %v\n%s", err, b.errb)
@@ -177,7 +185,7 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				}
 				for _, f := range private {
 					if config.Within(src, f) || config.Within(f, src) {
-						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker, the jobs' log, the checkpoint store or the web page's token keeps", src, f)
+						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker, the jobs' log, the checkpoint store, the web page's token or the menu-bar app's bundle keeps", src, f)
 					}
 				}
 			}

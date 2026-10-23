@@ -49,7 +49,7 @@ func TestCheckpointsMethod(t *testing.T) {
 	f := &fakeCheckpoints{result: &daemonproto.CheckpointsResult{Env: "alpha", Paths: []daemonproto.CheckpointListed{{
 		Path: "/work/p", Key: "p-00000000", Checkpoints: []daemonproto.CheckpointView{{ID: "p-00000000@20261018T120000Z", Reason: "interval"}}}}}}
 	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Checkpoints: f})
-	for _, kind := range []string{daemonproto.ClientCLI} {
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientApp} {
 		r, err := dialAs(t, dir, kind, 0).Checkpoints(t.Context(), "alpha")
 		if err != nil || len(r.Paths) != 1 || r.Paths[0].Checkpoints[0].Reason != "interval" {
 			t.Fatalf("%s: %+v, %v", kind, r, err)

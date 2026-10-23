@@ -47,7 +47,7 @@ func TestWritableMethod(t *testing.T) {
 
 	f := &fakeWritable{result: &daemonproto.WritableResult{Writable: []daemonproto.WritablePath{{Path: "/w", Envs: []string{"alpha"}}}}}
 	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Writable: f})
-	for _, kind := range []string{daemonproto.ClientCLI} {
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientApp} {
 		r, err := dialAs(t, dir, kind, 0).Writable(t.Context())
 		if err != nil || len(r.Writable) != 1 || r.Writable[0].Path != "/w" {
 			t.Fatalf("%s: %+v, %v", kind, r, err)

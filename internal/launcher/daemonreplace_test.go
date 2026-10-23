@@ -311,8 +311,8 @@ func TestRespawnAfterReplace(t *testing.T) {
 	}
 }
 
-// jobLinks are links with some host commands and some jobs running, as
-// the daemon's status counts them together.
+// jobLinks are links with some host commands and some stop or restart
+// jobs running, as the daemon's status counts them together.
 type jobLinks struct {
 	slowLinks
 	execs, jobs int
@@ -322,7 +322,7 @@ func (l jobLinks) HostExecs() int         { return l.execs + l.jobs }
 func (l jobLinks) ExecCounts() (int, int) { return l.execs, l.jobs }
 
 // caboose daemon stop says it is ending only the host commands the
-// shutdown ends and waits for, never the jobs counted
+// shutdown ends and waits for, never the stop and restart jobs counted
 // beside them in the daemon's status.
 func TestDaemonStopSaysOnlyTheCommandsItEnds(t *testing.T) {
 	a := replaceApp(t)
@@ -341,7 +341,7 @@ func TestDaemonStopSaysOnlyTheCommandsItEnds(t *testing.T) {
 	}
 }
 
-// caboose daemon status counts host commands and jobs on
+// caboose daemon status counts host commands and stop or restart jobs on
 // lines of their own.
 func TestDaemonStatusSeparatesCommandsFromJobs(t *testing.T) {
 	a := replaceApp(t)
@@ -352,7 +352,7 @@ func TestDaemonStatusSeparatesCommandsFromJobs(t *testing.T) {
 	if err := a.Daemon([]string{"status"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"  host exec : 1 running\n", "  jobs      : 2 running\n"} {
+	for _, want := range []string{"  host exec : 1 running\n", "  jobs      : 2 stop or restart running\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status %q lacks %q", out.String(), want)
 		}

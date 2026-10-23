@@ -515,7 +515,7 @@ func TestServerHandshakeRefusesWebAndDaemon(t *testing.T) {
 			t.Errorf("%s: err %v, frames %+v", kind, err, got)
 		}
 	}
-	for _, kind := range []string{ClientCLI} {
+	for _, kind := range []string{ClientCLI, ClientApp} {
 		if _, got, err := rawHandshakeAs(t, kind, 1, 1); err != nil || len(got) != 1 || got[0].Type != TypeHello {
 			t.Errorf("%s: err %v, frames %+v", kind, err, got)
 		}

@@ -262,9 +262,15 @@ func mountTarget(flag, value string) string {
 
 // mountSpec is what a --mount value names, read as docker's CLI reads it:
 // one CSV record (so a field may be quoted), each key lower-cased, the last
-// of a key winning. Keys it does not need are left to docker.
+// of a key winning. Keys it does not need are left to docker. volumeOpts
+// is set when it names a volume's driver or a driver's option
+// (volume-driver, volume-opt), with which a volume can be any directory
+// of the engine's host (the local driver's o=bind,device=PATH). typ is
+// the type, lower-cased: "" when none is named, which docker takes as
+// "volume".
 type mountSpec struct {
-	source, target string
+	source, target, typ string
+	volumeOpts          bool
 }
 
 func mountFields(value string) (mountSpec, error) {
@@ -281,6 +287,10 @@ func mountFields(value string) (mountSpec, error) {
 			m.source = v
 		case "target", "dst", "destination":
 			m.target = v
+		case "type":
+			m.typ = strings.ToLower(strings.TrimSpace(v))
+		case "volume-driver", "volume-opt":
+			m.volumeOpts = true
 		}
 	}
 	return m, nil

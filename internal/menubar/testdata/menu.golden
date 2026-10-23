@@ -1,0 +1,142 @@
+caboose  [info]
+----
+dev: 25 pending requests  [info]
+dev: 2 pending proposals  [info]
+ops: 1 pending proposal  [info]
+ops: the link failed: exec failed  [info]
+dev: checkpoint note 0  [info]
+dev: checkpoint note 1  [info]
+dev: checkpoint note 2  [info]
+dev: checkpoint note 3  [info]
+2 more…  [id=attention-more]
+----
+Requests (25)
+  #25 dev open: https://example.com/docs/…/end
+    Allow once  [id=req:dev:25:once]
+    Allow for 4 hours  [id=req:dev:25:hours:4]
+    Allow for 8 hours  [id=req:dev:25:hours:8]
+    Allow for 24 hours  [id=req:dev:25:hours:24]
+    Allow always…  [id=req:dev:25:always]
+    Deny  [id=req:dev:25:deny]
+    ----
+    Details… (web page)  [id=req:dev:25:details]
+  #24 dev connect: host24.example.com
+    Allow once  [id=req:dev:24:once]
+    Deny  [id=req:dev:24:deny]
+    ----
+    Details… (web page)  [id=req:dev:24:details]
+  #23 dev connect: host23.example.com
+    Allow once  [id=req:dev:23:once]
+    Deny  [id=req:dev:23:deny]
+    ----
+    Details… (web page)  [id=req:dev:23:details]
+  #22 dev connect: host22.example.com
+    Allow once  [id=req:dev:22:once]
+    Deny  [id=req:dev:22:deny]
+    ----
+    Details… (web page)  [id=req:dev:22:details]
+  #21 dev connect: host21.example.com
+    Allow once  [id=req:dev:21:once]
+    Deny  [id=req:dev:21:deny]
+    ----
+    Details… (web page)  [id=req:dev:21:details]
+  #20 dev connect: host20.example.com
+    Allow once  [id=req:dev:20:once]
+    Deny  [id=req:dev:20:deny]
+    ----
+    Details… (web page)  [id=req:dev:20:details]
+  #19 dev connect: host19.example.com
+    Allow once  [id=req:dev:19:once]
+    Deny  [id=req:dev:19:deny]
+    ----
+    Details… (web page)  [id=req:dev:19:details]
+  #18 dev connect: host18.example.com
+    Allow once  [id=req:dev:18:once]
+    Deny  [id=req:dev:18:deny]
+    ----
+    Details… (web page)  [id=req:dev:18:details]
+  #17 dev connect: host17.example.com
+    Allow once  [id=req:dev:17:once]
+    Deny  [id=req:dev:17:deny]
+    ----
+    Details… (web page)  [id=req:dev:17:details]
+  #16 dev connect: host16.example.com
+    Allow once  [id=req:dev:16:once]
+    Deny  [id=req:dev:16:deny]
+    ----
+    Details… (web page)  [id=req:dev:16:details]
+  #15 dev connect: host15.example.com
+    Allow once  [id=req:dev:15:once]
+    Deny  [id=req:dev:15:deny]
+    ----
+    Details… (web page)  [id=req:dev:15:details]
+  #14 dev connect: host14.example.com
+    Allow once  [id=req:dev:14:once]
+    Deny  [id=req:dev:14:deny]
+    ----
+    Details… (web page)  [id=req:dev:14:details]
+  #13 dev connect: host13.example.com
+    Allow once  [id=req:dev:13:once]
+    Deny  [id=req:dev:13:deny]
+    ----
+    Details… (web page)  [id=req:dev:13:details]
+  #12 dev connect: host12.example.com
+    Allow once  [id=req:dev:12:once]
+    Deny  [id=req:dev:12:deny]
+    ----
+    Details… (web page)  [id=req:dev:12:details]
+  #11 dev connect: host11.example.com
+    Allow once  [id=req:dev:11:once]
+    Deny  [id=req:dev:11:deny]
+    ----
+    Details… (web page)  [id=req:dev:11:details]
+  #10 dev connect: host10.example.com
+    Allow once  [id=req:dev:10:once]
+    Deny  [id=req:dev:10:deny]
+    ----
+    Details… (web page)  [id=req:dev:10:details]
+  #9 dev connect: host9.example.com
+    Allow once  [id=req:dev:9:once]
+    Deny  [id=req:dev:9:deny]
+    ----
+    Details… (web page)  [id=req:dev:9:details]
+  #8 dev connect: host8.example.com
+    Allow once  [id=req:dev:8:once]
+    Deny  [id=req:dev:8:deny]
+    ----
+    Details… (web page)  [id=req:dev:8:details]
+  #7 dev connect: host7.example.com
+    Allow once  [id=req:dev:7:once]
+    Deny  [id=req:dev:7:deny]
+    ----
+    Details… (web page)  [id=req:dev:7:details]
+  #6 dev connect: host6.example.com
+    Allow once  [id=req:dev:6:once]
+    Deny  [id=req:dev:6:deny]
+    ----
+    Details… (web page)  [id=req:dev:6:details]
+  5 more… (opens the web page)  [id=requests-more]
+----
+3 proposals…  [id=proposals]
+----
+dev: running (vm, up 3 h)  [info]
+2 sessions attached  [info]
+memory 3.1 of 8 GB  [info]
+Mac files 41,200 of 263,168  [info]
+localhost:3000  [id=port:dev:3000]
+localhost:5173  [id=port:dev:5173]
+Open in web page  [id=env:dev]
+Stop…  [id=stop:dev]
+Restart…  [id=restart:dev]
+----
+ops: stopped, link failed  [info]
+exec: caboose-agent: not found  [info]
+Open in web page  [id=env:ops]
+----
+side  [info]
+served by the checkout's daemon  [info]
+----
+Open web UI  [id=web]
+Open log  [id=log]
+Open at login  [id=login:on]
+Quit  [id=quit]

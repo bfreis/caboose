@@ -11,12 +11,13 @@ import (
 func TestJobInfoValidate(t *testing.T) {
 	at := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	good := []JobInfo{
-		{Kind: JobApply, State: JobRunning, Since: at, Proposal: "dot.toml"},
-		{Kind: JobApply, State: JobDone, Since: at, Finished: at.Add(time.Second), Proposal: "dot.toml"},
+		{Kind: JobRestart, State: JobRunning, Since: at},
+		{Kind: JobStop, State: JobDone, Since: at, Finished: at.Add(time.Second)},
+		{Kind: JobRestart, State: JobFailed, Since: at, Finished: at, Error: "the image would not build"},
 		{Kind: JobApply, State: JobRunning, Since: at, Proposal: "dot.toml", Lines: []string{"Building", "<b>step</b> 1/3"}},
 		{Kind: JobApply, State: JobDone, Since: at, Finished: at, Proposal: "dot.toml", Notes: []string{"Wrote it", "restart"}},
 		{Kind: JobApply, State: JobFailed, Since: at, Finished: at, Proposal: "dot.toml", Error: "the build failed", Lines: []string{"x"}},
-		{Kind: JobApply, State: JobRunning, Since: at, Proposal: "dot.toml", Lines: make([]string, MaxJobLines)},
+		{Kind: JobRestart, State: JobRunning, Since: at, Lines: make([]string, MaxJobLines)},
 	}
 	for _, j := range good {
 		if err := j.Validate(); err != nil {
@@ -29,16 +30,17 @@ func TestJobInfoValidate(t *testing.T) {
 	}
 	for _, j := range []JobInfo{
 		{Kind: "start", State: JobRunning, Since: at},
-		{Kind: "stop", State: JobRunning, Since: at},
-		{Kind: JobApply, State: "queued", Since: at, Proposal: "dot.toml"},
-		{Kind: JobApply, State: JobRunning, Proposal: "dot.toml"},
-		{Kind: JobApply, State: JobRunning, Since: at, Finished: at, Proposal: "dot.toml"},
-		{Kind: JobApply, State: JobDone, Since: at, Proposal: "dot.toml"},
-		{Kind: JobApply, State: JobDone, Since: at, Finished: at.Add(-time.Second), Proposal: "dot.toml"},
-		{Kind: JobApply, State: JobDone, Since: at, Finished: at, Proposal: "dot.toml", Error: "x"},
-		{Kind: JobApply, State: JobFailed, Since: at, Finished: at, Proposal: "dot.toml", Error: "a\nb"},
-		{Kind: JobApply, State: JobFailed, Since: at, Finished: at, Proposal: "dot.toml", Error: "\u202e"},
-		{Kind: JobApply, State: JobFailed, Since: at, Finished: at, Proposal: "dot.toml", Error: strings.Repeat("x", MaxJobError+1)},
+		{Kind: JobStop, State: "queued", Since: at},
+		{Kind: JobStop, State: JobRunning},
+		{Kind: JobStop, State: JobRunning, Since: at, Finished: at},
+		{Kind: JobStop, State: JobDone, Since: at},
+		{Kind: JobStop, State: JobDone, Since: at, Finished: at.Add(-time.Second)},
+		{Kind: JobStop, State: JobDone, Since: at, Finished: at, Error: "x"},
+		{Kind: JobStop, State: JobFailed, Since: at, Finished: at, Error: "a\nb"},
+		{Kind: JobStop, State: JobFailed, Since: at, Finished: at, Error: "\u202e"},
+		{Kind: JobStop, State: JobFailed, Since: at, Finished: at, Error: strings.Repeat("x", MaxJobError+1)},
+		{Kind: JobStop, State: JobRunning, Since: at, Proposal: "dot.toml"},
+		{Kind: JobRestart, State: JobDone, Since: at, Finished: at, Notes: []string{"n"}},
 		{Kind: JobApply, State: JobRunning, Since: at},
 		{Kind: JobApply, State: JobRunning, Since: at, Proposal: "../config.toml"},
 		{Kind: JobApply, State: JobRunning, Since: at, Proposal: "dot.toml", Notes: []string{"early"}},
@@ -66,20 +68,21 @@ func TestJobInfoValidate(t *testing.T) {
 // bounded and printable.
 func FuzzJobs(f *testing.F) {
 	for _, s := range []string{
-		`{"job":{"kind":"apply","state":"running","since":"2026-10-18T12:00:00Z","proposal":"a.toml"}}`,
-		`{"job":{"kind":"apply","state":"failed","since":"2026-10-18T12:00:00Z","finished":"2026-10-18T12:00:01Z","proposal":"a.toml","error":"x"}}`,
-		`{"daemon":{},"envs":[{"name":"a","job":{"kind":"apply","state":"done","since":"2026-10-18T12:00:00Z","finished":"2026-10-18T12:00:00Z","proposal":"a.toml"}}]}`,
-		`{"job":{"kind":"apply","state":"failed","proposal":"a.toml","error":"\u0007"}}`,
+		`{"job":{"kind":"restart","state":"running","since":"2026-10-18T12:00:00Z"}}`,
+		`{"job":{"kind":"stop","state":"failed","since":"2026-10-18T12:00:00Z","finished":"2026-10-18T12:00:01Z","error":"x"}}`,
+		`{"daemon":{},"envs":[{"name":"a","job":{"kind":"stop","state":"done","since":"2026-10-18T12:00:00Z","finished":"2026-10-18T12:00:00Z"}}]}`,
+		`{"job":{"kind":"stop","state":"failed","error":"\u0007"}}`,
 		`{"job":{"kind":"apply","state":"done","since":"2026-10-18T12:00:00Z","finished":"2026-10-18T12:00:00Z","proposal":"a.toml","lines":["b"],"notes":["c"]}}`, `{"job":null}`, `[]`, `null`,
 	} {
 		f.Add([]byte(s))
 	}
 	check := func(t *testing.T, j *JobInfo) {
 		switch {
-		case j.Kind != JobApply,
+		case j.Kind != JobStop && j.Kind != JobRestart && j.Kind != JobApply,
 			j.State != JobRunning && j.State != JobDone && j.State != JobFailed,
 			!printable(j.Error) || len(j.Error) > MaxJobError,
-			!ValidProposalFile(j.Proposal),
+			j.Kind != JobApply && (j.Proposal != "" || len(j.Notes) > 0),
+			j.Kind == JobApply && !ValidProposalFile(j.Proposal),
 			len(j.Lines) > MaxJobLines || len(j.Notes) > MaxProposalNotes,
 			j.Since.IsZero(), j.State == JobRunning && !j.Finished.IsZero():
 			t.Fatalf("accepted %+v", j)

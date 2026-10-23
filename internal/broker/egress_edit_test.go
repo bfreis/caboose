@@ -175,7 +175,7 @@ func TestEditEgressHostileEffect(t *testing.T) {
 	f.required = []string{"api.anthropic.com"}
 	f.reopen()
 	f.src.set(func(c *config.Config) { c.Trust = config.TrustHostile; c.EgressAllow = []string{"api.example"} })
-	res, err := f.b.EditEgress(EgressEdit{RemoveAllow: []string{"api.example"}, AddAllow: []string{"*.corp.example"}, By: ByWeb})
+	res, err := f.b.EditEgress(EgressEdit{RemoveAllow: []string{"api.example"}, AddAllow: []string{"*.corp.example"}, By: ByApp})
 	if err != nil {
 		t.Fatal(err)
 	}

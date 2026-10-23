@@ -37,6 +37,12 @@ type Config struct {
 
 	// Spawn starts the daemon, detached (StartDetached), for Ensure.
 	Spawn func() error
+	// NoReplace has Ensure never replace a running daemon, whatever its
+	// protocol: one of an older protocol is returned connected, for the
+	// caller to ask to make way itself (the menu-bar app, a background
+	// process, asks without force). Ensure starts one only when nothing
+	// answers.
+	NoReplace bool
 	// StartWait bounds the wait for a daemon Spawn started; 0 is StartWait.
 	StartWait time.Duration
 	// StopWait and StopExecWait bound Stop's wait; 0 is the constant of
@@ -84,15 +90,16 @@ func Connect(ctx context.Context, cfg Config) (*daemonproto.Client, error) {
 // looks again, then calls cfg.Spawn and waits for the new daemon to answer.
 // A daemon of an older protocol is replaced, at once: asked to exit (a
 // forced replace, its host commands killed), waited for to let go of its
-// lock, and another spawned, all under start.lock. A daemon that is there
-// but does not answer (KindTimeout) is not replaced: the caller should say
-// to run caboose daemon restart.
+// lock, and another spawned, all under start.lock; with cfg.NoReplace it
+// is returned connected instead. A daemon that is there but does not
+// answer (KindTimeout) is not replaced: the caller should say to run
+// caboose daemon restart.
 func Ensure(ctx context.Context, cfg Config) (*daemonproto.Client, error) {
 	c, err := Connect(ctx, cfg)
 	switch {
 	case cfg.Spawn == nil:
 		return c, err
-	case err == nil && c.Compat() != daemonproto.CompatClientNewer:
+	case err == nil && cfg.keep(c):
 		return c, nil
 	case err == nil:
 		c.Close() // an older protocol's: replaced below
@@ -110,7 +117,7 @@ func Ensure(ctx context.Context, cfg Config) (*daemonproto.Client, error) {
 	defer unlock(lk)
 	c, err = Connect(ctx, cfg)
 	switch {
-	case err == nil && c.Compat() != daemonproto.CompatClientNewer:
+	case err == nil && cfg.keep(c):
 		return c, nil // another command started it meanwhile
 	case err == nil:
 		if err := replaceOlder(ctx, cfg, c); err != nil {
@@ -153,6 +160,12 @@ func (c Config) stopExecWait() time.Duration {
 	return StopExecWait
 }
 
+// keep reports whether Ensure uses the daemon cl is connected to as it is:
+// one of this protocol or a newer one, and with NoReplace any.
+func (c Config) keep(cl *daemonproto.Client) bool {
+	return c.NoReplace || cl.Compat() != daemonproto.CompatClientNewer
+}
+
 // Stop stops the running daemon and waits for it to let go of its lock. It
 // reports whether one was running. With no daemon directory it creates
 // nothing; with one, at most start.lock. A
@@ -184,8 +197,8 @@ func Stop(ctx context.Context, cfg Config) (bool, error) {
 	// longer than the rest: waited for, and said.
 	execs := 0
 	if st, err := c.Status(ctx); err == nil {
-		// Only the commands the shutdown ends and waits for: the jobs it
-		// leaves alone are not among them.
+		// Only the commands the shutdown ends and waits for: the stop and
+		// restart jobs it leaves alone are not among them.
 		execs = max(st.Daemon.HostExecs-st.Daemon.Jobs, 0)
 	}
 	err = c.Stop(ctx)

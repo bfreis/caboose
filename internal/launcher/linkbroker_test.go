@@ -261,27 +261,28 @@ func TestLinkURLDialog(t *testing.T) {
 // dialog answering one already answered is dropped.
 func TestURLDialogAfterAnswer(t *testing.T) {
 	app, _ := brokerEnv(t, "[link]\nopen_urls = \"ask\"\n")
-	g := newGateActions()
-	r, _ := queueRunner(t, app, g, nil)
-	// The first dialog shows, and holds the second back until the CLI
-	// has answered it.
+	actions := &linkActions{answer: true}
+	r := brokerRunner(t, app, actions)
+	// Hold the queue (as an attached app would, which never polls) until
+	// the CLI has answered the second.
+	r.dialog.queue.SetApp(99, true)
 	o, _ := r.cfg.Decide.Decide(policy.Request{Kind: policy.KindOpenURL, URL: "https://example.com/", Origin: "https://example.com"})
-	g.nextAsked(t)
 	o2, _ := r.cfg.Decide.Decide(policy.Request{Kind: policy.KindOpenURL, URL: "https://other.example/", Origin: "https://other.example"})
 	if _, err := r.broker.Answer(o2.Request, broker.Reply{Verdict: broker.ReplyDeny, Scope: broker.ScopeOnce, By: broker.ByCLI}); err != nil {
 		t.Fatal(err)
 	}
-	g.answers <- true
+	r.dialog.queue.SetApp(99, false)
 	waitUntil(t, func() bool { q, _ := r.broker.Request(o.Request); return q.State != broker.StatePending })
 	time.Sleep(50 * time.Millisecond)
-	select {
-	case a := <-g.asked:
-		t.Fatalf("asked about a request already answered: %q", a)
-	default:
+	_, asked := actions.state()
+	for _, a := range asked {
+		if strings.Contains(a, "other.example") {
+			t.Fatalf("asked about a request already answered: %q", a)
+		}
 	}
 	// The dialog's own answer, late, is dropped.
 	var logged bytes.Buffer
-	d := &urlDialog{actions: &linkActions{answer: true}, answers: r.broker, logf: func(f string, a ...any) { logged.WriteString(f) }}
+	d := &urlDialog{actions: actions, answers: r.broker, logf: func(f string, a ...any) { logged.WriteString(f) }}
 	d.show(app.Cfg.Env, o2.Request, "https://other.example/")
 	if q, _ := r.broker.Request(o2.Request); q.State != broker.StateDenied || q.DecidedBy != broker.ByCLI {
 		t.Fatalf("the CLI's answer was overturned: %+v", q)
@@ -323,6 +324,8 @@ func (f *fakeAnswers) Request(uint64) (broker.RequestInfo, error) {
 }
 
 func (f *fakeAnswers) MarkInFlight(uint64, string) error { return nil }
+
+func (f *fakeAnswers) DenyInFlight(uint64, string) error { return nil }
 
 func (f *fakeAnswers) Answer(uint64, broker.Reply) (broker.AnswerResult, error) {
 	f.mu.Lock()

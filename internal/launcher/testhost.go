@@ -10,19 +10,20 @@ import (
 // PlayHostForTests has the launcher see a host of its own instead of the
 // machine running it, for the tests of the packages that drive it
 // (cmd/caboose), whose output must not depend on that machine: the OS
-// goos, one checkpoint volume (ext4, or APFS on darwin) with room, no ssh and no ~/.ssh to find
+// goos (with the menu-bar app only on darwin), one checkpoint volume
+// (ext4, or APFS on darwin) with room, no ssh and no ~/.ssh to find
 // the default SSH agent with, kern.maxvnodes at what vm wants on darwin
 // (none elsewhere), and no processes to count a VM's open files in. It returns what undoes it. These are package
 // variables: a test that calls it must not run in parallel with another
 // that runs the launcher. Only tests call it.
 func PlayHostForTests(goos_ string) (restore func()) {
-	oldGOOS, oldCk, oldSSH := goos, hostCkFS, hostSSH
+	oldGOOS, oldApp, oldCk, oldSSH := goos, appSupported, hostCkFS, hostSSH
 	oldMax, oldVnodes := maxVnodesNow, vnodesHost
 	fstype := "ext4"
 	if goos_ == "darwin" {
 		fstype = "apfs"
 	}
-	goos = goos_
+	goos, appSupported = goos_, goos_ == "darwin"
 	hostCkFS = ckFS{goos: goos_,
 		info:   func(string) (uint64, string, error) { return 1, fstype, nil },
 		statfs: func(string) (uint64, uint64, error) { return 400 << 30, 1000 << 30, nil }}
@@ -37,7 +38,7 @@ func PlayHostForTests(goos_ string) (restore func()) {
 	}
 	vnodesHost = func() (vnodes.System, error) { return nil, vnodes.ErrUnsupported }
 	return func() {
-		goos, hostCkFS, hostSSH = oldGOOS, oldCk, oldSSH
+		goos, appSupported, hostCkFS, hostSSH = oldGOOS, oldApp, oldCk, oldSSH
 		maxVnodesNow, vnodesHost = oldMax, oldVnodes
 	}
 }

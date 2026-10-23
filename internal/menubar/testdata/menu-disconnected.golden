@@ -1,0 +1,7 @@
+caboose  [info]
+caboose's daemon is not answering: the daemon did not answer within 10s of bein…  [info]
+----
+Open web UI  [disabled id=web]
+Open log  [disabled id=log]
+Open at login  [id=login:on]
+Quit  [id=quit]

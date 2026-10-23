@@ -211,7 +211,9 @@ func TestWebTokenRotation(t *testing.T) {
 	if tokenOf(t, s, webOf(t, c, false)) != tok {
 		t.Error("web hands out another token")
 	}
-	// The new token is the one a restart reads.
+	// The app rotates too; and the new token is the one a restart reads.
+	a := dialAs(t, h.dir, daemonproto.ClientApp, 0)
+	tok = tokenOf(t, s, webOf(t, a, true))
 	stop()
 	s, _ = webDaemon(t, h, lg)
 	if s.web.current() != tok {

@@ -27,7 +27,7 @@ type fakeLinks struct {
 	recovering bool
 	// closeTakes is how long Close takes, as ending host commands does.
 	closeTakes time.Duration
-	// jobs is how many jobs ExecCounts says run, which
+	// jobs is how many stop or restart jobs ExecCounts says run, which
 	// HostExecs counts beside the commands.
 	jobs int
 }
@@ -457,6 +457,84 @@ func TestRunningVersions(t *testing.T) {
 	}
 }
 
+// With NoReplace, Ensure never replaces a daemon of an older protocol: it
+// returns it connected, spawns nothing, and the daemon keeps running.
+func TestEnsureNoReplaceKeepsAnOlderProtocol(t *testing.T) {
+	links := &fakeLinks{}
+	d := startReplaceDaemon(t, "v1.0.0", links)
+	spawned := 0
+	cfg := Config{Dir: d.dir, Version: "v2.0.0", Client: daemonproto.ClientApp, Protocol: replaceProto + 1, NoReplace: true,
+		Spawn: func() error { spawned++; return nil }}
+	c, err := Ensure(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.Compat() != daemonproto.CompatClientNewer || c.Daemon().Version != "v1.0.0" || spawned != 0 {
+		t.Errorf("connected to %+v (compat %v), spawned %d", c.Daemon(), c.Compat(), spawned)
+	}
+	// A replace (forced or not, with no host command running) would have
+	// had the daemon exit before Ensure returned.
+	if !d.running() {
+		t.Error("the older daemon was replaced")
+	}
+	select {
+	case st := <-d.stopped:
+		t.Errorf("the daemon stopped: %+v", st)
+	default:
+	}
+}
+
+// The same when the older daemon turns up while Ensure waits for
+// start.lock: it is found under the lock and returned, never replaced.
+func TestEnsureNoReplaceUnderStartLock(t *testing.T) {
+	h := newHarness(t)
+	if err := prepareDir(h.dir); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := lockWait(context.Background(), filepath.Join(h.dir, StartLockFile), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawned := 0
+	cfg := Config{Dir: h.dir, Version: "v2.0.0", Client: daemonproto.ClientApp, Protocol: replaceProto + 1, NoReplace: true,
+		Spawn: func() error { spawned++; return nil }}
+	type res struct {
+		c   *daemonproto.Client
+		err error
+	}
+	got := make(chan res, 1)
+	go func() {
+		c, err := Ensure(context.Background(), cfg)
+		got <- res{c, err}
+	}()
+	// Whether Ensure saw nothing before the lock or the daemon after it,
+	// it must not replace it.
+	time.Sleep(50 * time.Millisecond)
+	stopped := make(chan Stopped, 1)
+	runInProcess(t, Options{Dir: h.dir, Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Links: &fakeLinks{}, Protocol: replaceProto,
+		OnStop: func(st Stopped, _ *log.Logger) { stopped <- st }})
+	unlock(lk)
+	r := <-got
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	defer r.c.Close()
+	if r.c.Compat() != daemonproto.CompatClientNewer || spawned != 0 {
+		t.Errorf("compat %v, spawned %d", r.c.Compat(), spawned)
+	}
+	select {
+	case st := <-stopped:
+		t.Errorf("the daemon stopped: %+v", st)
+	default:
+	}
+	if c2, err := Connect(context.Background(), Config{Dir: h.dir, Version: "v1.0.0", Protocol: replaceProto}); err != nil {
+		t.Errorf("the daemon is gone: %v", err)
+	} else {
+		c2.Close()
+	}
+}
+
 // Status says whether the links are still being brought back, as they
 // say it at each call.
 func TestStatusSaysRecovering(t *testing.T) {
@@ -520,7 +598,7 @@ func TestStopWaitsForTheHostCommandsEnd(t *testing.T) {
 }
 
 // The forced-replace log, the replace's answer and the status each say how
-// many host commands and how many jobs, never one count
+// many host commands and how many stop or restart jobs, never one count
 // for both.
 func TestReplaceAndStatusSeparateCommandsFromJobs(t *testing.T) {
 	links := &fakeLinks{busy: true, jobs: 1}
@@ -536,7 +614,7 @@ func TestReplaceAndStatusSeparateCommandsFromJobs(t *testing.T) {
 		t.Fatalf("replace: %+v, %v", r, err)
 	}
 	d.waitStopped(2 * time.Second)
-	if got, want := d.logs.String(), "killing 2 host command(s) and ending 1 job(s)"; !strings.Contains(got, want) {
+	if got, want := d.logs.String(), "killing 2 host command(s) and ending 1 stop/restart job(s)"; !strings.Contains(got, want) {
 		t.Errorf("log %q lacks %q", got, want)
 	}
 }
@@ -550,7 +628,7 @@ func TestWaitingReplaceLogSeparatesCommandsFromJobs(t *testing.T) {
 	if err != nil || r.Exiting || r.HostExecs != 3 || r.Jobs != 2 {
 		t.Fatalf("replace: %+v, %v", r, err)
 	}
-	if got, want := d.logs.String(), "host commands (1 running) and jobs (2 running)"; !strings.Contains(got, want) {
+	if got, want := d.logs.String(), "host commands (1 running) and stop/restart jobs (2 running)"; !strings.Contains(got, want) {
 		t.Errorf("log %q lacks %q", got, want)
 	}
 }

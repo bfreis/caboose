@@ -24,7 +24,7 @@ type EgressEdit struct {
 	// takes (policy.ParseAllowList); RemoveAllow and RemoveDeny are
 	// entries to remove, each in the list now.
 	AddAllow, RemoveAllow, AddDeny, RemoveDeny []string
-	// By is who edits: ByCLI or ByWeb.
+	// By is who edits: ByCLI, ByWeb or ByApp.
 	By string
 	// Confirm is the DiffHash of the diff the person was shown. Without
 	// it nothing is written: the edit's diff comes back to be shown. With
@@ -150,9 +150,9 @@ func (b *Broker) EditEgress(e EgressEdit) (EgressEditResult, error) {
 
 func (e *EgressEdit) check() error {
 	switch e.By {
-	case ByCLI, ByWeb:
+	case ByCLI, ByWeb, ByApp:
 	default:
-		return newError(KindBadRequest, "an egress edit comes from %q or %q, not %q", ByCLI, ByWeb, clip(e.By, 32))
+		return newError(KindBadRequest, "an egress edit comes from %q, %q or %q, not %q", ByCLI, ByWeb, ByApp, clip(e.By, 32))
 	}
 	n := len(e.AddAllow) + len(e.RemoveAllow) + len(e.AddDeny) + len(e.RemoveDeny)
 	if n == 0 {

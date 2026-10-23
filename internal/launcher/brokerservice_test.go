@@ -601,7 +601,7 @@ func TestShownAsWritten(t *testing.T) {
 // kind is refused here too.
 func TestAnswerIsRecordedAsTheCaller(t *testing.T) {
 	w := newBrokerWorld(t, brokerConfig)
-	for _, who := range []string{daemonproto.ClientCLI, daemonproto.ClientWeb} {
+	for _, who := range []string{daemonproto.ClientCLI, daemonproto.ClientWeb, daemonproto.ClientApp} {
 		id := w.file(broker.Ask{Request: egressReq("api.example.com", "10.0.0.5"), Session: who})
 		liar := map[string]any{"env": "alpha", "id": id, "verdict": "deny", "by": "cli", "decided_by": "dialog", "client": "cli"}
 		if who == daemonproto.ClientCLI {

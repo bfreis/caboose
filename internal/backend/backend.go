@@ -105,6 +105,11 @@ type Mount struct {
 	// can still unmount or cover it, for the running VM only: the host's
 	// files stay as they are.
 	ReadOnly bool
+	// Type and Volume are set only on a Mount from Mounts, as the engine
+	// says them: Type "" or "bind" for a host path, "volume" for one of
+	// the engine's volumes, whose name Volume is, or another of the
+	// engine's types ("tmpfs", ...).
+	Type, Volume string
 }
 
 // Volume is one of the sandbox's own filesystems, by name, at Target.

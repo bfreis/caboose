@@ -90,7 +90,7 @@ func TestDetailsMethods(t *testing.T) {
 			Findings: []daemonproto.DoctorFinding{{Level: daemonproto.LevelProblem, Label: "git", Message: "m", Fix: "f"}}},
 	}
 	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Details: f})
-	for _, kind := range []string{daemonproto.ClientCLI} {
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientApp} {
 		c := dialAs(t, dir, kind, 0)
 		if r, err := c.LinkLog(t.Context(), "alpha", 5); err != nil || len(r.Lines) != 2 || !r.Truncated {
 			t.Fatalf("%s link_log: %+v, %v", kind, r, err)

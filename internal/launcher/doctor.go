@@ -1051,6 +1051,9 @@ func (a *App) doctorDaemon(c *checkup, running bool) {
 		}
 	}
 	a.doctorWeb(c, v)
+	if appSupported {
+		doctorApp(c, v)
+	}
 	switch {
 	case !v.Served && v.Up:
 		c.ok("link", "running (a detached helper: CABOOSE_DATA_DIR is set)")

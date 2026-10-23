@@ -34,8 +34,9 @@ type DaemonLinks struct {
 	home    string // CABOOSE_HOME, whose envs/ recovery looks through
 	newApp  func(env string) (*App, error)
 	decide  func(env string) hostlink.Decider
+	actions func(env string) hostlink.Actions
 	gate    *hostlink.ExecGate // admits every link's host-exec requests
-	dialogs *dialogQueue       // every link's URL dialogs, shown one at a time
+	dialogs *dialogQueue       // every link's URL dialogs, which the attached app may take
 	// brokerHook, when set, stands in for the running links' brokers
 	// (brokerOf): the tests'.
 	brokerHook func(env string) *brokerHandle
@@ -63,9 +64,11 @@ type DaemonLinks struct {
 	proposalMu map[string]*sync.Mutex
 
 	// jobNotify is where a job's end is told (daemonjobs.go); nil tells
-	// no one. jobsLogMax caps jobs.log; 0 is maxJobsLog. jobNow is the
-	// jobs' clock; nil is time.Now.
+	// no one. jobAction, when set, stands in for the job's Stop or
+	// Restart: the tests'. jobsLogMax caps jobs.log; 0 is maxJobsLog.
+	// jobNow is the jobs' clock; nil is time.Now.
 	jobNotify  func(env string) func(title, text string)
+	jobAction  func(app *App, kind string) error
 	jobsLogMax int64
 	jobNow     func() time.Time
 
@@ -89,11 +92,15 @@ type DaemonLinksOptions struct {
 	// Decide, when set, is what makes an environment's link's decisions;
 	// nil decides as its config.toml says.
 	Decide func(env string) hostlink.Decider
+	// Actions, when set, are what an environment's link opens URLs,
+	// notifies and asks with; nil is hostlink.System's.
+	Actions func(env string) hostlink.Actions
 	// Checkpoints, when set, runs each environment's checkpoint schedule
 	// while this daemon serves it; nil runs none.
 	Checkpoints *CheckpointOptions
-	// JobNotify, when set, is where the end of an environment's job is
-	// told. nil tells no one.
+	// JobNotify, when set, is where the end of an environment's stop or
+	// restart job, or of an apply job, is told: the daemon's Notifier.
+	// nil tells no one.
 	JobNotify func(env string) func(title, text string)
 }
 
@@ -131,12 +138,16 @@ var _ daemon.Links = (*DaemonLinks)(nil)
 
 // NewDaemonLinks is the daemon's links, none running yet.
 func NewDaemonLinks(o DaemonLinksOptions) *DaemonLinks {
-	l := &DaemonLinks{dir: filepath.Clean(o.Dir), dev: o.Dev, home: o.CabooseHome, newApp: o.NewApp, decide: o.Decide,
+	l := &DaemonLinks{dir: filepath.Clean(o.Dir), dev: o.Dev, home: o.CabooseHome, newApp: o.NewApp, decide: o.Decide, actions: o.Actions,
 		gate: hostlink.NewExecGate(), dialogs: newDialogQueue(), log: log.New(io.Discard, "", 0), envs: map[string]*envLink{},
 		cp: o.Checkpoints, cpGate: checkpoint.NewGate(), scheds: map[string]*schedRun{}, jobNotify: o.JobNotify}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	return l
 }
+
+// Dialogs is the links' URL dialog queue, which the daemon hands the
+// attached menu-bar app's polls (daemon.Options.Dialogs).
+func (l *DaemonLinks) Dialogs() daemon.Dialogs { return l.dialogs }
 
 // DaemonGetenv is the environment the daemon's links read their
 // configuration with: the daemon's own, without the variables that are a
@@ -335,8 +346,12 @@ func (l *DaemonLinks) start(e *envLink, app *App) error {
 	if l.decide != nil {
 		decide = l.decide(e.name)
 	}
+	var actions hostlink.Actions
+	if l.actions != nil {
+		actions = l.actions(e.name)
+	}
 	cp, cpLimits := l.agentCheckpoints(e)
-	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate, decide: decide, lock: lock, dialogs: l.dialogs,
+	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate, decide: decide, lock: lock, actions: actions, dialogs: l.dialogs,
 		checkpoints: cp, cpLimits: cpLimits})
 	if err != nil {
 		out.Close()
@@ -555,7 +570,7 @@ func (l *DaemonLinks) Busy() bool {
 }
 
 // HostExecs is how many host commands run, every link's, counting each
-// running job as one: a replace waits for those
+// running job (stop, restart, apply) as one: a replace waits for those
 // too.
 func (l *DaemonLinks) HostExecs() int {
 	cmds, jobs := l.ExecCounts()

@@ -47,6 +47,10 @@ type vnodeWatch struct {
 	// level is the highest level told of since the count was last below
 	// vnodeRearmPct: 0, vnodeWarnPct or vnodeAlarmPct.
 	level int
+	// warning is what the last count says while it is at or past a level,
+	// else "": the level's state, not the notification, so it stays up
+	// until the count is back under vnodeRearmPct.
+	warning string
 	// errs are the failures logged, by message, and when.
 	errs map[string]time.Time
 }
@@ -81,6 +85,7 @@ func (w *vnodeWatch) check(now time.Time) (text string, notify bool, logs []stri
 			logs = append(logs, fmt.Sprintf("%s, under %d%% again", held, vnodeRearmPct))
 		}
 		w.level = 0
+		w.warning = ""
 		return "", false, logs
 	}
 	reached := 0
@@ -90,6 +95,9 @@ func (w *vnodeWatch) check(now time.Time) (text string, notify bool, logs []stri
 	case at(vnodeWarnPct):
 		reached = vnodeWarnPct
 	}
+	if reached > 0 || w.level > 0 {
+		w.warning = fmt.Sprintf("the VM holds %s of the Mac's %s vnodes", thousands(s.Files), thousands(s.Max))
+	}
 	if reached <= w.level {
 		return "", false, nil
 	}
@@ -97,6 +105,14 @@ func (w *vnodeWatch) check(now time.Time) (text string, notify bool, logs []stri
 	logs = append(logs, fmt.Sprintf("%s, past %d%%", held, reached))
 	return fmt.Sprintf("the VM holds %s of the Mac's %s vnodes: see %s",
 		thousands(s.Files), thousands(s.Max), envCommand(w.env, "doctor")), true, logs
+}
+
+// vnodeWarning is what the count last warned of, "" while it is under the
+// levels or is not made.
+func (r *linkRunner) vnodeWarning() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.vnodes
 }
 
 // vnodeTitle is the title of the notification.
@@ -184,6 +200,9 @@ func (r *linkRunner) watchVnodes(ctx context.Context) {
 		case <-t.C:
 		}
 		text, notify, logs := w.check(time.Now())
+		r.mu.Lock()
+		r.vnodes = w.warning
+		r.mu.Unlock()
 		for _, l := range logs {
 			r.log.Print(l)
 		}

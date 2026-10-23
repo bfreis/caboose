@@ -69,6 +69,7 @@ func FuzzDetailsResults(f *testing.F) {
 		`{"env":"alpha","isolation":"vm","image":{"state":"current"},"sessions":["a"],"ports":[{"port":3000,"url":"http://localhost:3000"}],"keep":[{"path":"~/.ssh","sync":true}],"errors":[{"part":"x","message":"\u202e"}]}`,
 		`{"findings":[{"level":"problem","label":"git","message":"m","fix":"f"}],"ran_at":"2026-10-18T12:00:00Z","as":"daemon"}`,
 		`{"daemon":{},"envs":[{"name":"a","trust":"\u0000","checkpoints_line":"x","owner":"dev","mods_missing":1}]}`,
+		`{"daemon":{},"envs":[],"attention":[{"env":"a","kind":"update","text":"x\u0007","route":"requests/a"}]}`,
 		`[]`, `null`, `{"env":1}`,
 	} {
 		f.Add([]byte(s))

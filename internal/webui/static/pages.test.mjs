@@ -1079,22 +1079,24 @@ test("proposal build: a failed job says why, and the proposal is offered again",
   assert.deepEqual(s.buttons(s.cardOf("dot.toml")).map(labelOf), ["Apply proposal dot.toml of default", "Delete proposal dot.toml of default"]);
 });
 
-test("proposal build: busy and stale are said in the dialog", async () => {
+test("proposal build: busy and stale are said in the dialog; a job of another kind is not shown as one", async () => {
   const s = buildSetup();
   await s.start();
   let n = 0;
   s.daemon.handlers.proposal_build = () => {
-    if (++n === 1) return { status: 409, body: { error: { kind: "busy", message: "a job already runs for default" } } };
+    if (++n === 1) return { status: 409, body: { error: { kind: "busy", message: "a restart job already runs for default" } } };
     s.list = [proposal("dot.toml", { title: "Add graphviz", parts: [{ ...PKG, diff: ["+ graphviz", "+ jq"] }], warnings: [], needs_build: true, confirm: { kind: "none" }, hash: HASH_NEWER })];
     return { status: 409, body: { error: { kind: "stale_diff", message: "changed" } } };
   };
+  s.job = { kind: "restart", state: "running", since: iso(NOW) };
   await s.approve();
   assert.ok(s.dialog(), "the dialog stays open");
-  assert.match(texts(s.dialog()).join(" "), /a job already runs/);
+  assert.match(texts(s.dialog()).join(" "), /a restart job already runs/);
   const act = () => s.buttons(s.dialog()).find((b) => texts(b).join("") === "Build and apply dot.toml");
   assert.equal(act().disabled, false, "busy may be tried again");
   act().click();
   await s.run(0);
   assert.match(texts(s.dialog()).join(" "), /review the new change/);
   assert.ok(texts(s.dialog()).includes("+ jq"));
+  assert.equal(s.jobBox(), undefined, "a restart is not an apply");
 });

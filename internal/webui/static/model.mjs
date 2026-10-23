@@ -620,7 +620,7 @@ export function proposalDeleteParams(env, file, hash) {
 // proposalBuildParams are proposal_build's params: proposal_apply's.
 export const proposalBuildParams = proposalApplyParams;
 
-const JOB_KINDS = ["apply"];
+const JOB_KINDS = ["stop", "restart", "apply"];
 const JOB_STATES = ["running", "done", "failed"];
 // The most of a job the page keeps: daemonproto's bounds.
 const MAX_JOB_LINES = 20;

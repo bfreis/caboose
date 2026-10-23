@@ -256,6 +256,28 @@ ACTION is one of:
   stop     stop it at once
   restart  stop it, and start another
 With none, it runs in the foreground: what starting it runs.`},
+	{Name: "app", Usage: "[--selftest]", Args: ownArgs, Hidden: true,
+		Summary: "the menu-bar app (macOS)",
+		Help: `Runs caboose's menu-bar app: a client of the daemon (started when none
+runs) that shows each environment, answers requests after a confirmation,
+asks the URL question, posts notifications and opens the web UI. Quit ends
+the app only; the daemon goes on. Caboose.app runs it when opened, and so
+does its login item. Started from Finder or at login it gets the default
+CABOOSE_HOME; with another, run Caboose.app/Contents/MacOS/caboose app from
+a terminal that sets it. It refuses to run from, or to become a login item
+from, a place any sandbox reaches: a root of any environment, anything a
+sandbox mounts, or a path reached through a symlink.
+
+--selftest checks every class and selector the app uses against this macOS,
+and exits. On any other system it says so and exits 1: 'caboose ui' opens
+the web UI there.`},
+	{Name: "__app-bundle", Args: ownArgs, Hidden: true,
+		Summary: "assemble Caboose.app around this binary",
+		Help: `What 'make app' runs: writes the bundle's Info.plist, with a checkout's
+identifier, and a copy of this binary into its one place,
+CABOOSE_HOME/app-dev/Caboose.app (outside every root and every mount of a
+sandbox's), replacing only caboose's own bundle there, and prints that
+path. It does not sign it ('make app' does, ad hoc).`},
 	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
 		Summary: "delete old Claude Code versions and unused packages",
 		Help: `Deletes the installed Claude Code versions beyond the newest

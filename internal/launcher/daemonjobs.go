@@ -1,6 +1,8 @@
 package launcher
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -8,17 +10,29 @@ import (
 
 	"github.com/bfreis/caboose/internal/cappedlog"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/proposal"
 )
 
-// The daemon's jobs, such as a proposal applied with its image built
-// first (daemonjob_apply.go), share starting (one per environment, busy
-// otherwise, the exec gate, jobs.log) and ending (endJob: the state, the
-// notification). A job runs in a goroutine of its own, and the call
-// answers at once; any question it would ask fails it, since there is no
-// terminal to ask it on (noTerminal). What it would say goes to the
-// environment's jobs.log; the end is a host notification.
+// The daemon's jobs: stop and restart here, and a proposal applied with
+// its image built first (daemonjob_apply.go), share starting (one per
+// environment, busy otherwise, the exec gate, jobs.log) and ending
+// (endJob: the state, the notification).
+//
+// The stop and restart jobs (sandbox_stop, sandbox_restart): an
+// environment's App runs Stop or Restart, as the command does, in a
+// goroutine of its own, and the call answers at once. The caller asked the
+// user first, so the session-loss question is taken as answered
+// (lossConfirmed); any other question fails the job, since there is no
+// terminal to ask it on (noTerminal). What the commands would say goes to
+// the environment's jobs.log; the end is a host notification.
+//
+// The launcher holds no lock over a sandbox's lifecycle: two commands
+// restarting one sandbox at once race, as they always have. The daemon
+// runs one job per environment at a time (a second is busy), and nothing
+// more: a terminal's caboose restart at the same moment as a job races
+// with it as two terminals' would.
 const (
 	// jobsLogFile is an environment's jobs log, in its env dir, beside
 	// the data dir and in no mount.
@@ -54,6 +68,25 @@ func (e *envLink) clock() time.Time {
 		return e.now()
 	}
 	return time.Now()
+}
+
+var _ daemon.Jobs = (*DaemonLinks)(nil)
+
+// StartJob starts a stop or restart job for env and returns it, running,
+// or busy while one runs for env.
+func (l *DaemonLinks) StartJob(_ context.Context, kind, env string) (*daemonproto.JobInfo, error) {
+	if kind != daemonproto.JobStop && kind != daemonproto.JobRestart {
+		return nil, daemonproto.NewError(daemonproto.KindBadRequest, "no job %q", kind)
+	}
+	e, err := l.jobEnv(env)
+	if err != nil {
+		return nil, err
+	}
+	app, err := l.newApp(env)
+	if err != nil {
+		return nil, err
+	}
+	return l.startJob(e, app, daemonproto.JobInfo{Kind: kind}, func(j *envJob, out *cappedlog.Log) { l.runJob(e, j, app, out) })
 }
 
 // jobEnv is env's link, for a job: a valid name, and a daemon that is not
@@ -107,6 +140,48 @@ func (l *DaemonLinks) startJob(e *envLink, app *App, info daemonproto.JobInfo, r
 	return &info, nil
 }
 
+// runJob runs j on app, then has the link follow the sandbox, records how
+// it ended and tells the user.
+func (l *DaemonLinks) runJob(e *envLink, j *envJob, app *App, out *cappedlog.Log) {
+	kind, env := j.info.Kind, e.name
+	lg := log.New(out, "", log.LstdFlags)
+	lg.Printf("%s %s: started", kind, env)
+	jobOutput(app, out)
+	app.lossConfirmed = true
+	app.noTerminal = fmt.Errorf("this needs a terminal: run `caboose -e %s %s`", env, kind)
+	// What brings the sandbox up (ensureRunning, under vm) starts the
+	// link, on the daemon's own links; else the link follows once the job
+	// is done.
+	linked := false
+	app.linkHook = func() {
+		clearLinkStop(app.Cfg.DataDir)
+		l.jobLink(e, lg, true)
+		linked = true
+	}
+	err := l.jobRun(app, kind)
+	if !linked {
+		// A stopped sandbox's link stops; a recreated one's is a new
+		// link, never the old one's guess of what it reaches. A failed
+		// job leaves a link that still runs as it is.
+		if err == nil && kind == daemonproto.JobRestart {
+			clearLinkStop(app.Cfg.DataDir)
+		}
+		l.jobLink(e, lg, err == nil)
+	}
+	var text string
+	switch {
+	case err == nil && kind == daemonproto.JobStop:
+		text = env + " stopped"
+	case err == nil:
+		text = env + " restarted"
+	case kind == daemonproto.JobStop:
+		text = "stopping " + env + " failed: "
+	default:
+		text = "restarting " + env + " failed: "
+	}
+	l.endJob(e, j, out, lg, err, nil, text)
+}
+
 // endJob records how j ended (failed with err, else done with notes),
 // says so in jobs.log, closes out and tells the user text, followed by
 // the error when it failed; then lets a replace waiting on it go ahead.
@@ -144,12 +219,43 @@ func (l *DaemonLinks) endJob(e *envLink, j *envJob, out *cappedlog.Log, lg *log.
 	l.logf("%s job for %s: %s", kind, env, info.State)
 	if l.jobNotify != nil {
 		if notify := l.jobNotify(env); notify != nil {
-			notify("caboose: "+env, text)
+			notify(daemonproto.HostTitles(env)[0], text)
 		}
 	}
 	// A replace waiting on the job may exit from here on.
 	l.gate.Leave()
 	close(j.done)
+}
+
+// jobRun is the job's Stop or Restart on app; a panic is the job's
+// failure, not the daemon's.
+func (l *DaemonLinks) jobRun(app *App, kind string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("internal error: %v", r)
+		}
+	}()
+	if l.jobAction != nil {
+		return l.jobAction(app, kind)
+	}
+	if kind == daemonproto.JobStop {
+		return app.Stop()
+	}
+	return app.Restart()
+}
+
+// jobLink has e's link follow its sandbox, as ensure_link does, on the
+// daemon's own links: with renew, a link that runs is replaced (or, the
+// sandbox not running, stopped); without, one that runs is kept.
+func (l *DaemonLinks) jobLink(e *envLink, lg *log.Logger, renew bool) {
+	e.op.Lock()
+	defer e.op.Unlock()
+	action, err := l.ensure(e, nil, renew)
+	if err != nil {
+		lg.Printf("the link: %v", err)
+		return
+	}
+	lg.Printf("the link: %s", action)
 }
 
 // oneLine is s with its lines joined, for a status field.

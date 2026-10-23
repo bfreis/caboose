@@ -52,8 +52,8 @@ func TestStatusAndDoctorGolden(t *testing.T) {
 	}
 }
 
-// On a Mac, status and doctor say so -- the engine OrbStack forwarding
-// its own SSH agent -- whatever the build's
+// On a Mac, status and doctor say so -- the menu-bar app's rows, the
+// engine OrbStack forwarding its own SSH agent -- whatever the build's
 // GOOS and this machine's filesystem; under vm docker is still never
 // asked (newBoxApp's engine fails the test on any question).
 func TestStatusAndDoctorGoldenDarwin(t *testing.T) {

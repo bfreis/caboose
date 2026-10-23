@@ -23,6 +23,8 @@ import (
 type CheckpointOptions struct {
 	// Notify shows the user a notification; nil shows none.
 	Notify func(title, text string)
+	// NotifyFor, when set, is env's schedule's Notify in its place.
+	NotifyFor func(env string) func(title, text string)
 	// Every is how often each schedule looks; checkpoint.TickEvery when 0.
 	Every time.Duration
 	// Now is the clock; time.Now when nil.
@@ -72,8 +74,12 @@ func (l *DaemonLinks) schedule(e *envLink) {
 		env = l.cp.Env(e.name)
 	}
 	name := e.name
+	notify := l.cp.Notify
+	if l.cp.NotifyFor != nil {
+		notify = l.cp.NotifyFor(name)
+	}
 	r := &schedRun{kick: make(chan struct{}, 1), s: checkpoint.NewScheduler(checkpoint.SchedulerOptions{
-		Name: name, Env: env, Gate: l.cpGate, Now: l.cp.Now, Take: l.cp.Take, Notify: l.cp.Notify,
+		Name: name, Env: env, Gate: l.cpGate, Now: l.cp.Now, Take: l.cp.Take, Notify: notify,
 		Logf: l.logf, TakeOptions: l.cp.TakeOptions,
 		Command: func(args string) string { return envCommand(name, args) },
 	})}

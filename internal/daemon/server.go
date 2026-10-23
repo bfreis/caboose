@@ -56,8 +56,8 @@ type Links interface {
 	// Busy reports whether something keeps the daemon from exiting idle,
 	// such as a running sandbox it serves.
 	Busy() bool
-	// HostExecs is how many host-exec commands run, plus any jobs.
-	// Links that can tell the two apart also have
+	// HostExecs is how many host-exec commands run, plus any stop or
+	// restart jobs. Links that can tell the two apart also have
 	// ExecCounts() (commands, jobs int), which the daemon prefers.
 	HostExecs() int
 	// Recovering reports whether the links the daemon ran before it
@@ -142,6 +142,18 @@ type Proposals interface {
 	ProposalBuild(ctx context.Context, p daemonproto.ProposalApplyParams) (*daemonproto.JobInfo, error)
 }
 
+// Jobs is what the daemon serves sandbox_stop and sandbox_restart with:
+// the sandbox's stop or restart, run as a job of the environment's, which
+// a call starts and does not wait for. A daemon given none answers them
+// with daemonproto.KindUnknownMethod.
+type Jobs interface {
+	// StartJob starts a job of kind (daemonproto.JobStop or JobRestart)
+	// for env (already checked to be a valid name) and returns it,
+	// running; a *daemonproto.Error of KindBusy while one already runs
+	// for env. Errors go to the client as Details' do.
+	StartJob(ctx context.Context, kind, env string) (*daemonproto.JobInfo, error)
+}
+
 type noLinks struct{}
 
 func (noLinks) Serve(context.Context, string, string) (*daemonproto.LinkResult, error) {
@@ -175,6 +187,22 @@ type Options struct {
 	Details Details
 	// Proposals serves the proposal methods; nil serves none.
 	Proposals Proposals
+	// Jobs serves sandbox_stop and sandbox_restart; nil serves none.
+	Jobs Jobs
+	// Notifier is where the daemon's notifications go: to the attached
+	// menu-bar app, or its fallback. nil is one of the daemon's own,
+	// whose fallback shows nothing: only its components notify, and the
+	// caller hands them the same Notifier.
+	Notifier *Notifier
+	// Dialogs is the URL dialog queue, which the attached app holding
+	// dialogs takes the requests of; nil hands it none.
+	Dialogs Dialogs
+	// Attention is where what needs the user comes from, for status's
+	// attention list; nil leaves the list empty.
+	Attention Attention
+	// AttentionEvery is how often the cheap kinds are computed; 0 is
+	// DefaultAttentionEvery.
+	AttentionEvery time.Duration
 	// Web turns on the web page's state: its token, made or read at
 	// start, and the web method's answers. nil serves no page and makes
 	// no token: only the production daemon sets it.
@@ -196,8 +224,13 @@ type Options struct {
 	// a daemon, such as starting the one that replaces it, goes there.
 	OnStop func(Stopped, *log.Logger)
 
-	// peerUID reads a connection's peer's user; nil is the system's.
-	peerUID func(net.Conn) (uint32, error)
+	// attentionNow is the attention cache's clock; nil is time.Now.
+	attentionNow func() time.Time
+	// peer reads a connection's peer's user and process; nil is the
+	// system's (SO_PEERCRED, LOCAL_PEERCRED and LOCAL_PEERPID).
+	peer func(net.Conn) (peerCred, error)
+	// executable is a process's executable path; nil is the system's.
+	executable func(pid int) string
 	// webRetry is how often the page's listener is tried again when it
 	// could not be had; 0 is defaultWebRetry. For the tests.
 	webRetry time.Duration
@@ -265,7 +298,10 @@ type server struct {
 	log     *log.Logger
 	ln      *net.UnixListener
 	own     uint32
-	peerUID func(net.Conn) (uint32, error)
+	peer    func(net.Conn) (peerCred, error)
+	exe     func(pid int) string
+	notes   *Notifier
+	attn    *attentionState // nil when Options.Attention is
 	started time.Time
 	ctx     context.Context // ends when the daemon stops
 	cancel  context.CancelFunc
@@ -284,6 +320,14 @@ type server struct {
 	replacing      bool
 	replaceVersion string
 	result         Stopped
+
+	// app is the attached menu-bar app, under mu; nil while none is.
+	// attachN numbers the attachments, under mu.
+	app     *attachment
+	attachN uint64
+	// replacedBy is the caboose a replace named, under mu: what
+	// replaced.json records when the daemon exits for it.
+	replacedBy Replaced
 
 	tableOnce sync.Once
 	table     map[string]*method // the method table, by name (lookup)
@@ -362,7 +406,9 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 		links:   opts.Links,
 		log:     log.New(w, "", log.LstdFlags),
 		own:     ownUID(),
-		peerUID: opts.peerUID,
+		peer:    opts.peer,
+		exe:     opts.executable,
+		notes:   opts.Notifier,
 		started: time.Now(),
 		conns:   map[net.Conn]bool{},
 		stopped: make(chan struct{}),
@@ -371,8 +417,18 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	if s.links == nil {
 		s.links = noLinks{}
 	}
-	if s.peerUID == nil {
-		s.peerUID = peerUID
+	if s.peer == nil {
+		s.peer = peerOf
+	}
+	if s.exe == nil {
+		s.exe = executableOf
+	}
+	if s.notes == nil {
+		s.notes = NewNotifier(nil)
+	}
+	s.notes.setLog(s.log)
+	if opts.Attention != nil {
+		s.attn = newAttentionState(opts.Attention, opts.attentionNow, s.log)
 	}
 	if s.opts.Idle <= 0 {
 		s.opts.Idle = DefaultIdle
@@ -392,6 +448,10 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	if err := saferm.Remove(dir, sock); err != nil {
 		return st, lg, closeLog, fmt.Errorf("removing the last daemon's socket: %w", err)
 	}
+	// Before the socket exists: whoever reaches this daemon finds
+	// replaced.json naming it, never the daemon it replaced (a dial
+	// succeeds once the socket listens, before any accept).
+	s.startReplaced()
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
 		return st, lg, closeLog, fmt.Errorf("the daemon's socket: %w", err)
@@ -410,6 +470,10 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	s.log.Printf("caboose daemon %s started (pid %d, protocol %d, idle exit after %v)", opts.Version, os.Getpid(), daemonproto.ProtocolVersion, s.opts.Idle)
 
 	s.startWeb()
+	if s.attn != nil {
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.attn.run(s.ctx, opts.AttentionEvery) }()
+	}
 	go s.accept()
 	go s.idle()
 	if opts.Ready != nil {
@@ -421,6 +485,7 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	case <-s.stopped:
 	}
 	s.log.Printf("caboose daemon stopping: %s", s.why)
+	s.exitReplaced()
 	return st, lg, closeLog, nil
 }
 
@@ -450,14 +515,20 @@ func prepareDir(dir string) error {
 }
 
 func (s *server) writeState() error {
-	b, err := json.MarshalIndent(State{
+	return s.writeJSON(StateFile, State{
 		PID: os.Getpid(), Version: s.opts.Version, Protocol: s.protocol(),
 		Started: s.started, Dev: s.opts.Dev, Dir: s.opts.Dir,
-	}, "", "  ")
+	})
+}
+
+// writeJSON writes v as the daemon directory's file name, mode 0600, by
+// a rename: a reader never sees half of it.
+func (s *server) writeJSON(name string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(s.opts.Dir, "."+StateFile+".*")
+	f, err := os.CreateTemp(s.opts.Dir, "."+name+".*")
 	if err != nil {
 		return err
 	}
@@ -467,7 +538,7 @@ func (s *server) writeState() error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(s.opts.Dir, StateFile))
+		err = os.Rename(tmp, filepath.Join(s.opts.Dir, name))
 	}
 	if err != nil {
 		_ = saferm.Remove(s.opts.Dir, tmp)
@@ -603,14 +674,17 @@ func (s *server) serve(c *net.UnixConn) {
 		s.mu.Unlock()
 		c.Close()
 	}()
-	uid, err := s.peerUID(c)
+	p, err := s.peer(c)
 	if err == nil {
-		err = checkPeer(uid, s.own)
+		err = checkPeer(p.UID, s.own)
 	}
 	if err != nil {
 		s.log.Printf("refused a connection: %v", err)
 		return
 	}
+	// Read once, as the connection is taken: what an attach records.
+	cp := &connPeer{pid: p.PID, exe: s.exe(p.PID)}
+	defer s.detachApp(cp)
 	conn := daemonproto.NewConn(c)
 	proto := s.protocol()
 	hello, cmp, err := daemonproto.ServerHandshakeProtocol(conn, s.opts.Version, proto, helloTimeout)
@@ -619,6 +693,7 @@ func (s *server) serve(c *net.UnixConn) {
 		return
 	}
 	c0, ok := socketCaller(hello, cmp)
+	c0.conn = cp
 	if !ok {
 		// The web kind is the daemon's own page's, set by its HTTP
 		// handler; the daemon kind is the daemon's own hello's. Neither
@@ -664,6 +739,10 @@ func (s *server) serve(c *net.UnixConn) {
 func (s *server) replace(p daemonproto.ReplaceParams, hello *daemonproto.Frame, cmp daemonproto.Compat) (*daemonproto.ReplaceResult, *daemonproto.Error, func()) {
 	who := fmt.Sprintf("caboose %s (%s, protocol %d)", daemonproto.Text(hello.Version, 64), daemonproto.Text(hello.Client, 16), hello.Protocol)
 	want := daemonproto.Text(p.Version, 64)
+	by := Replaced{Version: p.Version, Protocol: hello.Protocol}
+	if by.Version == "" {
+		by.Version = hello.Version
+	}
 	if p.Force {
 		if cmp != daemonproto.CompatClientNewer {
 			s.log.Printf("replace: refused a forced replace from %s, which speaks this daemon's protocol", who)
@@ -671,9 +750,10 @@ func (s *server) replace(p daemonproto.ReplaceParams, hello *daemonproto.Frame, 
 		}
 		cmds, jobs := s.execCounts()
 		n := cmds + jobs
-		s.log.Printf("replace: %s asks to replace this daemon now (as %s), killing %d host command(s) and ending %d job(s)", who, want, cmds, jobs)
+		s.log.Printf("replace: %s asks to replace this daemon now (as %s), killing %d host command(s) and ending %d stop/restart job(s)", who, want, cmds, jobs)
 		s.mu.Lock()
 		s.result.Forced = true
+		s.replacedBy = by
 		s.mu.Unlock()
 		return &daemonproto.ReplaceResult{Exiting: true, HostExecs: n, Jobs: jobs}, nil, func() {
 			s.stop(fmt.Sprintf("replaced by a caboose of protocol %d", hello.Protocol))
@@ -686,6 +766,7 @@ func (s *server) replace(p daemonproto.ReplaceParams, hello *daemonproto.Frame, 
 	s.mu.Lock()
 	waiting := s.replacing
 	s.replacing, s.replaceVersion = true, p.Version
+	s.replacedBy = by
 	s.mu.Unlock()
 	if s.drain(true) {
 		s.log.Printf("replace: %s asks for %s; no host command runs: exiting", who, want)
@@ -693,7 +774,7 @@ func (s *server) replace(p daemonproto.ReplaceParams, hello *daemonproto.Frame, 
 	}
 	cmds, jobs := s.execCounts()
 	n := cmds + jobs
-	s.log.Printf("replace: %s asks for %s; waiting for the host commands (%d running) and jobs (%d running) to end, admitting no new command for %v", who, want, cmds, jobs, replaceHold)
+	s.log.Printf("replace: %s asks for %s; waiting for the host commands (%d running) and stop/restart jobs (%d running) to end, admitting no new command for %v", who, want, cmds, jobs, replaceHold)
 	if !waiting {
 		go s.awaitDrain(replaceRecheck, time.Now())
 	}
@@ -741,10 +822,10 @@ func (s *server) awaitDrain(every time.Duration, since time.Time) {
 			if hold != held {
 				if hold {
 					cmds, jobs := s.execCounts()
-					s.log.Printf("replace: %d host command(s) and %d job(s) still run: admitting no new command for %v", cmds, jobs, replaceHold)
+					s.log.Printf("replace: %d host command(s) and %d stop/restart job(s) still run: admitting no new command for %v", cmds, jobs, replaceHold)
 				} else {
 					cmds, jobs := s.execCounts()
-					s.log.Printf("replace: %d host command(s) and %d job(s) still run: admitting new commands again, and waiting", cmds, jobs)
+					s.log.Printf("replace: %d host command(s) and %d stop/restart job(s) still run: admitting new commands again, and waiting", cmds, jobs)
 				}
 				held = hold
 			}
@@ -777,16 +858,17 @@ func (s *server) protocol() int {
 	return daemonproto.ProtocolVersion
 }
 
-func (s *server) status() *daemonproto.StatusResult {
+func (s *server) status(c caller) *daemonproto.StatusResult {
 	envs := s.links.Envs()
 	if envs == nil {
 		envs = []daemonproto.EnvStatus{}
 	}
 	s.mu.Lock()
 	replacing := s.replacing
+	app := s.appInfo(c.Kind == daemonproto.ClientWeb)
 	s.mu.Unlock()
 	cmds, jobs := s.execCounts()
-	info := daemonproto.DaemonInfo{Replacing: replacing,
+	info := daemonproto.DaemonInfo{Replacing: replacing, App: app,
 		PID: os.Getpid(), Version: s.opts.Version, Protocol: s.protocol(),
 		Started: s.started, Dev: s.opts.Dev, Dir: s.opts.Dir, HostExecs: cmds + jobs, Jobs: jobs,
 		Recovering: s.links.Recovering(),
@@ -795,5 +877,5 @@ func (s *server) status() *daemonproto.StatusResult {
 		w := s.web.state()
 		info.Web = &w
 	}
-	return &daemonproto.StatusResult{Daemon: info, Envs: envs}
+	return &daemonproto.StatusResult{Daemon: info, Envs: envs, Attention: s.attn.items()}
 }

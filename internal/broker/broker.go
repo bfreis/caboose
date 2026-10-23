@@ -184,10 +184,10 @@ type Opener interface {
 
 // Dialog asks a person about a URL request as soon as it is filed. Ask
 // must not block: whoever implements it shows the dialog later, and
-// answers with Broker.Answer, By "dialog". While a dialog shows, the
-// request is marked in flight (MarkInFlight): a broker that opens to
-// find a pending request so marked denies it, since the dialog went
-// away.
+// answers with Broker.Answer, By "dialog" (or the menu-bar app does, By
+// "app"). While a dialog shows, the request is marked in flight
+// (MarkInFlight): a broker that opens to find a pending request so
+// marked denies it, since whoever showed it went away.
 type Dialog interface {
 	Ask(env string, id uint64, url string)
 }

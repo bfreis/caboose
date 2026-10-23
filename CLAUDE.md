@@ -136,10 +136,13 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `internal/broker` | one environment's policy at work: builds the `policy.Policy` from `config.toml` and the grants, decides crossings, files what asks as requests (deduped, bounded, expiring), turns answers into grants or `config.toml` edits; `grants.json`, `requests.json`, `decisions.log` and `broker.lock` in the env dir, through `nofollow`; serves only while its `Owner` holds link.lock (`LockOwner`). The link opens it as it starts (`internal/launcher/linkbroker.go`, with the URL dialog) and hands `hostlink` its `Link()` |
 | `internal/uiport` | the host's web UI's fixed address, `127.0.0.1:7171` (a checkout's build: 7172), and `Is`, which every refusal that keeps a sandbox off those ports asks; imports nothing of caboose's |
 | `internal/webui` | the web page as HTTP: the loopback-only listener (`Listen`, `CheckAddr`; at most 64 connections), the server's limits, the checks every request passes in order (Host, `Sec-Fetch-*`, then for `/api/`: POST, Origin, `Sec-Fetch-Site: same-origin`, JSON, the token header, the daemon's web allowlist, the body, the rate limits: authenticated calls, and proofs, which need no token), the headers every response carries (CSP, no framing, no CORS), `/api/proof`, and the static files from a fixed table (`static/`, embedded, in the `Makefile`'s `EMBEDDED`); it calls the daemon's method table through `Dispatcher` and imports nothing of the daemon's |
+| `internal/menubar` | the menu-bar app's core, OS-independent: the `UI`, `Events` and `Daemon` interfaces between it and the glue, the menu tree and icon from the daemon's status, polling, the answer flow (every answer behind `UI.Confirm`), the held reflow, URL dialogs, the notification throttle and titles, the web page's routes, reconnecting, protocol skew and the spawn rules (`MayStart`, `SpawnExe`); tested with a fake daemon, UI and clock |
+| `internal/macui` | the menu-bar app's AppKit glue through purego, no cgo and no `init`: it draws what the core says and posts back what the user did, deciding nothing. Every class and selector is a literal in one table (`selftest.go`), which `caboose app --selftest` checks on the Mac and a scan test holds to the code; what needs no AppKit (alert text, `approved`, the menu's flattening, the queues) is untagged and tested anywhere. The status item's images are PNGs in `icons/` (in the `Makefile`'s `EMBEDDED`), drawn from shapes in `icons_test.go`, which holds the files to the drawing (`-update` writes them) |
+| `internal/appbundle`, `internal/launcher/app.go` | Caboose.app: its Info.plist (`Plist`, `ParseIdentifier`, bounded), `Assemble` (built beside its place and renamed in, replacing only caboose's own bundle, removing through `saferm` within the parent), `IsAppLaunch` (the bundle's executable opened with no arguments runs `caboose app`) and `InCheckoutBundle` (a `make app` bundle is a checkout's build, `installed()`, whatever its stamp). The launcher wires the core to the glue as client kind `app` (`daemon.Config.NoReplace`, `appSpawnExe`), and has `__app-bundle`, which `make app` (a Mac only, signed ad hoc) runs: it assembles the bundle at its one fixed place, `appbundle.CheckoutPath` (`CABOOSE_HOME/app-dev/Caboose.app`), never in the checkout, and in no mount (`TestDaemonDirsAreInNoMount`). `caboose app` and turning on Open at login (`menubar.Options.LoginCheck`) refuse a place a sandbox reaches (`checkAppPlace`, `launcher/appplace.go`: `hostlink.AppPlaceOf`'s facts judged by `policy.CheckAppPlace` against every environment's roots, kept home, `run_args` mount sources and sandbox mounts and the daemon's writable set, by name and identity, nothing reached inside the bundle, no symlink on the way, an unknown reach refusing all) |
 | `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`), the aliases `config.toml` names (`alias.go`), the checkpoints the sandbox asks for, only of `[checkpoints] paths`, through a `Checkpointer` the daemon gives (its schedule's `TakeNow`, `launcher/daemoncheckpoints.go`) within the environment's `CheckpointLimits` (`checkpoint.go`), files and lists requests for the agent and waits on their decisions (`requests.go`), its decisions through one `Decider`, the environment's `broker.Decider` (`decide.go`; nil decides by the policy `config.toml`'s link settings make, and files nothing); the daemon runs one per environment as goroutines (`DaemonLinks`, `internal/launcher/daemonlinks.go`; the CLI side is `daemonclient.go`: `startLink` asks it, starting it on demand, and `caboose link`, `status` and `doctor` ask through `App.DaemonDial`'s seam), and a command run with `CABOOSE_DATA_DIR` set keeps a detached `caboose link --background` (`internal/launcher/link.go`), either way one per environment by a lock in the data dir |
 | `internal/checkpoint`, `internal/launcher/checkpoint*.go`, `daemoncheckpoints.go`, `setup_checkpoints.go`, `doctor_checkpoints.go` | checkpoints of the sandbox's writable paths, kept on the host: the store (`EnvDir/checkpoints`, `Open`, keys and IDs, the lock, atomic publication by rename, leftovers), the walker (fd-relative, never following, linking unchanged files only from the previous checkpoint) and the macOS whole-tree clone, retention (`Retain`, `Prune`, the pins of `pins.go`), `Restore` (into a new directory, setuid bits cleared), and the `Scheduler` the daemon runs; the launcher resolves `[checkpoints] paths` to host sources (`checkpointSources`), guards the store by identity (`checkpointGuard`, `Store.CheckReach`), and has the CLI (`caboose checkpoint`), `setup checkpoints`, doctor's rows and status's line. The store is in no mount (`TestDaemonDirsAreInNoMount`) |
-| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `Options.Brokers` serves the request broker's methods, and `Details`, `Proposals`, `Checkpoints` and `Writable` theirs. `methods.go` is the one table of methods, each with the client kinds that may call it, which the socket and the web page share. `Options.Web` turns on the web page (`web.go`, `webserve.go`): the token, `web.token` (0600, read or made at start; a `web` call with `rotate` replaces it, and starts the page when none could be had at start), served through `internal/webui` on its one address, tried again every 30 s while it cannot be had, never on another. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
-| `internal/launcher/daemonjobs.go`, `daemonjob_apply.go` | the daemon's jobs, which share `startJob` (one per environment at a time, `busy` otherwise, answered at once) and `endJob`: the environment's own App, every question failing it (`noTerminal`: askYes and openTerminal), its notes in the env dir's `jobs.log` (`internal/cappedlog`), the end a host notification, and `EnvStatus.job` for `daemonproto.JobKept` after; a job enters the links' `hostlink.ExecGate` as a host command does, so a `replace` waits for it and, once it holds or has closed the gate, starts none (`busy`). The apply job (`ProposalBuild`, `proposal_build`): a proposal with packages (`NeedsBuild`, alone or with a root) checked as `proposal_apply` checks one, under the proposal lock, before it starts; caboose apply's build (`buildPackages`, the lock deferred) before anything is written, then, under the lock, planned again on a fresh App and written in one `config.toml` edit only if its hash, the profile (`packagesChanged`) and the root's diff are as they were, the lock after; its output's last lines in `JobInfo.Lines` (`jobLines`), its notes in `JobInfo.Notes` |
+| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `Options.Brokers` serves the request broker's methods, and `Details`, `Proposals`, `Checkpoints`, `Writable` and `Jobs` (`sandbox_stop`, `sandbox_restart`) theirs. `methods.go` is the one table of methods, each with the client kinds that may call it, which the socket and the web page share. `Options.Web` turns on the web page (`web.go`, `webserve.go`): the token, `web.token` (0600, read or made at start; a `web` call with `rotate` replaces it, and starts the page when none could be had at start), served through `internal/webui` on its one address, tried again every 30 s while it cannot be had, never on another. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
+| `internal/launcher/daemonjobs.go`, `daemonjob_apply.go` | the daemon's jobs, which share `startJob` (one per environment at a time, `busy` otherwise, answered at once) and `endJob`. The stop and restart jobs (`StartJob`): the environment's own App running `Stop` or `Restart` with the session loss taken as confirmed (`lossConfirmed`) and every other question failing it (`noTerminal`: askYes and openTerminal), its notes in the env dir's `jobs.log` (`internal/cappedlog`), the link following the sandbox on the daemon's own links (`linkHook`, which `startLink` calls instead of dialling the daemon), the end through the daemon's Notifier, and `EnvStatus.job` for `daemonproto.JobKept` after; a job enters the links' `hostlink.ExecGate` as a host command does, so a `replace` waits for it and, once it holds or has closed the gate, starts none (`busy`). The apply job (`ProposalBuild`, `proposal_build`): a proposal with packages (`NeedsBuild`, alone or with a root) checked as `proposal_apply` checks one, under the proposal lock, before it starts; caboose apply's build (`buildPackages`, the lock deferred) before anything is written, then, under the lock, planned again on a fresh App and written in one `config.toml` edit only if its hash, the profile (`packagesChanged`) and the root's diff are as they were, the lock after; its output's last lines in `JobInfo.Lines` (`jobLines`), its notes in `JobInfo.Notes` |
 | `internal/launcher/webui_cmd.go` | `caboose ui`: the page's address and token from the daemon (started if need be), opened only when the daemon serves it, else nothing opened and why; `--print`, `--new-token`; the `web` line of status and doctor's rows for the listener and the token file |
 | `internal/launcher/daemondetails.go`, `daemonproposals.go`, `apply_plan.go` | what the daemon's `Details` and `Proposals` are on the host: `link_log`, `env_details` (status's facts as data) and `doctor` (doctor's checks, run in the daemon's environment), the last two single-flight per environment; the proposals listed, deleted and applied by the hash of what was shown; `ProposalView`, a proposal planned as `caboose apply` would and said as data, with its hash (one part, or packages with a root, which `NeedsBuild` marks for `proposal_build`'s job, `daemonjob_apply.go`), and `ApplyPlanned`, which plans it again and writes only if that view still has the hash the page confirmed (and a root or an alias, its typed name), refusing what builds |
 | `internal/launcher/brokerservice.go`, `requests.go`, `configwriter.go` | the broker on the host: `DaemonLinks` serves the daemon's `requests`, `request`, `answer`, `grants`, `revoke` and `permissions` from the running link's broker (`not_owner` when this daemon runs none for the environment), `caboose requests\|grants\|permissions` ask the daemon for them, and the config writer is the broker's `ConfigWriter` for an "always" answer: `config.EditFile` and `CheckEdit`, the diff shown, written only for the diff's hash |
@@ -436,14 +439,34 @@ outside the repo.
   so a new method reaches the page only once `TestMethodTableAllowlist`
   lists it. The kind `web` exists only inside the daemon (`callWeb`); the
   socket refuses a hello naming `web` or `daemon` before any request.
-  `by` is derived from the kind (`broker.ByCLI`, `ByWeb`), and
-  `AnswerParams` has no field for it: keep it so. The links' one URL
-  dialog queue (`launcher/dialogqueue.go`) shows this machine's dialogs
-  one at a time, in the order filed; the dialog marks its request in
-  flight in `requests.json` first (`broker.MarkInFlight`), and one in
-  flight when it goes away is denied, "ask again", never asked another
-  way (`broker.Open` for a mark a broker that went away left).
-  `request` carries the
+  `by` is derived from the kind (`broker.ByCLI`, `ByWeb`, `ByApp`), and
+  `AnswerParams` has no field for it: keep it so. `app_attach` and
+  `notifications` are the `app` kind's alone, and `notifications` only
+  the attached connection's (one app at a time, `busy` for another); what
+  an attachment records of the app (its PID and executable,
+  `peercred_*.go`) is read off the socket as the connection is taken,
+  never from params, and the page's `status` has no executable. The
+  daemon's `Notifier` (`internal/daemon/notifier.go`) queues for an app
+  holding `notifications` under a title from a fixed table
+  (`daemonproto.HostTitles`, `SandboxTitle`: a sandbox's own title only
+  ever in the body) and a route picked by the source, never the text;
+  without one, or after 30 s without a poll, it shows what it was given
+  as it always did. `status.attention` (`internal/daemon/attention.go`)
+  is a cache the daemon's poll loop fills from `Options.Attention`'s
+  sources (`launcher/daemonattention.go`): `status` never calls one, the
+  engine-asking kinds (`image_stale`, `update`) run at most every 10
+  minutes, and an item's text is host-written (anything the sandbox
+  influenced is cut and made printable first). `dialogs` is the attached
+  app's too, once it holds `dialogs`: the links' one URL dialog queue
+  (`launcher/dialogqueue.go`, `daemon.Dialogs`) then shows nothing itself
+  and hands the app the requests in the order filed, one in flight at a
+  time, which the app answers with `answer` like anyone (`by` from its
+  kind, the URL opened the stored one). Whoever shows a URL dialog, the
+  app or the host's own, marks the request in flight in `requests.json`
+  first (`broker.MarkInFlight`); one in flight when they go away is
+  denied, "ask again", never asked another way (`DenyInFlight` when the
+  attachment ends, `broker.Open` for a mark a broker that went away
+  left). `request` carries the
   host's `offers` (once, hours, always) with their effects; an answer whose
   scope is not offered is refused. The "always" offer carries the literal
   diff of `config.toml` and its hash, and an "always" answer requires that
@@ -456,16 +479,21 @@ outside the repo.
   `CABOOSE_DATA_DIR` helper's environment, answers `not_owner`. The broker's
   files in the env dir (`grants.json`, `requests.json`, `decisions.log`,
   `broker.lock`) and the jobs' `jobs.log` beside them are in no mount
-  (`TestDaemonDirsAreInNoMount`). `proposal_build`, a job
-  (`launcher/daemonjobs.go`), ends no session and does what `caboose
-  apply` does, so every kind may call it, as `proposal_apply`; the job
-  asks nothing.
+  (`TestDaemonDirsAreInNoMount`). `sandbox_stop` and `sandbox_restart`
+  end every session, so they are the `cli` and `app` kinds' only, never
+  the page's; their caller asked the user, and the job asks nothing
+  (`launcher/daemonjobs.go`). `proposal_build`, the third job, ends no
+  session and does what `caboose apply` does, so every kind may call it,
+  as `proposal_apply`. Nothing locks a sandbox's lifecycle but
+  the one job per environment: a terminal's restart beside a job races
+  as two terminals' do. An App in the daemon never dials the daemon's own
+  socket for its link (`linkHook`).
 - **The web page's token is the daemon's, and its assets are inert.** The
   token (`web.token` in the daemon directory, 0600, in no mount) leaves
   the daemon only in `/api/redeem`'s answer to the page, for a one-time
   code: never in a URL, a log, an error, a status, any other response or
-  the web allowlist. The socket's `web` result, which `caboose ui` asks
-  for, carries a code (`WebParams.Code`; `code_url`), never the
+  the web allowlist. The socket's `web` result, which `caboose ui` and the
+  app ask for, carries a code (`WebParams.Code`; `code_url`), never the
   token: 60 s, once, in the daemon's memory only (`webState.codes`, at
   most 16), all cleared by a rotation, every refusal one same answer
   (`bad_code`), and `web` is not a method the page may call. `caboose ui`
@@ -729,6 +757,26 @@ outside the repo.
   its own value raises the better event, `IN_MODIFY`, but races a host
   edit landing between the stat and the set, and leaves new contents with
   an old mtime.
+- **The menu-bar app decides nothing in its glue, and never replaces a
+  daemon.** Every decision is `internal/menubar`'s; `internal/macui` maps
+  calls to AppKit and back (no `if` on the daemon's data beyond nil
+  checks), every selector and class it sends is a literal in the
+  self-check's table, AppKit runs on the main thread only (`main_darwin.go`
+  locks main to it, for every command), and sandbox text is never a menu
+  item's or a notification's title. The app-only methods are refused to
+  every other client kind (the method table). The app reaches the daemon
+  with `NoReplace`: it asks an older daemon to make way without force, and
+  starts one from the installed CLI when that is not older than the app,
+  and never after seeing a newer daemon (`MayStart`). The host runs the
+  app, at every login once it is a login item, so it never runs from what
+  a sandbox can write: `make app` writes it to a fixed place under
+  `CABOOSE_HOME`, never the checkout, held out of every mount by
+  `TestDaemonDirsAreInNoMount`, and the app refuses its own place at every
+  start and before Open at login when a sandbox reaches it
+  (`checkAppPlace`), failing closed. `make app`
+  signs ad hoc, on a Mac only; a release bundle needs an identifier of its
+  own (`appbundle.ReleaseID`, empty until then), and changing one loses the
+  notification authorization and login item given to the old one.
 - **`sandbox/CLAUDE.md` is sandbox-wide.** It is read by every session in
   every project, so project-specific instructions — including everything in
   this file — do not belong there. Keep it to what is true in every project

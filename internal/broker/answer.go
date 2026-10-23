@@ -23,7 +23,7 @@ type Reply struct {
 	Scope string
 	// Hours is how long, for ScopeHours: 1 to MaxHours.
 	Hours int
-	// By is who answered: ByCLI or ByWeb (the daemon's client
+	// By is who answered: ByCLI, ByWeb or ByApp (the daemon's client
 	// kinds, as the connection or the page says, never the answer) or
 	// ByDialog.
 	By string
@@ -68,9 +68,9 @@ func DiffHash(diff string) string {
 
 func (rp Reply) check() error {
 	switch rp.By {
-	case ByCLI, ByWeb, ByDialog:
+	case ByCLI, ByWeb, ByApp, ByDialog:
 	default:
-		return newError(KindBadRequest, "an answer comes from %q, %q or %q, not %q", ByCLI, ByWeb, ByDialog, clip(rp.By, 32))
+		return newError(KindBadRequest, "an answer comes from %q, %q, %q or %q, not %q", ByCLI, ByWeb, ByApp, ByDialog, clip(rp.By, 32))
 	}
 	switch rp.Verdict {
 	case ReplyDeny:

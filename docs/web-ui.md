@@ -46,9 +46,9 @@ against a sandbox that can reach your machine's loopback (under `container`
 and `gvisor` on OrbStack or Docker Desktop): without the token it can load
 the page, and nothing else.
 
-The token is never in an address. `caboose ui` opens
-`http://127.0.0.1:7171/#code=...`, with a one-time code the daemon makes
-for that one open: it is good once, for 60 seconds, kept only in the
+The token is never in an address. `caboose ui` (and the menu-bar app)
+opens `http://127.0.0.1:7171/#code=...`, with a one-time code the daemon
+makes for that one open: it is good once, for 60 seconds, kept only in the
 daemon's memory, and gone when the token is replaced. The page removes the
 code from the address bar before it sends anything, then trades it for the
 token (`POST /api/redeem`, which passes the same checks as every other

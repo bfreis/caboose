@@ -109,13 +109,13 @@ func TestNoBrokersIsUnknownMethod(t *testing.T) {
 	}
 }
 
-// Every kind of client reads and answers: the command line over the
-// socket, the page through the daemon's web path; each reaches the
-// brokers as its own kind.
+// Every kind of client reads and answers: the command line and the app
+// over the socket, the page through the daemon's web path; each reaches
+// the brokers as its own kind.
 func TestWhoMayAnswer(t *testing.T) {
 	fb := &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}}
 	dir, s := startBrokerServer(t, fb)
-	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientWeb} {
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientApp, daemonproto.ClientWeb} {
 		call := func(m string) error {
 			if kind == daemonproto.ClientWeb {
 				raw, _ := json.Marshal(brokerParams(m))

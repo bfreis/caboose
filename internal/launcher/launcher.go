@@ -177,6 +177,15 @@ type App struct {
 	// envBox, when set, stands in for sandboxBox: the tests' sandboxes of
 	// other environments.
 	envBox func(env string) (backend.Backend, bool, error)
+	// appBase and appEnvApps, when set, stand in for the default
+	// environment's App and the other environments' (envApp) that the
+	// menu-bar app judges its own place with (checkAppPlace).
+	appBase    func() (*App, error)
+	appEnvApps func(env string) (*App, error)
+	// inspectVolume, when set, stands in for Docker.InspectVolume, which
+	// the app's place check asks of every volume a sandbox mounts: the
+	// tests' engine.
+	inspectVolume func(name string) (docker.Volume, bool, error)
 
 	// install is what the container being brought up installs before it is
 	// ready (noteInstall), for waitUntilReady to say.
@@ -196,13 +205,18 @@ type App struct {
 	// sb is the sandbox config, once read (App.sandboxConfig).
 	sb *datadir.Sandbox
 	// lossConfirmed is set once the user has said yes to ending the
-	// running sessions (caboose apply's restart): confirmSessionLoss does
-	// not ask again.
+	// running sessions (caboose apply's restart, or the menu-bar app's
+	// confirmation for a daemon's job): confirmSessionLoss does not ask
+	// again.
 	lossConfirmed bool
 	// noTerminal, when set, is what every question this App would ask on
 	// a terminal fails with instead (askYes, openTerminal): a daemon's
 	// job has no terminal, and never guesses an answer.
 	noTerminal error
+	// linkHook, when set, is how startLink has the environment's link
+	// run: on the App a daemon's job runs on, the daemon's own links, in
+	// its own process, never by dialling its own socket.
+	linkHook func()
 	// beforeProposalWrite, when set, runs in ApplyPlanned once the plan
 	// is confirmed and before what it writes is checked again: the tests'
 	// way to change a file in between.

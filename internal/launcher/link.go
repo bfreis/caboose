@@ -582,6 +582,7 @@ type linkRunner struct {
 	forwards []int                // the ports forwarded now, sorted
 	reloaded bool                 // the session ended for new settings: reconnect at once
 	retired  bool                 // the isolation changed: this helper serves no more
+	vnodes   string               // what the vnode count last warned of, "" while under the levels
 }
 
 func (r *linkRunner) settingsNow() linkSettings {

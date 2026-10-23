@@ -13,7 +13,7 @@ import (
 
 // MethodWeb is the web page's state and address, with a one-time code
 // that opens it when asked for: see WebParams and WebResult. Only a
-// socket client's (the command line): never the web page's own.
+// socket client's (the command line, the app): never the web page's own.
 const MethodWeb = "web"
 
 // The web page's token: 32 random bytes, base64url without padding.
@@ -146,7 +146,7 @@ type WebResult struct {
 	// URL is the page's address, http://127.0.0.1:PORT/.
 	URL string `json:"url,omitempty"`
 	// CodeURL is URL with a fresh one-time code in its fragment,
-	// #code=C: what caboose ui opens. Set only when asked
+	// #code=C: what caboose ui and the app open. Set only when asked
 	// for (WebParams.Code) and the daemon has a token; it opens the page
 	// once, within CodeTTL.
 	CodeURL string `json:"code_url,omitempty"`

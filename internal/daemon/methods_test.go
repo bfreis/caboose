@@ -18,32 +18,40 @@ import (
 // until it is listed here, which is the decision of whether the web page
 // may call it; the table refuses any kind a method does not name.
 func TestMethodTableAllowlist(t *testing.T) {
-	cli, web := daemonproto.ClientCLI, daemonproto.ClientWeb
+	cli, app, web := daemonproto.ClientCLI, daemonproto.ClientApp, daemonproto.ClientWeb
 	want := map[string][]string{
-		daemonproto.MethodPing:           {cli, web},
-		daemonproto.MethodStatus:         {cli, web},
-		daemonproto.MethodEnsureLink:     {cli},
-		daemonproto.MethodRestartLink:    {cli},
-		daemonproto.MethodStopLink:       {cli},
-		daemonproto.MethodStop:           {cli},
-		daemonproto.MethodReplace:        {cli},
-		daemonproto.MethodRequests:       {cli, web},
-		daemonproto.MethodRequest:        {cli, web},
-		daemonproto.MethodAnswer:         {cli, web},
-		daemonproto.MethodGrants:         {cli, web},
-		daemonproto.MethodRevoke:         {cli, web},
-		daemonproto.MethodPermissions:    {cli, web},
-		daemonproto.MethodEditEgress:     {cli, web},
-		daemonproto.MethodProposals:      {cli, web},
-		daemonproto.MethodProposalDelete: {cli, web},
-		daemonproto.MethodProposalApply:  {cli, web},
-		daemonproto.MethodProposalBuild:  {cli, web},
-		daemonproto.MethodCheckpoints:    {cli, web},
-		daemonproto.MethodLinkLog:        {cli, web},
-		daemonproto.MethodEnvDetails:     {cli, web},
-		daemonproto.MethodDoctor:         {cli, web},
-		daemonproto.MethodWritable:       {cli},
-		daemonproto.MethodWeb:            {cli},
+		daemonproto.MethodPing:           {cli, app, web},
+		daemonproto.MethodStatus:         {cli, app, web},
+		daemonproto.MethodEnsureLink:     {cli, app},
+		daemonproto.MethodRestartLink:    {cli, app},
+		daemonproto.MethodStopLink:       {cli, app},
+		daemonproto.MethodStop:           {cli, app},
+		daemonproto.MethodReplace:        {cli, app},
+		daemonproto.MethodRequests:       {cli, app, web},
+		daemonproto.MethodRequest:        {cli, app, web},
+		daemonproto.MethodAnswer:         {cli, app, web},
+		daemonproto.MethodGrants:         {cli, app, web},
+		daemonproto.MethodRevoke:         {cli, app, web},
+		daemonproto.MethodPermissions:    {cli, app, web},
+		daemonproto.MethodEditEgress:     {cli, app, web},
+		daemonproto.MethodProposals:      {cli, app, web},
+		daemonproto.MethodProposalDelete: {cli, app, web},
+		daemonproto.MethodProposalApply:  {cli, app, web},
+		daemonproto.MethodProposalBuild:  {cli, app, web},
+		daemonproto.MethodCheckpoints:    {cli, app, web},
+		daemonproto.MethodLinkLog:        {cli, app, web},
+		daemonproto.MethodEnvDetails:     {cli, app, web},
+		daemonproto.MethodDoctor:         {cli, app, web},
+		daemonproto.MethodWritable:       {cli, app},
+		// They end every session: never the page's.
+		daemonproto.MethodSandboxStop:    {cli, app},
+		daemonproto.MethodSandboxRestart: {cli, app},
+		daemonproto.MethodWeb:            {cli, app},
+		// The menu-bar app's alone: never the command line's, never the
+		// page's.
+		daemonproto.MethodAppAttach:     {app},
+		daemonproto.MethodNotifications: {app},
+		daemonproto.MethodDialogs:       {app},
 	}
 	// Served to a client of a newer protocol, which is to replace the
 	// daemon: these alone.
@@ -121,8 +129,18 @@ func paramsFor(name string) json.RawMessage {
 		p = &daemonproto.EnvParams{Env: "alpha"}
 	case daemonproto.MethodPing, daemonproto.MethodStatus, daemonproto.MethodStop, daemonproto.MethodWritable, daemonproto.MethodWeb:
 		return nil
+	case daemonproto.MethodAppAttach:
+		p = &daemonproto.AppAttachParams{Capabilities: []string{daemonproto.CapNotifications}, Version: "v9.9.9"}
+	case daemonproto.MethodNotifications:
+		p = &daemonproto.NotificationsParams{}
+	case daemonproto.MethodDialogs:
+		p = &daemonproto.DialogsParams{}
 	case daemonproto.MethodLinkLog:
 		p = &daemonproto.LinkLogParams{Env: "alpha"}
+	case daemonproto.MethodSandboxStop:
+		p = &daemonproto.EnvParams{Env: "alpha"}
+	case daemonproto.MethodSandboxRestart:
+		p = &daemonproto.EnvParams{Env: "beta"} // a job of its own
 	case daemonproto.MethodProposals:
 		p = &daemonproto.EnvParams{Env: "alpha"}
 	case daemonproto.MethodProposalDelete:
@@ -144,6 +162,7 @@ type allServices struct {
 	wr    *fakeWritable
 	det   *fakeDetails
 	pr    *fakeProposals
+	jobs  *fakeJobs
 }
 
 func (a *allServices) reached() int {
@@ -157,6 +176,9 @@ func (a *allServices) reached() int {
 	n += len(a.det.calls)
 	a.det.mu.Unlock()
 	n += a.pr.count()
+	a.jobs.mu.Lock()
+	n += len(a.jobs.running)
+	a.jobs.mu.Unlock()
 	return n + a.links.served() + len(a.br.served())
 }
 
@@ -164,9 +186,9 @@ func startAll(t *testing.T) (string, *server, *allServices) {
 	t.Helper()
 	a := &allServices{links: &countingLinks{}, br: &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}},
 		cp: &fakeCheckpoints{result: &daemonproto.CheckpointsResult{Env: "alpha"}}, wr: &fakeWritable{result: &daemonproto.WritableResult{}}, det: &fakeDetails{},
-		pr: &fakeProposals{}}
+		pr: &fakeProposals{}, jobs: &fakeJobs{at: time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)}}
 	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t},
-		Links: a.links, Brokers: a.br, Checkpoints: a.cp, Writable: a.wr, Details: a.det, Proposals: a.pr})
+		Links: a.links, Brokers: a.br, Checkpoints: a.cp, Writable: a.wr, Details: a.det, Proposals: a.pr, Jobs: a.jobs})
 	return dir, s, a
 }
 
@@ -249,7 +271,7 @@ func TestSocketRefusesWebAndDaemonHellos(t *testing.T) {
 			t.Errorf("socketCaller let %q through", kind)
 		}
 	}
-	for _, kind := range []string{daemonproto.ClientCLI} {
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientApp} {
 		if c, ok := socketCaller(&daemonproto.Frame{Type: daemonproto.TypeHello, Client: kind}, daemonproto.CompatSame); !ok || c.Kind != kind {
 			t.Errorf("socketCaller %q: %+v %v", kind, c, ok)
 		}

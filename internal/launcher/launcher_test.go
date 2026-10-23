@@ -148,12 +148,23 @@ func TestIndent(t *testing.T) {
 // With no sandbox, status says what it would be, and asks nothing of any
 // engine: there is no Docker here to ask.
 func TestStatusHeaderWhenNotRunning(t *testing.T) {
-	for _, tc := range []struct{ iso, noun, shown, outbound string }{
-		{"", "container", "container (the default: config.toml defines no profile)", ""},
+	for _, tc := range []struct {
+		iso, noun, shown, outbound string
+		darwin                     bool
+	}{
+		{"", "container", "container (the default: config.toml defines no profile)", "", false},
 		{isolationVM, "VM       ", "vm (the default: config.toml defines no profile)",
-			"outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports \"22 80 443\")\n"},
+			"outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports \"22 80 443\")\n", false},
+		// On a Mac, the menu-bar app's row too.
+		{"", "container", "container (the default: config.toml defines no profile)", "", true},
+		{isolationVM, "VM       ", "vm (the default: config.toml defines no profile)",
+			"outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports \"22 80 443\")\n", true},
 	} {
-		pinHost(t, false)
+		pinHost(t, tc.darwin)
+		app := ""
+		if tc.darwin {
+			app = "app       : unknown (the daemon is not running or does not answer)\n"
+		}
 		var out, errb bytes.Buffer
 		a := &App{
 			Cfg: &config.Config{Env: "default", Container: "caboose-x", Image: "img", Roots: []config.Root{{Host: "/h/dev", Container: "/work"}},
@@ -177,7 +188,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 			"isolation : " + tc.shown + "\n" + tc.outbound +
 			"version   : " + version.Get().Version + "\n" +
 			"daemon    : not running (" + a.daemonDir() + "); any caboose command that launches or links starts it, or run: caboose daemon restart\n" +
-			"web       : unknown (the daemon is not running or does not answer)\n" +
+			"web       : unknown (the daemon is not running or does not answer)\n" + app +
 			"link      : not running (the daemon is not running); run: caboose daemon restart\n" +
 			"\nnot running — start it by running caboose in a repo.\n"
 		if out.String() != want {

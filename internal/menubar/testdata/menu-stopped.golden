@@ -1,0 +1,10 @@
+caboose (checkout)  [info]
+----
+dev: stopped  [info]
+restarting failed: the build failed  [info]
+Open in web page  [id=env:dev]
+----
+Open web UI  [id=web]
+Open log  [disabled id=log]
+Open at login  [id=login:on]
+Quit  [id=quit]

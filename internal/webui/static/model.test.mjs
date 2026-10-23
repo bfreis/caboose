@@ -279,6 +279,7 @@ test("a job is used only in its shape, its strings bounded and its lists strings
   assert.ok(many.lines.every((l) => l.length <= 200));
   assert.deepEqual(M.asJob({ ...run, state: "done", notes: ["n", {}, "restart"] }).notes, ["n", "restart"]);
   assert.deepEqual(M.asJob({ ...run, notes: ["early"] }).notes, [], "notes only once done");
+  assert.equal(M.asJob({ kind: "restart", state: "running", since: run.since }).proposal, "");
   for (const bad of [null, [], { ...run, kind: "exec" }, { ...run, state: "queued" }, { ...run, since: 1 }, { ...run, proposal: "../x.toml" }, { ...run, proposal: undefined }]) {
     assert.equal(M.asJob(bad), null, JSON.stringify(bad));
   }

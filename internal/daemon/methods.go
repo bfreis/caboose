@@ -16,20 +16,23 @@ import (
 // its hello's (never cli's claim of web or daemon: socketCaller); the web
 // page's is set by the daemon's own HTTP handler, never by a request.
 type caller struct {
-	Kind string // daemonproto.ClientCLI or ClientWeb
+	Kind string // daemonproto.ClientCLI, ClientWeb or ClientApp
 
 	// hello is a socket client's hello, nil for the web page.
 	hello *daemonproto.Frame
 	// cmp is how a socket client's protocol compares to the daemon's;
 	// the web page speaks the daemon's own.
 	cmp daemonproto.Compat
+	// conn is a socket client's connection, as its peer was read when it
+	// was taken; nil for the web page.
+	conn *connPeer
 }
 
 // socketCaller is the caller a socket connection's hello makes, and false
 // for a kind a socket client may not be.
 func socketCaller(hello *daemonproto.Frame, cmp daemonproto.Compat) (caller, bool) {
 	switch hello.Client {
-	case daemonproto.ClientCLI:
+	case daemonproto.ClientCLI, daemonproto.ClientApp:
 		return caller{Kind: hello.Client, hello: hello, cmp: cmp}, true
 	}
 	return caller{}, false
@@ -42,8 +45,9 @@ func webCaller() caller { return caller{Kind: daemonproto.ClientWeb} }
 // name a kind refuses it, so a method added later reaches the web page
 // only once it is listed for it.
 var (
-	allKinds    = []string{daemonproto.ClientCLI, daemonproto.ClientWeb}
-	clientKinds = []string{daemonproto.ClientCLI} // not the web page
+	allKinds    = []string{daemonproto.ClientCLI, daemonproto.ClientApp, daemonproto.ClientWeb}
+	clientKinds = []string{daemonproto.ClientCLI, daemonproto.ClientApp} // not the web page
+	appKind     = []string{daemonproto.ClientApp}                        // the menu-bar app alone
 )
 
 // method is one daemon method.
@@ -65,8 +69,8 @@ func (s *server) methods() []method {
 		{name: daemonproto.MethodPing, clients: allKinds, newer: true, run: func(context.Context, caller, json.RawMessage) (any, func(), *daemonproto.Error) {
 			return nil, nil, nil
 		}},
-		{name: daemonproto.MethodStatus, clients: allKinds, newer: true, run: func(context.Context, caller, json.RawMessage) (any, func(), *daemonproto.Error) {
-			return s.status(), nil, nil
+		{name: daemonproto.MethodStatus, clients: allKinds, newer: true, run: func(_ context.Context, c caller, _ json.RawMessage) (any, func(), *daemonproto.Error) {
+			return s.status(c), nil, nil
 		}},
 		{name: daemonproto.MethodStop, clients: clientKinds, newer: true, run: func(context.Context, caller, json.RawMessage) (any, func(), *daemonproto.Error) {
 			return nil, func() { s.stop("asked to stop") }, nil
@@ -91,11 +95,20 @@ func (s *server) methods() []method {
 		{name: daemonproto.MethodProposalApply, clients: allKinds, run: s.runProposalApply},
 		// A job, but one that ends no session: what caboose apply does.
 		{name: daemonproto.MethodProposalBuild, clients: allKinds, run: s.runProposalBuild},
+		// What ends every session in a sandbox: the command line's and
+		// the app's, which ask the user first, never the page's.
+		{name: daemonproto.MethodSandboxStop, clients: clientKinds, run: s.runJob(daemonproto.MethodSandboxStop, daemonproto.JobStop)},
+		{name: daemonproto.MethodSandboxRestart, clients: clientKinds, run: s.runJob(daemonproto.MethodSandboxRestart, daemonproto.JobRestart)},
 		// The host paths the sandboxes write, for the command line's
 		// restore: the page has no use for them.
 		{name: daemonproto.MethodWritable, clients: clientKinds, run: s.runWritable},
 		// The page's token: the socket's alone, never the page's.
 		{name: daemonproto.MethodWeb, clients: clientKinds, run: s.runWeb},
+		// The menu-bar app's: its connection alone, and only the
+		// attached one for notifications and dialogs.
+		{name: daemonproto.MethodAppAttach, clients: appKind, run: s.runAppAttach},
+		{name: daemonproto.MethodNotifications, clients: appKind, run: s.runNotifications},
+		{name: daemonproto.MethodDialogs, clients: appKind, run: s.runDialogs},
 	}
 }
 
@@ -367,6 +380,26 @@ func (s *server) runEnvDetails(ctx context.Context, _ caller, params json.RawMes
 		return nil, nil, protoError(err)
 	}
 	return res, nil, nil
+}
+
+// runJob is sandbox_stop or sandbox_restart: the job started, and
+// answered with at once.
+func (s *server) runJob(name, kind string) func(context.Context, caller, json.RawMessage) (any, func(), *daemonproto.Error) {
+	return func(ctx context.Context, c caller, params json.RawMessage) (any, func(), *daemonproto.Error) {
+		if s.opts.Jobs == nil {
+			return nil, nil, s.unserved(name)
+		}
+		var p daemonproto.EnvParams
+		if e := decode(name, params, &p); e != nil {
+			return nil, nil, e
+		}
+		j, err := s.opts.Jobs.StartJob(ctx, kind, p.Env)
+		if err != nil {
+			return nil, nil, protoError(err)
+		}
+		s.log.Printf("%s %s: started for a %s client", name, p.Env, c.Kind)
+		return &daemonproto.JobResult{Job: *j}, nil, nil
+	}
 }
 
 // runDoctor is doctor: the checks, run in the daemon.

@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/appbundle"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/launcher"
@@ -46,7 +47,21 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == vm.ExecHelper {
 		os.Exit(vm.ExecMain(os.Stdin, os.Stdout, os.Stderr))
 	}
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	argv := os.Args[1:]
+	if exe, err := os.Executable(); err == nil {
+		argv = appArgs(exe, argv, appbundle.ReadPlist)
+	}
+	os.Exit(run(argv, os.Stdout, os.Stderr))
+}
+
+// appArgs is the command line to run: the menu-bar app's, `app`, when exe
+// is Caboose.app's executable launched as an app (no arguments, or only
+// the -psn_ one older Launch Services add); argv otherwise.
+func appArgs(exe string, argv []string, readPlist func(string) ([]byte, error)) []string {
+	if appbundle.IsAppLaunch(exe, argv, readPlist) {
+		return []string{"app"}
+	}
+	return argv
 }
 
 func run(argv []string, stdout, stderr io.Writer) int {
@@ -78,6 +93,20 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		}
 		app := &launcher.App{Cfg: cfg, Stdout: stdout, Stderr: stderr, Checkout: launcher.FindCheckout(sourceDir)}
 		return exit(stderr, app.Daemon(inv.Args))
+	}
+
+	if inv.Command == "app" || inv.Command == "__app-bundle" {
+		// Machine-wide, like daemon: no environment's config.toml, no
+		// update check.
+		cfg, err := config.Machine(os.Getenv)
+		if err != nil {
+			return exit(stderr, launcher.Die("%v", err))
+		}
+		app := &launcher.App{Cfg: cfg, Stdout: stdout, Stderr: stderr, Checkout: launcher.FindCheckout(sourceDir)}
+		if inv.Command == "app" {
+			return exit(stderr, app.RunApp(inv.Args))
+		}
+		return exit(stderr, app.AppBundle(inv.Args))
 	}
 
 	cfg, err := config.Load(os.Getenv, config.OSFS{}, inv.Env)

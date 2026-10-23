@@ -305,8 +305,8 @@ func TestRequestCommandsAgainstARealDaemon(t *testing.T) {
 }
 
 // Over the real socket, no client may say it is the daemon's web page
-// (or the daemon): the hello is refused before any request. The command
-// line's answer is recorded as the command line's.
+// (or the daemon): the hello is refused before any request. The app's
+// answer is recorded as the app's.
 func TestRealDaemonRefusesOtherClientsAnswers(t *testing.T) {
 	w := newE2EWorld(t)
 	if err := w.app.Requests(nil); err != nil { // starts the daemon
@@ -321,17 +321,17 @@ func TestRealDaemonRefusesOtherClientsAnswers(t *testing.T) {
 			t.Errorf("%s hello: %v", kind, err)
 		}
 	}
-	c, err := daemonproto.Dial(context.Background(), daemon.Socket(w.app.daemonDir()), daemonproto.Options{Client: daemonproto.ClientCLI, Version: "v1"})
+	c, err := daemonproto.Dial(context.Background(), daemon.Socket(w.app.daemonDir()), daemonproto.Options{Client: daemonproto.ClientApp, Version: "v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r, err := c.Requests(context.Background(), "alpha", false, 0)
 	if err != nil || len(r.Requests) != 3 {
-		t.Errorf("cli reads: %v %v", r, err)
+		t.Errorf("app reads: %v %v", r, err)
 	}
 	a, err := c.Answer(context.Background(), daemonproto.AnswerParams{Env: "alpha", ID: 1, Verdict: "deny"})
-	if err != nil || a.Request.DecidedBy != daemonproto.ClientCLI {
-		t.Errorf("cli answered: %+v %v", a, err)
+	if err != nil || a.Request.DecidedBy != daemonproto.ClientApp {
+		t.Errorf("app answered: %+v %v", a, err)
 	}
 	c.Close()
 	var de *daemonproto.Error

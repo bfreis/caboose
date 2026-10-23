@@ -15,6 +15,8 @@
 //	web.token     the web page's token (0600), when the daemon serves the
 //	              page: only the daemon reads it, and hands it out only on
 //	              the socket
+//	replaced.json what caboose a daemon exited for, by a replace
+//	              (Replaced), so that no client brings back an older one
 //
 // The directory is CABOOSE_HOME/daemon for a release, and
 // CABOOSE_HOME/daemon-dev for a build from a checkout, which runs a daemon
@@ -39,6 +41,7 @@ const (
 	StateFile     = "daemon.json"
 	LogFile       = "daemon.log"
 	TokenFile     = "web.token"
+	ReplacedFile  = "replaced.json"
 )
 
 // Dir is the daemon directory under cabooseHome: dev for a build from a

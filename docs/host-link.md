@@ -68,22 +68,32 @@ restart`. With
 `CABOOSE_DATA_DIR` set the daemon does not serve the command's
 environment, so these commands find nothing to answer for.
 
-A packages proposal applied from the web page (see
-[proposals](proposals.md)) runs in the daemon as a job of the
-environment's, one at a time (a second is refused while one runs), and is
-answered at once: its image is built first, for minutes. The job asks
-nothing; a question fails it, with the command to run on a terminal
-instead. What it prints goes to `jobs.log` in the environment's directory
-(`~/.caboose/envs/ENV/jobs.log`, capped, in no mount), `caboose daemon
-status` sees the job for ten minutes after it ends, and its end is a
-notification. An update replacing the daemon waits for a running job as
-it waits for host commands, and starts no new one meanwhile.
+The daemon can also stop or restart a sandbox for a client that asked you
+first (the menu-bar app; the web page cannot). It runs `caboose stop` or
+`caboose restart` as a job of the environment's, one at a time (a second
+is refused while one runs), and answers at once: a restart may build the
+image first, for minutes. The job takes the sessions it ends as
+confirmed; any other question fails it, with the command to run on a
+terminal instead. What the command would print goes to `jobs.log` in the
+environment's directory (`~/.caboose/envs/ENV/jobs.log`, capped, in no
+mount), `caboose daemon status` and the app see the job for ten minutes
+after it ends, and its end is a notification. The link follows the
+sandbox: a stopped one's stops, a recreated one's starts again. A
+packages proposal applied from the web page is a job of the same kind
+(see [proposals](proposals.md)): one at a time with a stop or restart,
+its build's output in `jobs.log`, its end a notification. Nothing
+locks a sandbox's lifecycle beyond that: a terminal's `caboose restart`
+at the same moment as a job races with it, as two terminals' do. An
+update replacing the daemon waits for a running job as it waits for host
+commands, and starts no new one meanwhile.
 
 Its files are in `CABOOSE_HOME/daemon/` (`~/.caboose/daemon/`), a directory
 only you can enter, and in no mount of any sandbox: `daemon.sock` (the
 socket, which takes connections from your user only), `daemon.lock`,
-`start.lock`, `daemon.json` (its pid, version and start time) and
-`daemon.log`. A `caboose` built from a checkout runs a daemon of its own in
+`start.lock`, `daemon.json` (its pid, version and start time),
+`daemon.log`, and `replaced.json` once an update has replaced a daemon
+(the version that replaced it, so that nothing starts the older one
+again). A `caboose` built from a checkout runs a daemon of its own in
 `CABOOSE_HOME/daemon-dev/`, and serves only the environments it launches.
 A Unix socket's path is limited to about a hundred bytes; with a long
 `CABOOSE_HOME`, `caboose doctor` says to shorten it.
@@ -91,7 +101,7 @@ A Unix socket's path is limited to about a hundred bytes; with a long
 The daemon is started with a minimal environment, never your terminal's:
 it asks a login shell (`$SHELL -l`) once, when it starts, for `PATH`,
 `SSH_AUTH_SOCK`, `DOCKER_HOST`, `DOCKER_CONTEXT` and `DOCKER_CONFIG`. So it
-finds `docker` and your SSH agent the same way whichever terminal
+finds `docker` and your SSH agent the same way whichever terminal or app
 started it, and a variable you exported only in the terminal you launched
 from does not reach it (see [Host commands](#host-commands) for what that
 means there). The SSH agent a `vm` sandbox gets is `ssh_agent` in `[link]`

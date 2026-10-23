@@ -575,21 +575,53 @@ func effectivePort(u *url.URL) int {
 }
 
 func (h *Host) notify(title, text string) error {
-	return Notify(h.cfg.Actions, title, text)
+	return SandboxNotify(h.cfg.Actions, title, text)
+}
+
+// SandboxNotifier is what Actions also offer when they tell a sandbox's
+// notification from a host component's: SandboxNotify is given the
+// sandbox's title (empty when it gave none) and text, made printable and
+// cut short.
+type SandboxNotifier interface {
+	SandboxNotify(title, text string) error
 }
 
 // Notify shows text under title with actions, as the sandbox's notify
 // request is shown: made printable and cut short first, since either may
 // hold what the sandbox wrote.
 func Notify(actions Actions, title, text string) error {
-	title, text = clip(proposal.Printable(title), maxTitle), clip(proposal.Printable(text), maxText)
-	if text == "" {
-		return errors.New("nothing to say")
+	title, text, err := notice(title, text)
+	if err != nil {
+		return err
 	}
 	if title == "" {
 		title = "caboose"
 	}
 	return actions.Notify(title, text)
+}
+
+// SandboxNotify shows what a sandbox asked to: as Notify does, but
+// through actions' SandboxNotify when they offer one, so that they know
+// the sandbox wrote it.
+func SandboxNotify(actions Actions, title, text string) error {
+	s, ok := actions.(SandboxNotifier)
+	if !ok {
+		return Notify(actions, title, text)
+	}
+	title, text, err := notice(title, text)
+	if err != nil {
+		return err
+	}
+	return s.SandboxNotify(title, text)
+}
+
+// notice is a notification's title and text made printable and cut short.
+func notice(title, text string) (string, string, error) {
+	title, text = clip(proposal.Printable(title), maxTitle), clip(proposal.Printable(text), maxText)
+	if text == "" {
+		return "", "", errors.New("nothing to say")
+	}
+	return title, text, nil
 }
 
 // clip cuts s to at most n bytes, on a character boundary.

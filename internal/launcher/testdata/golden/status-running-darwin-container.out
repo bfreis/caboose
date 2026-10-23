@@ -9,6 +9,7 @@ isolation : container (the default: config.toml defines no profile)
 version   : VERSION
 daemon    : not running (daemon-VERSION); any caboose command that launches or links starts it, or run: caboose daemon restart
 web       : unknown (the daemon is not running or does not answer)
+app       : unknown (the daemon is not running or does not answer)
 link      : not running (the daemon is not running); run: caboose daemon restart
 claude    : 
 timezone  : UTC (host: unknown)

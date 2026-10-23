@@ -1,14 +1,25 @@
 package daemonproto
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
-// A proposal applied with its image built first (proposal_build) runs in
-// the daemon as a job of the environment's: the call returns at once,
-// with the job running, and status's EnvStatus.Job says how it went.
-// KindBusy while a job already runs for the environment. Its kind and
-// states:
+// The sandbox's stop and restart, and a proposal applied with its image
+// built first (proposal_build), run by the daemon as a job of the
+// environment's: the call returns at once, with the job running, and
+// status's EnvStatus.Job says how it went. KindBusy while a job already
+// runs for the environment.
 const (
-	JobApply = "apply"
+	MethodSandboxStop    = "sandbox_stop"    // params EnvParams, result JobResult
+	MethodSandboxRestart = "sandbox_restart" // params EnvParams, result JobResult
+)
+
+// Job kinds and states.
+const (
+	JobStop    = "stop"
+	JobRestart = "restart"
+	JobApply   = "apply"
 
 	JobRunning = "running"
 	JobDone    = "done"
@@ -42,10 +53,14 @@ type JobInfo struct {
 
 // Validate checks the job: a known kind and state, a start, an end only
 // once it has ended (and not before its start), an error only when it
-// failed, a proposal always, notes only once it is done; every string
-// bounded and printable.
+// failed, a proposal on an apply job only, and always, notes only once it
+// is done; every string bounded and printable.
 func (j *JobInfo) Validate() error {
 	switch j.Kind {
+	case JobStop, JobRestart:
+		if j.Proposal != "" || len(j.Notes) > 0 {
+			return bad("a proposal or notes on a %s job", j.Kind)
+		}
 	case JobApply:
 		if !ValidProposalFile(j.Proposal) {
 			return bad("an apply job with no proposal file")
@@ -93,10 +108,35 @@ func (j *JobInfo) Validate() error {
 	return checkText("job error", j.Error, MaxJobError)
 }
 
-// JobResult is the result of proposal_build: the job it started.
+// JobResult is the result of sandbox_stop, sandbox_restart and
+// proposal_build: the job they started.
 type JobResult struct {
 	Job JobInfo `json:"job"`
 }
 
 // Validate checks the job.
 func (r *JobResult) Validate() error { return r.Job.Validate() }
+
+// SandboxStop has the daemon stop env's sandbox, ending every session in
+// it, without asking: the caller asked the user.
+func (c *Client) SandboxStop(ctx context.Context, env string) (*JobResult, error) {
+	return c.jobCall(ctx, MethodSandboxStop, env)
+}
+
+// SandboxRestart has the daemon recreate env's sandbox, ending every
+// session in it, without asking: the caller asked the user.
+func (c *Client) SandboxRestart(ctx context.Context, env string) (*JobResult, error) {
+	return c.jobCall(ctx, MethodSandboxRestart, env)
+}
+
+func (c *Client) jobCall(ctx context.Context, method, env string) (*JobResult, error) {
+	p := &EnvParams{Env: env}
+	if err := checkParams(p); err != nil {
+		return nil, err
+	}
+	var r JobResult
+	if err := c.Call(ctx, method, p, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}

@@ -102,6 +102,7 @@ type urlAnswers interface {
 	Request(id uint64) (broker.RequestInfo, error)
 	Answer(id uint64, rp broker.Reply) (broker.AnswerResult, error)
 	MarkInFlight(id uint64, by string) error
+	DenyInFlight(id uint64, by string) error
 }
 
 // urlDialog is the broker's Dialog: it queues each URL request as it is

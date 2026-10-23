@@ -123,7 +123,7 @@ func (d *Docker) Mounts() ([]Mount, error) {
 	}
 	var out []Mount
 	for _, m := range ms {
-		out = append(out, Mount{Source: m.Source, Target: m.Destination})
+		out = append(out, Mount{Source: m.Source, Target: m.Destination, Type: m.Type, Volume: m.Name})
 	}
 	return out, nil
 }

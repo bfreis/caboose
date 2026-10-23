@@ -123,6 +123,8 @@ type statusData struct {
 	// lv is the daemon's view they came from.
 	lv                                linkView
 	daemon, web, link, checkpointLine string
+	// app is the menu-bar app's line, on macOS only.
+	app string
 
 	running bool
 	// The running part.
@@ -158,6 +160,9 @@ func (a *App) collectStatus() *statusData {
 	d.daemon = a.daemonLine(d.lv)
 	// From the daemon's status above: no call of its own.
 	d.web = webLine(d.lv)
+	if appSupported {
+		d.app = appLine(d.lv)
+	}
 	d.link = a.linkLine(d.lv, d.running)
 	d.checkpointLine = a.checkpointLine(d.lv, d.running, defaultCkSeams())
 	if !d.running {
@@ -227,6 +232,9 @@ func (a *App) renderStatus(d *statusData) error {
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	fmt.Fprintf(out, "daemon    : %s\n", d.daemon)
 	fmt.Fprintf(out, "web       : %s\n", d.web)
+	if d.app != "" {
+		fmt.Fprintf(out, "app       : %s\n", d.app)
+	}
 	fmt.Fprintf(out, "link      : %s\n", d.link)
 	if d.checkpointLine != "" {
 		fmt.Fprintf(out, "checkpoints: %s\n", d.checkpointLine)

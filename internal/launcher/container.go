@@ -548,6 +548,9 @@ type hostSocketSet struct {
 	Agent bool
 }
 
+// engineSocketTarget is where engine_socket mounts the engine's socket.
+const engineSocketTarget = "/var/run/docker.sock"
+
 // hostSockets are the host sockets createContainer mounts: the engine's
 // when engine_socket names one, which is root-equivalent access to this
 // host, and the SSH agent's, which lets git and jj push over SSH and git
@@ -561,7 +564,7 @@ func (a *App) hostSockets() hostSocketSet {
 	}
 	if sock := DockerSockPath(a.Cfg.EngineSocket, a.getenv("DOCKER_HOST")); sock != "" {
 		if isSocket(sock) {
-			s.Mounts = append(s.Mounts, backend.Mount{Source: sock, Target: "/var/run/docker.sock"})
+			s.Mounts = append(s.Mounts, backend.Mount{Source: sock, Target: engineSocketTarget})
 			s.Engine = sock
 		} else {
 			s.NotSocket = sock

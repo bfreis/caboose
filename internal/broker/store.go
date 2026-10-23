@@ -49,6 +49,7 @@ const (
 const (
 	ByCLI    = "cli"    // the caboose command
 	ByWeb    = "web"    // the daemon's web page
+	ByApp    = "app"    // the menu-bar app
 	ByDialog = "dialog" // the URL dialog
 	ByExpiry = "expiry" // nobody: it expired
 )
@@ -89,9 +90,10 @@ type reqRec struct {
 	Session   string      `json:"session,omitempty"`
 	Ask       *AskText    `json:"ask,omitempty"`
 	// InFlight is who shows the request's URL dialog right now, while it
-	// is pending: ByDialog (this machine's own dialog). A broker that
-	// opens to find it set denies the request (ReasonDialogGone): the
-	// dialog is gone, and it is never asked again another way.
+	// is pending: ByApp (the menu-bar app) or ByDialog (this machine's
+	// own dialog). A broker that opens to find it set denies the request
+	// (InFlightReason): whoever showed it is gone, and it is never asked
+	// again another way.
 	InFlight string `json:"in_flight,omitempty"`
 
 	// The facts.

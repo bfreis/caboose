@@ -75,7 +75,7 @@ func TestProposalMethods(t *testing.T) {
 		Title: "<b>t</b>", Parts: []daemonproto.ProposalPart{{Kind: "root", Diff: []string{"+ a"}, Summary: "s"}},
 		WebApply: true, Confirm: daemonproto.ProposalConfirm{Kind: "type_name", Name: "foo"}, Hash: h}}}}
 	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Proposals: f})
-	for _, kind := range []string{daemonproto.ClientCLI} {
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientApp} {
 		c := dialAs(t, dir, kind, 0)
 		if r, err := c.Proposals(t.Context(), "alpha"); err != nil || len(r.Proposals) != 1 || r.Proposals[0].Title != "<b>t</b>" {
 			t.Fatalf("%s proposals: %+v, %v", kind, r, err)

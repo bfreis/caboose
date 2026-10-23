@@ -27,6 +27,10 @@ const (
 	testDirEnv  = "CABOOSE_DAEMON_TEST_DIR"
 	testIdleEnv = "CABOOSE_DAEMON_TEST_IDLE"
 	testEnvFile = "CABOOSE_DAEMON_TEST_ENVFILE"
+	// testNotifyEnv, when set, names the file the daemon's host
+	// notifications are appended to, and its links notify when ensured
+	// (notifyLinks).
+	testNotifyEnv = "CABOOSE_DAEMON_TEST_NOTIFY"
 )
 
 func TestMain(m *testing.M) {
@@ -48,7 +52,12 @@ func testDaemon(dir string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	switch err := Run(ctx, Options{Dir: dir, Version: "v0.0.0-test", Idle: idle, LockWait: StartWait}); {
+	opts := Options{Dir: dir, Version: "v0.0.0-test", Idle: idle, LockWait: StartWait}
+	if f := os.Getenv(testNotifyEnv); f != "" {
+		opts.Notifier = NewNotifier(notifyFallback(f))
+		opts.Links = notifyLinks{n: opts.Notifier}
+	}
+	switch err := Run(ctx, opts); {
 	case errors.Is(err, ErrRunning):
 		return 3
 	case err != nil:
@@ -329,9 +338,9 @@ func TestPeerCheck(t *testing.T) {
 		opts := Options{Dir: h.dir, Version: "x", Idle: time.Minute, Log: testLog{t}}
 		switch peer {
 		case "other":
-			opts.peerUID = func(net.Conn) (uint32, error) { return own + 1, nil }
+			opts.peer = func(net.Conn) (peerCred, error) { return peerCred{UID: own + 1}, nil }
 		case "unreadable":
-			opts.peerUID = func(net.Conn) (uint32, error) { return own, errors.New("no credentials") }
+			opts.peer = func(net.Conn) (peerCred, error) { return peerCred{UID: own}, errors.New("no credentials") }
 		}
 		stop := runInProcess(t, opts)
 		c, err := Connect(context.Background(), Config{Dir: h.dir, Version: "v0.0.0-test"})

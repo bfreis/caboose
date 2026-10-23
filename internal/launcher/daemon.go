@@ -156,9 +156,19 @@ func (a *App) runDaemon() error {
 	notes := captureLoginEnv(ctx)
 	dir := a.daemonDir()
 	dev := a.installed().kind == installDev
+	// One Notifier for the links, the checkpoints and the
+	// stop and restart jobs: the attached menu-bar app's, else the host's
+	// own.
+	notifier := daemon.NewNotifier(hostlink.System{}.Notify)
 	links := NewDaemonLinks(DaemonLinksOptions{Dir: dir, Dev: dev, CabooseHome: a.Cfg.CabooseHome,
-		NewApp: DaemonApp(DaemonGetenv(a.getenv), a.Checkout), Checkpoints: &CheckpointOptions{Notify: SystemNotify},
-		JobNotify: func(string) func(title, text string) { return SystemNotify }})
+		NewApp: DaemonApp(DaemonGetenv(a.getenv), a.Checkout),
+		Actions: func(env string) hostlink.Actions {
+			return notifierActions{Actions: hostlink.System{}, n: notifier.For(env, daemon.SourceLink)}
+		},
+		Checkpoints: &CheckpointOptions{Notify: SystemNotify, NotifyFor: func(env string) func(title, text string) {
+			return daemonNotify(notifier, env, daemon.SourceCheckpoints)
+		}},
+		JobNotify: func(env string) func(title, text string) { return daemonNotify(notifier, env, daemon.SourceDaemon) }})
 	if daemonLinksSetup != nil {
 		daemonLinksSetup(links)
 	}
@@ -166,7 +176,7 @@ func (a *App) runDaemon() error {
 	links.WillRecover()
 	defer hostlink.KillHostExecs()
 	err := daemon.Run(ctx, daemon.Options{Dir: dir, Version: currentVersion(), Dev: dev, LockWait: daemon.StartWait,
-		Links: links, Brokers: links, Checkpoints: links, Writable: links, Details: links, Proposals: links, Web: daemonWeb(dev), Ready: func(lg *log.Logger) {
+		Notifier: notifier, Dialogs: links.Dialogs(), Attention: NewDaemonAttention(links, currentVersion()), Links: links, Brokers: links, Checkpoints: links, Writable: links, Details: links, Proposals: links, Jobs: links, Web: daemonWeb(dev), Ready: func(lg *log.Logger) {
 			for _, n := range notes {
 				lg.Print(n)
 			}
@@ -255,7 +265,7 @@ func (a *App) daemonStatus(ctx context.Context) error {
 		fmt.Fprintf(a.Stdout, "  host exec : %d running\n", cmds)
 	}
 	if d.Jobs > 0 {
-		fmt.Fprintf(a.Stdout, "  jobs      : %d running\n", d.Jobs)
+		fmt.Fprintf(a.Stdout, "  jobs      : %d stop or restart running\n", d.Jobs)
 	}
 	if d.Replacing {
 		fmt.Fprintf(a.Stdout, "  replacing : %s\n", replaceWaitText(d.HostExecs, d.Jobs))

@@ -20,7 +20,7 @@ CC       := ./$(LAUNCHER)
 GO_SRC   := go.mod $(wildcard go.sum) \
             $(shell find . -name '*.go' -not -name '*_test.go' -not -path './.*')
 EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh xdg-open.sh tmux.conf shellrc.bash sandbox/CLAUDE.md $(shell find sandbox/skills -type f -not -path '*/.*' -not -path '*/_*') $(shell find sandbox/mods -type f) imagecheck.sh \
-            internal/apkobuild/pkgset/packages.toml $(shell find internal/webui/static -type f)
+            internal/apkobuild/pkgset/packages.toml $(shell find internal/webui/static -type f) $(shell find internal/macui/icons -type f)
 GO_LDFLAGS ?=
 
 # caboose-agent, the sandbox's end of the link, for each architecture the
@@ -154,6 +154,35 @@ endif
 
 ## vmm: build and sign ./caboose-vmm, the vm isolation's runner (on a Mac)
 vmm: $(VMM)
+
+# Caboose.app, the menu-bar app: a bundle around a copy of ./caboose, which
+# runs as the app when the bundle is opened. macOS only, signed ad-hoc, with
+# a checkout's bundle identifier. The launcher (__app-bundle) assembles it
+# at its one fixed place, CABOOSE_HOME/app-dev/Caboose.app (~/.caboose by
+# default), never in the checkout: the host runs the bundle, at every login
+# once it is a login item, and a sandbox may write the checkout. It prints
+# that path, replaces only caboose's own bundle there, and the app refuses
+# to run from anywhere a sandbox reaches. After a rebuild of ./caboose, run
+# it again: the bundle holds a copy.
+APP_ID := local.caboose.checkout
+ifeq ($(shell uname -s)$(IN_SANDBOX),Darwin)
+app: $(LAUNCHER) $(VERSION_STAMP)
+	@{ read -r v; read -r c; read -r d; } < $(VERSION_STAMP); \
+	  app=$$("$(abspath $(LAUNCHER))" __app-bundle) \
+	  && codesign -s - --force --identifier $(APP_ID) "$$app" \
+	  && codesign --verify --strict --verbose=2 "$$app" \
+	  && echo "  built and signed $$app (ad-hoc) $$v"
+	@if [ -e Caboose.app ] || [ -L Caboose.app ]; then \
+	  echo "  !!  ./Caboose.app is an old bundle in the checkout, where a sandbox may write it: turn off its Open at login and delete it yourself" >&2; fi
+else ifneq ($(IN_SANDBOX),)
+app:
+	@echo "  !!  Caboose.app is built and signed on the Mac: run 'make app' on the host, not in the sandbox" >&2; exit 1
+else
+app:
+	@echo "  !!  Caboose.app is the menu-bar app for macOS: build it with 'make app' on a Mac" >&2; exit 1
+endif
+
+## app: build Caboose.app, the menu-bar app, in CABOOSE_HOME/app-dev, signed ad-hoc (on a Mac)
 
 # The vm isolation's builder guest, a raw ext4 disk built by docker from
 # vm/builder (docker on the host, or CI): vm-dist/builder-<arch>.img,
@@ -422,5 +451,5 @@ test-vm: launcher
 test-byo: $(CC)
 	@CABOOSE_BIN=$(CC) ./tests/byo/run.sh
 
-.PHONY: FORCE help staticcheck-version agent vmm vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
+.PHONY: FORCE help staticcheck-version agent vmm app vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
 FORCE:
