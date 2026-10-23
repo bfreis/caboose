@@ -7,6 +7,7 @@ package appbundle
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -25,6 +26,17 @@ const (
 	CheckoutID = "local.caboose.checkout"
 	ReleaseID  = "dev.bfreis.caboose"
 )
+
+// AppIcon is the bundle's icon, Contents/Resources/AppIcon.icns: the logo
+// on macOS's rounded square, drawn by icon_test.go (which writes the file
+// with -update and holds it to the drawing).
+//
+//go:embed icon/AppIcon.icns
+var AppIcon []byte
+
+// IconFile is the icon's name in Contents/Resources, and what the plist's
+// CFBundleIconFile names.
+const IconFile = "AppIcon.icns"
 
 // Name is the bundle's directory name; Executable the binary's name in
 // Contents/MacOS.
@@ -98,6 +110,7 @@ func Plist(in Info) []byte {
 	yes := func(k string) { fmt.Fprintf(&b, "\t<key>%s</key>\n\t<true/>\n", escape(k)) }
 	str("CFBundleDisplayName", "Caboose")
 	str("CFBundleExecutable", Executable)
+	str("CFBundleIconFile", IconFile)
 	str("CFBundleIdentifier", in.ID)
 	str("CFBundleName", "Caboose")
 	str("CFBundlePackageType", "APPL")

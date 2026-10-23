@@ -17,8 +17,8 @@ import (
 var remove = saferm.RemoveAll
 
 // Assemble builds the bundle at dir around exe, the launcher's binary:
-// Contents/Info.plist from info, and a copy of exe as
-// Contents/MacOS/caboose (mode 0755). It builds in a temporary directory
+// Contents/Info.plist from info, the icon in Contents/Resources, and a
+// copy of exe as Contents/MacOS/caboose (mode 0755). It builds in a temporary directory
 // beside dir and renames it into place. An existing dir is replaced only
 // when it is caboose's bundle (named Caboose.app, its Info.plist naming
 // one of caboose's identifiers); anything else there is refused and left
@@ -110,6 +110,13 @@ func fill(dir, exe string, info Info) error {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "Contents", "Info.plist"), Plist(info), 0o644); err != nil {
+		return err
+	}
+	res := filepath.Join(dir, "Contents", "Resources")
+	if err := os.MkdirAll(res, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(res, IconFile), AppIcon, 0o644); err != nil {
 		return err
 	}
 	return copyExe(exe, filepath.Join(macos, Executable))

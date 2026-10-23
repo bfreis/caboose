@@ -15,6 +15,8 @@ const wantPlist = `<?xml version="1.0" encoding="UTF-8"?>
 	<string>Caboose</string>
 	<key>CFBundleExecutable</key>
 	<string>caboose</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.caboose.checkout</string>
 	<key>CFBundleName</key>

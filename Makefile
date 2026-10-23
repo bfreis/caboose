@@ -20,7 +20,7 @@ CC       := ./$(LAUNCHER)
 GO_SRC   := go.mod $(wildcard go.sum) \
             $(shell find . -name '*.go' -not -name '*_test.go' -not -path './.*')
 EMBEDDED := Dockerfile layer.Dockerfile layer-user.sh entrypoint.sh xdg-open.sh tmux.conf shellrc.bash sandbox/CLAUDE.md $(shell find sandbox/skills -type f -not -path '*/.*' -not -path '*/_*') $(shell find sandbox/mods -type f) imagecheck.sh \
-            internal/apkobuild/pkgset/packages.toml $(shell find internal/webui/static -type f) $(shell find internal/macui/icons -type f)
+            internal/apkobuild/pkgset/packages.toml $(shell find internal/webui/static -type f) $(shell find internal/macui/icons -type f) internal/appbundle/icon/AppIcon.icns
 GO_LDFLAGS ?=
 
 # caboose-agent, the sandbox's end of the link, for each architecture the

@@ -305,10 +305,7 @@ func TestAppPlaceReachedInsideTheBundle(t *testing.T) {
 	r := newPlaceRig(t)
 	exe := bundle(t, filepath.Join(r.safe, "b"), appbundle.CheckoutID)
 	contents := filepath.Join(r.safe, "b", appbundle.Name, "Contents")
-	res := filepath.Join(contents, "Resources")
-	if err := os.Mkdir(res, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	res := filepath.Join(contents, "Resources") // the icon's, made by Assemble
 	r.base.Cfg.Roots = append(r.base.Cfg.Roots, config.Root{Host: res, Container: "/work/c"})
 	wantRefused(t, r.check(t, exe), "into its bundle")
 	r.base.Cfg.Roots = r.base.Cfg.Roots[:1]
@@ -429,7 +426,14 @@ func TestAppPlaceBundleByIdentity(t *testing.T) {
 		t.Fatalf("the link removed: %v", err)
 	}
 
+	// Resources, the icon's, replaced by a link.
 	link := filepath.Join(contents, "Resources")
+	if err := os.Remove(filepath.Join(link, appbundle.IconFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(r.root, link); err != nil {
 		t.Fatal(err)
 	}
