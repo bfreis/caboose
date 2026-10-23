@@ -83,8 +83,10 @@ type Options struct {
 	// Arch is the apk architecture to resolve or build for: "aarch64" or
 	// "x86_64" (see ArchFor).
 	Arch string
-	// CacheDir keeps downloaded packages and indexes between runs; empty
-	// keeps nothing on disk.
+	// CacheDir keeps downloaded packages and indexes between runs. Empty
+	// is apko's no-disk-cache mode, which still expands each package it
+	// installs into a directory of its own in the temp dir and never
+	// removes it: the launcher always gives one.
 	CacheDir string
 	// Repositories and Keyring are Wolfi's when nil.
 	Repositories []string

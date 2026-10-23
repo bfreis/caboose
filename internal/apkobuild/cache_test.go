@@ -20,7 +20,7 @@ import (
 // is newer than recent.
 func TestPruneCacheMatchesApko(t *testing.T) {
 	ctx := context.Background()
-	o := fixtureOptions(newFixture(t, "x86_64", "1.0"), "x86_64")
+	o := fixtureOptions(t, newFixture(t, "x86_64", "1.0"), "x86_64")
 	o.CacheDir = t.TempDir()
 	l, err := resolveList(ctx, Spec{Packages: []string{"fixture-hello"}}, []string{"fixture-hello"}, o)
 	if err != nil {

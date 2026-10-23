@@ -26,6 +26,13 @@ var gitConfig = []string{
 	"-c", "core.autocrlf=false",
 	"-c", "core.safecrlf=false",
 	"-c", "core.quotePath=false",
+	// The repo is on the data dir's mount, which in the sandbox is a
+	// file system shared with the host: it sets a file's ctime again a
+	// moment after a change, so the index's ctimes go stale with nothing
+	// changed, and a merge's own `git stash create` then fails ("stash
+	// failed") when it finds them. Size, mtime and inode still tell a
+	// change.
+	"-c", "core.trustctime=false",
 	"-c", "merge.renames=false",
 	"-c", "diff.renames=false",
 	"-c", "merge.conflictStyle=diff3",

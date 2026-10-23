@@ -31,7 +31,7 @@ func TestTouchOneTouchSeenByWatches(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, w := range c.watches {
-			if _, err := unix.InotifyAddWatch(fd, w, unix.IN_ATTRIB|unix.IN_MODIFY); err != nil {
+			if _, err := unix.InotifyAddWatch(fd, w, watchMask); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -59,7 +59,7 @@ func TestTouchDirectoryTouchedTwiceMerges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	if _, err := unix.InotifyAddWatch(fd, work, unix.IN_ATTRIB|unix.IN_MODIFY); err != nil {
+	if _, err := unix.InotifyAddWatch(fd, work, watchMask); err != nil {
 		t.Fatal(err)
 	}
 	Touch([]string{work}, []string{d, filepath.Join(d, "gone")})

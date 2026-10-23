@@ -176,8 +176,6 @@ app: $(LAUNCHER) $(VERSION_STAMP)
 	  && codesign -s - --force --identifier $(APP_ID) "$$app" \
 	  && codesign --verify --strict --verbose=2 "$$app" \
 	  && echo "  built and signed $$app (ad-hoc) $$v"
-	@if [ -e Caboose.app ] || [ -L Caboose.app ]; then \
-	  echo "  !!  ./Caboose.app is an old bundle in the checkout, where a sandbox may write it: turn off its Open at login and delete it yourself" >&2; fi
 else ifneq ($(IN_SANDBOX),)
 app:
 	@echo "  !!  Caboose.app is built and signed on the Mac: run 'make app' on the host, not in the sandbox" >&2; exit 1

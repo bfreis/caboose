@@ -9,7 +9,7 @@ import (
 	"github.com/bfreis/caboose/internal/vm/vmm"
 )
 
-// Cloud Hypervisor, on Linux, is step 4's.
+// Cloud Hypervisor, on Linux, has no runner yet.
 func newRunner() (vmm.Runner, error) {
 	return nil, errors.New("caboose-vmm runs VMs on macOS only, for now")
 }

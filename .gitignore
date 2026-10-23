@@ -35,10 +35,6 @@
 # ad-hoc: build output, next to the launcher as a release installs it.
 /caboose-vmm
 
-# An old Caboose.app, which make app wrote into the checkout before it
-# moved to CABOOSE_HOME/app-dev: make app warns while one is here.
-/Caboose.app/
-
 # The vm isolation's builder disk, from `make vm-builder` (docker): build
 # output, a few hundred MB.
 /vm-dist/

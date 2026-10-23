@@ -14,6 +14,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/agent"
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/hvsock"
 )
 
 // guest is a Guest whose boot fails when told to.
@@ -252,5 +253,53 @@ func TestExecCommandCarriesTheJob(t *testing.T) {
 	}
 	if job.Socket != "/d/vm.sock" || !reflect.DeepEqual(job.Req, req) {
 		t.Fatalf("job %+v", job)
+	}
+}
+
+// clockedGuest says, at its boot, whether the guest's clock was set.
+type clockedGuest struct {
+	c      *clock
+	booted chan bool
+}
+
+func (g *clockedGuest) Boot(agentproto.BootSpec) error { g.booted <- len(g.c.steps) > 0; return nil }
+func (g *clockedGuest) Shutdown()                      {}
+
+// WaitReady's connection sends the clock before its boot, so that a
+// boot never runs before the clock is set, whichever connection the
+// agent serves first.
+func TestWaitReadySendsTheClockFirst(t *testing.T) {
+	// Short: a Unix socket's path has a limit.
+	tmp, err := os.MkdirTemp("", "vm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmp) })
+	d := Dir(tmp)
+	ln, err := net.Listen("unix", d.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newClock()
+	g := &clockedGuest{c: c, booted: make(chan bool, 1)}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if port, err := hvsock.Accept(conn, time.Second); err != nil || port != agentproto.PortControl || hvsock.Ready(conn, 1) != nil {
+			return
+		}
+		_ = (&agent.ControlServer{Guest: g, Clock: c}).ServeConn(conn)
+	}()
+	t.Cleanup(func() { ln.Close(); <-served })
+	if err := d.WaitReady(agentproto.BootSpec{User: "0", Cmd: []string{"/e"}, Ready: "/r"}, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !recv(t, g.booted) {
+		t.Error("the boot ran before the clock was set")
 	}
 }

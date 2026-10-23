@@ -168,8 +168,8 @@ runs. If something else holds the port it says so and opens nothing.
                          one is refused from then on, and so is any code
                          not used yet
 
-'caboose -e ENV ui' opens ENV's page. Packages proposals, restore and
-restart stay in the terminal. See the web UI page of the docs.`},
+'caboose -e ENV ui' opens ENV's page. Restoring a checkpoint and restarting
+the sandbox stay in the terminal. See the web UI page of the docs.`},
 	{Name: "requests", Usage: "[ACTION]", Args: ownArgs,
 		Summary: "what the sandbox asked for, and answers to it",
 		Help: `The sandbox asks the host for what config.toml does not allow it: to open
@@ -228,8 +228,8 @@ ACTION is one of:
                  copy checkpoint ID (KEY@STAMP, or KEY@latest) into DIR,
                  which must not exist: never over anything, never in
                  place. A checkpoint of the live path is taken first. In
-                 the copy, setuid, setgid and sticky bits are cleared. It
-                 warns when a sandbox can write DIR.
+                 the copy, setuid, setgid and sticky bits are cleared. A
+                 DIR in ~/.caboose or that a sandbox can write is refused.
   release ID
                  unpin checkpoint ID: one is pinned, kept whatever its
                  age, when the next checkpoint of its path holds half or

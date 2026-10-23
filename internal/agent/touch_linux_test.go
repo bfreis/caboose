@@ -13,8 +13,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// watchMask is what the tests' watches ask inotify for.
+const watchMask = unix.IN_ATTRIB | unix.IN_MODIFY
+
+// foreignMask are the bits of an event that no watch of watchMask is
+// sent by this kernel's own inotify: what it reports carries only the
+// bits asked for and these flags of its own. A file system shared with
+// another machine (a Mac's directory in a Linux VM, as OrbStack's
+// /work is) may also deliver that machine's notifications of what was
+// written, late and with bits never asked for (IN_CLOSE_WRITE for the
+// write a test made before it watched); those are not this kernel's
+// answer to a touch, and events leaves them out.
+const foreignMask = ^uint32(watchMask | unix.IN_ISDIR | unix.IN_IGNORED | unix.IN_Q_OVERFLOW | unix.IN_UNMOUNT)
+
 // events reads what an inotify fd has queued, as "name:mask" in hex, "."
-// for the watched directory itself.
+// for the watched directory itself, but for an event carrying any bit of
+// foreignMask.
 func events(t *testing.T, fd int) []string {
 	t.Helper()
 	time.Sleep(50 * time.Millisecond)
@@ -33,7 +47,11 @@ func events(t *testing.T, fd int) []string {
 		if name == "" {
 			name = "."
 		}
-		out = append(out, name+":"+fmt.Sprintf("%x", ev.Mask))
+		if ev.Mask&foreignMask == 0 {
+			out = append(out, name+":"+fmt.Sprintf("%x", ev.Mask))
+		} else {
+			t.Logf("left out %s:%x, an event this kernel's inotify does not send a watch of %x", name, ev.Mask, watchMask)
+		}
 		off += unix.SizeofInotifyEvent + int(ev.Len)
 	}
 	return out
@@ -61,7 +79,7 @@ func TestTouch(t *testing.T) {
 	must(err)
 	defer unix.Close(fd)
 	for _, d := range []string{work, outside} {
-		_, err := unix.InotifyAddWatch(fd, d, unix.IN_ATTRIB|unix.IN_MODIFY)
+		_, err := unix.InotifyAddWatch(fd, d, watchMask)
 		must(err)
 	}
 

@@ -1,5 +1,5 @@
 // Package daemon is caboose's host daemon: one process per daemon
-// directory, serving the CLI (and later other clients) on a Unix socket
+// directory, serving the CLI, the web page and the app on a Unix socket
 // that only its own user may connect to, started on demand by the first
 // command that needs it and exiting a while after the last client and the
 // last sandbox it serves are gone.

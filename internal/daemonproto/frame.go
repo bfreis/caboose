@@ -1,5 +1,5 @@
 // Package daemonproto is the protocol between caboose's host daemon and its
-// clients (the command line today; a web page and an app later), and the
+// clients (the command line, the web page and the menu-bar app), and the
 // client that speaks it.
 //
 // The transport is a Unix socket carrying newline-delimited JSON: one frame

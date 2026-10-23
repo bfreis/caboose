@@ -104,8 +104,14 @@ func (d Dir) WaitReady(spec agentproto.BootSpec, timeout time.Duration) error {
 		return err
 	}
 	defer c.Close()
-	// A boot of a guest already booting is answered with the first's
-	// outcome.
+	// The agent serves each connection on its own, so this one may be
+	// served before Boot's: the clock goes first here too, so that no
+	// boot runs before the guest has the host's time. A repeated clock
+	// only sets the guest's again. A boot of a guest already booting is
+	// answered with the first's outcome.
+	if err := c.Clock(time.Now()); err != nil {
+		return err
+	}
 	if err := c.Boot(spec); err != nil {
 		return err
 	}

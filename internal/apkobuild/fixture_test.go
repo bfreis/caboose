@@ -104,17 +104,20 @@ func (f *fixtureRepo) RoundTrip(r *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-func fixtureOptions(f *fixtureRepo, arch string) Options {
+// fixtureOptions are Options for f's repository, with a package cache of
+// the test's own: without one, apko leaves what it expands in the temp
+// dir (Options.CacheDir).
+func fixtureOptions(t *testing.T, f *fixtureRepo, arch string) Options {
 	return Options{
 		Arch: arch, Repositories: []string{fixtureURL}, Keyring: []string{},
-		Transport: f, IgnoreSignatures: true,
+		Transport: f, IgnoreSignatures: true, CacheDir: t.TempDir(),
 	}
 }
 
 func TestFixtureResolveAndBuild(t *testing.T) {
 	ctx := context.Background()
 	repo := newFixture(t, "x86_64", "1.0")
-	o := fixtureOptions(repo, "x86_64")
+	o := fixtureOptions(t, repo, "x86_64")
 	l, err := resolveList(ctx, Spec{Packages: []string{"fixture-hello"}}, []string{"fixture-hello"}, o)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +157,7 @@ func TestFixtureResolveAndBuild(t *testing.T) {
 	}
 
 	// A lock for another architecture is refused.
-	if _, err := Build(ctx, l, fixtureOptions(repo, "aarch64"), "fixture:test", io.Discard); err == nil {
+	if _, err := Build(ctx, l, fixtureOptions(t, repo, "aarch64"), "fixture:test", io.Discard); err == nil {
 		t.Error("built a lock for the wrong architecture")
 	}
 	if _, err := Build(ctx, l, o, "BAD TAG", io.Discard); err == nil {
@@ -163,7 +166,7 @@ func TestFixtureResolveAndBuild(t *testing.T) {
 }
 
 func TestFixtureMissingPackage(t *testing.T) {
-	o := fixtureOptions(newFixture(t, "x86_64", "1.0"), "x86_64")
+	o := fixtureOptions(t, newFixture(t, "x86_64", "1.0"), "x86_64")
 	_, err := resolveList(context.Background(), Spec{Packages: []string{"nonexistent-pkg"}}, []string{"nonexistent-pkg"}, o)
 	if err == nil || !strings.Contains(err.Error(), "nonexistent-pkg") {
 		t.Errorf("error does not name the package: %v", err)
@@ -172,11 +175,11 @@ func TestFixtureMissingPackage(t *testing.T) {
 
 func TestFixtureNewVersionChangesLock(t *testing.T) {
 	ctx := context.Background()
-	l1, err := resolveList(ctx, Spec{Packages: []string{"fixture-hello"}}, []string{"fixture-hello"}, fixtureOptions(newFixture(t, "x86_64", "1.0"), "x86_64"))
+	l1, err := resolveList(ctx, Spec{Packages: []string{"fixture-hello"}}, []string{"fixture-hello"}, fixtureOptions(t, newFixture(t, "x86_64", "1.0"), "x86_64"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	l2, err := resolveList(ctx, Spec{Packages: []string{"fixture-hello"}}, []string{"fixture-hello"}, fixtureOptions(newFixture(t, "x86_64", "1.1"), "x86_64"))
+	l2, err := resolveList(ctx, Spec{Packages: []string{"fixture-hello"}}, []string{"fixture-hello"}, fixtureOptions(t, newFixture(t, "x86_64", "1.1"), "x86_64"))
 	if err != nil {
 		t.Fatal(err)
 	}
