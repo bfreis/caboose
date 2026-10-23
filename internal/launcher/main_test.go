@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"testing"
@@ -33,6 +34,13 @@ func TestMain(m *testing.M) {
 		exe, _ := os.Executable()
 		os.Exit(syncagent.Serve(os.Args[2], os.Stdin, os.Stdout, os.Stderr,
 			syncagent.Paths{Home: home, Repo: os.Getenv(testSyncRepo), Exe: exe}))
+	}
+	if os.Getenv(confPrintEnv) == "1" {
+		// A child of the conformance tests: what it inherited.
+		for _, kv := range os.Environ() {
+			fmt.Println(kv)
+		}
+		os.Exit(0)
 	}
 	if os.Getenv(brokerDaemonEnv) != "" {
 		os.Exit(brokerDaemonMain())

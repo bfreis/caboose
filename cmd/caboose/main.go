@@ -84,6 +84,12 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	if inv.Command == "conformance" {
+		// Its own environment, built from nothing: no config.toml of the
+		// caller's, no update check.
+		return runConformance(inv.Args, stdout, stderr)
+	}
+
 	if inv.Command == "daemon" {
 		// Machine-wide, and what starting the daemon runs, detached: no
 		// environment's config.toml, no update check.

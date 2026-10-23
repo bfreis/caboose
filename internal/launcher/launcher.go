@@ -174,6 +174,11 @@ type App struct {
 	// agent; one that does needs a lock here first.
 	agentSeen *agentMemo
 
+	// creating, when set, is told the spec the sandbox is created from,
+	// just before it is: the conformance suite's record of what it
+	// planned.
+	creating func(backend.Spec)
+
 	// envBox, when set, stands in for sandboxBox: the tests' sandboxes of
 	// other environments.
 	envBox func(env string) (backend.Backend, bool, error)

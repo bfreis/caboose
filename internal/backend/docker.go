@@ -2,8 +2,10 @@ package backend
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,19 @@ type Docker struct {
 
 // NewDocker is the container name on cli's engine.
 func NewDocker(cli *docker.CLI, name string) *Docker { return &Docker{CLI: cli, Name: name} }
+
+var fullID = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// NewDockerByID is the container with the full 64-hex ID id on cli's
+// engine: every call names it by that ID, never by a name, which another
+// container could take between a check and an exec. docker resolves a
+// full ID before any name, and never reuses one.
+func NewDockerByID(cli *docker.CLI, id string) (*Docker, error) {
+	if !fullID.MatchString(id) {
+		return nil, fmt.Errorf("%q is not a full container ID", id)
+	}
+	return &Docker{CLI: cli, Name: id}, nil
+}
 
 func (d *Docker) State() string { return d.CLI.ContainerState(d.Name) }
 

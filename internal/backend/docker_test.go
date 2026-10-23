@@ -109,6 +109,28 @@ func TestDockerRefusesEgress(t *testing.T) {
 	}
 }
 
+// A container addressed by ID is named by it in every call, after the
+// pinned engine's --host; anything but a full ID is refused.
+func TestDockerByID(t *testing.T) {
+	id := strings.Repeat("0a", 32)
+	for _, bad := range []string{"", "caboose-default", id[:12], strings.ToUpper(id), id + "0"} {
+		if _, err := NewDockerByID(&docker.CLI{Path: "docker"}, bad); err == nil {
+			t.Errorf("NewDockerByID(%q) was taken", bad)
+		}
+	}
+	e := echoDocker(t)
+	e.CLI.Host = "unix:///engine.sock"
+	d, err := NewDockerByID(e.CLI, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := argv(t, d, ExecSpec{User: "root", Argv: []string{"true"}})
+	want := []string{"--host", "unix:///engine.sock", "exec", "-u", "root", id, "true"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("exec argv %q, want %q", got, want)
+	}
+}
+
 // Started is the running container's State.StartedAt, asked by name, and
 // nothing for one that does not run, or a time docker cannot give.
 func TestDockerStarted(t *testing.T) {

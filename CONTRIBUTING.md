@@ -17,6 +17,7 @@ Docker. `make help` lists the targets; the ones that matter:
 | `make test` | build the `test` environment's image (`TEST_ENV`), then run the integration suite (`tests/run.sh`) in it |
 | `make test-vm` | only the integration suite's isolation vm group (`ONLY=vm tests/run.sh`): a throwaway environment, its image built in the builder guest; a Mac only, skipped elsewhere |
 | `make test-byo` | the bring-your-own-image suite (`tests/byo/`): slow, it installs Claude Code twice |
+| `make conformance` | the security conformance suite (`ISOLATION=container\|gvisor\|vm`, `TRUST=hostile`, `OUT=FILE`): it builds `./caboose-conformance` with the `conformance` tag, creates a throwaway environment and attacks it; on the host only, never in the sandbox (see "How to verify" in `docs/security.md`) |
 
 **Work in a release, develop in `dev`.** Use an install made by `install.sh`
 for the sandbox you work in: it is the default environment, and moves only

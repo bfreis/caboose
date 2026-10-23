@@ -25,6 +25,12 @@
 # recorded next to caboose.platform so a binary with a stale stamp gets rebuilt.
 /caboose.version
 
+# The launcher with the conformance suite's command, from `make
+# conformance`, and its stamps: build output, never a release.
+/caboose-conformance
+/caboose-conformance.platform
+/caboose-conformance.version
+
 # caboose-vmm, the vm isolation's runner, from `make vmm` on a Mac, signed
 # ad-hoc: build output, next to the launcher as a release installs it.
 /caboose-vmm

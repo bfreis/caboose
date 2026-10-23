@@ -39,10 +39,22 @@ type CLI struct {
 	// Stderr receives docker's own stderr on the calls that show it; nil
 	// means os.Stderr.
 	Stderr io.Writer
+	// Host, when set, is the engine's endpoint, given to every call as
+	// --host: the engine pinned, whatever a context or DOCKER_HOST would
+	// pick. "" leaves the choice to docker.
+	Host string
 }
 
 // New returns a CLI for the docker on $PATH.
 func New() *CLI { return &CLI{Path: "docker"} }
+
+// cmd is docker with args, the pinned endpoint first when there is one.
+func (c *CLI) cmd(args ...string) *exec.Cmd {
+	if c.Host != "" {
+		args = append([]string{"--host", c.Host}, args...)
+	}
+	return exec.Command(c.Path, args...)
+}
 
 func (c *CLI) stderr() io.Writer {
 	if c.Stderr != nil {
@@ -62,7 +74,7 @@ func (c *CLI) Output(args ...string) (string, error) {
 // RawOutput is Output without the newline trimming.
 func (c *CLI) RawOutput(args ...string) (string, error) {
 	var out, errb bytes.Buffer
-	cmd := exec.Command(c.Path, args...)
+	cmd := c.cmd(args...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		return out.String(), &Failure{Err: err, Stderr: strings.TrimSpace(errb.String())}
@@ -91,13 +103,13 @@ func (f *Failure) Unwrap() error { return f.Err }
 // Quiet runs docker with both stdout and stderr discarded, for calls whose
 // only answer is the exit status.
 func (c *CLI) Quiet(args ...string) error {
-	return exec.Command(c.Path, args...).Run()
+	return c.cmd(args...).Run()
 }
 
 // Run runs docker with stdout discarded (`>/dev/null`) and stderr shown, so a
 // failure still explains itself.
 func (c *CLI) Run(args ...string) error {
-	cmd := exec.Command(c.Path, args...)
+	cmd := c.cmd(args...)
 	cmd.Stderr = c.stderr()
 	return cmd.Run()
 }
@@ -105,7 +117,7 @@ func (c *CLI) Run(args ...string) error {
 // Stream runs docker with stdout and stderr connected to the given writers
 // and no stdin.
 func (c *CLI) Stream(stdout, stderr io.Writer, args ...string) error {
-	cmd := exec.Command(c.Path, args...)
+	cmd := c.cmd(args...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	return cmd.Run()
 }
@@ -118,7 +130,7 @@ func (c *CLI) Stream(stdout, stderr io.Writer, args ...string) error {
 // --provenance=false, which the legacy builder refuses; a user's own
 // --provenance still wins.
 func (c *CLI) Build(stdout, stderr io.Writer, args ...string) error {
-	cmd := exec.Command(c.Path, append([]string{"build"}, args...)...)
+	cmd := c.cmd(append([]string{"build"}, args...)...)
 	cmd.Env = append(os.Environ(), "BUILDX_NO_DEFAULT_ATTESTATIONS=1")
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	return cmd.Run()
@@ -131,7 +143,7 @@ func (c *CLI) Build(stdout, stderr io.Writer, args ...string) error {
 // up. The copy from r then ends at r's next read or write that fails, so
 // such a reader is the caller's to close.
 func (c *CLI) Load(r io.Reader, stdout, stderr io.Writer) error {
-	cmd := exec.Command(c.Path, "load")
+	cmd := c.cmd("load")
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if f, ok := r.(*os.File); ok {
 		cmd.Stdin = f
@@ -174,7 +186,7 @@ func (c *CLI) Architecture() (string, error) {
 // Command is docker with args, not yet started, for a caller that needs
 // its pipes or its process: every exec in the sandbox (backend.Docker),
 // and caboose logs, which becomes it.
-func (c *CLI) Command(args ...string) *exec.Cmd { return exec.Command(c.Path, args...) }
+func (c *CLI) Command(args ...string) *exec.Cmd { return c.cmd(args...) }
 
 // ExitCode is the exit status of a failed docker run, or 1 when it did not
 // get as far as exiting (docker missing, say).

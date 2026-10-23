@@ -518,7 +518,7 @@ format = 1    # this file's structure
 # leaves it, and cannot have egress = false. It ignores host_exec, asks for
 # every URL, and asks before any outbound connection egress_allow does not
 # name; egress_allow must name the hosts Claude Code needs (a launch says
-# which).
+# which). See docs/security.md.
 #trust = "fallible"
 
 # The directories holding your projects, each mounted into the sandbox at

@@ -91,6 +91,10 @@ $(VERSION_STAMP): FORCE
 	    "$$(git log -1 --format=%cI 2>/dev/null)")"; \
 	  [ "$$(cat $@ 2>/dev/null)" = "$$want" ] || printf '%s\n' "$$want" > $@
 
+# GO_TAGS are build tags for the launcher: conformance (make conformance)
+# adds the conformance suite's command, which no release carries.
+GO_TAGS ?=
+
 # CGO_ENABLED=0 always: the launcher needs no C, a static binary is what the
 # releases ship, and a `make CC=...` override is exported into recipes,
 # where cgo would read it as the C compiler. GO_LDFLAGS goes after the stamp,
@@ -111,7 +115,7 @@ agent: $(AGENT_BINS)
 
 $(LAUNCHER): $(GO_SRC) $(EMBEDDED) $(AGENT_BINS) $(PLATFORM_STAMP) $(VERSION_STAMP)
 	@{ read -r v; read -r c; read -r d; } < $(VERSION_STAMP); \
-	  CGO_ENABLED=0 go build -o $@ -ldflags \
+	  CGO_ENABLED=0 go build -o $@ -tags '$(GO_TAGS)' -ldflags \
 	    "-X $(VERSION_PKG).Version=$$v -X $(VERSION_PKG).Commit=$$c -X $(VERSION_PKG).Date=$$d "'$(GO_LDFLAGS)' \
 	    ./cmd/caboose \
 	  && echo "  built $@ $$v for $$(cat $(PLATFORM_STAMP))"
@@ -414,6 +418,7 @@ lint:
 	    echo "  !!  gofmt: $$unformatted"; exit 1; \
 	  fi; echo "  ok  gofmt"; \
 	  go vet ./... && echo "  ok  go vet"; \
+	  go vet -tags conformance ./... && echo "  ok  go vet (-tags conformance)"; \
 	  for os in linux darwin; do \
 	    [ "$$os" = "$$(go env GOOS)" ] || { GOOS=$$os go vet ./... && echo "  ok  go vet ($$os)"; }; \
 	  done; \
@@ -422,6 +427,45 @@ lint:
 	  for os in linux darwin; do \
 	    GOOS=$$os staticcheck ./... && echo "  ok  staticcheck ($$os)"; \
 	  done
+
+## conformance-probe: build the conformance suite's probe for each architecture into PROBE_DIR
+# A linux binary per architecture, which the conformance suite places into
+# its own throwaway sandbox: in no image and no release. PROBE_DIR is
+# required and must be outside the checkout, so a probe can never be
+# committed or picked up by another build.
+PROBE_ARCHS := amd64 arm64
+conformance-probe:
+	@if [ -z "$(PROBE_DIR)" ]; then echo "  !!  conformance-probe needs PROBE_DIR=<a directory outside the checkout>" >&2; exit 1; fi
+	@for d in "$(abspath $(PROBE_DIR))" "$(realpath $(PROBE_DIR))"; do \
+	    case "$$d/" in "$(CURDIR)/"*|"$(realpath $(CURDIR))/"*) echo "  !!  PROBE_DIR must be outside the checkout" >&2; exit 1;; esac; \
+	  done
+	@set -e; for a in $(PROBE_ARCHS); do \
+	    CGO_ENABLED=0 GOOS=linux GOARCH=$$a go build -trimpath -buildvcs=false -ldflags '-s -w' \
+	      -o "$(abspath $(PROBE_DIR))/conformance-probe-linux-$$a" ./internal/conformance/probe/cmd/conformance-probe; \
+	    echo "  built $(abspath $(PROBE_DIR))/conformance-probe-linux-$$a"; \
+	  done
+
+## conformance: run the conformance suite on a throwaway environment, on the host: ISOLATION=container|gvisor|vm [TRUST=hostile] [OUT=FILE]
+# The launcher is built with the conformance tag as ./caboose-conformance
+# (next to caboose-vmm, which the vm isolation runs, and to the checkout's
+# vm-dist), never as ./caboose; the probe into a fresh temp dir, whose two
+# files are removed by name afterwards. The suite prints its plan, then
+# creates only throwaway things and removes what it created itself.
+CONF_LAUNCHER := caboose-conformance
+conformance:
+	@if [ -n "$(IN_SANDBOX)" ]; then echo "  !!  conformance creates environments and attacks them: run it on the host, not in the sandbox" >&2; exit 1; fi
+	@if [ -z "$(ISOLATION)" ]; then echo "  !!  conformance needs ISOLATION=container, gvisor or vm" >&2; exit 1; fi
+	@$(MAKE) --no-print-directory launcher LAUNCHER=$(CONF_LAUNCHER) GO_TAGS=conformance
+	@probe="$$(mktemp -d /tmp/caboose-conformance-probe.XXXXXX)" || exit 1; \
+	  status=0; \
+	  $(MAKE) --no-print-directory conformance-probe PROBE_DIR="$$probe" || status=$$?; \
+	  if [ "$$status" = 0 ]; then \
+	    ./$(CONF_LAUNCHER) conformance run --isolation "$(ISOLATION)" $(if $(TRUST),--trust "$(TRUST)") \
+	      $(if $(OUT),--out "$(OUT)") --probe-dir "$$probe" || status=$$?; \
+	  fi; \
+	  for a in $(PROBE_ARCHS); do rm -f "$$probe/conformance-probe-linux-$$a"; done; \
+	  rmdir "$$probe"; \
+	  exit $$status
 
 ## go-test: run the Go unit tests (no docker, safe anywhere)
 # The agent first: the image's context hashes cover its binaries.
@@ -451,5 +495,5 @@ test-vm: launcher
 test-byo: $(CC)
 	@CABOOSE_BIN=$(CC) ./tests/byo/run.sh
 
-.PHONY: FORCE help staticcheck-version agent vmm app vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
+.PHONY: FORCE help staticcheck-version agent conformance conformance-probe vmm app vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint go-test test test-vm test-byo
 FORCE:

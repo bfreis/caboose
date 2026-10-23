@@ -226,6 +226,20 @@ func SharePaths(ms []Mount) ([]string, error) {
 	return paths, nil
 }
 
+// PlanShares are the shares a VM created from mounts ms is given: what its
+// machine.json must say, which the conformance suite's audit compares.
+func PlanShares(ms []Mount) ([]vm.Share, error) {
+	shares, _, err := planShares(ms)
+	return shares, err
+}
+
+// PlanGuest is PlanShares with the guest's mounts of them, as the VM's
+// boot spec gives them: what the conformance suite's tests hold its audit
+// to.
+func PlanGuest(ms []Mount) ([]vm.Share, []agentproto.GuestMount, error) {
+	return planShares(ms)
+}
+
 // planShares makes the mounts directories of the VM's one share. A
 // virtio-fs share is a directory, so a file is mounted from its own
 // directory, shared whole (a kept file entry's is the data dir's home/,

@@ -62,9 +62,9 @@ daemon refuses an older caboose's commands, `caboose daemon stop` and
 is in `daemon.json`).
 
 The daemon also answers `caboose requests`, `grants` and `permissions`
-for the environments whose link it runs. A daemon older than your
-`caboose` does not know those commands and says so: `caboose daemon
-restart`. With
+(see [Requests and grants](security.md#requests-and-grants)), for the
+environments whose link it runs. A daemon older than your `caboose` does
+not know those commands and says so: `caboose daemon restart`. With
 `CABOOSE_DATA_DIR` set the daemon does not serve the command's
 environment, so these commands find nothing to answer for.
 
@@ -538,3 +538,7 @@ sandbox is:
 - an alias runs only what `config.toml` says, with the parameters it lists:
   the sandbox names it and picks values, and the host resolves and decides
   the rest at every run.
+
+This is the link's part of the picture. What the sandbox can reach as a
+whole, and which controls are enforced and under what conditions, is in
+[security](security.md).

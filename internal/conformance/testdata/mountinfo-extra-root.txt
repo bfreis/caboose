@@ -1,0 +1,19 @@
+612 520 0:180 / / rw,relatime master:208 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/A:/var/lib/docker/overlay2/l/B,upperdir=/var/lib/docker/overlay2/x/diff,workdir=/var/lib/docker/overlay2/x/work
+613 612 0:183 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+614 612 0:184 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755
+615 614 0:185 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+616 612 0:186 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+617 616 0:30 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw
+618 614 0:182 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+619 614 0:187 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k
+620 612 254:1 /docker/containers/c/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/vda1 rw
+621 612 254:1 /docker/containers/c/hostname /etc/hostname rw,relatime - ext4 /dev/vda1 rw
+622 612 254:1 /docker/containers/c/hosts /etc/hosts rw,relatime - ext4 /dev/vda1 rw
+623 612 0:52 /B/roots/conf-0011aabb-ro /work/conf-0011aabb-ro ro,relatime - virtiofs mac rw
+624 612 0:52 /B/roots/conf-0011aabb-dev /work/conf-0011aabb-dev ro,relatime - virtiofs mac rw
+625 624 0:52 /B/roots/conf-0011aabb-dev/part /work/conf-0011aabb-dev/part rw,relatime - virtiofs mac rw
+626 612 0:52 /B/data/home/.config /home/agent/.config rw,relatime - virtiofs mac rw
+627 612 0:52 /B/data/home/my\040dir /home/agent/my\040dir rw,relatime - virtiofs mac rw
+628 612 0:52 /B/data/claude-code /etc/claude-code ro,relatime - virtiofs mac rw
+629 613 0:183 /bus /proc/bus ro,nosuid,nodev,noexec,relatime - proc proc rw
+630 612 0:52 /Users/u/dev /work/dev rw,relatime - virtiofs mac rw

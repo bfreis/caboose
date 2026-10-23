@@ -26,6 +26,8 @@
 - Every root is read-only from inside the sandbox but for the parts its
   `writable` lists, and those a mistaken command or a hostile agent can
   change or delete entirely. List only what the sandbox needs to write.
+  [Security](security.md) says what the sandbox can and cannot reach, and
+  which controls are in effect.
 - A caboose checkout in a writable part is, like any other checkout
   there, **writable** from inside — and its `CLAUDE.md` invites the agent to
   edit the launcher's source and the layer, which the *host* then

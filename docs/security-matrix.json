@@ -1,0 +1,398 @@
+{
+  "version": 1,
+  "controls": [
+    {
+      "control": "only the mounted paths are reachable",
+      "checks": [
+        "R13",
+        "D0",
+        "D1"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "read-only roots and writable parts",
+      "checks": [
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7",
+        "R8",
+        "R9",
+        "R10",
+        "R11",
+        "R14"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "read-only instructions mount",
+      "checks": [
+        "R12"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held",
+          "note": "until the guest's root unmounts it"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "until the guest's root unmounts it"
+        }
+      }
+    },
+    {
+      "control": "daemon out of reach",
+      "checks": [
+        "D2",
+        "D9",
+        "X2"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "`host_exec` off unless set",
+      "checks": [
+        "H1",
+        "H8"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "refused even when set"
+        }
+      }
+    },
+    {
+      "control": "aliases: only `config.toml`'s, no command in or through a writable path",
+      "checks": [
+        "H2",
+        "H3",
+        "H4",
+        "H6",
+        "H7",
+        "H9",
+        "H10"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "no working directory or argument in a writable path either"
+        }
+      }
+    },
+    {
+      "control": "ports forwarded only as the host says, on `127.0.0.1`",
+      "checks": [],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "URL checks",
+      "checks": [],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "always asks"
+        }
+      }
+    },
+    {
+      "control": "outbound rules",
+      "checks": [
+        "E1",
+        "E2",
+        "E3",
+        "E4",
+        "E5",
+        "E6",
+        "E7",
+        "E8"
+      ],
+      "cells": {
+        "container": {
+          "claim": "not covered"
+        },
+        "gvisor": {
+          "claim": "not covered"
+        },
+        "vm/fallible": {
+          "claim": "partial",
+          "note": "proxied traffic only; the NAT is open"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "every unnamed host asks; no NAT"
+        }
+      }
+    },
+    {
+      "control": "request queue and grants",
+      "checks": [
+        "D5",
+        "D8"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "the host's settings: proposals and the sandbox config reach nothing of the host's",
+      "checks": [
+        "H5",
+        "D6"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "checkpoints (on the host, the same under every isolation)",
+      "checks": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "web page: port refused, token and request checks",
+      "checks": [
+        "D4",
+        "D3",
+        "D7"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held",
+          "note": "run_args --network host is allowed under fallible, warned by doctor and caboose ui, not refused"
+        },
+        "gvisor": {
+          "claim": "held",
+          "note": "run_args --network host is allowed under fallible, warned by doctor and caboose ui, not refused"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "D7 not run (hostile asks before every URL)"
+        }
+      }
+    },
+    {
+      "control": "`hostile` refused",
+      "checks": [
+        "T1"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "n/a"
+        },
+        "vm/hostile": {
+          "claim": "n/a"
+        }
+      }
+    },
+    {
+      "control": "`trust` is the host's: labels say what runs, `hostile` cannot be turned off from the sandbox",
+      "checks": [
+        "T2",
+        "T3",
+        "T4",
+        "T5"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
+      "control": "the SSH agent under `hostile`: none unless `ssh_agent` names one",
+      "checks": [
+        "T6"
+      ],
+      "cells": {
+        "container": {
+          "claim": "n/a"
+        },
+        "gvisor": {
+          "claim": "n/a"
+        },
+        "vm/fallible": {
+          "claim": "n/a"
+        },
+        "vm/hostile": {
+          "claim": "held",
+          "note": "an agent ssh_agent names is forwarded"
+        }
+      }
+    },
+    {
+      "control": "the sandbox's home holds what Claude Code keeps (a recorded gap)",
+      "checks": [
+        "X1"
+      ],
+      "cells": {
+        "container": {
+          "claim": "not covered",
+          "note": "the home is readable and writable by design"
+        },
+        "gvisor": {
+          "claim": "not covered",
+          "note": "the home is readable and writable by design"
+        },
+        "vm/fallible": {
+          "claim": "not covered",
+          "note": "the home is readable and writable by design"
+        },
+        "vm/hostile": {
+          "claim": "not covered",
+          "note": "the home is readable and writable by design"
+        }
+      }
+    }
+  ],
+  "results": {}
+}

@@ -442,6 +442,8 @@ form included, is read-only throughout: nothing in the sandbox can change
 it. So is the default root, `dev = "~/dev"`, when `config.toml` has no
 `[roots]`: `caboose setup roots` asks, for each root, which directories
 under it the sandbox may write, and a launch says when it can write none.
+[Security](security.md#read-only-roots-and-writable-parts) says what this
+holds against, under each isolation.
 
 ```toml
 [roots.dev]
@@ -570,7 +572,8 @@ still go through the proxy, and so are decided by `egress_allow` and
 ## `[checkpoints]`
 
 The paths whose files caboose's daemon copies, on this machine, into
-`~/.caboose/envs/<env>/checkpoints/`, which no sandbox mounts:
+`~/.caboose/envs/<env>/checkpoints/`, which no sandbox mounts
+([security](security.md#checkpoints)):
 
 - while the sandbox runs, a checkpoint of each path every 10 minutes, the
   first as soon as the daemon's link to the sandbox starts, and one more

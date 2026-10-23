@@ -1,0 +1,15 @@
+1 0 0:22 / / rw,relatime - overlay overlay rw,lowerdir=/mnt/lower,upperdir=/mnt/scratch/upper,workdir=/mnt/scratch/work
+2 1 0:5 / /dev rw,relatime - devtmpfs devtmpfs rw,size=4010000k,nr_inodes=1002500,mode=755
+3 1 0:21 / /proc rw,relatime - proc proc rw
+4 1 0:23 / /run rw,nosuid,nodev,relatime - tmpfs tmpfs rw,mode=755
+5 1 0:24 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw
+6 5 0:6 / /sys/kernel/security rw,nosuid,nodev,noexec,relatime - securityfs securityfs rw
+7 5 0:25 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime - cgroup2 cgroup2 rw
+8 2 0:26 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+9 2 0:27 / /dev/shm rw,nosuid,nodev,relatime - tmpfs shm rw,mode=1777
+11 1 0:28 /m0 /work/conf-0011aabb-ro ro,relatime - virtiofs caboose rw
+12 1 0:28 /m1 /work/conf-0011aabb-dev ro,relatime - virtiofs caboose rw
+13 12 0:28 /m2 /work/conf-0011aabb-dev/part rw,relatime - virtiofs caboose rw
+14 1 0:28 /m3 /home/agent/.config rw,relatime - virtiofs caboose rw
+15 1 0:28 /m4 /etc/claude-code ro,relatime - virtiofs caboose rw
+16 1 254:32 / /var/lib/docker rw,relatime - ext4 /dev/vdc rw

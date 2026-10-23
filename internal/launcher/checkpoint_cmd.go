@@ -31,6 +31,10 @@ type checkpointOpts struct {
 	// take carries Take's test switches; restore carries Restore's.
 	take    checkpoint.TakeOptions
 	restore checkpoint.RestoreOptions
+	// restored, when set, is given what checkpoint.Restore returned, as
+	// it returned it: the conformance suite tells the product's refusals
+	// of a target (ErrTargetExists, ErrTargetRefused) from other failures.
+	restored func(checkpoint.Restored, error)
 }
 
 // Checkpoint is `caboose checkpoint`: list, create and restore the
@@ -455,6 +459,9 @@ func (a *App) checkpointRestore(args []string, o checkpointOpts) error {
 	}
 
 	res, err := checkpoint.Restore(context.Background(), s, id, to, ro)
+	if o.restored != nil {
+		o.restored(res, err)
+	}
 	w := a.Stdout
 	if res.BeforeRestore != nil {
 		fmt.Fprintf(w, "First took %s, a checkpoint of %s as it is now: restore it to undo what you do with the copy.\n", res.BeforeRestore, res.Path)

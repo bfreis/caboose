@@ -431,7 +431,7 @@ func TestCheckpointSourcesLogin(t *testing.T) {
 // A root whose host path is a second name of a directory inside the store
 // (a symlink, a /proc/self/fd magic link) is refused as a source, by
 // identity, and makes the store exposed. (A bind mount, which
-// needs privileges, is not covered.)
+// needs privileges, is not covered: see docs/security.md.)
 func TestCheckpointSourcesRefuseAliasesInsideTheStore(t *testing.T) {
 	e := newCkEnv(t)
 	inner := filepath.Join(checkpoint.StoreDir(e.envDir), "k-0000aaaa", "sub")

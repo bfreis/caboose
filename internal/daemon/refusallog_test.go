@@ -30,7 +30,7 @@ func (l *lockedLog) count(s string) int {
 
 // Every connection that reaches the daemon with no hello first, a
 // request in its place or nothing at all, is logged as "a client's
-// hello".
+// hello": the line the conformance suite's host witness counts.
 func TestConnectionWithoutHelloIsLogged(t *testing.T) {
 	log := &lockedLog{}
 	dir, _ := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: log})

@@ -521,6 +521,9 @@ func (a *App) createContainer(mayBuild bool) error {
 		spec.Env = append(spec.Env, "CABOOSE_ISOLATION="+isolationVM)
 		a.Note("starting the sandbox's VM")
 	}
+	if a.creating != nil {
+		a.creating(spec)
+	}
 	if err := a.box().Create(spec); err != nil {
 		return a.boxFailed(err)
 	}
@@ -529,7 +532,7 @@ func (a *App) createContainer(mayBuild bool) error {
 
 // sandboxVolumes are the volumes the sandbox is created with: under vm
 // the guest's dockerd's storage, a disk kept across restarts; none
-// otherwise.
+// otherwise. The conformance suite reads the next launch's from it too.
 func (a *App) sandboxVolumes() []backend.Volume {
 	if !a.isVM() {
 		return nil
@@ -556,7 +559,8 @@ const engineSocketTarget = "/var/run/docker.sock"
 // host, and the SSH agent's, which lets git and jj push over SSH and git
 // sign without a private key in the image or the data dir. None under
 // vm: a Unix socket does not cross virtio-fs, so a vm profile has no
-// engine_socket, and the link carries the agent.
+// engine_socket, and the link carries the agent. The conformance suite
+// reads the next launch's from it too.
 func (a *App) hostSockets() hostSocketSet {
 	var s hostSocketSet
 	if a.isVM() {
@@ -581,7 +585,8 @@ func (a *App) hostSockets() hostSocketSet {
 // and the roots, in order: what it keeps of its home (sb), the Claude
 // Code build for platform, the sync repo, the proposals, caboose's
 // instructions and the roots. createContainer creates the sandbox with
-// them.
+// them; the conformance suite reads the next launch's from them without
+// creating anything.
 func dataMounts(d, platform string, sb *datadir.Sandbox, roots []config.Root) []backend.Mount {
 	// What the sandbox keeps of its home: the sandbox config's [[keep]]
 	// entries, each kept in the data dir's home/, never at a host path of

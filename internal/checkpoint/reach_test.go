@@ -14,7 +14,7 @@ import (
 // taken after a symlink (which a lexical clean would get wrong), and, on
 // Linux, a /proc/self/fd magic link. What is not inside it is not refused,
 // even when its path is spelt like the store's. (A bind mount, which needs
-// privileges, is not covered.)
+// privileges, is not covered: see docs/security.md.)
 func TestCheckReachAliasesInsideTheStore(t *testing.T) {
 	s := newStore(t)
 	inner := filepath.Join(s.Dir(), "k-0000aaaa", "20261018T120000Z", TreeName, "sub")

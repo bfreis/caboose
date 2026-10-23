@@ -108,6 +108,7 @@ caboose help               # every command
 | [The web page](docs/web-ui.md) | `caboose ui`: requests and proposals in a browser, its address and token, and what stays in the terminal |
 | [The menu-bar app](docs/menu-bar-app.md) | Caboose.app on a Mac: environments, requests answered after a confirmation, the URL question, notifications; `make app` builds it from a checkout |
 | [Caveats](docs/caveats.md) | what to know before you rely on it, including the docker socket |
+| [Security](docs/security.md) | the threat model: what each isolation protects, from whom, and what it does not cover |
 | [Contributing](CONTRIBUTING.md) | building, testing and releasing caboose |
 
 ## License

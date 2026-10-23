@@ -1,0 +1,17 @@
+1 0 0:6 / / rw,noatime - 9p none rw,trans=fd,rfdno=4,wfdno=4,cache=remote_revalidating
+2 1 0:3 / /dev rw,noatime - dev none rw
+3 2 0:7 / /dev/pts rw,noatime - devpts none rw
+4 2 0:8 / /dev/shm rw,noatime - tmpfs none rw,mode=1777
+5 2 0:9 / /dev/mqueue rw,noatime - mqueue none rw
+6 1 0:10 / /proc rw,noatime - proc none rw
+7 1 0:11 / /sys rw,noatime - sysfs none rw
+8 7 0:12 / /sys/fs/cgroup rw,noatime - tmpfs none rw,mode=0755
+9 1 0:13 / /etc/hosts rw,noatime - 9p none rw,trans=fd,rfdno=6,wfdno=6
+10 1 0:14 / /etc/hostname rw,noatime - 9p none rw,trans=fd,rfdno=7,wfdno=7
+11 1 0:15 / /etc/resolv.conf rw,noatime - 9p none rw,trans=fd,rfdno=8,wfdno=8
+12 1 0:16 / /work/conf-0011aabb-ro ro,noatime - 9p none ro,trans=fd,rfdno=9,wfdno=9
+13 1 0:17 / /work/conf-0011aabb-dev ro,noatime - 9p none ro,trans=fd,rfdno=10,wfdno=10
+14 13 0:18 / /work/conf-0011aabb-dev/part rw,noatime - 9p none rw,trans=fd,rfdno=11,wfdno=11
+15 1 0:19 / /home/agent/.config rw,noatime - 9p none rw,trans=fd,rfdno=12,wfdno=12
+16 1 0:20 / /home/agent/my\040dir rw,noatime - 9p none rw,trans=fd,rfdno=13,wfdno=13
+17 1 0:21 / /etc/claude-code ro,noatime - 9p none ro,trans=fd,rfdno=14,wfdno=14

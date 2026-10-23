@@ -430,9 +430,9 @@ func (a *App) checkpointReach(apps func(env string) (*App, error)) ([]checkpoint
 
 // vmShareDir is the directory a VM is given for its mount m when that is
 // more than m's source, or "": a virtio-fs share is a directory, so a
-// file is shared with its whole directory, which the guest's root can
-// mount whole. Only under vm; a source that is not there, or not a file,
-// is shared as it is.
+// file is shared with its whole directory (backend.PlanShares), which
+// the guest's root can mount whole. Only under vm; a source that is not
+// there, or not a file, is shared as it is.
 func vmShareDir(b *App, m backend.Mount) string {
 	if !b.isVM() || !filepath.IsAbs(m.Source) {
 		return ""
