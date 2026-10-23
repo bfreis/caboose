@@ -6,6 +6,7 @@ Docker. `make help` lists the targets; the ones that matter:
 | | |
 |---|---|
 | `make launcher` | build `./caboose` from the Go sources, only when something changed (and `./caboose-vmm` too, on a Mac) |
+| `make agent` | build `caboose-agent`, the sandbox's end of the host link, for amd64 and arm64 into `agent-bin/`, from `cmd/caboose-agent` and `internal/agent`; the launcher embeds it and the image's layer copies it in (`make launcher` runs it) |
 | `make vm-kernel` | build `vm-dist/kernel-arm64` (and its `.config` and `.SOURCE`, checked to name the pinned version), the vm isolation's guest kernel, from `vm/kernel` and the kernel.org release the Makefile pins; with docker, on the host, never in the sandbox |
 | `make vm-assets` | pack the kernel and builder as `vm-release/caboose-vm_VERSION_arm64.tar.gz`, the release asset (goreleaser runs it) |
 | `make vm-builder` | build `vm-dist/builder-arm64.img`, the vm isolation's builder guest, with docker; on the host, never in the sandbox |
@@ -28,6 +29,11 @@ whole caboose with its own container, image and data dir, created on
 defaults the first time (its roots are `~/dev`: `./caboose -e dev setup`
 changes that, and logs in to Claude there). `DEV_ENV=default` aims the
 targets at your own environment, when you mean it.
+
+To use the vm isolation from a checkout, also run `make vm-kernel
+vm-builder` once (they need Docker on the host): a checkout's build finds
+the guest kernel and the builder disk in `vm-dist/`. `make launcher`
+builds `caboose-vmm` on a Mac.
 
 `./caboose` is gitignored, and symlinked onto `PATH` it finds its checkout
 through the link. Every make target that runs it rebuilds it first when its
@@ -54,8 +60,10 @@ anywhere but a Mac with `caboose-vmm`, the kernel and the builder disk;
 push.
 
 **Changes to the image need a rebuild, on the host.**
-`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `tmux.conf` and
-`shellrc.bash` are baked into the image, and caboose's package groups
+`layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `xdg-open.sh`,
+`tmux.conf`, `shellrc.bash` and `caboose-agent` (built by `make agent` from
+`cmd/caboose-agent` and `internal/agent` into `agent-bin/`) are baked into
+the image, and caboose's package groups
 (`internal/apkobuild/pkgset/packages.toml`) decide an `apko` base's, which is built from the copies embedded in the
 launcher, so an edit needs `make build && make
 restart` (make rebuilds the launcher for you), which moves the `dev`
@@ -73,7 +81,8 @@ what to fix, for a file in the checkout that is a link or over the size limits.
 
 The image is not built from the checkout. `caboose build` writes the
 layer's files embedded in the binary — `layer.Dockerfile`, `layer-user.sh`,
-`entrypoint.sh`, `tmux.conf` and `shellrc.bash` — into an empty temp dir
+`entrypoint.sh`, `xdg-open.sh`, `tmux.conf`, `shellrc.bash` and
+`caboose-agent` — into an empty temp dir
 and builds there, so nothing else in the tree — `.git`, `.jj`, whatever is
 lying around — can reach the Docker daemon. That is an allowlist by
 construction: a file `layer.Dockerfile` starts to `COPY` has to be added
@@ -96,8 +105,10 @@ image is always built locally.
 
 ### Signing the macOS binaries
 
-The darwin archives hold two binaries, `caboose` and `caboose-vmm`, which
-`macsign.sh` signs with `rcodesign` in goreleaser's post-build hooks, before
+The darwin/arm64 archive holds two binaries, `caboose` and `caboose-vmm`
+(the vm isolation runs on Apple silicon only, so the darwin/amd64 archive
+holds `caboose` alone), which `macsign.sh` signs, as `dev.bfreis.caboose`
+and `dev.bfreis.caboose.vmm`, with `rcodesign` in goreleaser's post-build hooks, before
 anything is archived, so the archives and `checksums.txt` hold the signed
 binaries. How depends on five GitHub Actions secrets of the repository the
 release runs in:

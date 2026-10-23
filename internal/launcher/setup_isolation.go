@@ -235,7 +235,7 @@ func (a *App) offerRunsc(p *prompter) (bool, error) {
 	case engine == "OrbStack":
 		return a.registerOrbStack(p)
 	case engine == "Docker Desktop":
-		p.note("Docker has no runsc runtime, and caboose cannot register one with Docker Desktop yet: gVisor is not available here.")
+		p.note("Docker has no runsc runtime, and caboose cannot register one with Docker Desktop: gVisor is not available here.")
 	case goos == "linux":
 		p.note("Docker has no runsc runtime. To use gVisor, install it as %s says, registering it with docker as %s "+
 			"(the first flag lets the sandbox reach the SSH agent caboose forwards; the others, run Docker inside it), "+

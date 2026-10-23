@@ -3,8 +3,8 @@
 A server the agent starts in the sandbox is reachable from your browser, at
 the same port on `localhost`; `caboose-agent open URL` in the sandbox opens
 a page in your browser; `caboose-agent notify TEXT` shows a notification;
-and under gVisor, a file you save here is seen by the watchers in the
-sandbox; and, where you turn it on, `caboose-agent host CMD` runs CMD on
+and under gVisor and vm, a file you save here is seen by the watchers in
+the sandbox; and, where you turn it on, `caboose-agent host CMD` runs CMD on
 your machine. All of it goes through the host link: `caboose-agent` in the
 container, and a link on your machine, run by the caboose daemon.
 

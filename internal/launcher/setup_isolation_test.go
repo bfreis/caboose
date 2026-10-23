@@ -425,13 +425,14 @@ func TestSetupIsolationLinuxRunscFlags(t *testing.T) {
 	}
 }
 
-// Docker Desktop: not yet.
+// Docker Desktop has no runsc, and caboose cannot register one with it:
+// setup says so and keeps container.default.
 func TestSetupIsolationDockerDesktop(t *testing.T) {
 	e := newIsolationEngine(t, "darwin", "Docker Desktop", false, false, "")
 	if err := e.run("", "isolation"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("cannot register one with Docker Desktop yet", `Wrote isolation = "container.default"`)
+	e.wantOut("cannot register one with Docker Desktop:", `Wrote isolation = "container.default"`)
 }
 
 // A container created under runsc, which docker no longer has: setup says

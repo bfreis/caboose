@@ -125,7 +125,7 @@ caboose checkpoint list [PATH|KEY] [--json]
 Each configured path, whether it is copied now (and if not, why: a path
 under no writable part, missing, or reached through a symbolic link), the
 daemon's next one when it answers, then its checkpoints, newest first: the
-ID, when it was taken, why (`interval`, `start`, `stop`, `manual`,
+ID, when it was taken, why (`interval`, `start`, `stop`, `manual`, `agent`,
 `before-restore`), the method and the number of entries, and `(pinned)`
 for one pinned after a sharp shrink, which is also named above the list
 with the command that releases it. Then the checkpoints of paths no

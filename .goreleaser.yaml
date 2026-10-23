@@ -3,14 +3,14 @@
 # nothing is `goreleaser release --snapshot --clean --skip=publish` (dist/).
 #
 # Only the launcher is released, with install.sh, which installs it, and on
-# macOS caboose-vmm beside it in the same archive: the vm isolation's VM
+# macOS on Apple silicon caboose-vmm beside it in the same archive: the vm isolation's VM
 # runner, a binary of its own because it alone carries the virtualization
 # entitlement. Both darwin binaries are signed by macsign.sh, with
 # rcodesign, which the release workflow installs: with a Developer ID and
 # notarized when the workflow has the signing secrets (CONTRIBUTING.md),
-# else caboose-vmm ad-hoc and the launcher as the linker left it. The image is not: the binary carries the Dockerfile,
-# entrypoint.sh and tmux.conf embedded, and builds the image on the user's
-# machine the first time it runs. An install made by install.sh updates
+# else caboose-vmm ad-hoc and the launcher as the linker left it. The image
+# is not released: the launcher embeds the layer's files and builds the
+# image on the user's machine. An install made by install.sh updates
 # itself from these releases (internal/selfupdate), so the archives' names,
 # their layout (caboose, and caboose-vmm when there is one, at the root)
 # and checksums.txt are what it downloads: change them only together with
@@ -59,10 +59,11 @@ builds:
     # --adhoc.
     hooks:
       post:
-        - cmd: '{{ if eq .Os "darwin" }}sh macsign.sh caboose "{{ .Path }}"{{ else }}true{{ end }}'
+        - cmd: '{{ if eq .Os "darwin" }}sh macsign.sh dev.bfreis.caboose "{{ .Path }}"{{ else }}true{{ end }}'
           output: true
 
-  # The vm isolation's runner, macOS only. Signed with the
+  # The vm isolation's runner, macOS on Apple silicon only: the launcher
+  # refuses vm on any other Mac, and no amd64 vm asset is built. Signed with the
   # com.apple.security.virtualization entitlement, without which
   # Virtualization.framework refuses it, ad-hoc when there is no Developer
   # ID; the identifier is set, as rcodesign would otherwise leave the
@@ -73,7 +74,7 @@ builds:
     env:
       - CGO_ENABLED=0
     goos: [darwin]
-    goarch: [amd64, arm64]
+    goarch: [arm64]
     flags:
       - -trimpath
     ldflags:
@@ -84,13 +85,13 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
     hooks:
       post:
-        - cmd: sh macsign.sh --adhoc caboose-vmm "{{ .Path }}" cmd/caboose-vmm/entitlements.plist
+        - cmd: sh macsign.sh --adhoc dev.bfreis.caboose.vmm "{{ .Path }}" cmd/caboose-vmm/entitlements.plist
           output: true
 
 archives:
   - formats: [tar.gz]
-    # caboose-vmm is darwin's only: a darwin archive holds two binaries, a
-    # linux one caboose alone.
+    # caboose-vmm is darwin/arm64's only: that archive holds two binaries,
+    # every other one caboose alone.
     allow_different_binary_count: true
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     builds_info:
@@ -114,6 +115,12 @@ checksum:
   # vm's asset is checked as the archives are.
   extra_files:
     - glob: ./vm-release/caboose-vm_{{ .Version }}_*.tar.gz
+
+# The kernel source release's kernel-VERSION tags sit on release commits:
+# never take one for the previous release.
+git:
+  ignore_tags:
+    - "kernel-*"
 
 changelog:
   sort: asc

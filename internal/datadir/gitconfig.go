@@ -90,7 +90,7 @@ func (g ExecGit) Unset(path, key string) error {
 // puts the copy back when fn changed it.
 //
 // The host's git is never pointed at the file itself: the container writes
-// dot_config/git, and git follows a symlink there -- reading, and on a set
+// home/.config/git, and git follows a symlink there -- reading, and on a set
 // writing, whatever host file it names. The copy is read and written back
 // through internal/nofollow instead, so a config that is not a plain file
 // is nofollow.ErrNotPlain, and left alone. Written back by rename, which
@@ -176,7 +176,7 @@ type Change struct {
 }
 
 // WriteSandboxGit applies changes to the sandbox's global git config,
-// dataDir/dot_config/git/config, creating it if need be. Only through
+// dataDir/home/.config/git/config, creating it if need be. Only through
 // editConfig's host-side copy: a config that is a link is
 // nofollow.ErrNotPlain, and nothing is written.
 //

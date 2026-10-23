@@ -3,12 +3,12 @@
 # puts the line there), so every interactive bash -- caboose shell, a tmux
 # window, the snapshot Claude Code's Bash tool takes of the shell -- reads
 # ~/.config/caboose/shell.d, which the launcher mounts from the data dir's
-# dot_config/caboose/shell.d. The snapshot then sets PATH to Claude Code's
+# home/.config/caboose/shell.d. The snapshot then sets PATH to Claude Code's
 # own, so a PATH a file sets reaches every shell but that one.
 #
 # What it reads, one order across both kinds, by name in byte order:
-#   *.sh    for any shell caboose may offer (bash now, zsh later): plain
-#           alias, export and function lines, valid in both
+#   *.sh    plain alias, export and function lines, which bash and zsh
+#           read alike
 #   *.bash  for bash alone
 # On a tie of name, X.sh comes before X.bash, so the bash-only file can build
 # on the shared one: 10-a.sh 10-a.bash 20-b.sh 20-b.bash. Dotfiles and

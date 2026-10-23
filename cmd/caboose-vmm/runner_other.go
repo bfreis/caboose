@@ -9,12 +9,12 @@ import (
 	"github.com/bfreis/caboose/internal/vm/vmm"
 )
 
-// Cloud Hypervisor, on Linux, has no runner yet.
+// The runner off macOS: there is none, as caboose-vmm runs VMs on macOS only.
 func newRunner() (vmm.Runner, error) {
-	return nil, errors.New("caboose-vmm runs VMs on macOS only, for now")
+	return nil, errors.New("caboose-vmm runs VMs on macOS only")
 }
 
 func check() vm.Check {
-	return vm.Check{Framework: "caboose-vmm runs VMs on macOS only, for now",
+	return vm.Check{Framework: "caboose-vmm runs VMs on macOS only",
 		Translated: vm.No, Supported: vm.No, Entitled: vm.Unknown, Valid: vm.Unknown}
 }

@@ -230,12 +230,15 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | What | Where in config.toml |
 |---|---|
 | which image profile, which isolation | top-level `image = "<kind>.<name>"`, `isolation = "<kind>.<name>"` |
+| the adversary assumed | top-level `trust = "fallible"` or `"hostile"` (hostile: vm only) |
+| what the host checkpoints | `paths` in `[checkpoints]` (no restart: the daemon reads it again) |
+| whether creating the sandbox builds a missing or stale image | `auto_build` in `[build]` |
 | an image profile | `[apko.NAME]` `packages`, `defaults`; `[dockerfile.NAME]` (its Dockerfile in the environment's `dockerfile/NAME/`); `[ref.NAME]` `image` |
 | a capability, a device, DNS, any other `docker run` flag | `run_args` in `[container.NAME]` or `[gvisor.NAME]` |
 | the host's Docker engine inside | `engine_socket = true` in `[container.NAME]` or `[gvisor.NAME]`: root-equivalent on the host |
 | VM size | `cpus`, `memory` in `[vm.NAME]` |
-| VM outbound proxy | `egress`, `egress_ports`, `egress_allow` in `[vm.NAME]` (the last two apply without a restart) |
-| forwarded ports, URL opening, any host command | `forward_ports`, `open_urls`, `host_exec` in `[link]` (within seconds) |
+| VM outbound proxy | `egress`, `egress_ports`, `egress_allow`, `egress_deny` in `[vm.NAME]` (all but `egress` apply without a restart) |
+| forwarded ports, URL opening, any host command, checkpoints asked for from here | `forward_ports`, `open_urls`, `open_urls_allow`, `host_exec`, `checkpoint_requests` in `[link]` (within seconds) |
 | a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |

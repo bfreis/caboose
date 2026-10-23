@@ -5,8 +5,9 @@
   always-on host.
 - Old versions are pruned at container start and on `caboose prune`, not the
   moment an update lands — start-up is when no session holds a binary open.
-- `.claude.json` is the one single-file bind mount, and it is pinned to
-  the inode it was created from. A tool on the host that saves by writing a
+- `.claude.json` is a single-file bind mount (as is any `file = true`
+  entry you add to the [sandbox config](sandbox-config.md)), and each is
+  pinned to the inode it was created from. A tool on the host that saves by writing a
   temp file and renaming it over the original — as many editors do — gives
   the host file a new inode and leaves the container's mount pointing at a
   deleted one, which needs `caboose restart` to repair. Edit it in
@@ -18,9 +19,10 @@
   own the host as root. The container reads untrusted input all day (repo
   contents, web pages, MCP responses), so the realistic risk is an
   injection escalating out of the container, not the model going rogue.
-  Note it does **not** let the test suite run from inside either — the
-  suite restarts the container on its third line and would kill the session
-  running it. Point `DOCKER_HOST` at a socket proxy instead if you only want
+  Note it does **not** let you develop caboose from inside either: the
+  integration suite needs `./caboose`, which `make` refuses to build in the
+  sandbox, since the checkout is shared with the host and a linux binary
+  there would replace the host's. Point `DOCKER_HOST` at a socket proxy instead if you only want
   read-only endpoints. `caboose status` always says which side of this line a
   container is on.
 - Every root is read-only from inside the sandbox but for the parts its
@@ -38,7 +40,9 @@
   binary with no checkout has nothing there to edit.
 - [Updates](getting-started.md#updates) are checked against the `checksums.txt` of the same
   release, which catches a download cut short or damaged, not a release
-  someone else published: releases are not signed yet, so an install
-  trusts whatever the GitHub release holds, as `install.sh` itself does.
-  `CABOOSE_NO_AUTO_UPDATE=1` and a pinned `CABOOSE_VERSION` keep an install
-  where it is.
+  someone else published: `checksums.txt` itself is not signed, and an
+  update checks no code signature, so an install trusts whatever the
+  GitHub release holds, as `install.sh` itself does.
+  `CABOOSE_NO_AUTO_UPDATE=1` keeps an install where it is;
+  `CABOOSE_VERSION` only picks what `install.sh` installs, which then
+  updates itself unless `CABOOSE_NO_AUTO_UPDATE` is set.

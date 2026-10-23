@@ -2,9 +2,12 @@
 
 ## Install
 
-You need a running Docker engine — Docker Desktop, OrbStack or colima — and,
-only if you build from source, a Go toolchain (the version in `go.mod`).
-Nothing else: the image is not published anywhere, because the launcher
+You need a running Docker engine (Docker Engine on Linux; Docker Desktop,
+OrbStack or colima on a Mac), except on a Mac with Apple silicon and
+macOS 13 or later, where `caboose setup` (which the installer runs) offers
+the vm isolation, a VM of caboose's own, with no Docker
+([Isolation](configuration.md#isolation-profiles)). Only if you build from
+source, a Go toolchain (the version in `go.mod`). Nothing else: the image is not published anywhere, because the launcher
 builds it on your machine, from Wolfi packages by default — or from a
 Dockerfile of yours, or on an image of your own ([The image](images.md)).
 
@@ -19,13 +22,15 @@ against the release's `checksums.txt`, and installs it without root:
 `~/.local/bin/caboose` a link to it (the one thing outside `~/.caboose`;
 `CABOOSE_HOME=DIR` installs under `DIR` instead, and caboose must be run
 with the same variable). It says so when `~/.local/bin` is not
-on your `PATH`, or when no Docker engine answers, and then runs [`caboose
+on your `PATH`, or when no Docker engine answers (on an Apple-silicon Mac,
+that the vm isolation needs none), and then runs [`caboose
 setup`](configuration.md#setup) on your terminal. `CABOOSE_VERSION=v1.2.3` installs
 that release instead; `CABOOSE_NO_SETUP=1` installs only. Running it again
 installs the latest next to what is there.
 
-An install made this way [keeps itself up to date](#updates). The binary is
-not signed or notarized, and doesn't need to be: a file downloaded by `curl` has
+An install made this way [keeps itself up to date](#updates). On a Mac the
+binaries are signed (with a Developer ID and notarized, when the release was
+built with one), but they do not need to be: a file downloaded by `curl` has
 no quarantine flag for Gatekeeper to check.
 
 `go install` is not supported: it makes an install that does not update
@@ -38,6 +43,10 @@ itself.
 make launcher                   # builds ./caboose (gitignored)
 ln -s "$PWD/caboose" ~/.local/bin/caboose
 ```
+
+To use the vm isolation from a checkout, also run `make vm-kernel
+vm-builder` once (they need Docker on the host); `make launcher` builds
+`caboose-vmm` on a Mac.
 
 ## First run
 
@@ -63,6 +72,10 @@ time, it:
    (up to `ready_timeout` seconds, 600 by default) — once per data dir and
    [platform](images.md#switching-between-images), not once per image build.
 4. **Attaches a tmux session** for the project and starts `claude` in it.
+
+Under the vm isolation the same happens in a VM: the image is built in
+caboose's builder VM, with no Docker, and a release fetches the VM's kernel
+and builder disk the first time.
 
 Nothing has to be set up first: a launch runs on defaults, and says in one
 line that `caboose setup` has not been run, and while the sandbox has no

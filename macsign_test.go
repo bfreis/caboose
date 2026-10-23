@@ -87,7 +87,7 @@ func TestMacsignNotarization(t *testing.T) {
 				if timeout == "" {
 					timeout = "600"
 				}
-				argv := append(append([]string{}, sh[1:]...), "macsign.sh", "caboose", filepath.Join(dir, "caboose"))
+				argv := append(append([]string{}, sh[1:]...), "macsign.sh", "dev.bfreis.caboose", filepath.Join(dir, "caboose"))
 				cmd := exec.Command(sh[0], argv...)
 				cmd.Env = []string{
 					"PATH=" + bin + ":" + os.Getenv("PATH"),

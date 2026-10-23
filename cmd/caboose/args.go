@@ -34,7 +34,8 @@ type Command struct {
 	Help string
 	Args argKind
 	// Hidden leaves the command out of the short help (caboose --help);
-	// the full one (caboose help) lists it.
+	// the full one (caboose help) lists it, unless its name starts with
+	// "__": those are run by the Makefile, never typed.
 	Hidden bool
 }
 
@@ -66,12 +67,14 @@ re-run is safe; with no terminal it refuses.`},
 		Summary: "review the changes sessions proposed, and apply them",
 		Help: `A session in the sandbox cannot change what the sandbox is: it proposes
 the change instead, into ~/.caboose-proposals -- packages to add or remove
-under an apko image, a Dockerfile section under a dockerfile one, or
-another root. (What it keeps of its home is its own sandbox config's,
-which it edits itself.) This shows each proposal whole, and applies it,
-leaves it pending or deletes it as you say. Nothing else in config.toml
-can be proposed, and a root that would hand the sandbox your home, a
-hidden directory of it or caboose's own state is refused. Packages are
+under an apko image, a Dockerfile section under a dockerfile one, another
+root, one alias (a command on this machine sessions may run) or one
+writable part of a root. (What it keeps of its home is its own sandbox
+config's, which it edits itself.) This shows each proposal whole, and
+applies it, leaves it pending or deletes it as you say. Nothing else in
+config.toml can be proposed, and a root, alias or writable part that would
+hand the sandbox your home, a hidden directory of it or caboose's own state
+is refused. Packages are
 built before anything is written, so a list that does not build stays
 pending; after a Dockerfile change it offers to build. Then it offers the
 restart that moves the sandbox onto the changes (which ends running
@@ -131,9 +134,11 @@ with no terminal it refuses.`},
 one; from a script or a pipe it has none, CMD's output comes out as it
 is, and a bash given no -c reads its commands from stdin
 ('caboose shell < script').`},
-	{Name: "link", Usage: "[--restart]", Args: ownArgs,
+	{Name: "link", Usage: "[OPTION]", Args: ownArgs,
 		Summary: "forward the sandbox's ports, open its URLs",
-		Help: `The host's end of the link to caboose-agent in the sandbox: while it
+		Help: `Usage: caboose link [--restart | --foreground]
+
+The host's end of the link to caboose-agent in the sandbox: while it
 runs, a port something listens on in it is forwarded to
 the same port on this machine's localhost when forward_ports allows it,
 and 'caboose-agent open URL' or 'notify TEXT' in the sandbox opens an
@@ -307,7 +312,8 @@ while a session is running (CABOOSE_FORCE=1 overrides).
 
 'status' shows what a sync would send and take, changing nothing. 'add
 PATH' makes a path of the sandbox's home (~/...) sync, keeping it too when
-nothing keeps it yet; 'rm PATH' stops a rule, leaving the files.`},
+nothing keeps it and it sits directly in ~, ~/.config, ~/.local,
+~/.local/share or ~/.cache; 'rm PATH' stops a rule, leaving the files.`},
 	{Name: "env", Usage: "[list]", Args: ownArgs,
 		Summary: "list environments ('caboose -e NAME setup' makes one)"},
 	{Name: "help", Usage: "[COMMAND]", Args: ownArgs,
@@ -538,8 +544,8 @@ func ShortUsage() string { return usage(false) }
 
 func usage(all bool) string {
 	var b strings.Builder
-	b.WriteString(`caboose: Claude Code in a long-lived Docker sandbox, with its own account,
-settings and plugins.
+	b.WriteString(`caboose: Claude Code in a long-lived sandbox (a container, or a VM of its
+own on a Mac), with its own account, settings and plugins.
 
 Usage:
   caboose [FLAGS]                    start or attach this project's session
@@ -555,7 +561,7 @@ Commands:
 		width = max(width, len(synopsis(c)))
 	}
 	for _, c := range Commands {
-		if c.Hidden && !all {
+		if c.Hidden && (!all || strings.HasPrefix(c.Name, "__")) {
 			continue
 		}
 		fmt.Fprintf(&b, "  %-*s  %s\n", width, synopsis(c), c.Summary)

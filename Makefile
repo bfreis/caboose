@@ -146,9 +146,9 @@ $(VMM): $(GO_SRC) $(ENTITLEMENTS) macsign.sh $(VERSION_STAMP)
 	    ./cmd/caboose-vmm \
 	  && if [ -n "$(DEVID_P12)" ]; then \
 	       MACSIGN_P12="$(DEVID_P12)" MACSIGN_P12_PASSWORD_FILE="$(DEVID_P12_PASSWORD_FILE)" \
-	       MACSIGN_API_KEY="$(APPSTORE_API_KEY_JSON)" sh macsign.sh caboose-vmm $@ $(ENTITLEMENTS); \
+	       MACSIGN_API_KEY="$(APPSTORE_API_KEY_JSON)" sh macsign.sh dev.bfreis.caboose.vmm $@ $(ENTITLEMENTS); \
 	     else \
-	       codesign -s - --force --identifier caboose-vmm --entitlements $(ENTITLEMENTS) $@; \
+	       codesign -s - --force --identifier dev.bfreis.caboose.vmm --entitlements $(ENTITLEMENTS) $@; \
 	     fi \
 	  && echo "  built and signed $@ $$v"
 else

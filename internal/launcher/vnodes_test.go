@@ -35,15 +35,15 @@ func TestMaxVnodesCommands(t *testing.T) {
 		got = append(got, strings.Join(c, " "))
 	}
 	want := []string{
-		"install -m 0644 -o root -g wheel /tmp/x.plist /Library/LaunchDaemons/dev.caboose.maxvnodes.plist",
+		"install -m 0644 -o root -g wheel /tmp/x.plist /Library/LaunchDaemons/dev.bfreis.caboose.maxvnodes.plist",
 		"sysctl kern.maxvnodes=1048576",
-		"launchctl bootstrap system /Library/LaunchDaemons/dev.caboose.maxvnodes.plist",
+		"launchctl bootstrap system /Library/LaunchDaemons/dev.bfreis.caboose.maxvnodes.plist",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("commands = %q, want %q", got, want)
 	}
 	plist := maxVnodesPlistText()
-	for _, s := range []string{"<string>dev.caboose.maxvnodes</string>", "<string>/usr/sbin/sysctl</string>",
+	for _, s := range []string{"<string>dev.bfreis.caboose.maxvnodes</string>", "<string>/usr/sbin/sysctl</string>",
 		"<string>kern.maxvnodes=1048576</string>", "<key>RunAtLoad</key>\n\t<true/>"} {
 		if !strings.Contains(plist, s) {
 			t.Errorf("plist lacks %q:\n%s", s, plist)

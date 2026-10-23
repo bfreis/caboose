@@ -96,10 +96,11 @@ exactly as it would be written (too long, or a line holding a tab or a
 character the page shows otherwise), "always" is not offered, and the
 other answers still are. It lists the proposals waiting for
 `caboose apply`, each with the change it makes, and deletes or applies one
-after you confirm the whole change again, a root or an alias by typing its name, as
-`caboose apply` asks (a proposal that changes more than one thing, but
-packages with a root, is shown with the `caboose apply` command that
-applies it in a terminal); a proposal is applied only if nothing it
+after you confirm the whole change again, a root or an alias by typing its
+name, a writable part by typing its root's name, as `caboose apply` asks
+(a proposal that changes more than one thing is shown with the `caboose
+apply` command that applies it in a terminal; the one exception is
+packages with a root, which the page applies); a proposal is applied only if nothing it
 changes moved since you saw it, and the image is rebuilt at the next
 `caboose restart`. A proposal of packages is applied with **Build and
 apply**: the daemon builds the image first, as a job of the environment's,

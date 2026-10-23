@@ -23,15 +23,17 @@ and out through bind mounts.
 
 ## Install
 
-You need a running Docker engine (Docker Desktop, OrbStack or colima), or,
-on a Mac with Apple silicon and macOS 13 or later, nothing at all: there
-caboose can run the sandbox in a VM of its own.
+You need a running Docker engine (Docker Engine on Linux; Docker Desktop,
+OrbStack or colima on a Mac), or, on a Mac with Apple silicon and macOS 13
+or later, nothing at all: there caboose can run the sandbox in a VM of its
+own.
 
 ```sh
 curl -fsSL https://github.com/bfreis/caboose/releases/latest/download/install.sh | sh
 ```
 
-Then run `caboose` in any project's directory.
+Then run `caboose` in a project's directory under `~/dev` (the default
+root; `caboose setup roots` changes it).
 
 The installer puts caboose in `~/.caboose/versions`, linked from
 `~/.local/bin`, without root, checks it
@@ -98,7 +100,7 @@ caboose help               # every command
 | [Isolation](docs/configuration.md#isolation-profiles) | container, gVisor or a VM of caboose's own, and what each needs |
 | [How it works](docs/how-it-works.md) | the sandbox, persistent state, tmux, terminal rendering |
 | [Start-up scripts and shell config](docs/startup.md) | `start.d` run at container start, `shell.d` read by every bash |
-| [Proposals](docs/proposals.md) | sessions asking for a tool, a kept directory or a root; `caboose apply` |
+| [Proposals](docs/proposals.md) | sessions asking for a tool, a root, an alias or a writable part; `caboose apply` |
 | [The image](docs/images.md) | what the sandbox is built from: packages, a Dockerfile, or an image of your own, and what it must contain |
 | [The sandbox config](docs/sandbox-config.md) | what the sandbox keeps of its home, and what of that syncs |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |

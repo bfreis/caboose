@@ -91,7 +91,7 @@ func (a *App) judgeVMM(path string, out []byte, stderr string, runErr, ctxErr er
 	case c.Translated == vm.Yes:
 		v.Problem, v.Fix = fmt.Sprintf("%s is a %s build, running under Rosetta: vm needs the arm64 one", path, c.Arch), a.vmmFix()
 	case c.Arch != "arm64":
-		v.Problem, v.Fix = fmt.Sprintf("vm runs on Apple silicon only, for now, and this Mac is %s", or(c.Arch, "unknown")), a.otherIsolation()
+		v.Problem, v.Fix = fmt.Sprintf("vm runs on Apple silicon only, and this Mac is %s", or(c.Arch, "unknown")), a.otherIsolation()
 	case macOSMajor(c.MacOS) > 0 && macOSMajor(c.MacOS) < minMacOS:
 		v.Problem, v.Fix = fmt.Sprintf("this Mac runs macOS %s, and vm needs macOS %d or later", c.MacOS, minMacOS), "update macOS, or "+a.otherIsolation()
 	case c.Framework != "ok":

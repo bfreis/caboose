@@ -25,8 +25,8 @@ started with, so 1Password's has to be the `SSH_AUTH_SOCK` of apps started
 outside a terminal: 1Password documents that as ["Configure SSH_AUTH_SOCK
 globally"](https://www.1password.dev/ssh/agent/compatibility/)
 (a launch agent), after which the engine needs a restart. With another
-engine on a Mac, the host's `$SSH_AUTH_SOCK` is mounted when it is a
-socket, which works for macOS's own agent at most. On Linux the agent's
+engine on a Mac, the agent chosen as on Linux (below) is mounted when it
+is a socket, which works for macOS's own agent at most. On Linux the agent's
 socket is mounted directly: the one `ssh` itself would use, so an
 `IdentityAgent` in `~/.ssh/config` (1Password's setup there) wins over
 `$SSH_AUTH_SOCK`. The mount is fixed when the container is created, so a
@@ -69,9 +69,10 @@ nothing on the Mac shows the agent is not yours:
     [link]
     ssh_agent = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
-The link rereads `config.toml`, so it takes effect without a restart. It
-applies under `vm` and, on Linux, to the socket mounted under `container` and
-`gvisor`. With OrbStack or Docker Desktop the engine forwards its own, so a
+Under `vm` the link carries it and rereads `config.toml`, so a change
+takes effect without a restart. Under `container` and `gvisor` the socket
+is mounted when the container is created, so a change takes `caboose
+restart`. With OrbStack or Docker Desktop the engine forwards its own, so a
 socket named there is not used, and `caboose doctor` says so; `none` is
 honored there too, as no agent. `caboose doctor` names the agent the
 sandbox gets and what chose it, and says when a sandbox created before a

@@ -5,7 +5,7 @@
 | `caboose` | start or attach the session for the current directory (run it *in* the repo) |
 | `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
 | `caboose setup [roots \| checkpoints \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks): the roots, which paths to take [checkpoints](checkpoints.md#choosing-the-paths) of, the image, the isolation, git and sync; see [Setup](configuration.md#setup) |
-| `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root), and apply them; see [Proposals](proposals.md) |
+| `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root, an alias, a writable part of a root), and apply them; see [Proposals](proposals.md) |
 | `caboose requests [--all]` | what the sandbox asked for and waits on: URLs to open, connections through the `vm` proxy, runs of an alias whose `policy` is `"ask"`; `requests show N`, `requests approve N [--for 8h \| --always]`, `requests deny N` answer them; see [Requests and grants](security.md#requests-and-grants) |
 | `caboose ui [requests \| proposals \| ENV] [--print] [--new-token]` | open caboose's [web page](web-ui.md) in your browser, through the daemon; `--print` prints the address instead (it opens the page once, within 60 s), `--new-token` replaces the page's token first |
 | `caboose app [--selftest]` | macOS: the [menu-bar app](menu-bar-app.md), which Caboose.app runs when opened (`make app` puts it in `CABOOSE_HOME/app-dev`); `--selftest` checks the classes and selectors it uses and exits; it refuses to run from a place any sandbox reaches; elsewhere it says to use `caboose ui` |
@@ -23,8 +23,8 @@
 | `caboose check-image [IMAGE]` | whether an image can be the sandbox's base; see [Checking an image](images.md#checking-an-image) |
 | `caboose restart` | recreate the sandbox, to pick up a rebuilt image or new mounts |
 | `caboose stop` | stop the sandbox |
-| `caboose detach` | detach this project's session, leaving it running |
-| `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; the caboose daemon runs it, every launch asks it for one, `caboose link` asks now and `--restart` replaces it; see [The host link](host-link.md) |
+| `caboose detach` | detach every terminal from this project's sessions (only NAME's with `--session NAME`), leaving them running |
+| `caboose link [--restart \| --foreground]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; the caboose daemon runs it, every launch asks it for one, `caboose link` asks now and `--restart` replaces it; `--foreground` runs the link in this terminal, to debug it (refused while the daemon serves the environment); see [The host link](host-link.md) |
 | `caboose daemon [status\|stop\|restart]` | the host daemon that runs the links: how it is, stop it, or restart it; it starts on demand and exits when idle; see [The host link](host-link.md#the-daemon) |
 | `caboose prune` | delete old Claude Code versions now, and cached packages no environment's lock names |
 | `caboose prune --docker` | under a `vm` profile, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `CABOOSE_FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |

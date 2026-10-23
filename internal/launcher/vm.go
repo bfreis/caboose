@@ -111,17 +111,17 @@ type vmFiles struct {
 // findVMFiles finds caboose-vmm next to this launcher (as a release
 // installs it, and make vmm builds it), and the kernel and builder disk in
 // CABOOSE_HOME/vm/<tag>/<arch>/ (a release's), else the checkout's vm-dist/
-// (make vm-kernel and make vm-builder). A release carries neither yet, which the error says.
+// (make vm-kernel and make vm-builder).
 func (a *App) findVMFiles() (vmFiles, error) {
 	if a.vmFiles != nil {
 		return a.vmFiles()
 	}
 	f := vmFiles{Arch: runtime.GOARCH}
 	if runtime.GOOS != "darwin" {
-		return f, fmt.Errorf("isolation vm runs on macOS only, for now (%s)", isolationOrigin(a.Cfg))
+		return f, fmt.Errorf("isolation vm runs only on macOS on Apple silicon (%s)", isolationOrigin(a.Cfg))
 	}
 	if f.Arch != "arm64" {
-		return f, fmt.Errorf("isolation vm runs on Apple silicon only, for now: there is no builder for %s yet", f.Arch)
+		return f, fmt.Errorf("isolation vm runs only on macOS on Apple silicon, not on %s (%s)", f.Arch, isolationOrigin(a.Cfg))
 	}
 	var missing []string
 	exe, err := a.executable()

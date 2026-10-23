@@ -24,8 +24,10 @@ and nothing else. By default:
 | the `mcpServers` key of `~/.claude.json` | key by key; the rest of that file never leaves the machine |
 | `~/.config/caboose/` | as text: the sandbox config itself, and [`start.d` and `shell.d`](startup.md) |
 
-To sync more, or less, change the rules: `caboose sync add ~/.cargo/config.toml`
-and `caboose sync rm ~/.claude/commands` edit the sandbox config for you, and
+To sync more, or less, change the rules: `caboose sync add ~/.cargo` (kept
+and synced whole), or a file inside an entry already kept, such as
+`caboose sync add ~/.claude/keybindings.json`, and `caboose sync rm
+~/.claude/commands` edit the sandbox config for you, and
 it syncs too, so a rule added on one machine reaches the others with the
 files it names. `caboose sync status` shows what a sync would send and
 take, and changes nothing.
@@ -91,8 +93,8 @@ could not — offline, a conflict (nothing in the data dir changes then),
 anything else. It never prompts, and a remote that does not answer costs
 at most 20 seconds, once. An SSH remote's host key has to have been
 accepted by a `caboose sync` from a terminal first. A launch that finds a
-sync running (another terminal's) waits for it, whether `auto_sync` is set
-or not. `caboose doctor` says what is waiting on either side without
+sync running (another terminal's) waits up to 20 seconds for it, then
+starts anyway and says so, whether `auto_sync` is set or not. `caboose doctor` says what is waiting on either side without
 syncing: this machine's changes not sent, and (after a fetch) the
 remote's not taken, or why the remote cannot be reached.
 

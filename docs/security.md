@@ -5,13 +5,13 @@ machine each isolation keeps out of a sandbox's reach and by which
 control, and what it does not cover. It is written for deciding whether to
 trust caboose with an agent you are not watching.
 
-It describes caboose after v0.3.2. Every control below is **in effect**:
+It describes caboose as of the release it ships with. Every control below is **in effect**:
 the code enforces it, under the conditions its entry gives (while the
 daemon runs, for the paths you list).
 
 What is in effect is not the same as what has been tested end to end:
 [the matrix](#the-matrix) says which controls the conformance suite
-checks, and records no results yet.
+checks; it records no results.
 
 A control added, removed or weakened is a change to this document. Every
 setting the [configuration reference](configuration.md) describes is
@@ -42,7 +42,8 @@ What you can rely on:
   decided by the host's settings. A URL, an outbound connection and a host
   command are decided by one policy, deny beating allow; what asks a
   person is refused at once as pending, and only the host answers it (a
-  dialog on the host, or `caboose requests`).
+  dialog on the host, `caboose requests`, the web page or the menu-bar
+  app).
 - The sandbox cannot change its own mounts, isolation, image or host
   settings; it can propose a change, which you review with `caboose apply`.
 
@@ -156,7 +157,7 @@ read-only ones still read-only, since the Mac holds them so.
 Per control and per isolation, what caboose claims. The conformance suite
 that tries each refused operation from inside each isolation is built
 ([How to verify](#how-to-verify)), and **this document records no results
-of it yet**: a cell reads as not tested until one is recorded, and "no
+of it**: a cell reads as not tested until one is recorded, and "no
 check" where the suite has no check for the row. The macOS host is the one
 caboose is built and tested on, and Linux hosts are untested.
 
@@ -235,7 +236,7 @@ directory the Mac shares read-only, and each part a writable share of its
 own: the guest's root can unmount or cover the read-only mount until the
 next boot, but cannot write your files through it. A read-only
 share with a writable one inside it is what the conformance suite's root
-checks exercise under `vm`; this document records no result of them yet.
+checks exercise under `vm`; this document records no result of them.
 
 What it does not cover:
 
@@ -527,8 +528,9 @@ nothing else:
   in a URL, so never in a browser's history or a command's arguments.
   The page's own HTML and style load without it, and hold nothing secret.
 - **Checks on every request**, before anything runs: the `Host` must be
-  exactly `127.0.0.1:7171` (a name rebound to `127.0.0.1` sends its own,
-  and is refused); a request from another site, or another port of
+  exactly the address served, `127.0.0.1:7171` (`127.0.0.1:7172` for a
+  checkout's build): a name rebound to `127.0.0.1` sends its own,
+  and is refused; a request from another site, or another port of
   `127.0.0.1` such as a forwarded sandbox page, is refused by its
   `Sec-Fetch-Site`; nothing loads inside a frame. An API call must also be
   a `POST` from the page's own `Origin`, with `Sec-Fetch-Site:
@@ -586,7 +588,7 @@ there without this case; the page is the host's, so a `container` or
 
 #### The menu-bar app
 
-In effect where it runs; releases do not ship it yet, and a checkout
+In effect where it runs; releases do not ship it, and a checkout
 builds it on a Mac ([the menu-bar app](menu-bar-app.md)). It is one more
 client of the daemon, decides nothing itself, and:
 
@@ -604,10 +606,15 @@ client of the daemon, decides nothing itself, and:
 ### Proposals
 
 In effect. A session can propose only what [proposals](proposals.md) list:
-packages, a Dockerfile section, one root, one alias alone. Anything more is refused whole,
-not offered; so is text with control or invisible formatting characters. A
-proposed root is refused when it is your home, a hidden directory in it,
-caboose's own state, or overlaps another; you type its name to accept it.
+packages, a Dockerfile section, one root, one alias alone, or one writable
+part of a root alone. Anything more is refused whole, not offered; so is
+text with control or invisible formatting characters. A proposed root is
+refused when it is your home, a hidden directory in it, caboose's own
+state, or overlaps another; you type its name to accept it. A proposed
+writable part is refused when it is in no root, reached through a symbolic
+link, already writable, or the home, a hidden directory of it or caboose's
+state; you type its root's name to accept it, and it takes effect at the
+next `caboose restart`.
 `caboose apply` shows each proposal whole before anything is written.
 
 ### What the host reads from the sandbox

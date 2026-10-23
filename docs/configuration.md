@@ -39,7 +39,7 @@ packages = ["graphviz", "postgresql-17-client"]
 |---|---|---|
 | `format` | `1` | the file's structure, which `caboose setup` writes; a file saying any other format is refused (a newer one saying `caboose update`) |
 | `trust` | `"fallible"` | how far the sandbox is trusted: `"fallible"` (an agent that may make mistakes) or `"hostile"` (assume something else steers it); any other value is an error. Under `"hostile"` the sandbox needs a `vm` isolation profile and has no network but the proxy, `host_exec` is ignored, every URL asks and every outbound connection `egress_allow` does not name asks. See [Trust](#trust) |
-| `isolation` | the one profile defined, else `container` | the [isolation profile](#isolation-profiles) the sandbox runs under, `"<kind>.<name>"` |
+| `isolation` | the one profile defined, else a plain container at its defaults (not a value you can write: name a profile, such as `"container.default"`, with its table) | the [isolation profile](#isolation-profiles) the sandbox runs under, `"<kind>.<name>"` |
 | `image` | the one profile defined, else `apko.default` | the [image profile](#image-profiles) the sandbox is built from, `"<kind>.<name>"` |
 
 ## `[roots]`
@@ -72,8 +72,8 @@ is `name = "host path"`, or a table with `host` and optionally `path` and
 |---|---|---|
 | `forward_ports` | `["3000-3999", 5173, "8000-8999", "32768-60999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, while they listen (the last range is where a login's loopback callback listens): integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. Ports 7171 and 7172, caboose's web UI on this machine, are never forwarded: a set that holds either, alone or in a range (`"7000-7999"`), is an error. See [the host link](host-link.md#ports) |
 | `open_urls` | `"ask"` | whether the sandbox may open URLs in your browser: `"ask"`, `"allow"` or `"off"`; see [the host link](host-link.md#urls-and-notifications) |
-| `ssh_agent` | the agent `ssh` here would use; none under `trust = "hostile"` | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over, and the only way a `hostile` sandbox gets one. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead of a socket named here, but `"none"` still gives none. See [SSH agent](ssh.md) |
-| `open_urls_allow` | `[]` | origins the sandbox may open in your browser without asking when `open_urls` is `"ask"` (`"off"` still refuses every URL): `"https://host"` or `"http://host:port"`, lowercase, with nothing after the host or port (no path, not even a `/`). Ignored under `trust = "hostile"`, where every URL asks. See [Trust](#trust) |
+| `ssh_agent` | the agent `ssh` here would use; none under `trust = "hostile"` | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over, and the only way a `hostile` sandbox gets one. Under `vm`, and under `container` or `gvisor` except with OrbStack or Docker Desktop on a Mac, which forward the agent they were started with instead of a socket named here (`"none"` still gives none). See [SSH agent](ssh.md) |
+| `open_urls_allow` | `[]` | origins the sandbox may open in your browser without asking when `open_urls` is `"ask"` (`"off"` still refuses every URL): `"https://host"` or `"http://host"`, each with an optional `:port`, lowercase, with nothing after the host or port (no path, not even a `/`). Ignored under `trust = "hostile"`, where every URL asks. See [Trust](#trust) |
 | `checkpoint_requests` | `"allow"` | whether a session may ask for a checkpoint now of paths [`[checkpoints]`](#checkpoints) lists (`caboose-agent checkpoint`): `"allow"` or `"off"`; under either `trust`, since it copies nothing the schedule does not. At most one per path a minute and 10 requests an hour. See [Checkpoints](checkpoints.md#asked-for-by-the-sandbox) |
 | `host_exec` | `false` | let sessions run commands on this machine, as you, through the link (`caboose-agent host CMD`). **Sessions, and whatever steers them (a web page, a repo they work on), can then run anything on this machine as you**: meant for an environment whose point is a separate login or tools, not containment. See [the host link](host-link.md#host-commands) |
 
@@ -100,13 +100,13 @@ Each kind has its own keys, and a key another kind has is an error, so
 | `container`, `gvisor` | `run_args` | `[]` | more arguments for `docker run`, as the container is created; see [docker run arguments](#docker-run-arguments) |
 | `container`, `gvisor` | `engine_socket` | `false` | mount this machine's engine socket (`DOCKER_HOST`'s unix socket, else `/var/run/docker.sock`): **removes the isolation**, see [caveats](caveats.md) |
 | `vm` | `cpus` | half the CPUs | the VM's CPUs; at least 1 |
-| `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` |
+| `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` (a bare number is MiB); at least `512M` |
 | `vm` | `egress` | `true` | whether the sandbox's outbound connections through the link's proxy (HTTP(S) through the proxy settings, ssh through its `ProxyCommand`) are made from this machine, so a VPN's routes and DNS apply. At `trust = "fallible"` the VM keeps its own NAT beside the proxy, and a program that ignores the proxy settings leaves through it, unrestricted; under `"hostile"` there is no NAT. `false` is the VM's own NAT alone. See [the host link](host-link.md#outbound-connections) |
 | `vm` | `egress_ports` | `[22, 80, 443]` | the ports the sandbox may reach that way, written as `forward_ports` is; `[]` for none |
 | `vm` | `egress_allow` | `[]` | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
 | `vm` | `egress_deny` | `[]` | names, `*.suffix` patterns, CIDRs or addresses the sandbox may never reach, written as `egress_allow` is; a deny entry beats every allow entry, and every grant |
 
-A profile's name follows the rule for a root's: a lowercase label.
+A profile's name follows [the rule for a root's](#roots).
 Profiles do not inherit from one another; define each one in full. Which
 one runs:
 
@@ -266,7 +266,7 @@ A `gvisor` profile needs `runsc` registered with docker (in `docker info`'s
 runtimes); a launch without it stops and says so, and `caboose doctor`
 lists it as a problem. [`caboose setup isolation`](#setup) registers it
 on OrbStack; elsewhere, install gVisor as [its guide](https://gvisor.dev/docs/user_guide/install/)
-says (Docker Desktop is not supported yet), registering it with the flags
+says (caboose cannot register it with Docker Desktop, so gVisor is not available there), registering it with the flags
 the sandbox needs, then reload docker:
 
 ```sh
@@ -383,7 +383,7 @@ This is about `vm`, with the roots shared over virtiofs.
 
 **The file limit.** The Mac's Virtualization process holds one open file, so one pinned vnode, for every file and directory the guest kernel has cached from the shares, and releases it only when the guest drops it from its cache (`echo 2 > /proc/sys/vm/drop_caches`, in the sandbox, drops nearly all of them; walking the tree again pins them again). macOS's default `kern.maxvnodes` is a few hundred thousand, so a VM whose sessions walk a repo of several hundred thousand files, worktrees included, can hold most of it, and a second VM can run the Mac out: `Too many open files in system` for every process on it, so git and new processes fail.
 
-The fix is a larger limit. `sudo sysctl kern.maxvnodes=1048576` applies at once and resets at reboot. `caboose setup isolation` offers to make it stick when `vm` is chosen and the limit is lower: it shows a LaunchDaemon, `/Library/LaunchDaemons/dev.caboose.maxvnodes.plist`, that runs that command at boot, and the `sudo` commands that install and load it, and runs them only after you say yes (sudo asks for your password). `caboose doctor` reports a lower limit under `vm`. Under `vm`, the [host link](host-link.md) checks about once a minute how many files the VM's Virtualization process holds open; past half of `kern.maxvnodes` it shows a notification, once per crossing, and again past 80%, and logs it in `link.log`. Meanwhile, `sync; echo 2 > /proc/sys/vm/drop_caches` in the sandbox lets the Mac release files at once, at the price of the guest re-reading what it needs again. Whether Docker Desktop's or OrbStack's file sharing pins the Mac's vnodes the same way is not covered here.
+The fix is a larger limit. `sudo sysctl kern.maxvnodes=1048576` applies at once and resets at reboot. `caboose setup isolation` offers to make it stick when `vm` is chosen and the limit is lower: it shows a LaunchDaemon, `/Library/LaunchDaemons/dev.bfreis.caboose.maxvnodes.plist`, that runs that command at boot, and the `sudo` commands that install and load it, and runs them only after you say yes (sudo asks for your password). `caboose doctor` reports a lower limit under `vm`. Under `vm`, the [host link](host-link.md) checks about once a minute how many files the VM's Virtualization process holds open; past half of `kern.maxvnodes` it shows a notification, once per crossing, and again past 80%, and logs it in `link.log`. Meanwhile, `sync; echo 2 > /proc/sys/vm/drop_caches` in the sandbox lets the Mac release files at once, at the price of the guest re-reading what it needs again. Whether Docker Desktop's or OrbStack's file sharing pins the Mac's vnodes the same way is not covered here.
 
 **Worktrees.** A worktree placed inside the repo's directory adds its whole tree to what a walk of the repo caches. Keep worktrees outside it (and outside the roots, if the sandbox need not see them).
 
@@ -478,7 +478,8 @@ writable = ["you/project", "you/other"]   # /work/dev/you/project, ...
 
 The rules:
 
-- A name is a lowercase label; `host` is absolute, or starts with `~`.
+- A name is lowercase letters, digits, `-` and `_`, starting with a letter
+  or digit, at most 32 characters; `host` is absolute, or starts with `~`.
 - Host directories cannot contain one another, and neither can container
   paths: no root's path is at, inside or around another's.
 - `path = "/work"` puts a root at `/work` itself, and is allowed only for a
@@ -497,8 +498,10 @@ The rules:
 Use the same names and paths on every machine you [sync](sync.md), so a
 project has the same path on each. The sync's default rules match the
 projects under the roots the [sandbox config](sandbox-config.md) lists,
-wherever their paths are; a root added after it was written is added to its
-`roots` too, and `caboose doctor` says when one is missing.
+wherever their paths are. A root added after the file was written syncs
+nothing until you add its container path to `roots` by hand; `caboose
+doctor` says when a listed root is missing here, and, with a sync remote
+set, when a root here is not listed.
 
 Bind mounts are fixed when the container is created, so changing the roots
 once a container exists needs `caboose restart`, which kills running
@@ -657,8 +660,8 @@ An alias is a command on this machine that a session may run with
 `caboose-agent run NAME [KEY=VALUE...]`: a fixed argv plus enum
 parameters, never a shell and never free-form arguments. There are none by
 default, and only this file defines them (a session can propose one,
-which `caboose apply` shows you: [proposals](proposals.md)). `NAME` is a
-lowercase label. The link reads a change within seconds, with no restart.
+which `caboose apply` shows you: [proposals](proposals.md)). `NAME`
+follows [the rule for a root's](#roots). The link reads a change within seconds, with no restart.
 
 ```toml
 [alias.caffeinate]
@@ -681,7 +684,7 @@ suite = ["unit", "all"]
 | `timeout` | none | a Go duration (`"30s"`, `"10m"`); `"0"` is none. At its end the command is killed |
 | `cwd` | a fresh empty directory | the host directory it runs in, absolute or starting with `~/` |
 | `policy` | `"allow"` | `"allow"` runs it when asked; `"ask"` refuses it as pending until you allow the request it files (`caboose requests`); `"deny"` refuses it |
-| `params` | none | a sub-table `[alias.NAME.params]` of parameters, each an array of 1 to 32 distinct values; a parameter's name is a lowercase label and a value is 1 to 64 of letters, digits, `.`, `_` and `-` |
+| `params` | none | a sub-table `[alias.NAME.params]` of parameters, each an array of 1 to 32 distinct values; a parameter's name follows [the rule for a root's](#roots) and a value is 1 to 64 of letters, digits, `.`, `_` and `-` |
 
 In the sandbox, `caboose-agent aliases` lists the names, descriptions,
 parameters and whether each asks first, never a command or a directory;

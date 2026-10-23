@@ -5,14 +5,14 @@ whose menu shows each environment, the requests waiting for you, and the
 proposals waiting for [`caboose apply`](proposals.md). It is one more
 client of caboose's daemon, beside the CLI and the [web page](web-ui.md),
 and it is optional: everything it does can be done with `caboose requests`,
-`caboose ui` and the rest. Releases do not ship it yet; you can build it
+`caboose ui` and the rest. Releases do not ship it; you can build it
 from a checkout ([below](#building-it-from-a-checkout)).
 
 ## Starting and quitting
 
 Opening Caboose.app (from Finder, `open ~/.caboose/app-dev/Caboose.app`,
 or its login item) runs `caboose app`, the binary inside the bundle. The app starts the daemon
-when none runs, as every caboose command does. It never replaces a daemon
+when none runs, as a launch or `caboose ui` does. It never replaces a daemon
 that runs: when caboose was updated and its daemon is newer than the app,
 the menu says "caboose is newer than this menu-bar app: update the app, or
 quit it"; when the app is the newer one, it asks the older daemon to make
@@ -103,8 +103,9 @@ While the app runs, caboose's notifications come from it. A notification
 from caboose itself (a link that failed, a checkpoint, a restart done)
 carries its own title. One a sandbox sent (`caboose-agent notify`) is
 always titled "From the ENV sandbox", with what the sandbox wrote below it,
-so a sandbox cannot post one that looks like caboose's. At most three show
-at a time; past that, one "N things need you" sums up the rest. Clicking
+so a sandbox cannot post one that looks like caboose's. At most three are
+posted in any five minutes; past that, one "N things need you" sums up the
+rest. Clicking
 one opens the web page where it belongs.
 
 macOS asks once whether Caboose may post notifications. If you say no, or

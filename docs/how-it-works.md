@@ -132,7 +132,9 @@ not an interactive multiplexer, so it is configured to own nothing:
 
 Because there is no prefix, detach by closing the terminal (the session
 survives) or with `caboose detach` from another one. Any tmux command is
-still reachable from the host: `docker exec caboose tmux <cmd>`.
+still reachable from the host: `caboose shell -c 'tmux <cmd>'` (or
+`docker exec caboose-default tmux <cmd>` under `container` and `gvisor`,
+in the default environment).
 
 ## Terminal rendering
 

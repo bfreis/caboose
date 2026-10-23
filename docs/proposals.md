@@ -15,7 +15,8 @@ So a session **proposes** the change, and you apply it on the host:
    stay open.
 2. In a host terminal: `caboose apply` shows each proposal whole — the
    packages to add or remove, the Dockerfile change as a diff, the root to
-   mount — and applies it, leaves it pending or deletes it, as you say.
+   mount, or the change to `config.toml` an alias or a writable part
+   makes — and applies it, leaves it pending or deletes it, as you say.
    Packages are built as they are applied; after a Dockerfile change it
    offers to build.
 3. It offers `caboose restart`, which moves the container onto the changes

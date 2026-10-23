@@ -138,12 +138,12 @@ The configured image is `@@CABOOSE_IMAGE@@`; when proposing,
 
 ## caboose itself
 
-The user runs `caboose@@CABOOSE_ENV_FLAG@@ COMMAND` on the host, never in
-here: `setup`, `doctor`, `status`, `restart`, `stop`, `shell`, `logs`,
-`build`, `check-image`, `apply`, `sync`, `link`, `version`, `update`,
-`prune`, `detach`, `env`, `claude`, `help`. When the sandbox itself seems
-wrong, point the user at `caboose@@CABOOSE_ENV_FLAG@@ doctor` first: it names
-each problem and the command that fixes it.
+The user runs `caboose@@CABOOSE_ENV_FLAG@@ COMMAND` on the host, never in here: `setup`,
+`doctor`, `status`, `restart`, `stop`, `shell`, `logs`, `build`, `check-image`,
+`apply`, `requests` (answers `pending #N`), `grants`, `permissions`, `checkpoint`,
+`ui`, `sync`, `link`, `version`, `update`, `prune`, `detach`, `env`, `claude`,
+`help`. When the sandbox seems wrong, point the user at `caboose@@CABOOSE_ENV_FLAG@@ doctor`
+first: it names each problem and the command that fixes it.
 `caboose@@CABOOSE_ENV_FLAG@@ restart` recreates the sandbox and ends every
 session in it, this one included.
 @@IF hostexec=on@@

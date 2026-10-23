@@ -161,7 +161,7 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `embed.go` | the `//go:embed` list: the files the launcher carries with it and builds the image from |
 | `Makefile` | the maintenance entry points; also builds `./caboose` (gitignored) |
 | `internal/version` | the launcher's version, commit and date: ldflags when stamped (make, goreleaser), else what the Go toolchain recorded, else `dev` |
-| `.goreleaser.yaml` | release build: static darwin/linux × amd64/arm64 archives (the darwin ones with `caboose-vmm`; both darwin binaries signed by `macsign.sh` with `rcodesign`, which `release.yml` installs: with a Developer ID and notarized when the repository has the signing secrets, else `caboose-vmm` ad-hoc, CONTRIBUTING.md), `checksums.txt` and `install.sh` on the GitHub release |
+| `.goreleaser.yaml` | release build: static darwin/linux × amd64/arm64 archives (darwin/arm64's with `caboose-vmm`; both darwin binaries signed by `macsign.sh` with `rcodesign`, which `release.yml` installs: with a Developer ID and notarized when the repository has the signing secrets, else `caboose-vmm` ad-hoc, CONTRIBUTING.md), `checksums.txt` and `install.sh` on the GitHub release |
 | `macsign.sh` | POSIX sh: signs a darwin binary with `rcodesign`, with a Developer ID (hardened runtime) and notarized when `MACSIGN_*` name the files (one submission, polled with retries until a verdict or `MACSIGN_NOTARY_TIMEOUT`; `macsign_test.go` stubs `rcodesign`), else ad-hoc with `--adhoc`; goreleaser's post-build hooks and `make vmm` run it |
 | `install.sh` | the one-line install, POSIX sh: the latest release (or `CABOOSE_VERSION`), checked against `checksums.txt`, into the layout `internal/selfupdate` keeps, then `caboose setup`; tested by `install_test.go` against a fake release host |
 | `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `CABOOSE_HOME/versions/<tag>` and the `~/.local/bin/caboose` link (the only thing of an install outside `CABOOSE_HOME`), `update.json` and its lock; `releasetest` serves fake releases |
@@ -583,7 +583,7 @@ outside the repo.
   the image stale, and the launch that creates the container rebuilds it.
 - **Releases, `install.sh` and `internal/selfupdate` are one contract.**
   The archive names (`caboose_<version>_<os>_<arch>.tar.gz`, caboose at the
-  root, and `caboose-vmm` beside it in darwin's), vm's asset
+  root, and `caboose-vmm` beside it in darwin/arm64's), vm's asset
   (`caboose-vm_<version>_<arch>.tar.gz`, `make vm-assets`, which a release
   build fetches: `internal/launcher/vmassets.go`), `checksums.txt`, the `releases/latest` redirect and the layout
   (`CABOOSE_HOME/versions/<tag>/`, the one `~/.local/bin/caboose` link, and

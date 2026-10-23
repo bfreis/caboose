@@ -41,6 +41,9 @@ Always give:
 - `meanwhile`: what you will do until it is decided. This is a promise to
   keep: do that, not wait.
 
+From a script these are `--context TEXT`, `--option TEXT` (once per
+choice), `--recommend TEXT` and `--meanwhile TEXT`.
+
 The text you write is shown to the person as the sandbox's words, beside what
 the host itself says would be allowed. Keep it short and true.
 

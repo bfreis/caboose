@@ -67,9 +67,9 @@ Every interactive bash — `caboose shell`, a tmux window, a `!` command,
 and the snapshot of the shell Claude Code's Bash tool takes — reads
 `shell.d` through `~/.bashrc`:
 
-- `*.sh` for any shell caboose may offer: bash today, zsh perhaps later.
-  Keep them to what both read the same: `alias`, `export`, plain
-  functions. `.sh` here means that, not POSIX `sh`.
+- `*.sh` for what bash and zsh read the same: `alias`, `export`, plain
+  functions, so a file can be shared with a zsh of your own elsewhere.
+  `.sh` here means that, not POSIX `sh`.
 - `*.bash` for bash alone: `shopt`, `PS1`, `bind`, completions.
 - **One order across both**, by name in byte order, the `.sh` before the
   `.bash` of the same name: `10-a.sh 10-a.bash 20-b.sh 20-b.bash`. The

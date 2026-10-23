@@ -567,9 +567,9 @@ format = 1    # this file's structure
 #open_urls = "ask"
 # The SSH agent the sandbox gets: a socket on this machine, or "none". By
 # default the one ssh here would use, an IdentityAgent in ~/.ssh/config
-# or else $SSH_AUTH_SOCK. Under vm, and container or gvisor on Linux; on
-# a Mac OrbStack and Docker Desktop forward the agent they were started
-# with instead.
+# or else $SSH_AUTH_SOCK. Under vm, and under container or gvisor except
+# with OrbStack or Docker Desktop on a Mac, which forward the agent they
+# were started with instead ("none" still gives none).
 #ssh_agent = "~/.ssh/agent.sock"
 # Let sessions run commands on this machine, as you, through the link
 # (caboose-agent host CMD): a hole in the wall, on purpose. Sessions, and

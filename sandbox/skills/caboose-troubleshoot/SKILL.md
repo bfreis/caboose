@@ -46,7 +46,6 @@ A port not reaching the host: `caboose-agent ports` says, for each listening
 port, whether it is forwarded, not in `forward_ports` (`[link]` of
 `config.toml`), the web UI's port (never forwarded), or already in use on
 the host.
-@@IF isolation=gvisor,vm@@
 
 ## "Read-only file system" under a root
 
@@ -60,6 +59,7 @@ to add it to the root's `writable` in `config.toml`
 (`caboose@@CABOOSE_ENV_FLAG@@ setup roots` asks); either way it takes `caboose@@CABOOSE_ENV_FLAG@@ restart`, which ends
 running sessions. Until then, only a copy outside the roots can be
 written, and a restart loses it unless it is in a kept path.
+@@IF isolation=gvisor,vm@@
 
 ## Host edits and file watchers
 
@@ -113,8 +113,8 @@ body:
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 403 | a port outside `egress_ports` (default 22, 80, 443), a name `egress_deny` holds, or an address that is not public (private, LAN, tailnet, loopback, link-local, the Mac's own) | the user adds the name, CIDR or port to `egress_allow` / `egress_ports` in `[vm.NAME]`; loopback, link-local and the Mac's own addresses pass only for an explicit address or CIDR |
-| 403 with `pending #N` | the host's policy asks the user first: a private address `egress_allow` does not name, or, under `trust = "hostile"`, any host it does not name. The request is filed on the host | do not retry in a loop: note the number, carry on without the connection, and tell the user to run `caboose requests` on the host, which shows what you asked and answers it (`caboose requests approve N`, or `--for 8h`, or `deny N`); once they allow it the next try goes through. Unanswered, it expires as denied after a day |
+| 403 | a port outside `egress_ports` (default 22, 80, 443), a name or address `egress_deny` holds, or a loopback, link-local or unspecified address or one of the Mac's own | the user adds the port to `egress_ports`, or the address or CIDR to `egress_allow`, in `[vm.NAME]`; loopback, link-local and the Mac's own pass only for an explicit address or CIDR; nothing lets an `egress_deny` entry through |
+| 403 with `pending #N` | the host's policy asks the user first: a private address `egress_allow` does not name, or, under `trust = "hostile"`, any host it does not name. The request is filed on the host | do not retry in a loop: note the number, carry on without the connection, and tell the user to run `caboose@@CABOOSE_ENV_FLAG@@ requests` on the host, which shows what you asked and answers it (`caboose@@CABOOSE_ENV_FLAG@@ requests approve N`, or `--for 8h`, or `deny N`); once they allow it the next try goes through. Unanswered, it expires as denied after a day |
 | 502 | the name does not resolve on the Mac, or the host does not answer | check the name; the Mac's VPN |
 | 503 | too many connections, or the link failed mid-request | retry; see the host link above |
 
@@ -222,8 +222,9 @@ The link also warns by notification when the VM holds over half of
 
 If files were deleted or overwritten in a project and the host takes
 checkpoints of it, the user restores them on the host, never from in here:
-`caboose checkpoint list` shows what exists, and `caboose checkpoint
-restore ID --to DIR` copies one into a new directory.
+`caboose@@CABOOSE_ENV_FLAG@@ checkpoint list` shows what exists, and
+`caboose@@CABOOSE_ENV_FLAG@@ checkpoint restore ID --to DIR` copies one into
+a new directory.
 
 ## Requests and caboose's Claude Code mod
 
@@ -246,8 +247,8 @@ The mod is loaded by Claude Code from `/etc/claude-code/mods/caboose`, which
 session starts: a settings file's `env` block that sets the same variable
 replaces the value and drops the mod (put the folder first in its list, or
 remove the entry), and a sandbox created without the variable needs
-`caboose@@CABOOSE_ENV_FLAG@@ restart`, which `doctor` says. `caboose
-permissions` on the host counts the sessions without the mod. The request
+`caboose@@CABOOSE_ENV_FLAG@@ restart`, which `doctor` says.
+`caboose@@CABOOSE_ENV_FLAG@@ permissions` on the host counts the sessions without the mod. The request
 tools work without the mod, through `caboose-agent`; only the announcement of
 a decision is lost, and no decision depends on it.
 

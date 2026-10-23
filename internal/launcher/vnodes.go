@@ -21,7 +21,7 @@ const wantMaxVnodes = 1048576
 // maxVnodesPlist is where setup makes the setting stick across reboots,
 // and maxVnodesLabel its launchd label.
 const (
-	maxVnodesLabel = "dev.caboose.maxvnodes"
+	maxVnodesLabel = "dev.bfreis.caboose.maxvnodes"
 	maxVnodesPlist = "/Library/LaunchDaemons/" + maxVnodesLabel + ".plist"
 )
 

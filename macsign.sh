@@ -68,7 +68,7 @@ fi
 [ -s "$MACSIGN_API_KEY" ] || { echo "macsign.sh: $MACSIGN_API_KEY is missing or empty" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# Named after the binary, so Apple's log says which one it was.
+# Named after the identifier, so Apple's log says which binary it was.
 zip -qj "$tmp/$id.zip" "$bin"
 # rcodesign 0.29.0, from its source: notary-submit without --wait uploads
 # and exits 0 having logged "created submission ID: <uuid>" (on stderr,

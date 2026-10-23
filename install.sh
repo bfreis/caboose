@@ -98,7 +98,7 @@ got="$(sha256 "$tmp/$asset")"
 
 mkdir "$tmp/x"
 tar -xzf "$tmp/$asset" -C "$tmp/x" caboose || die "$asset has no caboose in it"
-# caboose-vmm, which runs a vm isolation's VM, is in a macOS archive only.
+# caboose-vmm, which runs a vm isolation's VM, is in an Apple-silicon macOS archive only.
 tar -xzf "$tmp/$asset" -C "$tmp/x" caboose-vmm 2>/dev/null || true
 
 bin="$HOME/.local/bin"
@@ -154,7 +154,13 @@ case ":${PATH:-}:" in
 esac
 
 if ! command -v docker >/dev/null 2>&1; then
-    say "caboose needs Docker (OrbStack, Docker Desktop or colima), and there is no docker here yet"
+    if [ "$os" = darwin ] && [ "$arch" = arm64 ]; then
+        say "there is no docker here: caboose setup offers the vm isolation, which needs none; the others need Docker (OrbStack, Docker Desktop or colima)"
+    elif [ "$os" = darwin ]; then
+        say "caboose needs Docker (OrbStack, Docker Desktop or colima), and there is no docker here"
+    else
+        say "caboose needs Docker Engine, and there is no docker here"
+    fi
 elif ! docker info >/dev/null 2>&1; then
     say "docker is installed, but its engine does not answer: start it before using caboose"
 fi

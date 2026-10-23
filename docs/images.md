@@ -264,8 +264,9 @@ base in use is the one the last `caboose build` made there; a named image
 the builder lacks is pulled into it from its registry. An image that only a
 docker engine on this Mac has cannot reach the builder, so its pull fails
 (exit 2): push it to a registry first, or check it in that engine with
-`caboose --env NAME check-image IMAGE`, in an environment whose `config.toml` has no `vm` profile. There the checklist
-ends with a `docker inside` row: `available (dockerd VERSION)`, or what the
+`caboose --env NAME check-image IMAGE`, in an environment whose `config.toml` has no `vm` profile.
+
+Under `vm`, the checklist ends with a `docker inside` row: `available (dockerd VERSION)`, or what the
 image lacks for it, marked `!` and never counted as unmet, with what to add
 on stderr; `caboose build` notes it too.
 

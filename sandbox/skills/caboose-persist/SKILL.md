@@ -29,7 +29,8 @@ sync = true              # only if the user asked to sync it too
 ```
 
 - `path` is directly in `~`, `~/.config`, `~/.local`, `~/.local/share` or
-  `~/.cache` (not `~/.local` or `~/.cache` themselves). For something
+  `~/.cache` (not `~/.config`, `~/.local`, `~/.local/share` or `~/.cache`
+  themselves: each holds a path caboose mounts). For something
   deeper, keep its parent.
 - Prefer a directory. `file = true` keeps a single file (`~/.foorc`), but a
   tool that saves by writing a temp file and renaming it over the original

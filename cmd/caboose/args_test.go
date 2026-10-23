@@ -104,10 +104,11 @@ func TestUnknownOffersClaude(t *testing.T) {
 	}
 }
 
+// Every command but those named __..., which only the Makefile runs.
 func TestUsageListsEveryCommand(t *testing.T) {
 	u := Usage()
 	for _, c := range Commands {
-		if !strings.Contains(u, "\n  "+c.Name) {
+		if !strings.HasPrefix(c.Name, "__") && !strings.Contains(u, "\n  "+c.Name) {
 			t.Errorf("usage lacks %s:\n%s", c.Name, u)
 		}
 	}
@@ -165,7 +166,8 @@ func TestRequestsHelpNamesEveryKind(t *testing.T) {
 	}
 }
 
-// The short help leaves the hidden commands out; the full one lists them,
+// The short help leaves the hidden commands out; the full one lists them
+// but those named __..., which only the Makefile runs,
 // and each has its own help.
 func TestHiddenCommands(t *testing.T) {
 	var hidden []string
@@ -183,8 +185,9 @@ func TestHiddenCommands(t *testing.T) {
 		if strings.Contains(short, "\n  "+name+" ") {
 			t.Errorf("--help lists %s:\n%s", name, short)
 		}
-		if !strings.Contains(full, "\n  "+name+" ") {
-			t.Errorf("help lacks %s:\n%s", name, full)
+		listed := strings.Contains(full, "\n  "+name+" ")
+		if internal := strings.HasPrefix(name, "__"); listed == internal {
+			t.Errorf("help lists %s: %v:\n%s", name, listed, full)
 		}
 	}
 	if short != ShortUsage() || full != Usage() {
