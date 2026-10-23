@@ -213,8 +213,42 @@ func (a *App) updateInBackground() {
 				a.replaceDaemon(ctx, rd, tag)
 			}
 		}
+		if st.Error == "" {
+			st.AppError = ""
+			if _, err := a.updateApp(ctx, tag); err != nil {
+				st.AppError = err.Error()
+			}
+		}
 	}
 	_ = selfupdate.WriteState(home, st)
+}
+
+// bundleApp is install.sh's Caboose.app, which an update replaces.
+func (a *App) bundleApp() selfupdate.App {
+	if a.installedApp != nil {
+		return a.installedApp()
+	}
+	return selfupdate.App{Path: appbundle.InstallPath(a.Cfg.Home)}
+}
+
+// updateApp brings install.sh's Caboose.app up to tag when it is older,
+// and says whether it did: on a Mac, and only where install.sh put one
+// (selfupdate.App), which a running app relaunches into by itself. It is
+// a step of its own after the command's: a release whose app could not be
+// had leaves the command updated, and the next check tries the app again,
+// since it compares the app's own version.
+func (a *App) updateApp(ctx context.Context, tag string) (bool, error) {
+	if !appSupported || a.Cfg.Home == "" {
+		return false, nil
+	}
+	done, err := a.bundleApp().Install(ctx, a.releases(), tag, runtime.GOARCH)
+	if errors.Is(err, selfupdate.ErrNoApp) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("updating Caboose.app to %s: %w", tag, err)
+	}
+	return done, nil
 }
 
 // updateNow is `caboose update`, in the foreground.
@@ -274,12 +308,19 @@ func (a *App) updateNow() error {
 	}
 	st.Latest = tag
 	if selfupdate.Compare(tag, cur) <= 0 {
+		say(fmt.Sprintf("checking Caboose.app against %s", tag))
+		appDone, appErr := a.updateApp(ctx, tag)
 		stop()
+		st.AppError = errText(appErr)
 		_ = selfupdate.WriteState(home, st)
 		if tag == cur {
 			u.ok("caboose %s is the latest release.", cur)
 		} else {
 			u.ok("caboose %s is newer than the latest release, %s: nothing to do.", cur, tag)
+		}
+		a.sayApp(u, tag, appDone, appErr)
+		if appErr != nil {
+			return Die("%v", appErr)
 		}
 		return nil
 	}
@@ -291,11 +332,15 @@ func (a *App) updateNow() error {
 		_ = selfupdate.WriteState(home, st)
 		return Die("updating to %s: %v", tag, err)
 	}
+	say(fmt.Sprintf("updating Caboose.app to %s", tag))
+	appDone, appErr := a.updateApp(ctx, tag)
 	stop()
 	st.From, st.To, st.Announced = cur, tag, true
+	st.AppError = errText(appErr)
 	_ = selfupdate.WriteState(home, st)
 	u.ok("Updated caboose: %s → %s", cur, tag)
 	u.note("The next caboose you run is %s. When it builds the sandbox's image differently, the next 'caboose restart' rebuilds it.", tag)
+	a.sayApp(u, tag, appDone, appErr)
 	if r := a.replaceDaemon(ctx, rd, tag); r != nil {
 		switch {
 		case r.Current:
@@ -305,7 +350,28 @@ func (a *App) updateNow() error {
 			u.note("The caboose daemon restarts as %s once %s; the sandboxes' links come back by themselves.", tag, replaceWaitEnds(r.HostExecs, r.Jobs))
 		}
 	}
+	if appErr != nil {
+		return Die("%v", appErr)
+	}
 	return nil
+}
+
+// sayApp is what caboose update says of Caboose.app, once the command is
+// done: replaced, or why not. Nothing when there was nothing to do.
+func (a *App) sayApp(u *ui, tag string, done bool, err error) {
+	switch {
+	case err != nil:
+		u.note("Caboose.app stays as it was: %v. The next 'caboose update' tries again.", err)
+	case done:
+		u.ok("Updated Caboose.app to %s, in %s; a running one relaunches into it by itself.", tag, a.bundleApp().Path)
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // releaseDaemonAsker is what an update asks the release's daemon: which

@@ -89,7 +89,7 @@ func TestAppBundleCommand(t *testing.T) {
 	if err != nil || fi.Mode().Perm() != 0o755 {
 		t.Errorf("executable %v, %v", fi, err)
 	}
-	if code, _, errs := runIt("__app-bundle", filepath.Join(t.TempDir(), "Caboose.app")); code != 1 || !strings.Contains(errs, "usage: caboose __app-bundle\n") {
+	if code, _, errs := runIt("__app-bundle", filepath.Join(t.TempDir(), "Caboose.app")); code != 1 || !strings.Contains(errs, "usage: caboose __app-bundle [--release VERSION --exe PATH DIR]\n") {
 		t.Errorf("a DIR: exit %d, %q", code, errs)
 	}
 }

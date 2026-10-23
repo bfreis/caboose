@@ -28,10 +28,18 @@ setup`](configuration.md#setup) on your terminal. `CABOOSE_VERSION=v1.2.3` insta
 that release instead; `CABOOSE_NO_SETUP=1` installs only. Running it again
 installs the latest next to what is there.
 
+On a Mac it also installs the [menu-bar app](menu-bar-app.md) in
+`~/Applications/Caboose.app`, checked against `checksums.txt` and its
+signature, and opens it once setup is done. It replaces only caboose's
+own app there; anything else at that place is left as it is, and the app
+not installed, which caboose does not need. `CABOOSE_NO_APP=1` installs
+no app.
+
 An install made this way [keeps itself up to date](#updates). On a Mac the
-binaries are signed (with a Developer ID and notarized, when the release was
-built with one), but they do not need to be: a file downloaded by `curl` has
-no quarantine flag for Gatekeeper to check.
+binaries and the app are signed (with a Developer ID and notarized, the
+app's ticket stapled, when the release was built with one), but they do
+not need to be: a file downloaded by `curl` has no quarantine flag for
+Gatekeeper to check.
 
 `go install` is not supported: it makes an install that does not update
 itself.
@@ -98,8 +106,12 @@ goes on without waiting for it: when there is a newer release, it is
 downloaded, checked against its checksums and installed next to the one
 running, and the next caboose you run is the new one, which says so once.
 The version before it stays, for going back (point `~/.local/bin/caboose`
-at it). `caboose update` checks and installs now, and `caboose doctor`
-says when the last check was and whether it failed.
+at it). On a Mac the update brings `~/Applications/Caboose.app` along,
+once its signature checks out and is by the same team as the one there; a
+running app relaunches into the new one within seconds (never while a
+question of its waits on you). An app that could not be had is tried
+again at the next check. `caboose update` checks and installs now, and
+`caboose doctor` says when the last check was and whether it failed.
 `CABOOSE_NO_AUTO_UPDATE=1` (or `true`) turns the automatic part off (`caboose update`
 still works). A build from a checkout never updates itself, and neither
 does a binary anywhere else.

@@ -5,18 +5,27 @@ whose menu shows each environment, the requests waiting for you, and the
 proposals waiting for [`caboose apply`](proposals.md). It is one more
 client of caboose's daemon, beside the CLI and the [web page](web-ui.md),
 and it is optional: everything it does can be done with `caboose requests`,
-`caboose ui` and the rest. Releases do not ship it; you can build it
-from a checkout ([below](#building-it-from-a-checkout)).
+`caboose ui` and the rest. On a Mac, [`install.sh`](getting-started.md#install)
+puts it in `~/Applications/Caboose.app` (unless `CABOOSE_NO_APP=1`), and
+caboose's [updates](getting-started.md#updates) keep it at the same
+version as caboose; you can also build it from a checkout
+([below](#building-it-from-a-checkout)).
 
 ## Starting and quitting
 
-Opening Caboose.app (from Finder, `open ~/.caboose/app-dev/Caboose.app`,
-or its login item) runs `caboose app`, the binary inside the bundle. The app starts the daemon
-when none runs, as a launch or `caboose ui` does. It never replaces a daemon
-that runs: when caboose was updated and its daemon is newer than the app,
-the menu says "caboose is newer than this menu-bar app: update the app, or
-quit it"; when the app is the newer one, it asks the older daemon to make
-way once its host commands have ended, never killing them.
+Opening Caboose.app (from Finder, `open ~/Applications/Caboose.app`, or
+its login item) runs `caboose app`, the binary inside the bundle. The app
+starts the daemon when none runs, as a launch or `caboose ui` does, from
+the installed caboose when that is not older than the app. It never
+replaces a daemon that runs: when caboose was updated and its daemon is
+newer than the app, the menu says "caboose is newer than this menu-bar
+app: update the app, or quit it"; when the app is the newer one, it asks
+the older daemon to make way once its host commands have ended, never
+killing them.
+
+An update replaces the bundle on disk; the running app notices within
+seconds and relaunches into the new one, waiting first for any question
+it has in front of you to be answered.
 
 Only one app runs at a time: a second one says "Caboose is already running
 in the menu bar" and exits once you close that alert (or two minutes
@@ -29,7 +38,7 @@ An app started from Finder or at login gets the default `CABOOSE_HOME`
 (`~/.caboose`). If you use another, start it from a terminal that sets it:
 
 ```
-CABOOSE_HOME=/path/to/home ~/.caboose/app-dev/Caboose.app/Contents/MacOS/caboose app
+CABOOSE_HOME=/path/to/home ~/Applications/Caboose.app/Contents/MacOS/caboose app
 ```
 
 The app runs as you, on the Mac, outside any sandbox, so it refuses to run
@@ -142,9 +151,10 @@ fixed, outside the checkout and outside everything a sandbox mounts: a
 sandbox can write a checkout, and the host runs the bundle, at every login
 once it is a login item. The bundle uses a checkout's identifier and a
 checkout's daemon (the one in `CABOOSE_HOME/daemon-dev`, beside the
-release's). Since it holds a copy of the binary, run `make app` again after
-rebuilding `./caboose`. `make app` runs on a Mac only, and never inside the
-sandbox.
+release's), so it runs beside an installed app, and updates never touch
+it. Since it holds a copy of the binary, run `make app` again after
+rebuilding `./caboose`; a running one relaunches into it. `make app` runs
+on a Mac only, and never inside the sandbox.
 
-`~/.caboose/app-dev/Caboose.app/Contents/MacOS/caboose app --selftest` checks every class and
+`Caboose.app/Contents/MacOS/caboose app --selftest` checks every class and
 selector the app uses against your macOS, and exits.

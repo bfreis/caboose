@@ -149,7 +149,7 @@ read-only ones still read-only, since the Mac holds them so.
 | caboose's instructions to sessions | the sandbox rewriting them | a read-only mount | in effect |
 | your Mac's network, under `vm` | connections through the proxy | the proxy's ports and address rules, `egress_deny`, a person's answer for a private address | in effect, for what uses the proxy |
 | your network, under `vm` with `hostile` | any connection | no NAT; the proxy's rules decide | in effect |
-| the web page and the menu-bar app that approve requests | the sandbox opening, reaching or using them | the page's ports (7171, 7172) refused for forwarding, URL opens, vm egress and `run_args` publishes; served on `127.0.0.1` only; a token on every API call, `Host`, `Origin` and `Sec-Fetch-Site` checks, a strict CSP, no framing, no CORS; the app refuses to run from a place a sandbox reaches | in effect (the app: built from a checkout, not in releases) |
+| the web page and the menu-bar app that approve requests | the sandbox opening, reaching or using them | the page's ports (7171, 7172) refused for forwarding, URL opens, vm egress and `run_args` publishes; served on `127.0.0.1` only; a token on every API call, `Host`, `Origin` and `Sec-Fetch-Site` checks, a strict CSP, no framing, no CORS; the app refuses to run from a place a sandbox reaches | in effect |
 | your browser and your desktop | the sandbox opening pages, showing text | URL checks, a person's answer by default (never waited on), printable text, rate limits | in effect |
 
 ## The matrix
@@ -600,9 +600,10 @@ there without this case; the page is the host's, so a `container` or
 
 #### The menu-bar app
 
-In effect where it runs; releases do not ship it, and a checkout
-builds it on a Mac ([the menu-bar app](menu-bar-app.md)). It is one more
-client of the daemon, decides nothing itself, and:
+In effect where it runs: on a Mac, `install.sh` puts a release's in
+`~/Applications`, and a checkout builds its own
+([the menu-bar app](menu-bar-app.md)). It is one more client of the
+daemon, decides nothing itself, and:
 
 - runs as you, so it refuses to start, and to be turned on at login, from
   a place a sandbox could change or reach into: a root of any environment,
@@ -613,7 +614,11 @@ client of the daemon, decides nothing itself, and:
   the app's answer; the methods only the app may call are refused to
   every other client, and the app never forces a running daemon to make way;
 - never shows the sandbox's text as a menu item's or a notification's
-  title, only in its body, made printable.
+  title, only in its body, made printable;
+- is replaced by `install.sh` and updates only with a bundle checked
+  against the release's checksums whose signature is valid, for caboose's
+  identifier and, on an update, by the same team as the one installed;
+  nothing but caboose's own release bundle is ever replaced.
 
 ### Proposals
 

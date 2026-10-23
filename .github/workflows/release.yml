@@ -6,8 +6,10 @@
 # install.sh -- what every install made by install.sh updates itself from,
 # once the release is the latest. All of it is configured in
 # .goreleaser.yaml, but for vm's asset (its guest kernel and builder disk),
-# built by the vm-assets job below, and the kernel's source, which is kept
-# in a release of its own (kernel-VERSION) made below.
+# built by the vm-assets job below, the menu-bar app, Caboose.app, built,
+# signed and notarized on a Mac by the app job below, and the kernel's
+# source, which is kept in a release of its own (kernel-VERSION) made
+# below.
 name: release
 
 on:
@@ -62,8 +64,200 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  # The menu-bar app, caboose-app_VERSION_darwin_ARCH.zip: Caboose.app
+  # around the launcher built for ARCH, signed with Apple's own codesign,
+  # notarized with notarytool, the ticket stapled into the bundle and
+  # Gatekeeper's verdict checked (spctl), on a Mac, since only a Mac has
+  # those tools. Both architectures on one arm64 runner: the launcher
+  # needs no cgo, so amd64's is a cross-compile. With MACOS_P12_BASE64
+  # unset (a fork) the bundle is signed ad-hoc and not notarized, as the
+  # binaries are. The zips reach goreleaser's job as workflow artifacts.
+  app:
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The launcher embeds caboose-agent.
+      - name: build caboose-agent
+        run: make agent
+
+      # Built as goreleaser builds the darwin archives' launcher: the same
+      # flags and version stamp, the date the commit's.
+      - name: build the launcher
+        env:
+          TAG: ${{ github.ref_name }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          date=$(TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)
+          pkg=github.com/bfreis/caboose/internal/version
+          mkdir -p "$RUNNER_TEMP/bin"
+          CGO_ENABLED=0 GOOS=darwin go build -trimpath \
+            -ldflags "-s -w -X $pkg.Version=v${TAG#v} -X $pkg.Commit=$GITHUB_SHA -X $pkg.Date=$date" \
+            -o "$RUNNER_TEMP/bin/caboose" ./cmd/caboose
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      # Caboose.app around it, by the launcher's own assembly (go run is
+      # this Mac's build, so it runs whatever ARCH is).
+      - name: assemble Caboose.app
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/app"
+          go run ./cmd/caboose __app-bundle --release "v${TAG#v}" --exe "$RUNNER_TEMP/bin/caboose" "$RUNNER_TEMP/app"
+
+      # The Developer ID goes into a keychain of this job's own, and the
+      # notary's key into a file, both in RUNNER_TEMP and removed by the
+      # always() step at the end. Nothing derived from the secrets is
+      # printed. With MACOS_P12_BASE64 set, every other secret must be too:
+      # a release that has a Developer ID is notarized or not made.
+      - name: signing secrets
+        env:
+          P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+          ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          KEY_P8: ${{ secrets.APPSTORE_KEY_P8 }}
+        run: |
+          set -eu
+          if [ -z "$P12_BASE64" ]; then
+            echo "MACOS_P12_BASE64 is not set: Caboose.app is signed ad-hoc and not notarized"
+            exit 0
+          fi
+          missing=
+          [ -n "$P12_PASSWORD" ] || missing="$missing MACOS_P12_PASSWORD"
+          [ -n "$ISSUER_ID" ] || missing="$missing APPSTORE_ISSUER_ID"
+          [ -n "$KEY_ID" ] || missing="$missing APPSTORE_KEY_ID"
+          [ -n "$KEY_P8" ] || missing="$missing APPSTORE_KEY_P8"
+          if [ -n "$missing" ]; then
+            echo "::error::MACOS_P12_BASE64 is set but not:$missing"
+            exit 1
+          fi
+          umask 077
+          dir="$RUNNER_TEMP/macsign"
+          mkdir -p "$dir"
+          printf '%s' "$P12_BASE64" | base64 -D > "$dir/devid.p12"
+          printf '%s\n' "$KEY_P8" > "$dir/AuthKey.p8"
+          kc="$dir/signing.keychain-db"
+          kcpass=$(openssl rand -hex 24)
+          echo "::add-mask::$kcpass"
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 7200 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          security import "$dir/devid.p12" -k "$kc" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc" > /dev/null
+          rm -f "$dir/devid.p12"
+          # shellcheck disable=SC2046 # the search list, one keychain per word
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          id=$(security find-identity -v -p codesigning "$kc" | awk '/"Developer ID Application: / { print $2; exit }')
+          if [ -z "$id" ]; then
+            echo "::error::MACOS_P12_BASE64 holds no Developer ID Application identity"
+            exit 1
+          fi
+          {
+            echo "SIGN_IDENTITY=$id"
+            echo "NOTARY_KEY=$dir/AuthKey.p8"
+            echo "NOTARY_KEY_ID=$KEY_ID"
+            echo "NOTARY_ISSUER=$ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      # The hardened runtime, which notarization requires, and Apple's
+      # timestamp; no entitlements: the app loads only system frameworks
+      # and is not JIT-compiled.
+      - name: sign
+        run: |
+          set -eu
+          app="$RUNNER_TEMP/app/Caboose.app"
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign --force --options runtime --timestamp --identifier dev.bfreis.caboose --sign "$SIGN_IDENTITY" "$app"
+          else
+            codesign --force --identifier dev.bfreis.caboose --sign - "$app"
+          fi
+
+      - name: check the build
+        env:
+          ARCH: ${{ matrix.arch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          app="$RUNNER_TEMP/app/Caboose.app"
+          bin="$app/Contents/MacOS/caboose"
+          want=$ARCH
+          if [ "$ARCH" = amd64 ]; then want=x86_64; fi
+          [ "$(lipo -archs "$bin")" = "$want" ] || { echo "::error::$bin is $(lipo -archs "$bin"), not $want"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          [ "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" = dev.bfreis.caboose ] || { echo "::error::not dev.bfreis.caboose"; exit 1; }
+          [ "$(plutil -extract CabooseVersion raw -o - "$app/Contents/Info.plist")" = "v${TAG#v}" ] || { echo "::error::CabooseVersion is not v${TAG#v}"; exit 1; }
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign --display --verbose=2 "$app" 2>&1 | grep -Eq 'flags=0x[0-9a-f]+\([^)]*runtime' || { echo "::error::no hardened runtime"; exit 1; }
+          fi
+
+      # Submitted and waited on; anything but Accepted fails, with the
+      # notary's log. Then the ticket is stapled into the bundle, so that
+      # Gatekeeper needs no network to accept it, and its verdict checked.
+      - name: notarize
+        if: env.SIGN_IDENTITY != ''
+        run: |
+          set -eu
+          app="$RUNNER_TEMP/app/Caboose.app"
+          sub="$RUNNER_TEMP/submit"
+          mkdir -p "$sub"
+          ditto -c -k --keepParent "$app" "$sub/Caboose.zip"
+          out=$(xcrun notarytool submit "$sub/Caboose.zip" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+            --wait --timeout 45m --output-format json) || true
+          echo "$out"
+          status=$(echo "$out" | plutil -extract status raw -o - - 2> /dev/null || echo unknown)
+          if [ "$status" != Accepted ]; then
+            id=$(echo "$out" | plutil -extract id raw -o - - 2> /dev/null || true)
+            if [ -n "$id" ]; then
+              xcrun notarytool log "$id" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
+            fi
+            echo "::error::notarizing Caboose.app: $status"
+            exit 1
+          fi
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: zip
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/dist"
+          ditto -c -k --keepParent "$RUNNER_TEMP/app/Caboose.app" "$RUNNER_TEMP/dist/caboose-app_${VERSION}_darwin_${ARCH}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-${{ matrix.arch }}
+          path: ${{ runner.temp }}/dist/caboose-app_*.zip
+          if-no-files-found: error
+          # Already compressed.
+          compression-level: 0
+          retention-days: 7
+
+      # The keychain and the key, whatever happened above. The runner is
+      # thrown away too, but nothing should rely on that.
+      - name: remove signing secrets
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/macsign/signing.keychain-db" 2> /dev/null || true
+          rm -rf "$RUNNER_TEMP/macsign"
+
   goreleaser:
-    needs: vm-assets
+    needs: [vm-assets, app]
     runs-on: ubuntu-latest
     # It makes the kernel source release and the release itself.
     permissions:
@@ -161,6 +355,14 @@ jobs:
         with:
           name: vm-assets
           path: vm-release
+
+      # The app job's zips, which goreleaser lists in checksums.txt and
+      # attaches to the release.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: app-*
+          merge-multiple: true
+          path: app-release
 
       # The kernel's source, as the GPL asks and kernel-arm64.SOURCE
       # promises: a release kernel-VERSION in this repository (a fork's

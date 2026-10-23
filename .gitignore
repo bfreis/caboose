@@ -41,6 +41,7 @@
 
 # vm's files packed for a release, from `make vm-assets`.
 /vm-release/
+/app-release/
 
 # goreleaser's output: the release archives and checksums
 # from `goreleaser release` (or a `--snapshot` dry run). Build output only.

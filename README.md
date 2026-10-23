@@ -36,8 +36,9 @@ Then run `caboose` in a project's directory under `~/dev` (the default
 root; `caboose setup roots` changes it).
 
 The installer puts caboose in `~/.caboose/versions`, linked from
-`~/.local/bin`, without root, checks it
-against the release's checksums, and runs `caboose setup`. After that,
+`~/.local/bin`, and on a Mac the menu-bar app in `~/Applications`, without
+root, checks them against the release's checksums, and runs `caboose
+setup`. After that,
 caboose keeps itself up to date. The first launch builds the image, which
 takes a few minutes once, and asks you to log in to Claude. See
 [Getting started](docs/getting-started.md) for the details, and for
@@ -108,7 +109,7 @@ caboose help               # every command
 | [The host link](docs/host-link.md) | ports forwarded to your localhost, URLs and notifications from the sandbox, the VM's outbound connections, and commands run on the host where you allow it |
 | [SSH agent and commit signing](docs/ssh.md) | agent forwarding on macOS and Linux, `ssh_agent`, 1Password, signing |
 | [The web page](docs/web-ui.md) | `caboose ui`: requests and proposals in a browser, its address and token, and what stays in the terminal |
-| [The menu-bar app](docs/menu-bar-app.md) | Caboose.app on a Mac: environments, requests answered after a confirmation, the URL question, notifications; `make app` builds it from a checkout |
+| [The menu-bar app](docs/menu-bar-app.md) | Caboose.app on a Mac: environments, requests answered after a confirmation, the URL question, notifications; installed and updated with caboose |
 | [Caveats](docs/caveats.md) | what to know before you rely on it, including the docker socket |
 | [Security](docs/security.md) | the threat model: what each isolation protects, from whom, and what it does not cover |
 | [Contributing](CONTRIBUTING.md) | building, testing and releasing caboose |

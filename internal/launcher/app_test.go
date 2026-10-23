@@ -3,7 +3,10 @@ package launcher
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -343,6 +346,132 @@ func TestDoctorAppRowOnlyWhereSupported(t *testing.T) {
 		}
 		if want := map[bool]int{true: 1, false: 0}[on]; n != want {
 			t.Errorf("supported %v: %d menu-bar app rows, want %d", on, n, want)
+		}
+	}
+}
+
+// The app relaunches into a bundle an update renamed into its place: the
+// executable it runs from is then another file. Relaunching waits for
+// this process, then opens the bundle.
+func TestAppOptionsRelaunch(t *testing.T) {
+	d := t.TempDir()
+	exe := bundle(t, d, appbundle.ReleaseID)
+	app := filepath.Dir(filepath.Dir(filepath.Dir(exe)))
+	a := appApp(t, exe)
+	var spawned []string
+	a.Spawn = func(exe string, args ...string) error { spawned = append([]string{exe}, args...); return nil }
+	o := a.appOptions(exe, nil)
+	if o.Replaced == nil || o.Relaunch == nil {
+		t.Fatal("no Replaced or Relaunch")
+	}
+	if o.Replaced() {
+		t.Error("replaced at start")
+	}
+	// The same file rewritten in place is not a new bundle.
+	if err := os.WriteFile(exe, []byte("bin2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if o.Replaced() {
+		t.Error("replaced by a write")
+	}
+	// Half swapped: nothing there yet.
+	aside := filepath.Join(d, "aside.app")
+	if err := os.Rename(app, aside); err != nil {
+		t.Fatal(err)
+	}
+	if o.Replaced() {
+		t.Error("replaced with nothing there")
+	}
+	bundle(t, d, appbundle.ReleaseID)
+	if !o.Replaced() {
+		t.Error("not replaced by a new bundle")
+	}
+	if err := o.Relaunch(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/bin/sh", "-c", relaunchScript, "sh", strconv.Itoa(os.Getpid()), app}
+	if !slices.Equal(spawned, want) {
+		t.Errorf("spawned %q, want %q", spawned, want)
+	}
+	// An app run as caboose app, from no bundle, never relaunches.
+	plain := filepath.Join(d, "caboose")
+	if err := os.WriteFile(plain, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if o := a.appOptions(plain, nil); o.Replaced != nil || o.Relaunch != nil {
+		t.Error("a bare binary relaunches")
+	}
+}
+
+// The relaunch's wait ends when the app has: the script is run here with
+// open replaced by echo.
+func TestRelaunchScriptWaits(t *testing.T) {
+	sleeper := exec.Command("sleep", "0.5")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go sleeper.Wait()
+	script := strings.Replace(relaunchScript, "exec /usr/bin/open -n", "echo opened", 1)
+	start := time.Now()
+	out, err := exec.Command("sh", "-c", script, "sh", strconv.Itoa(sleeper.Process.Pid), "/A/Caboose.app").CombinedOutput()
+	if err != nil || string(out) != "opened /A/Caboose.app\n" {
+		t.Fatalf("%q, %v", out, err)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond {
+		t.Errorf("opened after %v, before the app ended", took)
+	}
+}
+
+// --release writes a release's bundle where it is told, around the binary
+// it is given, with the release identifier and the version given.
+func TestAppBundleRelease(t *testing.T) {
+	pinVersion(t, "dev")
+	d := t.TempDir()
+	src := filepath.Join(d, "caboose-darwin")
+	if err := os.WriteFile(src, []byte("the darwin build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(d, "out")
+	if err := os.Mkdir(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := appApp(t, filepath.Join(d, "the-running-one"))
+	var stdout strings.Builder
+	a.Stdout = &stdout
+	if err := a.AppBundle([]string{"--release", "v1.2.3", "--exe", src, out}); err != nil {
+		t.Fatal(err)
+	}
+	app := filepath.Join(out, appbundle.Name)
+	if stdout.String() != app+"\n" {
+		t.Errorf("printed %q", stdout.String())
+	}
+	b, err := appbundle.ReadPlist(filepath.Join(app, "Contents", "Info.plist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, err := appbundle.ParseIdentifier(b); err != nil || id != appbundle.ReleaseID {
+		t.Errorf("identifier %q, %v", id, err)
+	}
+	if v, err := appbundle.ParseString(b, "CabooseVersion"); err != nil || v != "v1.2.3" {
+		t.Errorf("version %q, %v", v, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(app, "Contents", "MacOS", "caboose")); err != nil || string(got) != "the darwin build" {
+		t.Errorf("executable %q, %v", got, err)
+	}
+	if _, err := os.Stat(appbundle.CheckoutPath(a.Cfg.CabooseHome)); !os.IsNotExist(err) {
+		t.Errorf("wrote the checkout's place: %v", err)
+	}
+	for _, args := range [][]string{
+		{"--release", "v1.2.3", "--exe", src, out},                    // there already
+		{"--release", "v1.2.3-4-gabcdef0", "--exe", src, t.TempDir()}, // no release
+		{"--release", "dev", "--exe", src, t.TempDir()},
+		{"--release", "v1.2.3", "--exe", src, filepath.Join(d, "nope")},
+		{"--release", "v1.2.3", src, out},
+		{"--release", "v1.2.3", "--exe", src},
+		{"--nope"},
+	} {
+		if err := a.AppBundle(args); err == nil {
+			t.Errorf("%q: no error", args)
 		}
 	}
 }

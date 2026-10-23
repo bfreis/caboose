@@ -100,8 +100,9 @@ part of neither image: an edit to it needs only the launcher rebuilt.
 
 Releases are cut by pushing a `v*` tag: goreleaser (`.goreleaser.yaml`, run
 by `.github/workflows/release.yml`) builds darwin/linux × amd64/arm64
-binaries and publishes a GitHub release. Only the launcher is released; the
-image is always built locally.
+binaries and publishes a GitHub release. The launcher is released, and on a
+Mac the menu-bar app around it, Caboose.app; the image is always built
+locally.
 
 ### Signing the macOS binaries
 
@@ -150,6 +151,28 @@ encode-app-store-connect-api-key -o FILE ISSUER_ID KEY_ID AuthKey.p8`)
 notarizes it too; this path needs `rcodesign` installed. Without them it
 is ad-hoc, by `codesign`. A `caboose-vmm` already built is not signed
 again: `rm caboose-vmm` first.
+
+### Signing the menu-bar app
+
+Caboose.app is built by the workflow's `app` job on a macOS runner, one
+zip per architecture (`caboose-app_VERSION_darwin_ARCH.zip`, which
+goreleaser lists in `checksums.txt` and attaches to the release): the
+launcher built for that architecture as goreleaser builds it, assembled by
+`caboose __app-bundle --release` with the release identifier,
+`dev.bfreis.caboose`, and signed with Apple's own tools rather than
+`rcodesign`, since a bundle's signature and its stapled ticket are where
+the two could differ. With `MACOS_P12_BASE64` set, the Developer ID goes
+into a keychain of the job's own; the bundle is signed with the hardened
+runtime and Apple's timestamp (no entitlements), checked (`codesign
+--verify --deep --strict`, the architecture, the identifier and version in
+its `Info.plist`), notarized with `notarytool`, which must answer
+Accepted, the ticket stapled into the bundle, and Gatekeeper's verdict
+checked with `spctl` before the zip is made. The same five secrets, the
+same rule (all of them, or a failed release) and the same clean-up hold.
+Without them it is signed ad-hoc and not notarized. `install.sh` and
+`caboose update` check the bundle's signature before they put it in
+place, and an update takes only one signed by the same team as the one
+installed.
 
 | | |
 |---|---|

@@ -25,6 +25,8 @@ const wantPlist = `<?xml version="1.0" encoding="UTF-8"?>
 	<string>1.4.2</string>
 	<key>CFBundleVersion</key>
 	<string>1.4.2</string>
+	<key>CabooseVersion</key>
+	<string>v1.4.2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -38,6 +40,19 @@ const wantPlist = `<?xml version="1.0" encoding="UTF-8"?>
 func TestPlist(t *testing.T) {
 	if got := string(Plist(Info{ID: CheckoutID, Version: "v1.4.2"})); got != wantPlist {
 		t.Errorf("Plist:\n%s\nwant:\n%s", got, wantPlist)
+	}
+}
+
+// The version whole, where macOS's numbers cannot carry it.
+func TestPlistCabooseVersion(t *testing.T) {
+	for _, v := range []string{"v1.4.2", "v1.5.0-rc.1", "v1.2.3-4-gabcdef0-dirty"} {
+		got, err := ParseString(Plist(Info{ID: ReleaseID, Version: v}), "CabooseVersion")
+		if err != nil || got != v {
+			t.Errorf("%s: CabooseVersion %q, %v", v, got, err)
+		}
+	}
+	if _, err := ParseString([]byte(wantPlist), "Nope"); err == nil || err.Error() != "Info.plist: no Nope" {
+		t.Errorf("a missing key: %v", err)
 	}
 }
 
@@ -197,8 +212,17 @@ func TestInCheckoutBundle(t *testing.T) {
 }
 
 func TestKnown(t *testing.T) {
-	if !Known(CheckoutID) || Known("") || Known("local.caboose") || Known(CheckoutID+" ") {
+	if !Known(CheckoutID) || !Known(ReleaseID) || Known("") || Known("local.caboose") || Known(CheckoutID+" ") || Known("dev.bfreis") {
 		t.Error("Known")
+	}
+	if ReleaseID != "dev.bfreis.caboose" {
+		t.Errorf("ReleaseID = %q: a release's identifier never changes", ReleaseID)
+	}
+}
+
+func TestInstallPath(t *testing.T) {
+	if got := InstallPath("/Users/u"); got != "/Users/u/Applications/Caboose.app" {
+		t.Errorf("InstallPath = %q", got)
 	}
 }
 

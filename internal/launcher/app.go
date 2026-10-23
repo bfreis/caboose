@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/bfreis/caboose/internal/appbundle"
@@ -72,7 +73,7 @@ func (a *App) RunApp(args []string) error {
 // on ui.
 func (a *App) appOptions(exe string, ui menubar.UI) menubar.Options {
 	lg := log.New(a.Stderr, "caboose app: ", log.LstdFlags)
-	return menubar.Options{
+	o := menubar.Options{
 		Daemon:   a.appDaemon(),
 		UI:       ui,
 		Version:  currentVersion(),
@@ -84,6 +85,32 @@ func (a *App) appOptions(exe string, ui menubar.UI) menubar.Options {
 		// sandboxes reach may have grown since the app started.
 		LoginCheck: func() error { return a.checkAppPlace(context.Background(), exe) },
 	}
+	if bundle := appbundle.BundleOf(exe); bundle != "" {
+		if start, err := os.Stat(exe); err == nil {
+			o.Replaced = func() bool { return bundleReplaced(exe, start) }
+			o.Relaunch = func() error { return a.relaunchApp(bundle) }
+		}
+	}
+	return o
+}
+
+// bundleReplaced reports whether the file at exe is no longer start, the
+// executable the app started from: an update renamed a new bundle into
+// the old one's place. A bundle half swapped (nothing at exe) is not yet
+// replaced.
+func bundleReplaced(exe string, start os.FileInfo) bool {
+	now, err := os.Stat(exe)
+	return err == nil && !os.SameFile(start, now)
+}
+
+// relaunchScript waits, at most 10 s, for the process $1 to end, then
+// opens the bundle $2: an app still attached to the daemon would turn the
+// new one away as a second app.
+const relaunchScript = `i=0; while kill -0 "$1" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done; exec /usr/bin/open -n "$2"`
+
+// relaunchApp starts, detached, what opens bundle once this app has quit.
+func (a *App) relaunchApp(bundle string) error {
+	return a.spawn("/bin/sh", "-c", relaunchScript, "sh", strconv.Itoa(os.Getpid()), bundle)
 }
 
 // appDaemon is how the app reaches the daemon: as client kind app, never
@@ -163,9 +190,17 @@ func (a *App) appSpawnExe() (string, error) {
 // the checkout's identifier, whatever this build's version stamp says,
 // and prints the bundle's path. The app judges that place itself at every
 // launch (checkAppPlace).
+//
+// With --release VERSION --exe PATH DIR (release.yml), it assembles a
+// release's bundle instead: DIR/Caboose.app, which must not exist yet,
+// around the binary at PATH (the release's darwin build, which need not
+// run here), with the release identifier and VERSION, a release tag.
 func (a *App) AppBundle(args []string) error {
+	if len(args) > 0 && args[0] == "--release" {
+		return a.releaseBundle(args[1:])
+	}
 	if len(args) != 0 {
-		return Die("usage: caboose __app-bundle")
+		return Die("%s", appBundleUsage)
 	}
 	if a.Cfg.CabooseHome == "" || !filepath.IsAbs(a.Cfg.CabooseHome) {
 		return Die("CABOOSE_HOME (or HOME) is not set to an absolute path: the bundle has no place")
@@ -185,9 +220,34 @@ func (a *App) AppBundle(args []string) error {
 	return nil
 }
 
-// appBundleInfo is what __app-bundle writes in the Info.plist: the
-// checkout's identifier, always, until releases build a bundle of their
-// own.
+const appBundleUsage = "usage: caboose __app-bundle [--release VERSION --exe PATH DIR]"
+
+// releaseBundle is __app-bundle --release VERSION --exe PATH DIR.
+func (a *App) releaseBundle(args []string) error {
+	if len(args) != 4 || args[1] != "--exe" {
+		return Die("%s", appBundleUsage)
+	}
+	v, exe, dir := args[0], args[2], args[3]
+	if !release(v) {
+		return Die("--release %q: not a release's version (vX.Y.Z[-PRERELEASE])", v)
+	}
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return Die("%s: not a directory", dir)
+	}
+	dest := filepath.Join(dir, appbundle.Name)
+	if _, err := os.Lstat(dest); err == nil {
+		return Die("%s already exists", dest)
+	}
+	if err := appbundle.Assemble(dest, exe, appbundle.Info{ID: appbundle.ReleaseID, Version: v}); err != nil {
+		return Die("%v", err)
+	}
+	fmt.Fprintln(a.Stdout, dest)
+	return nil
+}
+
+// appBundleInfo is what __app-bundle writes in the Info.plist for make
+// app: the checkout's identifier, always, whatever this build's stamp.
 func appBundleInfo() appbundle.Info {
 	return appbundle.Info{ID: appbundle.CheckoutID, Version: currentVersion()}
 }

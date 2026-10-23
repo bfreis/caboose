@@ -289,7 +289,12 @@ the web UI there.`},
 identifier, and a copy of this binary into its one place,
 CABOOSE_HOME/app-dev/Caboose.app (outside every root and every mount of a
 sandbox's), replacing only caboose's own bundle there, and prints that
-path. It does not sign it ('make app' does, ad hoc).`},
+path. It does not sign it ('make app' does, ad hoc).
+
+--release VERSION --exe PATH DIR is what the release workflow runs: it
+writes DIR/Caboose.app, which must not exist, around the binary at PATH,
+with the release's identifier and VERSION, and prints its path. It signs
+nothing either.`},
 	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
 		Summary: "delete old Claude Code versions and unused packages",
 		Help: `Deletes the installed Claude Code versions beyond the newest

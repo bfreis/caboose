@@ -18,12 +18,12 @@ import (
 )
 
 // The bundle's identifiers. A checkout's bundle (make app) claims no
-// domain or account. ReleaseID is a release's, empty until releases ship
-// the app: changing an identifier later loses the notification
-// authorization and the login item given to the old one.
+// domain or account; ReleaseID is the released bundle's. Changing one
+// loses the notification authorization and the login item given to the
+// old one.
 const (
 	CheckoutID = "local.caboose.checkout"
-	ReleaseID  = ""
+	ReleaseID  = "dev.bfreis.caboose"
 )
 
 // Name is the bundle's directory name; Executable the binary's name in
@@ -46,12 +46,19 @@ func CheckoutPath(cabooseHome string) string {
 	return filepath.Join(cabooseHome, CheckoutDir, Name)
 }
 
+// InstallPath is where install.sh and updates put a release's bundle:
+// the one fixed place, ~/Applications/Caboose.app, outside CABOOSE_HOME
+// as the command's link is.
+func InstallPath(home string) string {
+	return filepath.Join(home, "Applications", Name)
+}
+
 // MaxPlist bounds what ReadPlist reads and ParseIdentifier accepts.
 const MaxPlist = 64 << 10
 
 // Known reports whether id is one of caboose's bundle identifiers.
 func Known(id string) bool {
-	return id == CheckoutID || (ReleaseID != "" && id == ReleaseID)
+	return id == CheckoutID || id == ReleaseID
 }
 
 // Info is what the Info.plist says of the bundle.
@@ -74,7 +81,9 @@ func BundleVersion(v string) string {
 }
 
 // Plist is the bundle's Info.plist, an XML property list. LSUIElement
-// keeps the app out of the Dock; there are no entitlements.
+// keeps the app out of the Dock; there are no entitlements. CabooseVersion
+// is the version whole, which the numbers macOS reads cannot carry (a
+// prerelease's, a checkout's): what an update compares.
 func Plist(in Info) []byte {
 	v := BundleVersion(in.Version)
 	var b bytes.Buffer
@@ -94,6 +103,7 @@ func Plist(in Info) []byte {
 	str("CFBundlePackageType", "APPL")
 	str("CFBundleShortVersionString", v)
 	str("CFBundleVersion", v)
+	str("CabooseVersion", in.Version)
 	str("LSMinimumSystemVersion", "13.0")
 	yes("LSUIElement")
 	yes("NSHighResolutionCapable")
@@ -121,7 +131,12 @@ func ReadPlist(path string) ([]byte, error) {
 // ParseIdentifier is the CFBundleIdentifier of an XML Info.plist: the
 // string after that key in the top-level dict. A plist larger than
 // MaxPlist, malformed, or without the key is an error.
-func ParseIdentifier(plist []byte) (string, error) {
+func ParseIdentifier(plist []byte) (string, error) { return ParseString(plist, "CFBundleIdentifier") }
+
+// ParseString is the string after the key want in an XML Info.plist's
+// top-level dict, read as ParseIdentifier reads the identifier: the key
+// given twice, or with an empty or non-string value, is an error.
+func ParseString(plist []byte, want string) (string, error) {
 	if len(plist) > MaxPlist {
 		return "", errors.New("Info.plist is too large")
 	}
@@ -151,7 +166,7 @@ func ParseIdentifier(plist []byte) (string, error) {
 				inKey = true
 				text.Reset()
 			case depth == 3:
-				inValue = key == "CFBundleIdentifier" && t.Name.Local == "string"
+				inValue = key == want && t.Name.Local == "string"
 				text.Reset()
 			}
 		case xml.CharData:
@@ -165,7 +180,7 @@ func ParseIdentifier(plist []byte) (string, error) {
 					key, inKey = text.String(), false
 				case inValue:
 					if found != "" {
-						return "", errors.New("Info.plist: CFBundleIdentifier given twice")
+						return "", fmt.Errorf("Info.plist: %s given twice", want)
 					}
 					found, inValue, key = text.String(), false, ""
 				default:
@@ -176,7 +191,7 @@ func ParseIdentifier(plist []byte) (string, error) {
 		}
 	}
 	if found == "" {
-		return "", errors.New("Info.plist: no CFBundleIdentifier")
+		return "", fmt.Errorf("Info.plist: no %s", want)
 	}
 	return found, nil
 }

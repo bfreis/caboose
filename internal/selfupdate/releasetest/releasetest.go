@@ -5,17 +5,24 @@ package releasetest
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/appbundle"
 	"github.com/bfreis/caboose/internal/selfupdate"
 )
 
@@ -157,4 +164,90 @@ func Archive(t *testing.T, files map[string][]byte) []byte {
 		t.Fatal(err)
 	}
 	return b.Bytes()
+}
+
+// AppZip is a zip of a Caboose.app, as a release's app asset holds it
+// (ditto -c -k --keepParent): its Info.plist for id and tag, an
+// executable, and Contents/SIGNER, which a test's codesign reads as the
+// signature ("IDENTIFIER TEAM", TEAM "-" when ad hoc).
+func AppZip(t *testing.T, id, tag, signer string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	zw := zip.NewWriter(&b)
+	for _, f := range []struct {
+		name string
+		mode os.FileMode
+		data []byte
+	}{
+		{"Caboose.app/Contents/Info.plist", 0o644, appbundle.Plist(appbundle.Info{ID: id, Version: tag})},
+		{"Caboose.app/Contents/MacOS/caboose", 0o755, Binary(tag)},
+		{"Caboose.app/Contents/SIGNER", 0o644, []byte(signer + "\n")},
+	} {
+		h := &zip.FileHeader{Name: f.name, Method: zip.Deflate}
+		h.SetMode(f.mode)
+		w, err := zw.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// Unzip is ditto -x -k for the tests: the zip's files, with their modes.
+func Unzip(_ context.Context, zipPath, dir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	for _, f := range r.File {
+		p := filepath.Join(dir, filepath.FromSlash(f.Name))
+		if !strings.HasPrefix(p, dir+string(filepath.Separator)) {
+			return fmt.Errorf("%s escapes", f.Name)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		in, err := f.Open()
+		if err != nil {
+			return err
+		}
+		b, err := io.ReadAll(in)
+		in.Close()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, b, f.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Codesign is codesign for the tests: a bundle's signature is its
+// Contents/SIGNER (AppZip's), and one with Contents/BROKEN does not
+// verify.
+func Codesign(_ context.Context, args ...string) (string, error) {
+	app := args[len(args)-1]
+	if args[0] == "--verify" {
+		if _, err := os.Stat(filepath.Join(app, "Contents", "BROKEN")); err == nil {
+			return app + ": a sealed resource is missing or invalid", errors.New("exit status 1")
+		}
+		return "", nil
+	}
+	b, err := os.ReadFile(filepath.Join(app, "Contents", "SIGNER"))
+	if err != nil {
+		return app + ": code object is not signed at all", errors.New("exit status 1")
+	}
+	id, team, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
+	if team == "-" {
+		team = "not set"
+	}
+	return fmt.Sprintf("Executable=%s/Contents/MacOS/caboose\nIdentifier=%s\nFormat=app bundle with Mach-O thin (arm64)\nTeamIdentifier=%s\n", app, id, team), nil
 }

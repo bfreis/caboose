@@ -1,6 +1,7 @@
 # Release build for the caboose launcher: `goreleaser release --clean`, run by
 # .github/workflows/release.yml on a v* tag. A local dry run that publishes
-# nothing is `goreleaser release --snapshot --clean --skip=publish` (dist/).
+# nothing is `goreleaser release --snapshot --clean --skip=publish` (dist/),
+# with stand-ins for the app's zips in app-release/ (see the hooks below).
 #
 # Only the launcher is released, with install.sh, which installs it, and on
 # macOS on Apple silicon caboose-vmm beside it in the same archive: the vm isolation's VM
@@ -10,11 +11,13 @@
 # notarized when the workflow has the signing secrets (CONTRIBUTING.md),
 # else caboose-vmm ad-hoc and the launcher as the linker left it. The image
 # is not released: the launcher embeds the layer's files and builds the
-# image on the user's machine. An install made by install.sh updates
-# itself from these releases (internal/selfupdate), so the archives' names,
-# their layout (caboose, and caboose-vmm when there is one, at the root)
-# and checksums.txt are what it downloads: change them only together with
-# it, and with install.sh.
+# image on the user's machine. The menu-bar app, Caboose.app, is built
+# and signed by release.yml on a Mac, and only attached here. An install
+# made by install.sh updates itself from these releases
+# (internal/selfupdate), so the archives' names, their layout (caboose,
+# and caboose-vmm when there is one, at the root), the app's zips and
+# checksums.txt are what it downloads: change them only together with it,
+# and with install.sh.
 version: 2
 
 project_name: caboose
@@ -30,6 +33,11 @@ before:
     # release.yml builds them on an arm64 runner and puts the asset in
     # vm-release/, and this only checks it.
     - make vm-assets VM_VERSION={{ .Version }} VM_ARCH=arm64 VM_ASSETS_PREBUILT={{ envOrDefault "VM_ASSETS_PREBUILT" "" }}
+    # The menu-bar app, one zip per Mac architecture: release.yml's app
+    # job builds, signs and notarizes them on a Mac and puts them in
+    # app-release/; this only checks they are there, since nothing here
+    # can make one.
+    - sh -c 'for a in arm64 amd64; do f=app-release/caboose-app_{{ .Version }}_darwin_$a.zip; [ -s "$f" ] || { echo "no $f: the app job of release.yml makes it" >&2; exit 1; }; done'
 
 builds:
   - id: caboose
@@ -112,9 +120,10 @@ archives:
 
 checksum:
   name_template: checksums.txt
-  # vm's asset is checked as the archives are.
+  # vm's asset and the app's zips are checked as the archives are.
   extra_files:
     - glob: ./vm-release/caboose-vm_{{ .Version }}_*.tar.gz
+    - glob: ./app-release/caboose-app_{{ .Version }}_darwin_*.zip
 
 # The kernel source release's kernel-VERSION tags sit on release commits:
 # never take one for the previous release.
@@ -142,3 +151,4 @@ release:
   extra_files:
     - glob: ./install.sh
     - glob: ./vm-release/caboose-vm_{{ .Version }}_*.tar.gz
+    - glob: ./app-release/caboose-app_{{ .Version }}_darwin_*.zip

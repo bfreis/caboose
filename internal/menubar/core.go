@@ -48,6 +48,9 @@ const (
 	// AlertWait bounds how long an app that quits after an alert waits
 	// for the user to close it: a second app left unattended still ends.
 	AlertWait = 2 * time.Minute
+	// ReplacedEvery is how often the app asks whether an update replaced
+	// its bundle.
+	ReplacedEvery = 5 * time.Second
 )
 
 // Fixed texts.
@@ -102,6 +105,14 @@ type Options struct {
 	// (or approved): an error refuses it, and the menu says why. Nil
 	// asks nothing.
 	LoginCheck func() error
+	// Replaced, when set, says whether the app's bundle on disk is no
+	// longer the one it runs from, as an update leaves it; Relaunch then
+	// starts the new one, once this process has ended. Asked every
+	// ReplacedEvery, but never while the user has a question in front of
+	// them: once Replaced says so, the core relaunches and quits. A
+	// Relaunch that fails is logged, and the app goes on as it is.
+	Replaced func() bool
+	Relaunch func() error
 }
 
 type connState int
@@ -376,9 +387,31 @@ func (c *Core) AlertClosed(id string)            { c.post(func() { c.alertClosed
 func (c *Core) start() {
 	c.lostAt = c.clock.Now()
 	c.after(DisconnectedAfter, c.render)
+	if c.opts.Replaced != nil && c.opts.Relaunch != nil {
+		c.after(ReplacedEvery, c.checkReplaced)
+	}
 	c.readLogin()
 	c.render()
 	c.attempt()
+}
+
+// checkReplaced relaunches into a bundle an update put in place of this
+// one, once no question waits on the user (an answer half given is not
+// lost to it).
+func (c *Core) checkReplaced() {
+	if c.quitting {
+		return
+	}
+	if c.confirm != nil || c.dialog != nil || c.answering != nil || !c.opts.Replaced() {
+		c.after(ReplacedEvery, c.checkReplaced)
+		return
+	}
+	if err := c.opts.Relaunch(); err != nil {
+		c.logf("the app was updated, but cannot relaunch into the new one: %v", err)
+		return
+	}
+	c.logf("the app was updated: relaunching into the new one")
+	c.quit()
 }
 
 // Connecting.

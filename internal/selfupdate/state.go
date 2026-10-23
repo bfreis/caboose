@@ -31,6 +31,10 @@ type State struct {
 	From      string `json:"from,omitempty"`
 	To        string `json:"to,omitempty"`
 	Announced bool   `json:"announced,omitempty"`
+	// AppError is why the last check could not bring install.sh's
+	// Caboose.app up to the latest release ("" when it could, or there
+	// is none).
+	AppError string `json:"app_error,omitempty"`
 }
 
 // ReadState reads home's state; none, or one that does not parse, is the

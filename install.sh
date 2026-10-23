@@ -7,14 +7,19 @@
 # against the release's checksums.txt, and installs it the way caboose
 # updates itself afterwards (internal/selfupdate, whose layout this must
 # match): the binary in ~/.caboose/versions/<tag>/caboose, and
-# ~/.local/bin/caboose a symlink to it, the one thing outside ~/.caboose.
-# Nothing needs root. Run again, it installs the latest release next to the
-# one there, keeping one before it.
+# ~/.local/bin/caboose a symlink to it. On a Mac it also puts the menu-bar
+# app in ~/Applications/Caboose.app, checked against checksums.txt and its
+# signature, where updates replace it; it replaces only caboose's own
+# app there. Those two are the only things outside ~/.caboose. Nothing
+# needs root. Run again, it installs the latest release next to the one
+# there, keeping one before it.
 #
 #   CABOOSE_HOME=DIR         install under DIR instead of ~/.caboose (the
 #                            same variable caboose itself reads)
 #   CABOOSE_VERSION=v1.2.3   install that release instead of the latest
 #   CABOOSE_NO_SETUP=1       install only; do not run caboose setup after
+#   CABOOSE_NO_APP=1         on a Mac, install no menu-bar app, and do not
+#                            open it
 #   CABOOSE_RELEASES_URL     where releases are (tests)
 #
 # POSIX sh: it runs before anything else is known about the machine.
@@ -142,6 +147,73 @@ for d in "$versions"/v*; do
 done
 
 say "installed caboose $tag in $dest"
+
+# The menu-bar app, Caboose.app, in ~/Applications: unpacked beside it,
+# checked, then renamed into place, the old one moved aside first and put
+# back if that fails. Anything there that is not caboose's release app is
+# left as it is. A running app relaunches into the new one by itself.
+app_id=dev.bfreis.caboose
+apps="$HOME/Applications"
+app="$apps/Caboose.app"
+plist_id() { plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null || true; }
+install_app() {
+    zip="caboose-app_${tag#v}_darwin_${arch}.zip"
+    curl -fsSL -o "$tmp/$zip" "$releases/download/$tag/$zip" ||
+        { app_why="cannot download $releases/download/$tag/$zip"; return 1; }
+    want="$(awk -v f="$zip" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp/checksums.txt")"
+    [ -n "$want" ] || { app_why="checksums.txt of $tag lists no $zip"; return 1; }
+    [ "$(sha256 "$tmp/$zip")" = "$want" ] || { app_why="$zip does not match its checksum"; return 1; }
+    if [ -L "$app" ] || { [ -e "$app" ] && { [ ! -d "$app" ] || [ "$(plist_id "$app")" != "$app_id" ]; }; }; then
+        app_why="$app is not caboose's menu-bar app: it is left as it is"
+        return 1
+    fi
+    stage="$apps/.Caboose.app.install-$$"
+    if ! mkdir -p "$apps" || ! rm -rf "$stage" || ! mkdir "$stage"; then
+        app_why="cannot write in $apps"
+        return 1
+    fi
+    if ! ditto -x -k "$tmp/$zip" "$stage/x"; then
+        rm -rf "$stage"
+        app_why="cannot unpack $zip"
+        return 1
+    fi
+    fresh="$stage/x/Caboose.app"
+    if [ ! -d "$fresh" ] || [ ! -x "$fresh/Contents/MacOS/caboose" ] || [ "$(plist_id "$fresh")" != "$app_id" ]; then
+        rm -rf "$stage"
+        app_why="$zip holds no Caboose.app of caboose's"
+        return 1
+    fi
+    if ! codesign --verify --deep --strict "$fresh" 2>/dev/null; then
+        rm -rf "$stage"
+        app_why="the Caboose.app in $zip is not validly signed"
+        return 1
+    fi
+    # set -e does not hold in a function run as a condition: every step
+    # here says how it went.
+    if [ -d "$app" ] && ! mv "$app" "$stage/old"; then
+        rm -rf "$stage"
+        app_why="cannot move the old one out of $app"
+        return 1
+    fi
+    if ! mv "$fresh" "$app"; then
+        [ -d "$stage/old" ] && mv "$stage/old" "$app"
+        rm -rf "$stage"
+        app_why="cannot move it into $app"
+        return 1
+    fi
+    rm -rf "$stage"
+}
+app_installed=
+if [ "$os" = darwin ] && [ -z "${CABOOSE_NO_APP:-}" ]; then
+    app_why=
+    if install_app; then
+        app_installed=1
+        say "installed the menu-bar app in $app"
+    else
+        say "the menu-bar app was not installed: $app_why"
+        say "caboose works without it; run this script again to try again"
+    fi
+fi
 say "it keeps itself up to date (CABOOSE_NO_AUTO_UPDATE=1 turns that off)"
 
 case ":${PATH:-}:" in
@@ -174,4 +246,9 @@ elif (exec </dev/tty) 2>/dev/null; then
     "$link" setup </dev/tty || say "caboose setup did not finish; run it again with: caboose setup"
 else
     say "no terminal to run caboose setup on; run it yourself: caboose setup"
+fi
+
+if [ -n "$app_installed" ]; then
+    say "opening the menu-bar app"
+    open "$app" 2>/dev/null || say "could not open it; open $app yourself"
 fi

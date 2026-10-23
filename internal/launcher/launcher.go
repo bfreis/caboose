@@ -74,6 +74,7 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/selfupdate"
 )
 
 // Entrypoint is where the image installs entrypoint.sh.
@@ -234,6 +235,10 @@ type App struct {
 	Executable func() (string, error)
 	Spawn      func(exe string, args ...string) error
 	Now        func() time.Time
+	// installedApp, when set, stands in for install.sh's Caboose.app,
+	// which an update replaces (App.bundleApp): the tests' ditto and
+	// codesign.
+	installedApp func() selfupdate.App
 	// DaemonDial, when set, stands in for connecting to the daemon
 	// (dialDaemon), starting it when start is set: the tests' fake.
 	DaemonDial func(ctx context.Context, start bool) (DaemonCaller, error)
