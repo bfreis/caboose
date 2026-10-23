@@ -183,6 +183,10 @@ type Syncer struct {
 	// (fetch, push), all told, from the first: one still running when it
 	// is spent is killed, with everything it started.
 	Budget time.Duration
+	// InSandbox is set where the sync runs in the sandbox, on its own
+	// files: they are read whole, never bounded by MaxFile, which holds
+	// for the host's reads alone.
+	InSandbox bool
 	// Sandbox is the sandbox config whose rules say what syncs; nil reads
 	// Home's (ReadSandbox).
 	Sandbox *datadir.Sandbox
@@ -223,13 +227,13 @@ func (s *Syncer) sandbox() (*datadir.Sandbox, error) {
 // With no file the defaults for roots are in effect (Absent); a file that
 // cannot be used has Err set, and the defaults stand in.
 func ReadSandbox(home string, roots []string) (*datadir.Sandbox, error) {
-	data, _, err := nofollow.Dir(home).ReadFile(sandboxcfg.Rel)
+	data, _, err := nofollow.Dir(home).ReadFileMax(sandboxcfg.Rel, sandboxcfg.MaxSize)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		d := sandboxcfg.Default(roots)
 		c, err := sandboxcfg.Parse(d)
 		return &datadir.Sandbox{Config: c, Data: d, Absent: true}, err
-	case err != nil && !errors.Is(err, nofollow.ErrNotPlain):
+	case err != nil && !errors.Is(err, nofollow.ErrNotPlain) && !errors.Is(err, nofollow.ErrTooLarge):
 		return nil, err
 	}
 	bad := err
@@ -297,7 +301,7 @@ func withoutEntries(c *sandboxcfg.Config, rels []string) *sandboxcfg.Config {
 // prevRules is the sandbox config the last successful sync ran with -- less
 // the entries it found unmounted -- nil when there is none to read.
 func (s *Syncer) prevRules() *sandboxcfg.Config {
-	data, _, err := s.repo().ReadFile(rulesFile)
+	data, _, err := s.repo().ReadFileMax(rulesFile, sandboxcfg.MaxSize)
 	if err != nil {
 		return nil
 	}
@@ -306,7 +310,7 @@ func (s *Syncer) prevRules() *sandboxcfg.Config {
 		return nil
 	}
 	var skipped []string
-	if data, _, err := s.repo().ReadFile(unmountedFile); err == nil {
+	if data, _, err := s.repo().ReadFileMax(unmountedFile, s.maxFile()); err == nil {
 		skipped = strings.Fields(string(data))
 	}
 	return withoutEntries(c, skipped)
@@ -332,6 +336,9 @@ type Report struct {
 	// Refused are home paths not synced for not being plain files and
 	// directories (Export.Refused), both ways: never read, never written.
 	Refused []string
+	// TooLarge are home paths not exported for being over MaxFile
+	// (Export.TooLarge).
+	TooLarge []string
 	// Unmounted are the keep entries with sync rules that the sandbox
 	// does not mount yet: nothing of them synced. They do once a restart
 	// mounts them.
@@ -446,12 +453,37 @@ func (s *Syncer) SetRemote(url string) error {
 	return g.run("remote", "add", "origin", url)
 }
 
+// MaxFile is the largest file the host reads whole, from the home or the
+// repo, when it looks at a sync (Pending, for status and doctor): the
+// sandbox writes both and decides a file's size, and a file over it is
+// never read. One in the home is not exported (Export.TooLarge). The sync
+// itself runs in the sandbox (InSandbox), on files that are its own, and
+// reads them whole: a bound there would only stop the sync.
+const MaxFile = 16 << 20
+
+// unbounded is the limit of a read the sync makes in the sandbox: past
+// any file, short of overflowing nofollow's limit arithmetic.
+const unbounded = 1 << 62
+
+// maxFile is the largest file s reads whole: MaxFile on the host,
+// anything in the sandbox.
+func (s *Syncer) maxFile() int64 {
+	if s.InSandbox {
+		return unbounded
+	}
+	return MaxFile
+}
+
+// maxGitConfig is the largest sync repo git config read without git: the
+// sandbox writes the repo.
+const maxGitConfig = 1 << 20
+
 // MaybeRemote reports whether the git config of the sync repo at repo names
 // the remote, without running git: cheap enough to ask on every launch. It
 // can be fooled -- the sandbox writes the repo -- so Remote is the answer;
 // a false here is only ever "no remote".
 func MaybeRemote(repo string) bool {
-	data, _, err := nofollow.Dir(repo).ReadFile(".git/config")
+	data, _, err := nofollow.Dir(repo).ReadFileMax(".git/config", maxGitConfig)
 	return err == nil && bytes.Contains(data, []byte(`[remote "origin"]`))
 }
 
@@ -459,7 +491,7 @@ func MaybeRemote(repo string) bool {
 // without git, for showing: like MaybeRemote it can be fooled, and is no
 // input to anything. "" when there is none to read.
 func RemoteHint(repo string) string {
-	data, _, err := nofollow.Dir(repo).ReadFile(".git/config")
+	data, _, err := nofollow.Dir(repo).ReadFileMax(".git/config", maxGitConfig)
 	if err != nil {
 		return ""
 	}
@@ -612,11 +644,11 @@ func (s *Syncer) commitExport(r *Report) error {
 	if err != nil {
 		return err
 	}
-	e, err := ExportLive(s.Home, c)
+	e, err := exportLive(s.Home, c, s.maxFile())
 	if err != nil {
 		return err
 	}
-	r.Refused, r.Shadowed = e.Refused, e.Shadowed
+	r.Refused, r.Shadowed, r.TooLarge = e.Refused, e.Shadowed, e.TooLarge
 	if sb, err := s.sandbox(); err == nil {
 		r.Unmounted = s.unmounted(sb.Config)
 	}
@@ -732,7 +764,7 @@ func (s *Syncer) applied() error {
 // resume finishes the apply of a sync that stopped halfway through it
 // (applyingFile), before anything is exported.
 func (s *Syncer) resume(r *Report) error {
-	data, _, err := s.repo().ReadFile(applyingFile)
+	data, _, err := s.repo().ReadFileMax(applyingFile, 4<<10)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -1003,6 +1035,12 @@ func (s *Syncer) apply(old string, r *Report) error {
 			r.Refused = appendNew(r.Refused, t.Rel)
 			continue
 		}
+		if errors.Is(err, nofollow.ErrTooLarge) {
+			// Too large to merge keys into: left as it is, and said,
+			// never the whole sync stopped for it.
+			r.TooLarge = appendNew(r.TooLarge, t.Rel)
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("applying %s: %w", p, err)
 		}
@@ -1089,7 +1127,7 @@ func (s *Syncer) pruneEmpty(dir, stop string) {
 // live one: every key not synced is this machine's alone. In place for a
 // kept file, a single-file bind mount that a rename over would break.
 func (s *Syncer) writeKeys(t Target, data []byte, del bool) error {
-	cur, _, err := s.live().ReadFile(t.Rel)
+	cur, _, err := s.live().ReadFileMax(t.Rel, s.maxFile())
 	missing := errors.Is(err, fs.ErrNotExist)
 	if err != nil && !missing {
 		return err

@@ -1,6 +1,7 @@
 package datadir
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -680,5 +681,42 @@ func TestFindClone(t *testing.T) {
 	cloneDirs = 2
 	if got := FindClone(roots); got != "" {
 		t.Errorf("found %q past the budget", got)
+	}
+}
+
+// A directory of more entries than cloneDirEntries is passed over, read
+// in batches and never whole, and the search stops after cloneEntries
+// entries in all.
+func TestFindCloneBoundsEntries(t *testing.T) {
+	root := t.TempDir()
+	want := filepath.Join(root, "me", "caboose")
+	if err := os.MkdirAll(filepath.Join(want, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(want, "go.mod"), []byte("module "+Module+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots := []config.Root{{Host: root, Container: "/work"}}
+	defer func(d, e int) { cloneDirEntries, cloneEntries = d, e }(cloneDirEntries, cloneEntries)
+	cloneDirEntries = 8
+	if got := FindClone(roots); got != want {
+		t.Fatalf("FindClone %q, want %q", got, want)
+	}
+	// The clone's parent now holds more than the bound: passed over.
+	for i := range 8 {
+		if err := os.WriteFile(filepath.Join(root, "me", fmt.Sprint("f", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := FindClone(roots); got != "" {
+		t.Errorf("found %q in a directory over the bound", got)
+	}
+	if ents, err := readDirMax(filepath.Join(root, "me"), 8); err != errTooMany || len(ents) > 8+256 {
+		t.Errorf("readDirMax: %d entries, %v", len(ents), err)
+	}
+	// And the whole search's bound.
+	cloneDirEntries, cloneEntries = 4096, 3
+	if got := FindClone(roots); got != "" {
+		t.Errorf("found %q past the entries in all", got)
 	}
 }

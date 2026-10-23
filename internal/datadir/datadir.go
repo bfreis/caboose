@@ -25,10 +25,12 @@ package datadir
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -97,6 +99,14 @@ const ManagedDir = "claude-code"
 // ManagedInstructions is the CLAUDE.md in ManagedDir, written by
 // InstallManaged on every launch.
 const ManagedInstructions = ManagedDir + "/CLAUDE.md"
+
+// MaxGitConfig is the largest sandbox git config the host reads, and
+// MaxManaged the largest managed file doctor reads to check it: the
+// sandbox decides the first's size, and a read is bounded whoever writes.
+const (
+	MaxGitConfig = 1 << 20
+	MaxManaged   = 1 << 20
+)
 
 // ManagedSkills is where Claude Code looks for managed skills, inside
 // ManagedDir: one directory per skill, each with a SKILL.md. InstallManaged
@@ -202,6 +212,10 @@ func EnsureLayout(dir string, keep []sandboxcfg.Keep) error {
 	return nil
 }
 
+// maxKeyFile is the largest file PrivateKeysIn reads: a private key, of
+// any type ssh takes, is a few KiB.
+const maxKeyFile = 64 << 10
+
 // PrivateKeysIn lists the files directly in the sandbox's ~/.ssh (SSHDir)
 // that hold a private key, by name. Read through nofollow: the container
 // writes that directory, so nothing in it is followed.
@@ -219,9 +233,9 @@ func PrivateKeysIn(dir string) ([]string, error) {
 		if !e.Type().IsRegular() {
 			continue
 		}
-		data, _, err := d.ReadFile(SSHDir + "/" + e.Name())
+		data, _, err := d.ReadFileMax(SSHDir+"/"+e.Name(), maxKeyFile)
 		if err != nil {
-			continue // a link, or gone since: not a key file ssh would use
+			continue // a link, gone since, or far larger than any key: not a key file ssh would use
 		}
 		if privateKeyHeader.Match(data) {
 			keys = append(keys, e.Name())
@@ -346,18 +360,52 @@ const UpstreamURL = "https://github.com/bfreis/caboose"
 const Module = "github.com/bfreis/caboose"
 
 // Limits on FindClone, which runs at every launch: how deep below a root it
-// looks, and how many directories it reads in all.
+// looks, how many directories it reads in all, how many entries one may
+// hold (a directory with more is passed over: a clone's own levels are
+// small), and how many entries it reads in all.
 var (
-	cloneDepth = 3
-	cloneDirs  = 4000
+	cloneDepth      = 3
+	cloneDirs       = 4000
+	cloneDirEntries = 4096
+	cloneEntries    = 200000
 )
+
+// errTooMany is a directory of more entries than readDirMax may read.
+var errTooMany = errors.New("too many entries")
+
+// readDirMax is os.ReadDir for a directory of at most n entries, read in
+// batches: one with more is errTooMany, with what was read.
+func readDirMax(p string, n int) ([]fs.DirEntry, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var ents []fs.DirEntry
+	for {
+		batch, err := f.ReadDir(256)
+		ents = append(ents, batch...)
+		if len(ents) > n {
+			return ents, errTooMany
+		}
+		if err == io.EOF || err == nil && len(batch) == 0 {
+			break
+		}
+		if err != nil {
+			return ents, err
+		}
+	}
+	slices.SortFunc(ents, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	return ents, nil
+}
 
 // FindClone is the host path of a clone of caboose's source under the
 // roots, or "" (one whose path is not cleanPath is not a candidate): a repository (a directory with .git or .jj) whose go.mod
 // declares Module, at most cloneDepth below a root. A repository is
 // checked and never descended into, hidden directories and symlinks are
-// skipped, and the search gives up after cloneDirs directories, so a large
-// root costs a bounded read. The roots are the sandbox's to write, so a
+// skipped, and the search gives up after cloneDirs directories or
+// cloneEntries entries, passing over a directory of more than
+// cloneDirEntries, so a large root costs a bounded read. The roots are the sandbox's to write, so a
 // symlink there is never followed.
 func FindClone(roots []config.Root) string {
 	budget := cloneDirs
@@ -369,11 +417,13 @@ func FindClone(roots []config.Root) string {
 	for _, r := range roots {
 		queue = append(queue, dir{r.Host, 0})
 	}
-	for len(queue) > 0 && budget > 0 {
+	entries := cloneEntries
+	for len(queue) > 0 && budget > 0 && entries > 0 {
 		d := queue[0]
 		queue = queue[1:]
 		budget--
-		ents, err := os.ReadDir(d.path)
+		ents, err := readDirMax(d.path, min(cloneDirEntries, entries))
+		entries -= len(ents)
 		if err != nil {
 			continue
 		}
@@ -421,11 +471,18 @@ func cleanPath(p string) bool {
 // module line names Module.
 func declaresModule(path string) bool {
 	fi, err := os.Lstat(path)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > 1<<20 {
+	const max = 1 << 20
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > max {
 		return false
 	}
-	data, err := os.ReadFile(path)
+	// Read through the limit too: the file can grow after the Lstat.
+	file, err := os.Open(path)
 	if err != nil {
+		return false
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, max+1))
+	if err != nil || len(data) > max {
 		return false
 	}
 	for _, line := range strings.Split(string(data), "\n") {

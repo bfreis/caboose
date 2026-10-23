@@ -8,7 +8,11 @@ import { ApiError, createApi, validCode, validToken } from "./api.mjs";
 import { createPages } from "./pages.mjs";
 import { IDS, byId, el, navLink, parseRoute, replace, routeHash, sandboxText, useDocument } from "./dom.mjs";
 
-// STORAGE_KEY is where the token is kept, in this origin's localStorage.
+// STORAGE_KEY is where the token is kept, in this tab's sessionStorage:
+// never the origin's lasting storage, which whatever answers on this
+// origin while the daemon is down could read back. sessionStorage is this
+// tab's alone, and goes with it; the daemon makes a new token every time
+// it starts, so a token kept from before lets nothing in once it is back.
 export const STORAGE_KEY = "caboose.token";
 
 // POLL_MS is how often status (and a page's own calls, by default) is
@@ -127,7 +131,7 @@ function statusShape(s) {
 // createApp is the page, on deps:
 //   win       location, history, addEventListener (the window)
 //   doc       the document: nodes, visibilityState, addEventListener
-//   fetch, crypto, storage (a function returning localStorage)
+//   fetch, crypto, storage (a function returning sessionStorage)
 //   setTimeout, clearTimeout
 //   page      {render(ctx) -> {title, body}, calls?(ctx) -> [{key,
 //             method, params, every}], onPending?(env, n)}
@@ -146,7 +150,6 @@ export function createApp(deps) {
   let busyMs = 0; // the last wait after a 429 to a proof, 0 once one verified
   let busyRounds = 0; // the status polls in a row refused as busy, 0 after any other outcome
   let refusedRounds = 0; // the status polls in a row refused with a 401 after their proof verified
-  let adopting = false; // the poll under way runs at once to try a token another tab stored
   let route = { page: "overview", env: null };
   let status = null;
   let pending = null; // env name -> pending count, from the last status
@@ -231,24 +234,11 @@ export function createApp(deps) {
     return token;
   }
 
-  // forget drops t, and its stored copy, unless another tab stored
-  // another token since.
+  // forget drops t, and its stored copy. The storage is this tab's alone,
+  // so no other page can have stored another token in it meanwhile.
   function forget(t) {
     if (token === t) token = null;
     store.remove(t);
-  }
-
-  // newer is whether another tab stored a token other than t since t was
-  // taken; the next credential is then that one, which is proven before
-  // anything is sent with it. Once per round: a round run at once to try
-  // a stored token takes no other at once, so a stored token that keeps
-  // changing cannot make the page prove in a hot loop.
-  function newer(t) {
-    if (adopting) return false;
-    const left = store.get();
-    if (left === null || left === t) return false;
-    if (token === t) token = null;
-    return true;
   }
 
   function setState(s) {
@@ -273,7 +263,6 @@ export function createApp(deps) {
     // Only a server that proves the token and refuses it round after round
     // has it dropped.
     if (e.status === 401 && t !== null) {
-      if (newer(t)) return "adopt";
       if (refusedRounds < REFUSED_ROUNDS) return "retry";
       forget(t);
       return setState("no_token");
@@ -282,8 +271,6 @@ export function createApp(deps) {
       case "no_crypto":
         return setState("no_crypto");
       case "proof":
-        // Another tab may have opened the page with a new token since.
-        if (t !== null && newer(t)) return "adopt";
         return setState("squatter");
       case "bad_answer":
         return setState("squatter");
@@ -300,10 +287,9 @@ export function createApp(deps) {
   }
 
   // again asks for status at once after a page call or an answer failed
-  // in a way a poll decides: a 401 after its proof, or another tab's token.
+  // in a way a poll decides: a 401 after its proof.
   function again(r) {
-    if (r !== "retry" && r !== "adopt") return;
-    if (r === "adopt") adopting = true;
+    if (r !== "retry") return;
     pollNow();
   }
 
@@ -338,7 +324,6 @@ export function createApp(deps) {
       busyMs = 0;
       busyRounds = 0;
       refusedRounds = 0;
-      adopting = false;
       if (state !== "ok") {
         showAlert("");
         state = "ok";
@@ -351,13 +336,12 @@ export function createApp(deps) {
       refusedRounds = e instanceof ApiError && e.status === 401 ? refusedRounds + 1 : 0;
       const suspect = busyRounds === BUSY_SUSPECT_ROUNDS;
       const r = fail(e, t);
-      adopting = r === "adopt";
       if (suspect) render(false); // a page not shown yet says it in main
       if (r === "busy") {
         busyMs = Math.min(busyMs === 0 ? BUSY_MIN_MS : busyMs * 2, BUSY_MAX_MS);
         next = busyMs;
       } else {
-        next = r === "retry" || r === "adopt" ? 0 : state === "no_crypto" || state === "no_token" ? null : SLOW_MS;
+        next = r === "retry" ? 0 : state === "no_crypto" || state === "no_token" ? null : SLOW_MS;
       }
     } finally {
       busy.delete("status");
@@ -481,7 +465,7 @@ export function createApp(deps) {
         if (codeFailed) return message("This address's code is used or out of date: run ", ui, " again.");
         return message("Open this page with ", ui, " in a terminal.");
       case "squatter":
-        return message("Something else answers on " + win.location.host + ", or the page's token is out of date: what answers could not prove it knows the token, so the page sends it nothing. Run ", ui, ".");
+        return message("The page's token is out of date (caboose's daemon makes a new one every time it starts), or something else answers on " + win.location.host + ": what answers could not prove it knows the token, so the page sends it nothing. Run ", ui, " again.");
       case "no_crypto":
         return message("This browser cannot check that the daemon is caboose's (it has no Web Crypto), so the page sends it nothing: use a current Safari, Chrome or Firefox.");
       case "starting":
@@ -635,7 +619,7 @@ if (globalThis.window !== undefined && globalThis.window === globalThis && globa
     doc: w.document,
     fetch: (...a) => w.fetch(...a),
     crypto: w.crypto,
-    storage: () => w.localStorage,
+    storage: () => w.sessionStorage,
     setTimeout: (f, ms) => w.setTimeout(f, ms),
     clearTimeout: (id) => w.clearTimeout(id),
     page: createPages({

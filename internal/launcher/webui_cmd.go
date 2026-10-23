@@ -4,17 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bfreis/caboose/internal/config"
-	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/hostlink"
 	"github.com/bfreis/caboose/internal/proposal"
@@ -226,33 +221,5 @@ func (a *App) doctorWeb(c *checkup, v linkView) {
 		c.problem("web", fmt.Sprintf("find what holds the port with: %s; stop it, then %s", holderCommand(webPort(*w)), runDaemonHint),
 			"not listening on %s: %s", w.Addr, or(proposal.Printable(w.Error), "no reason given"))
 	}
-	if a.Cfg.CabooseHome != "" {
-		a.doctorWebToken(c)
-	}
 	c.ok("web ports", "%d and %d are the web UI's: forward_ports, open_urls, the outbound proxy and run_args refuse them on purpose", uiport.Release, uiport.Dev)
-}
-
-// doctorWebToken checks web.token without following a link or reading it.
-func (a *App) doctorWebToken(c *checkup) {
-	p := filepath.Join(a.daemonDir(), daemon.TokenFile)
-	fi, err := os.Lstat(p)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		c.note("web token", "none yet (%s): the daemon makes it when it serves the page", p)
-		return
-	case err != nil:
-		c.problem("web token", "check "+p, "cannot be read: %v", err)
-		return
-	case !fi.Mode().IsRegular():
-		c.problem("web token", "remove "+p+", then "+runDaemonHint, "%s is not a plain file (%s)", p, fi.Mode().Type())
-		return
-	case fi.Mode().Perm() != 0o600:
-		c.problem("web token", "chmod 600 "+p+", or caboose ui --new-token", "%s has mode %04o, not 0600: another user may read it", p, fi.Mode().Perm())
-		return
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		c.problem("web token", "caboose ui --new-token, after removing "+p, "%s belongs to user %d, not you", p, st.Uid)
-		return
-	}
-	c.ok("web token", "%s (mode 0600, yours)", p)
 }

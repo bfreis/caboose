@@ -57,6 +57,14 @@ being symlinks or hard links`). Whatever the remote has of such a path is
 kept, not read as deleted. The sync repo gets no symlinks either, whatever
 a remote committed.
 
+**The host reads no large file.** The sync runs in the sandbox, on the
+sandbox's own files, and syncs a file whatever its size. When the host
+looks at what is waiting to be sent (`caboose sync status`, `caboose
+doctor`), it reads no file over 16 MiB, and names one it skipped (`not
+synced, being larger than 16 MiB`). A tree of more than 200000 entries,
+or more than 64 levels deep, under a kept path stops the sync with an
+error.
+
 **Project memory follows the checkout.** Claude Code keeps a project's
 memory under a key made from its path, and the sandbox's paths are the same
 on every machine (`/work/...`, [How it works](how-it-works.md)), so `you/project`

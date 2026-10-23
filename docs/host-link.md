@@ -176,7 +176,9 @@ answers it too (and shows what is waiting), and `caboose requests approve N
 showing you the change. `"allow"` opens
 without asking, and so does an origin in `open_urls_allow`; `"off"`
 refuses every URL. Under `trust = "hostile"` every URL asks, whatever
-`open_urls` and `open_urls_allow` say (`"off"` still refuses). Any other
+`open_urls` and `open_urls_allow` say (`"off"` still refuses), so a URL
+request is offered only once there: neither some hours nor always, which
+would change nothing. Any other
 scheme, a URL with a user or password in it, or one holding unprintable
 characters is refused whatever the setting, and so is any URL to port 7171
 or 7172, whatever host it names: those are the host's caboose web UI, which
@@ -289,8 +291,9 @@ connection is refused for now, with `pending #N` in the proxy's answer
 for a time lets the name through as it resolved when the request was
 filed: should it later resolve to a private address the answer did not
 see, it asks again. A loopback, link-local or own address never asks:
-it is refused. `caboose requests` lists them and answers them: allow once,
-for some hours (`--for 8h`), or always, which adds the name to
+it is refused. `caboose requests` lists them and answers them: allow once
+(that one connection, to that port: another port is a request of its
+own), for some hours (`--for 8h`, the host on any port), or always, which adds the name to
 `egress_allow` of the `vm` profile in use in `config.toml` after showing
 you the change; unanswered, they expire a day later, denied.
 
@@ -439,7 +442,9 @@ status is `caboose-agent run`'s (75 pending, 77 refused, 127 no such alias,
 does, at its `timeout`, and with the link, and so does what it started.
 An alias with `policy = "ask"` is refused as `pending #N` at once, and
 runs when asked again once you allow the request (`caboose requests
-approve N`, `--for 8h`, or `--always`, which writes `policy = "allow"`).
+approve N` for that one run with those arguments: other arguments are a
+request of their own; `--for 8h` for any arguments; or `--always`, which
+writes `policy = "allow"`).
 Each run is a line in `link.log`, by name and arguments; each decision is
 in `decisions.log`. At most 16 aliases and host commands run at once, and a
 sandbox that asks too often is told to try again shortly.

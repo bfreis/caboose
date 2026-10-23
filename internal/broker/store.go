@@ -25,6 +25,7 @@ type grantRec struct {
 	Kind    policy.Kind  `json:"kind"`
 	Key     string       `json:"key"`
 	Once    bool         `json:"once"`
+	Exact   string       `json:"exact,omitempty"`
 	Addrs   []netip.Addr `json:"addrs,omitempty"`
 	Created time.Time    `json:"created"`
 	Expires time.Time    `json:"expires"`
@@ -311,7 +312,7 @@ func policyGrants(g []grantRec, now time.Time) []policy.Grant {
 	var out []policy.Grant
 	for _, r := range g {
 		if now.Before(r.Expires) {
-			out = append(out, policy.Grant{ID: r.ID, Kind: r.Kind, Key: r.Key, Once: r.Once, Expires: r.Expires, Addrs: r.Addrs})
+			out = append(out, policy.Grant{ID: r.ID, Kind: r.Kind, Key: r.Key, Once: r.Once, Exact: r.Exact, Expires: r.Expires, Addrs: r.Addrs})
 		}
 	}
 	return out

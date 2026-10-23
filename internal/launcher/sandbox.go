@@ -27,12 +27,12 @@ import (
 // readSandboxFile is the sandbox config's text as the file has it, or the
 // defaults when there is none (absent set).
 func (a *App) readSandboxFile() (data []byte, absent bool, err error) {
-	data, _, err = nofollow.Dir(a.Cfg.DataDir).ReadFile(datadir.SandboxConfig)
+	data, _, err = nofollow.Dir(a.Cfg.DataDir).ReadFileMax(datadir.SandboxConfig, sandboxcfg.MaxSize)
 	if errors.Is(err, fs.ErrNotExist) {
 		return sandboxcfg.Default(a.rootPaths()), true, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("reading %s: %v", sandboxcfg.HomePath, err)
+		return nil, false, fmt.Errorf("reading %s: %w", sandboxcfg.HomePath, err)
 	}
 	return data, false, nil
 }
@@ -117,6 +117,9 @@ func (a *App) SyncStatus(args []string) error {
 		}
 		if len(st.Refused) > 0 {
 			fmt.Fprintf(out, "refused : %s (symlinks or hard links: never followed)\n", homeList(st.Refused))
+		}
+		if len(st.TooLarge) > 0 {
+			fmt.Fprintf(out, "too large: %s (over %d MiB: never read)\n", homeList(st.TooLarge), statesync.MaxFile>>20)
 		}
 		if len(st.Secrets) > 0 {
 			fmt.Fprintf(out, "secrets : %s (every sync refuses until they are gone)\n", strings.Join(shownAll(st.Secrets), ", "))

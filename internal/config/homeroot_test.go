@@ -90,3 +90,108 @@ func TestResolveRootsRefusesCabooseHome(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A root inside CABOOSE_HOME, under a second name for it, is refused when
+// the roots are resolved: it would hand the sandbox the daemon's token
+// and every environment's configuration.
+func TestResolveRootsRefusesInsideCabooseHome(t *testing.T) {
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	u := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(u, ".caboose", "daemon"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(u, ".caboose"), filepath.Join(dir, "second")); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range []string{filepath.Join(u, ".caboose"), filepath.Join(dir, "second")} {
+		c := &Config{CabooseHome: ch, Home: u,
+			Roots: []Root{{Name: "d", Host: filepath.Join(u, ".caboose", "daemon"), Container: "/work/d"}}}
+		if err := c.ResolveRoots(); err == nil || !strings.Contains(err.Error(), "is inside CABOOSE_HOME") {
+			t.Errorf("CABOOSE_HOME %s: %v", ch, err)
+		}
+	}
+}
+
+// A root written as a real directory in another root's writable part,
+// which the sandbox then swaps for a symlink to ~/.ssh: the next launch
+// refuses it rather than mount where the link leads.
+func TestResolveRootsRefusesALinkInAWritablePart(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	home := filepath.Join(base, "home")
+	ssh := filepath.Join(home, ".ssh")
+	x := filepath.Join(home, "dev", "proj", "x")
+	for _, d := range []string{ssh, x, filepath.Join(base, "ch")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots := func() []Root {
+		return []Root{
+			{Name: "dev", Host: filepath.Join(home, "dev"), Container: "/work/dev", Writable: []string{"proj"}},
+			{Name: "x", Host: x, Container: "/work/x"},
+		}
+	}
+	c := &Config{Home: home, CabooseHome: filepath.Join(base, "ch"), Roots: roots()}
+	if err := c.ResolveRoots(); err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("a root in another, before the swap: %v", err)
+	}
+	if err := os.Remove(x); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(ssh, x); err != nil {
+		t.Fatal(err)
+	}
+	c = &Config{Home: home, CabooseHome: filepath.Join(base, "ch"), Roots: roots()}
+	err := c.ResolveRoots()
+	if err == nil || !strings.Contains(err.Error(), "symbolic link "+x) || !strings.Contains(err.Error(), "writable part") {
+		t.Fatalf("after the swap: %v (roots %+v)", err, c.Roots)
+	}
+	// A symlink outside every writable part is followed, as before, and
+	// kept in Via for the check against every sandbox's.
+	elsewhere := filepath.Join(base, "projects")
+	if err := os.Symlink(filepath.Join(home, "dev"), elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	c = &Config{Home: home, CabooseHome: filepath.Join(base, "ch"), Roots: []Root{{Name: "p", Host: elsewhere, Container: "/work/p"}}}
+	if err := c.ResolveRoots(); err != nil || c.Roots[0].Host != filepath.Join(home, "dev") || len(c.Roots[0].Via) != 1 || c.Roots[0].Via[0] != elsewhere {
+		t.Fatalf("%v %+v", err, c.Roots)
+	}
+	if why := LinkInPaths(c.Roots[0], []string{base}); !strings.Contains(why, "symbolic link "+elsewhere) {
+		t.Errorf("LinkInPaths: %q", why)
+	}
+	if why := LinkInPaths(c.Roots[0], []string{filepath.Join(home, "dev")}); why != "" {
+		t.Errorf("LinkInPaths, a writable path not holding the link: %q", why)
+	}
+}
+
+// physicalVia resolves as EvalSymlinks does, relative and chained links
+// and .. included, and lists every link met.
+func TestPhysicalVia(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(base, "a", "b", "c"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a/b", filepath.Join(base, "l1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "l1"), filepath.Join(base, "l2")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(base, "l2", "c"), filepath.Join(base, "l1", "c", "..", "c"), filepath.Join(base, "a", "b", "c")} {
+		want, _ := filepath.EvalSymlinks(p)
+		got, via, err := physicalVia(p)
+		if err != nil || got != want {
+			t.Errorf("%s: %q %v, want %q", p, got, err, want)
+		}
+		t.Logf("%s via %v", p, via)
+	}
+	if _, via, _ := physicalVia(filepath.Join(base, "l2", "c")); len(via) != 2 {
+		t.Errorf("via %v", via)
+	}
+	if err := os.Symlink("loop", filepath.Join(base, "loop")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := physicalVia(filepath.Join(base, "loop")); err == nil {
+		t.Error("a loop resolved")
+	}
+}

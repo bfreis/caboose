@@ -385,6 +385,66 @@ func TestOnceGrantConsumedOnce(t *testing.T) {
 	}
 }
 
+// A once answer allows the request shown and nothing else: the alias with
+// other arguments, or the host on another port, is a request of its own,
+// filed apart and asked again. One for some hours covers them all.
+func TestOnceGrantIsForTheRequestShown(t *testing.T) {
+	f := newFixture(t)
+	f.src.set(func(c *config.Config) {
+		c.Aliases = []config.Alias{{Name: "deploy", Command: []string{"/usr/bin/make", "{env}"}, Params: map[string][]string{"env": {"staging", "prod"}}, Policy: config.AliasAsk}}
+		c.Trust = config.TrustHostile
+	})
+	if err := f.b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	deploy := func(env string) policy.Request {
+		r := aliasReq("deploy")
+		r.Args = map[string]string{"env": env}
+		return r
+	}
+	staging := mustPending(t, f.decide(deploy("staging")))
+	prod := mustPending(t, f.decide(deploy("prod")))
+	if prod == staging {
+		t.Fatalf("other arguments merged into request #%d", staging)
+	}
+	if again := mustPending(t, f.decide(deploy("staging"))); again != staging {
+		t.Errorf("the same arguments filed apart: #%d, #%d", again, staging)
+	}
+	f.answer(staging, Reply{Verdict: ReplyAllow, Scope: ScopeOnce})
+	if o := f.decide(deploy("prod")); o.Verdict != Pending || o.Request != prod {
+		t.Fatalf("other arguments after a once answer: %+v", o)
+	}
+	if o := f.decide(deploy("staging")); o.Verdict != Allowed {
+		t.Fatalf("the arguments shown: %+v", o)
+	}
+
+	https := egressReq("api.example", "140.82.112.3")
+	ssh := https
+	ssh.Port = 22
+	id := mustPending(t, f.decide(https))
+	other := mustPending(t, f.decide(ssh))
+	if other == id {
+		t.Fatalf("another port merged into request #%d", id)
+	}
+	f.answer(id, Reply{Verdict: ReplyAllow, Scope: ScopeOnce})
+	if o := f.decide(ssh); o.Verdict != Pending || o.Request != other {
+		t.Fatalf("another port after a once answer: %+v", o)
+	}
+	if o := f.decide(https); o.Verdict != Allowed {
+		t.Fatalf("the port shown: %+v", o)
+	}
+
+	// Hours cover the alias whatever its arguments, the host whatever
+	// its port.
+	f.answer(prod, Reply{Verdict: ReplyAllow, Scope: ScopeHours, Hours: 1})
+	f.answer(other, Reply{Verdict: ReplyAllow, Scope: ScopeHours, Hours: 1})
+	for _, r := range []policy.Request{deploy("staging"), deploy("prod"), https, ssh} {
+		if o := f.decide(r); o.Verdict != Allowed {
+			t.Errorf("%v %v %d under an hours grant: %+v", r.Kind, r.Args, r.Port, o)
+		}
+	}
+}
+
 func TestOnceGrantExpires(t *testing.T) {
 	f := newFixture(t)
 	id := mustPending(t, f.decide(aliasReq("build")))
@@ -747,8 +807,9 @@ func TestAlwaysEgressAndURL(t *testing.T) {
 		t.Fatalf("url after always: %+v", o)
 	}
 
-	// Under hostile, a URL is never allowed always: not offered, and an
-	// answer that tries is refused.
+	// Under hostile, a URL is never allowed always or for some hours,
+	// since policy.Decide asks for every URL there before any grant: not
+	// offered, and an answer that tries is refused.
 	f.src.set(func(c *config.Config) { c.Trust = config.TrustHostile })
 	if err := f.b.Reload(); err != nil {
 		t.Fatal(err)
@@ -758,12 +819,25 @@ func TestAlwaysEgressAndURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(offers) != 2 || offers[0].Scope != ScopeOnce || offers[1].Scope != ScopeHours ||
-		len(withheld) != 1 || withheld[0].Scope != ScopeAlways || !strings.Contains(withheld[0].Why, "hostile") {
+	if len(offers) != 1 || offers[0].Scope != ScopeOnce ||
+		len(withheld) != 2 || withheld[0].Scope != ScopeHours || withheld[1].Scope != ScopeAlways ||
+		!strings.Contains(withheld[0].Why, "hostile") || !strings.Contains(withheld[1].Why, "hostile") {
 		t.Fatalf("hostile url offers %+v, withheld %+v", offers, withheld)
 	}
 	if _, err := f.b.Answer(hid, Reply{Verdict: ReplyAllow, Scope: ScopeAlways, By: ByCLI, Confirm: DiffHash("")}); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("hostile always url: %v", err)
+	}
+	if _, err := f.b.Answer(hid, Reply{Verdict: ReplyAllow, Scope: ScopeHours, Hours: 8, By: ByCLI}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("hostile hours url: %v", err)
+	}
+	gs, err := f.b.Grants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range gs {
+		if g.Kind == policy.KindOpenURL {
+			t.Fatalf("hostile url grant %+v", g)
+		}
 	}
 }
 
@@ -777,7 +851,7 @@ func TestOffers(t *testing.T) {
 		t.Fatalf("%+v %+v %+v %v", ri, offers, withheld, err)
 	}
 	once, hours, always := offers[0], offers[1], offers[2]
-	if once.Scope != ScopeOnce || once.Effect != "allows that once" || once.Diff != "" || once.DiffHash != "" {
+	if once.Scope != ScopeOnce || once.Effect != "allows one connection to db.corp.example at 10.0.0.5 on port 443: another connection, or another port, asks again" || once.Diff != "" || once.DiffHash != "" {
 		t.Fatalf("once: %+v", once)
 	}
 	if hours.Scope != ScopeHours || hours.HoursMin != 1 || hours.HoursMax != MaxHours ||

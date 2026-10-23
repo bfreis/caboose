@@ -15,7 +15,6 @@ import (
 
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
-	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/launcher"
 	"github.com/bfreis/caboose/internal/saferm"
@@ -354,15 +353,4 @@ func healthyDaemon(t *testing.T, home string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { f.Close() })
-	// The web page's token, as the daemon keeps it (a release's and a
-	// checkout's daemon directory; the test binary may be either).
-	for _, dev := range []bool{false, true} {
-		dir := daemon.Dir(filepath.Join(home, ".caboose"), dev)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, daemon.TokenFile), []byte(strings.Repeat("a", daemonproto.TokenLen)+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 }

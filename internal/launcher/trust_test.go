@@ -354,6 +354,27 @@ func TestDoctorTrustRows(t *testing.T) {
 	}
 }
 
+// Doctor's SSH agent row under hostile says what agentFrom does: no agent
+// with ssh_agent unset, the one it names otherwise.
+func TestSSHAgentTrustNote(t *testing.T) {
+	a := &App{Cfg: &config.Config{Isolation: isolationVM, Trust: config.TrustHostile, Getenv: func(string) string { return "/tmp/agent.sock" }}}
+	sock, from := a.agentFrom("", "", a.Cfg.Trust)
+	if sock != "" || from != agentFromHostile {
+		t.Fatalf("agentFrom = %q, %q", sock, from)
+	}
+	if got := a.sshAgentTrustNote(); !strings.Contains(got, "the VM gets none") || strings.Contains(got, "unrestricted") {
+		t.Errorf("unset: %q", got)
+	}
+	a.Cfg.SSHAgent = "/tmp/other.sock"
+	if got := a.sshAgentTrustNote(); !strings.Contains(got, "ssh_agent names an agent") || !strings.Contains(got, "unrestricted") {
+		t.Errorf("set: %q", got)
+	}
+	a.Cfg.SSHAgent = "none"
+	if got := a.sshAgentTrustNote(); !strings.Contains(got, "no SSH agent") {
+		t.Errorf("none: %q", got)
+	}
+}
+
 func TestFactsHostExecEffective(t *testing.T) {
 	b := newBoxApp(t, isolationVM, runningBox(isolationVM))
 	b.Cfg.HostExec, b.Cfg.Trust = true, config.TrustFallible

@@ -183,8 +183,10 @@ type Status struct {
 	// Changed and Deleted are the repo paths waiting to be sent.
 	Changed []string `json:"changed,omitempty"`
 	Deleted []string `json:"deleted,omitempty"`
-	// Refused, Shadowed and Unmounted are as statesync.Report has them.
+	// Refused, TooLarge, Shadowed and Unmounted are as statesync.Report
+	// has them.
 	Refused   []string `json:"refused,omitempty"`
+	TooLarge  []string `json:"too_large,omitempty"`
 	Shadowed  []string `json:"shadowed,omitempty"`
 	Unmounted []string `json:"unmounted,omitempty"`
 	// Secrets are files a sync refuses to send for holding what looks
@@ -213,7 +215,7 @@ func PendingStatus(s *statesync.Syncer) (*Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := &Status{Changed: p.Changed, Deleted: p.Deleted, Refused: p.Export.Refused, Shadowed: p.Export.Shadowed}
+	st := &Status{Changed: p.Changed, Deleted: p.Deleted, Refused: p.Export.Refused, TooLarge: p.Export.TooLarge, Shadowed: p.Export.Shadowed}
 	var se *statesync.SecretsError
 	if err := p.Export.ScanSecrets(); errors.As(err, &se) {
 		st.Secrets = se.Paths

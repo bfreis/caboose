@@ -1,28 +1,25 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"log"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/bfreis/caboose/internal/daemonproto"
-	"github.com/bfreis/caboose/internal/saferm"
 	"github.com/bfreis/caboose/internal/webui"
 )
 
 // WebOptions turn on the daemon's web page. Options.Web nil serves none,
 // and makes no token.
+//
+// The token is made anew at every start and kept in the daemon's memory
+// alone, never on disk: a token a page kept from before (or that
+// something holding the port while the daemon was down read from a
+// page's storage) lets nothing in once the daemon is back.
 type WebOptions struct {
 	// Addr is where the page is served: a loopback IPv4 address
 	// (127.0.0.1:7171 for a release). Anything else is refused.
@@ -39,17 +36,19 @@ func checkWebAddr(a netip.AddrPort) error { return webui.CheckAddr(a) }
 // one past it drops the oldest.
 const maxCodes = 16
 
-// webState is the daemon's side of its web page: the token, which only
-// it reads, the one-time codes that open the page (in memory only), and
-// whether the page is served. Everything under mu.
+// newToken makes a token; a test makes it fail.
+var newToken = daemonproto.NewToken
+
+// webState is the daemon's side of its web page: the token and the
+// one-time codes that open the page, both in memory only, and whether
+// the page is served. Everything under mu.
 type webState struct {
-	dir  string
 	want netip.AddrPort // where it is to be served (Options.Web's)
 	now  func() time.Time
 	log  *log.Logger
 
 	mu        sync.Mutex
-	token     string         // "" when none could be read or made: then nothing is let in
+	token     string         // "" when none could be made: then nothing is let in
 	addrErr   string         // set when want is refused
 	tokenErr  string         // set when there is no token
 	addr      netip.AddrPort // where it is served: the bound address, else want
@@ -59,10 +58,9 @@ type webState struct {
 	codes     map[string]time.Time // outstanding one-time codes, by when each expires
 }
 
-// newWebState reads the directory's token, or makes one, and starts not
-// served.
-func newWebState(dir string, o WebOptions, lg *log.Logger) *webState {
-	w := &webState{dir: dir, want: o.Addr, addr: o.Addr, now: o.Now, log: lg, codes: map[string]time.Time{}}
+// newWebState makes a new token, and starts not served.
+func newWebState(o WebOptions, lg *log.Logger) *webState {
+	w := &webState{want: o.Addr, addr: o.Addr, now: o.Now, log: lg, codes: map[string]time.Time{}}
 	if w.now == nil {
 		w.now = time.Now
 	}
@@ -73,11 +71,13 @@ func newWebState(dir string, o WebOptions, lg *log.Logger) *webState {
 		w.err = w.addrErr
 		lg.Printf("web: %v", err)
 	}
-	tok, err := loadToken(dir, lg)
+	tok, err := newToken()
 	if err != nil {
 		lg.Printf("web: the page's token: %v", err)
 		w.tokenErr = fmt.Sprintf("the page's token: %v", err)
 		w.err = w.tokenErr
+	} else {
+		lg.Printf("web: made a new token for the page")
 	}
 	w.token = tok
 	return w
@@ -135,21 +135,18 @@ func (w *webState) redeem(code string) (string, bool) {
 	return w.token, true
 }
 
-// rotate replaces the token with a new one, written first: from when it
-// returns, the old one lets nothing in, and neither does any code made
-// before. On an error the old one stays.
-// A rotation that writes a token after none could be had at the start
+// rotate replaces the token with a new one: from when it returns, the old
+// one lets nothing in, and neither does any code made before. On an error
+// the old one stays.
+// A rotation that makes a token after none could be had at the start
 // clears that, and reports it (recovered): the page can be served now.
 func (w *webState) rotate() (recovered bool, err error) {
-	tok, err := daemonproto.NewToken()
+	tok, err := newToken()
 	if err != nil {
 		return false, err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := writeToken(w.dir, tok); err != nil {
-		return false, err
-	}
 	w.token = tok
 	clear(w.codes)
 	w.log.Printf("web: the page's token was replaced with a new one")
@@ -245,8 +242,8 @@ func (s *server) runWeb(_ context.Context, _ caller, params json.RawMessage) (an
 	if p.Rotate {
 		recovered, err := s.web.rotate()
 		if err != nil {
-			s.log.Printf("web: a new token could not be written: %v", err)
-			return nil, nil, daemonproto.NewError(daemonproto.KindInternal, "a new token could not be written, so the old one stays: %v", err)
+			s.log.Printf("web: a new token could not be made: %v", err)
+			return nil, nil, daemonproto.NewError(daemonproto.KindInternal, "a new token could not be made, so the old one stays: %v", err)
 		}
 		if recovered {
 			s.startWeb()
@@ -257,105 +254,4 @@ func (s *server) runWeb(_ context.Context, _ caller, params json.RawMessage) (an
 		return nil, nil, daemonproto.NewError(daemonproto.KindInternal, "a code for the page could not be made: %v", err)
 	}
 	return r, nil, nil
-}
-
-// loadToken reads the daemon directory's web.token, or, when there is
-// none or it cannot be trusted, makes a new one and writes it.
-func loadToken(dir string, lg *log.Logger) (string, error) {
-	tok, why := readToken(filepath.Join(dir, TokenFile), ownUID())
-	if tok != "" {
-		return tok, nil
-	}
-	tok, err := daemonproto.NewToken()
-	if err != nil {
-		return "", err
-	}
-	if err := writeToken(dir, tok); err != nil {
-		return "", err
-	}
-	if why == "" {
-		lg.Printf("web: made the page's token, %s", TokenFile)
-	} else {
-		lg.Printf("web: %s %s: replaced it with a new token", TokenFile, why)
-	}
-	return tok, nil
-}
-
-// readToken is the token in the file p, or "" and why it is not to be
-// used ("" for a file that is not there). The file must be a regular
-// file of uid's (the user's), mode 0600, holding a token and at most a newline;
-// a symlink is never followed.
-func readToken(p string, uid uint32) (string, string) {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", ""
-	}
-	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
-			return "", "was a symlink"
-		}
-		return "", "could not be read"
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return "", "could not be read"
-	}
-	if !fi.Mode().IsRegular() {
-		return "", "was not a regular file"
-	}
-	if fi.Mode().Perm() != 0o600 {
-		return "", fmt.Sprintf("had mode %#o, not 0600", fi.Mode().Perm())
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != uid {
-		return "", "belonged to another user"
-	}
-	b, err := io.ReadAll(io.LimitReader(f, daemonproto.TokenLen+2))
-	if err != nil {
-		return "", "could not be read"
-	}
-	tok := string(bytes.TrimSuffix(b, []byte("\n")))
-	if !daemonproto.ValidToken(tok) {
-		return "", "did not hold a token"
-	}
-	return tok, ""
-}
-
-// writeToken writes tok to the daemon directory's web.token, 0600: to a
-// temp file in the directory, renamed over it, so that a reader finds the
-// old token or the new one, whole.
-func writeToken(dir, tok string) error {
-	f, err := os.CreateTemp(dir, "."+TokenFile+".*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	err = f.Chmod(0o600)
-	if err == nil {
-		_, err = f.WriteString(tok + "\n")
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, TokenFile))
-	}
-	if err != nil {
-		_ = saferm.Remove(dir, tmp)
-		return err
-	}
-	// The rename itself, kept: a rotated token never comes back as the
-	// old one after a crash.
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	return err
 }

@@ -436,7 +436,7 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	if opts.Web != nil {
 		// Holding the lock: only the directory's one daemon writes the
 		// token.
-		s.web = newWebState(dir, *opts.Web, s.log)
+		s.web = newWebState(*opts.Web, s.log)
 	}
 	if opts.onServer != nil {
 		opts.onServer(s)

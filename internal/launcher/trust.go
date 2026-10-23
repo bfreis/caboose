@@ -260,11 +260,15 @@ func (a *App) doctorTrust(c *checkup) {
 	c.note("ssh agent", "%s", a.sshAgentTrustNote())
 }
 
-// sshAgentTrustNote says what a hostile VM gets of the SSH agent: what a
-// fallible one does.
+// sshAgentTrustNote says what a hostile VM gets of the SSH agent, as
+// agentFrom decides it: none unless ssh_agent names one, and then that one,
+// unrestricted.
 func (a *App) sshAgentTrustNote() string {
-	if a.Cfg.SSHAgent == "none" {
+	switch a.Cfg.SSHAgent {
+	case "none":
 		return "ssh_agent = none: the VM gets no SSH agent"
+	case "":
+		return agentFromHostile + ": the VM gets none, neither ssh's IdentityAgent nor $SSH_AUTH_SOCK"
 	}
-	return "trust does not change the SSH agent: the link carries it into the VM (ssh_agent's, else the one ssh here would use), unrestricted, so the sandbox can sign and log in wherever its keys reach (set ssh_agent = \"none\" for none)"
+	return "ssh_agent names an agent: the link carries it into the VM, unrestricted, so the sandbox can sign and log in wherever its keys reach (set ssh_agent = \"none\", or unset it, for none)"
 }

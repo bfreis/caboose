@@ -178,9 +178,13 @@ func (b *Broker) consume(r policy.Request, now time.Time) (policy.Decision, erro
 }
 
 // file files r, which d says asks, as a request: merged into the pending
-// one of the same kind, key and session, or new, within the limits.
+// one of the same kind, key, session and ExactKey (an alias's arguments,
+// a connection's port), or new, within the limits. A request that
+// differs is never merged into one that does not: a person allowing the
+// one shown once would otherwise allow the other unseen.
 func (b *Broker) file(r policy.Request, d policy.Decision, p policy.Policy, session string, text *AskText, now time.Time) Outcome {
 	key := policy.GrantKey(r)
+	exact := policy.ExactKey(r)
 	if key == "" {
 		d = policy.Decision{Verdict: policy.VerdictDeny, Rule: "deny:no-key", Reason: d.Reason}
 		b.dlog.decision(now, r, session, d, 0)
@@ -202,7 +206,7 @@ func (b *Broker) file(r policy.Request, d policy.Decision, p policy.Policy, sess
 		for i := range s.reqs.Requests {
 			q := &s.reqs.Requests[i]
 			if q.State == StatePending {
-				if q.Kind == r.Kind && q.Key == key && q.Session == session {
+				if q.Kind == r.Kind && q.Key == key && q.Session == session && policy.ExactKey(q.request()) == exact {
 					id = q.ID
 					return false, b.repeat(s, q, now) || write, nil
 				}

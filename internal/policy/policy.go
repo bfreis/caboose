@@ -14,9 +14,11 @@ package policy
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/netip"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -211,6 +213,11 @@ type Grant struct {
 	Key string
 	// Once grants allow one request; consuming them is the caller's.
 	Once bool
+	// Exact is, for a once grant, the ExactKey of the one request it
+	// allows: the alias with these arguments, the connection to this
+	// port. A once grant allows only a request whose ExactKey is the
+	// same; a timed grant ignores it.
+	Exact string
 	// Expires is when it stops matching; a zero time never matches.
 	Expires time.Time
 	// Addrs, for an egress grant, are the private addresses it lets
@@ -276,6 +283,26 @@ func GrantKey(r Request) string {
 	return string(r.Kind) + ":" + v
 }
 
+// ExactKey is what of r, beyond its GrantKey, a once grant holds to: an
+// alias's arguments as the sandbox gave them (sorted, quoted), an
+// outbound connection's port; "" for the other kinds, which the GrantKey
+// says whole. A person who allows a request once allows that request,
+// not another run of the alias or another port of the host.
+func ExactKey(r Request) string {
+	switch r.Kind {
+	case KindAlias:
+		keys := slices.Sorted(maps.Keys(r.Args))
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, strconv.Quote(k)+"="+strconv.Quote(r.Args[k]))
+		}
+		return strings.Join(parts, " ")
+	case KindEgress:
+		return strconv.Itoa(r.Port)
+	}
+	return ""
+}
+
 // Decide decides r under p at now.
 func Decide(p Policy, r Request, now time.Time) Decision {
 	switch r.Kind {
@@ -316,11 +343,17 @@ func (p Policy) grant(r Request, now time.Time) (Grant, bool) {
 		return Grant{}, false
 	}
 	for _, g := range p.Grants {
-		if g.Kind == r.Kind && g.Key != "" && g.Key == key && !g.Expires.IsZero() && now.Before(g.Expires) {
+		if g.Kind == r.Kind && g.Key != "" && g.Key == key && !g.Expires.IsZero() && now.Before(g.Expires) && g.matchesExactly(r) {
 			return g, true
 		}
 	}
 	return Grant{}, false
+}
+
+// matchesExactly reports whether g, when it is a once grant, is for this
+// very request (ExactKey); a timed grant covers every request of its key.
+func (g Grant) matchesExactly(r Request) bool {
+	return !g.Once || g.Exact == ExactKey(r)
 }
 
 // egressGrant is the live grant in p for r that holds every one of
@@ -331,7 +364,7 @@ func (p Policy) egressGrant(r Request, now time.Time, private []netip.Addr) (Gra
 		return Grant{}, false
 	}
 	for _, g := range p.Grants {
-		if g.Kind != r.Kind || g.Key != key || g.Expires.IsZero() || !now.Before(g.Expires) {
+		if g.Kind != r.Kind || g.Key != key || g.Expires.IsZero() || !now.Before(g.Expires) || !g.matchesExactly(r) {
 			continue
 		}
 		if holdsAll(g.Addrs, private) {

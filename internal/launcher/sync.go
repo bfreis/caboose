@@ -388,6 +388,9 @@ func (a *App) reportSync(r *statesync.Report) {
 	if len(r.Unmounted) > 0 {
 		a.Note("%s, which the %s does not mount yet: they sync after 'caboose restart'", homeList(r.Unmounted), a.noun())
 	}
+	if len(r.TooLarge) > 0 {
+		a.Note("not synced, being larger than %d MiB: %s", statesync.MaxFile>>20, homeList(r.TooLarge))
+	}
 	if len(r.Refused) > 0 {
 		a.Note("not synced, being symlinks or hard links (never followed): %s", homeList(r.Refused))
 	}

@@ -97,6 +97,11 @@ func (b *Broker) offer(q *reqRec, set Settings, scope string) (Offer, error) {
 	case ScopeOnce:
 		o.Effect = policy.AnswerEffect(r, policy.ScopeOnce, 0, b.opts.Env, set.VMProfile, set.ConfigPath)
 	case ScopeHours:
+		if r.Kind == policy.KindOpenURL && (set.Config == nil || set.Config.Trust != config.TrustFallible) {
+			// policy.Decide asks for every URL under hostile, before any
+			// grant: one for some hours would never take effect.
+			return Offer{}, newError(KindBadRequest, "trust = hostile asks before opening any URL, so a grant for some hours would change nothing: allow it once")
+		}
 		o.HoursMin, o.HoursMax = 1, MaxHours
 		// The effect ends "for 1 hour" (policy.AnswerEffect): the hours
 		// are the person's to pick.

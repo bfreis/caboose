@@ -164,7 +164,9 @@ func (b *Broker) Answer(id uint64, rp Reply) (AnswerResult, error) {
 		switch rp.Scope {
 		case ScopeOnce:
 			if r.Kind != policy.KindOpenURL {
-				grant = &grantRec{Kind: q.Kind, Key: q.Key, Once: true, Addrs: allowed, Created: now, Expires: now.Add(OnceTTL), Request: q.ID}
+				// For the request shown alone: the alias with these
+				// arguments, the host on this port (policy.ExactKey).
+				grant = &grantRec{Kind: q.Kind, Key: q.Key, Once: true, Exact: policy.ExactKey(r), Addrs: allowed, Created: now, Expires: now.Add(OnceTTL), Request: q.ID}
 			}
 		case ScopeHours:
 			grant = &grantRec{Kind: q.Kind, Key: q.Key, Addrs: allowed, Created: now, Expires: now.Add(time.Duration(rp.Hours) * time.Hour), Request: q.ID}
@@ -317,7 +319,7 @@ func (b *Broker) alwaysEdit(q *reqRec, set Settings) (config.Edit, error) {
 		return config.Edit{Set: map[string]any{key: list}}, nil
 	case policy.KindOpenURL:
 		if c.Trust != config.TrustFallible {
-			return config.Edit{}, newError(KindBadRequest, "trust = hostile asks before opening any URL, so open_urls_allow would change nothing: allow it once or for some hours")
+			return config.Edit{}, newError(KindBadRequest, "trust = hostile asks before opening any URL, so open_urls_allow would change nothing: allow it once")
 		}
 		key := "link.open_urls_allow"
 		list := fileList(c, key)

@@ -417,7 +417,20 @@ it. The refusal names a narrower root, a directory under it that does not
 hold `CABOOSE_HOME` (`~/dev` instead of `~`). It is judged by the
 directories' identity on disk, so another name for the same directory is
 refused too, and a `CABOOSE_HOME` not made yet by its nearest existing
-parent.
+parent. A root inside `CABOOSE_HOME` is refused the same way.
+
+A root may be reached through a symbolic link, which is followed when the
+roots are read, unless the link lies where a sandbox can write (a
+writable part of a root of any environment, as its `config.toml` says or
+its sandbox mounts): that sandbox could have pointed it anywhere,
+`~/.ssh` say, so the launch is refused, naming the link and where it
+leads. Write the directory it leads to in `config.toml` instead, once you
+have checked it is the one meant. A root that itself lies inside
+another environment's writable part is refused the same way, since that
+environment's sandbox could swap it for a link; a root that is that very
+directory, shared by both, is fine. When another environment's
+`config.toml` does not load, the launch is refused, naming it: fix that
+file, or remove the environment.
 
 A root that must sit at another container path (a script expects it
 there), or that has writable parts (below), takes the long form: a table

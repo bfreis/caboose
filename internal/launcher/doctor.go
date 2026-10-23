@@ -408,8 +408,11 @@ func (a *App) doctorSandbox(c *checkup) {
 
 // sandboxWrites are the files in the data dir every launch writes, which
 // it refuses to write through a link, with where the sandbox sees them.
-var sandboxWrites = []struct{ rel, inside string }{
-	{datadir.GitConfig, "~/.config/git/config"},
+var sandboxWrites = []struct {
+	rel, inside string
+	max         int64
+}{
+	{datadir.GitConfig, "~/.config/git/config", datadir.MaxGitConfig},
 }
 
 // doctorDataDir checks the data dir from the host: where it is, and links
@@ -419,14 +422,14 @@ func (a *App) doctorDataDir(c *checkup) {
 	c.ok("data dir", "%s", cfg.DataDir)
 	d := nofollow.Dir(cfg.DataDir)
 	for _, f := range sandboxWrites {
-		if _, _, err := d.ReadFile(f.rel); errors.Is(err, nofollow.ErrNotPlain) {
+		if _, _, err := d.ReadFileMax(f.rel, f.max); errors.Is(err, nofollow.ErrNotPlain) {
 			c.problem("data dir", "remove it from inside: caboose shell, then rm "+f.inside+"; the next launch writes it again",
 				"%s is a symlink or a hard link, or is reached through one; a launch never writes through those, so it is not kept up to date", f.inside)
 		}
 	}
 	// caboose's instructions, which the sandbox reads and cannot write.
 	host := filepath.Join(cfg.DataDir, datadir.ManagedInstructions)
-	switch _, _, err := d.ReadFile(datadir.ManagedInstructions); {
+	switch _, _, err := d.ReadFileMax(datadir.ManagedInstructions, datadir.MaxManaged); {
 	case err == nil:
 		c.ok("instructions", "%s, which the %s reads, read-only, as Claude Code's managed %s", host, a.noun(), managedInstructionsInside)
 	case errors.Is(err, fs.ErrNotExist):
@@ -973,6 +976,9 @@ func (a *App) doctorPending(c *checkup, st *syncagent.Status) {
 	if len(st.Secrets) > 0 {
 		c.problem("sync", "take the secrets out of those files; every sync refuses until then", "%v",
 			(&statesync.SecretsError{Paths: shownAll(st.Secrets)}).Error())
+	}
+	if len(st.TooLarge) > 0 {
+		c.note("sync", "not synced, being larger than %d MiB: %s", statesync.MaxFile>>20, homeList(st.TooLarge))
 	}
 	if len(st.Refused) > 0 {
 		c.note("sync", "not synced, being symlinks or hard links (never followed): %s", homeList(st.Refused))

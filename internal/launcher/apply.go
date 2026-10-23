@@ -352,13 +352,14 @@ func (a *App) showPlan(p *prompter, pl plan) {
 	}
 	if pl.root != nil {
 		p.say("Mount a host directory into the sandbox ([roots]):")
-		p.table([][2]string{{config.WorkDir + "/" + pl.root.Name, "← " + pl.host}})
-		if a.short(pl.host) != proposal.Printable(pl.root.Path) && pl.host != proposal.Printable(pl.root.Path) {
+		hostShown := proposal.Printable(pl.host)
+		p.table([][2]string{{config.WorkDir + "/" + pl.root.Name, "← " + hostShown}})
+		if proposal.Printable(a.short(pl.host)) != proposal.Printable(pl.root.Path) && hostShown != proposal.Printable(pl.root.Path) {
 			p.note("    proposed as %s", proposal.Printable(pl.root.Path))
 		}
 		p.blank()
 		p.warn("Everything under %s becomes readable from the sandbox. It is mounted read-only: "+
-			"what the sandbox may write of it is writable in config.toml, which %s asks for.", pl.host, p.code(SetupCommand(a.Cfg.Env, "roots")))
+			"what the sandbox may write of it is writable in config.toml, which %s asks for.", hostShown, p.code(SetupCommand(a.Cfg.Env, "roots")))
 	}
 }
 
@@ -389,7 +390,7 @@ func (a *App) confirmRoot(p *prompter, pl plan, edit *config.Edit) (ok bool, err
 			return false, err
 		}
 	}
-	typed, err := p.ask(fmt.Sprintf("To mount %s, type the root's name, %s", pl.host, pl.root.Name), "")
+	typed, err := p.ask(fmt.Sprintf("To mount %s, type the root's name, %s", proposal.Printable(pl.host), pl.root.Name), "")
 	if err != nil {
 		return false, err
 	}

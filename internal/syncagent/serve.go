@@ -265,7 +265,7 @@ func newSyncer(req *Request, p Paths) (*statesync.Syncer, error) {
 	}
 	s := &statesync.Syncer{
 		Home: p.Home, Repo: p.Repo, Host: req.Host,
-		Sandbox: sb, Roots: req.Roots, Defaults: req.Defaults, Mounted: req.Mounted,
+		Sandbox: sb, Roots: req.Roots, Defaults: req.Defaults, Mounted: req.Mounted, InSandbox: true,
 		Budget: time.Duration(req.Budget) * time.Second,
 	}
 	s.Env = []string{"GIT_CONFIG_GLOBAL=" + os.DevNull, "HOME=" + p.Home}

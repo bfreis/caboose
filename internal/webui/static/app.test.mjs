@@ -279,7 +279,7 @@ test("no token goes out until a proof verifies: a wrong MAC", async () => {
   assert.ok(s.daemon.calls("proof").length >= 2, "the proof is retried");
   assert.equal(s.daemon.withToken().length, 0);
   assert.equal(s.app.state, "squatter");
-  assert.match(s.main(), /Something else answers on 127\.0\.0\.1:7171/);
+  assert.match(s.main(), /something else answers on 127\.0\.0\.1:7171/);
   // Once the daemon is back, the proof verifies and the polls resume.
   s.daemon.mode = "ok";
   await s.clock.advance(SLOW_MS);
@@ -294,7 +294,7 @@ test("no token goes out until a proof verifies: a page that is not the API", asy
   await s.clock.advance(60_000);
   assert.equal(s.daemon.withToken().length, 0);
   assert.equal(s.app.state, "squatter");
-  assert.match(s.main(), /Something else answers/);
+  assert.match(s.main(), /something else answers/);
 });
 
 test("proofs refused as too many: the page says so, backs off, sends no token, and resumes", async () => {
@@ -304,7 +304,7 @@ test("proofs refused as too many: the page says so, backs off, sends no token, a
   await settle();
   assert.equal(s.app.state, "busy");
   assert.match(s.main(), /refusing proofs for now/);
-  assert.doesNotMatch(s.main(), /Something else answers/);
+  assert.doesNotMatch(s.main(), /something else answers/);
   // The waits between proofs double from BUSY_MIN_MS, up to BUSY_MAX_MS.
   const at = () => s.daemon.calls("proof").length;
   for (const wait of [BUSY_MIN_MS, 2 * BUSY_MIN_MS, 4 * BUSY_MIN_MS]) {
@@ -495,7 +495,7 @@ test("a server that proved nothing cannot drop the stored token: a 401 to the pr
   assert.equal(s.daemon.withToken().length, 0);
   assert.equal(s.storage.m.get(STORAGE_KEY), T);
   assert.equal(s.app.state, "squatter");
-  assert.match(s.main(), /Something else answers/);
+  assert.match(s.main(), /something else answers/);
 });
 
 test("no token goes out until a proof verifies: no answer", async () => {
@@ -612,7 +612,26 @@ test("a token made new between two polls is not sent again until a proof verifie
   await s.clock.advance(60_000);
   assert.deepEqual(s.daemon.requests.slice(n).filter((r) => r.token !== undefined), []);
   assert.equal(s.app.state, "squatter");
-  assert.match(s.main(), /the page's token is out of date/);
+  assert.match(s.main(), /The page's token is out of date/);
+});
+
+// The daemon makes a new token every time it starts: a page whose token
+// it no longer knows sends it nothing, and says to run caboose ui again.
+test("a daemon started again with a new token: the page says to run caboose ui again", async () => {
+  const s = setup({ stored: OLD, daemonToken: OLD });
+  s.app.start();
+  await s.clock.advance(POLL_MS);
+  assert.equal(s.app.state, "ok");
+  const n = s.daemon.requests.length;
+  s.daemon.mode = "down";
+  await s.clock.advance(SLOW_MS);
+  s.daemon.mode = "ok";
+  s.daemon.token = T;
+  await s.clock.advance(60_000);
+  assert.deepEqual(s.daemon.requests.slice(n).filter((r) => r.token !== undefined), []);
+  assert.equal(s.app.state, "squatter");
+  assert.match(s.main(), /makes a new one every time it starts/);
+  assert.match(s.main(), /Run caboose ui again\./);
 });
 
 test("a proof is redone when the tab is shown again, and nothing is polled while hidden", async () => {
@@ -680,7 +699,7 @@ test("a token replaced between a proof and its call: the page says what a failed
     ["proof", false],
   ]);
   assert.equal(s.app.state, "squatter");
-  assert.match(s.main(), /the page's token is out of date/);
+  assert.match(s.main(), /The page's token is out of date/);
   assert.equal(s.storage.m.get(STORAGE_KEY), OLD);
   assertProvenFirst(server);
   // And it stays so, sending nothing with the old token.
@@ -743,87 +762,6 @@ test("a 401 whose body names the kind proof counts as a refused round: no hot lo
   // The one that succeeded, then the two refused.
   assert.equal(s.daemon.calls("status").filter((r) => r.token === OLD).length, 3);
   assert.equal(s.app.state, "no_token");
-});
-
-test("a stored token that keeps changing is taken at once only once a round", async () => {
-  // Every read of localStorage finds another token, none the daemon's:
-  // each round's proof fails, and the page may try the stored one at
-  // once, but not the one after it.
-  let n = 0;
-  const flipping = new FakeStorage({});
-  flipping.getItem = () => token(String.fromCharCode(99 + (n++ % 20)));
-  const s = setup({ daemonToken: T });
-  s.storage.getItem = flipping.getItem;
-  s.app.start();
-  await s.clock.advance(60_000);
-  const proofs = s.daemon.calls("proof").length;
-  assert.ok(proofs <= 2 * (60_000 / SLOW_MS + 1), proofs + " proofs in 60 s");
-  assert.ok(proofs >= 60_000 / SLOW_MS, proofs + " proofs in 60 s");
-  assert.equal(s.app.state, "squatter");
-  assert.deepEqual(s.daemon.withToken(), []);
-});
-
-// twoTabs is two pages of one origin open at once: one daemon, one
-// localStorage, one clock. Tab A's requests go through a, so a test can
-// change the daemon in the middle of one of A's rounds.
-function twoTabs(o) {
-  live?.stop();
-  const clock = new Clock();
-  const daemon = new FakeDaemon(o.daemonToken, ORIGIN, { now: clock.now });
-  const storage = new FakeStorage({ [STORAGE_KEY]: o.stored });
-  const tab = (fetch) =>
-    createApp({
-      win: new FakeWindow("#/requests", ORIGIN),
-      doc: new FakeDocument().shell(),
-      fetch,
-      crypto: trackedCrypto,
-      storage: () => storage,
-      now: clock.now,
-      setTimeout: clock.setTimeout,
-      clearTimeout: clock.clearTimeout,
-      page: stubPage,
-    });
-  const hooks = { afterProof: null };
-  const a = tab(async (url, init) => {
-    const res = await daemon.fetch(url, init);
-    if (String(url).endsWith("/proof")) hooks.afterProof?.();
-    return res;
-  });
-  const b = tab((url, init) => daemon.fetch(url, init));
-  return { clock, daemon, storage, a, b, hooks, stop: () => (a.stop(), b.stop()) };
-}
-
-test("a token made new: two open tabs say the same, however each met it, and both take a new page's token", async () => {
-  const w = twoTabs({ stored: OLD, daemonToken: OLD });
-  try {
-    w.a.start();
-    w.b.start();
-    await settle();
-    assert.deepEqual([w.a.state, w.b.state], ["ok", "ok"]);
-    // caboose ui --new-token lands between a proof of tab A's and its
-    // call: A is refused with a 401, B's next proof fails.
-    let raced = false;
-    w.hooks.afterProof = () => {
-      w.hooks.afterProof = null;
-      w.daemon.token = T;
-      raced = true;
-    };
-    const n = w.daemon.requests.length;
-    await w.clock.advance(POLL_MS);
-    assert.ok(raced);
-    assert.ok(w.daemon.requests.slice(n).some((r) => r.method === "status" && r.token === OLD), "no call met the 401");
-    await w.clock.advance(3 * SLOW_MS);
-    assert.deepEqual([w.a.state, w.b.state], ["squatter", "squatter"]);
-    assert.equal(w.storage.m.get(STORAGE_KEY), OLD);
-    // A page opened with caboose ui stores the new token: both tabs take
-    // it at their next round, each after a proof of its own.
-    w.storage.setItem(STORAGE_KEY, T);
-    await w.clock.advance(SLOW_MS);
-    assert.deepEqual([w.a.state, w.b.state], ["ok", "ok"]);
-    assertProvenFirst(w.daemon);
-  } finally {
-    w.stop();
-  }
 });
 
 test("no token: nothing is sent, and the page says to run caboose ui", async () => {

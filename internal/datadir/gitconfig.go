@@ -97,7 +97,7 @@ func (g ExecGit) Unset(path, key string) error {
 // is fine for a file reached through a mount of its directory.
 func editConfig(dataDir string, fn func(path string) error) error {
 	d := nofollow.Dir(dataDir)
-	data, mode, err := d.ReadFile(GitConfig)
+	data, mode, err := d.ReadFileMax(GitConfig, MaxGitConfig)
 	if errors.Is(err, fs.ErrNotExist) {
 		data, mode, err = nil, 0o666, nil // created, with the umask, if fn sets anything
 	}

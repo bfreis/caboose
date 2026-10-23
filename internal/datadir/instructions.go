@@ -383,11 +383,12 @@ func InstallManaged(files map[string][]byte, dataDir string) (bool, error) {
 	}
 	for _, name := range sortedKeys(files) {
 		rel := path.Join(ManagedDir, name)
-		have, _, err := d.ReadFile(rel)
+		// Read no more than the file should hold: one larger is not it.
+		have, _, err := d.ReadFileMax(rel, int64(len(files[name])))
 		switch {
 		case err == nil && bytes.Equal(have, files[name]):
 			continue
-		case err == nil:
+		case err == nil, errors.Is(err, nofollow.ErrTooLarge):
 			err = d.WriteInPlace(rel, files[name])
 		case errors.Is(err, fs.ErrNotExist):
 			err = d.WriteFile(rel, files[name], 0o644)

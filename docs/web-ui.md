@@ -17,7 +17,7 @@ address, and opens that in your default browser. If the daemon does not
 serve the page (another process holds the port), it says so and opens
 nothing: opening the address then would hand its code to whatever holds
 the port. Run `caboose status` to see the page's state on its `web` line,
-and `caboose doctor` for the listener and the token file.
+and `caboose doctor` for the listener.
 
 ## The address
 
@@ -39,9 +39,10 @@ them, the `vm` outbound proxy never reaches them, and `run_args` refuses a
 ## The token
 
 Every call the page makes carries a token, 32 random bytes that the daemon
-keeps in its directory as `web.token` (mode 0600, in no mount, so a sandbox
-cannot read it). The page's own files load without it and hold nothing
-secret. The token is the boundary against other local processes, and
+makes anew every time it starts and keeps in its memory alone, never on
+disk, so no sandbox can read it and a token taken from before lets nothing
+in once the daemon is back. The page's own files load without it and hold
+nothing secret. The token is the boundary against other local processes, and
 against a sandbox that can reach your machine's loopback (under `container`
 and `gvisor` on OrbStack or Docker Desktop): without the token it can load
 the page, and nothing else.
@@ -52,8 +53,11 @@ makes for that one open: it is good once, for 60 seconds, kept only in the
 daemon's memory, and gone when the token is replaced. The page removes the
 code from the address bar before it sends anything, then trades it for the
 token (`POST /api/redeem`, which passes the same checks as every other
-call). It keeps the token in the browser's `localStorage` for that origin,
-and sends it as a header on every request; it sets no cookies. Before
+call). It keeps the token in the tab's `sessionStorage`, which no other
+tab reads and which goes when the tab is closed, never in the origin's
+lasting storage, and sends it as a header on every request; it sets no
+cookies. A reload of the tab keeps the token; a new tab, or the same page
+after the daemon started again, needs `caboose ui` again. Before
 every request that sends the token, it asks the server to prove it knows
 it, with a fresh challenge each time, so a process that took over the port
 while the daemon was down is not handed it.
@@ -73,15 +77,18 @@ What that leaves exposed, which you should know before sharing a screen:
   a minute.
 - A process that binds the port in the instant between the daemon
   answering a proof and the request that follows it can receive that one
-  request with the token; and reloading the page while such a process
-  holds the port loads its script, which can read the stored token.
+  request with the token. Reloading the tab while such a process holds
+  the port (the daemon down, say) loads its script, which can read the
+  token that tab kept: but that token died with the daemon, which makes
+  a new one when it starts again, so it lets nothing in. Only while the
+  daemon runs on is a token so taken still good.
 
 If any of that may have happened, run `caboose ui --new-token`: it replaces
-the token at once, and every code not used yet with it. Every page
-open with the old one sends nothing more and says that its token is out of
-date, or that something else answers on the port (from the page's side the
-two look the same), and to run `caboose ui`; once that opens a page with the
-new token, the pages already open take it at their next round.
+the token at once, and every code not used yet with it; a daemon that
+starts again does the same. Every page open with the old token sends
+nothing more and says that its token is out of date, or that something
+else answers on the port (from the page's side the two look the same),
+and to run `caboose ui` again, which opens a page with the new one.
 `caboose ui --print` prints the address for a machine with no browser; it
 opens the page once, within 60 seconds.
 

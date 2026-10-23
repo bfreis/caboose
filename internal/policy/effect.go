@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -133,9 +134,12 @@ func egressEffect(r Request) string {
 type Scope int
 
 const (
-	// ScopeOnce allows the request asked about, and nothing after it.
+	// ScopeOnce allows the request asked about, and nothing after it:
+	// the same alias with the same arguments, the same host and port
+	// (ExactKey).
 	ScopeOnce Scope = iota + 1
-	// ScopeHours allows requests of its GrantKey for some hours.
+	// ScopeHours allows requests of its GrantKey for some hours: the alias
+	// with any arguments, the host on any port.
 	ScopeHours
 	// ScopeAlways writes the permission into config.toml.
 	ScopeAlways
@@ -144,15 +148,21 @@ const (
 // AnswerEffect says what approving r with scope s would do: hours is how
 // long for ScopeHours, env the environment, profile the vm profile in use
 // and configPath where config.toml is, for ScopeAlways. It is "" for an
-// answer that cannot be given.
+// answer that cannot be given. Each says how far it reaches: once is the
+// very request shown, the others the whole alias or host.
 func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string) string {
 	if GrantKey(r) == "" {
 		return ""
 	}
 	switch s {
 	case ScopeOnce:
-		if r.Kind == KindOpenURL {
+		switch r.Kind {
+		case KindOpenURL:
 			return "opens that URL now, and allows nothing more"
+		case KindAlias:
+			return fmt.Sprintf("allows this one run of alias %s, %s: another run, or other arguments, asks again", shown(r.Alias, 64), argsNote(r))
+		case KindEgress:
+			return fmt.Sprintf("allows one connection to %s%s on port %d: another connection, or another port, asks again", shown(r.Host, maxShownHost), privateNote(r), r.Port)
 		}
 		return "allows that once"
 	case ScopeHours:
@@ -166,9 +176,9 @@ func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string
 		var what string
 		switch r.Kind {
 		case KindAlias:
-			what = "alias " + shown(r.Alias, 64)
+			what = "alias " + shown(r.Alias, 64) + " with any arguments"
 		case KindEgress:
-			what = "connections to " + shown(r.Host, maxShownHost) + privateNote(r)
+			what = "connections to " + shown(r.Host, maxShownHost) + privateNote(r) + " on any port egress_ports allows"
 		case KindOpenURL:
 			what = "opening URLs of " + shown(r.Origin, maxShownHost)
 		}
@@ -176,9 +186,9 @@ func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string
 	case ScopeAlways:
 		switch r.Kind {
 		case KindAlias:
-			return fmt.Sprintf(`sets policy = "allow" in [alias.%s] of %s`, shown(r.Alias, 64), configPath)
+			return fmt.Sprintf(`sets policy = "allow" in [alias.%s] of %s: every run of it, with any arguments, without asking`, shown(r.Alias, 64), configPath)
 		case KindEgress:
-			return fmt.Sprintf("adds %s to egress_allow in [vm.%s] of %s", strconv.Quote(shown(r.Host, maxShownHost)), profile, configPath)
+			return fmt.Sprintf("adds %s to egress_allow in [vm.%s] of %s: connections to it on any port egress_ports allows, without asking", strconv.Quote(shown(r.Host, maxShownHost)), profile, configPath)
 		case KindOpenURL:
 			return fmt.Sprintf("adds %s to open_urls_allow in [link] of %s", strconv.Quote(shown(r.Origin, maxShownHost)), configPath)
 		}
@@ -206,6 +216,23 @@ func NonPublicAddrs(r Request) []netip.Addr {
 		}
 	}
 	return out
+}
+
+// argsNote is the arguments of an alias request as an effect names them.
+func argsNote(r Request) string {
+	if len(r.Args) == 0 {
+		return "with no arguments"
+	}
+	keys := slices.Sorted(maps.Keys(r.Args))
+	var words []string
+	for i, k := range keys {
+		if i == maxShownArgs {
+			words = append(words, fmt.Sprintf("… (%d more)", len(keys)-i))
+			break
+		}
+		words = append(words, word(shown(k+"="+r.Args[k], maxShownArg)))
+	}
+	return "with exactly " + strings.Join(words, " ")
 }
 
 // privateNote names the private addresses an answer for r lets through.

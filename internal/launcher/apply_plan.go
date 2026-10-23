@@ -218,13 +218,14 @@ func (a *App) viewParts(v *ProposalView) {
 			return
 		}
 		v.edit, v.editDiff = &edit, d
-		sum := fmt.Sprintf("mount %s read-only at %s/%s", pl.host, config.WorkDir, pl.root.Name)
-		if a.short(pl.host) != proposal.Printable(pl.root.Path) && pl.host != proposal.Printable(pl.root.Path) {
+		hostShown := proposal.Printable(pl.host)
+		sum := fmt.Sprintf("mount %s read-only at %s/%s", hostShown, config.WorkDir, pl.root.Name)
+		if proposal.Printable(a.short(pl.host)) != proposal.Printable(pl.root.Path) && hostShown != proposal.Printable(pl.root.Path) {
 			sum += ", proposed as " + proposal.Printable(pl.root.Path)
 		}
 		v.Parts = append(v.Parts, ProposalPart{Kind: PartRoot, Diff: viewLines(d), Summary: sum})
 		v.Warnings = append(v.Warnings, fmt.Sprintf("Everything under %s becomes readable from the sandbox. It is mounted read-only: "+
-			"what the sandbox may write of it is writable in config.toml, which %s asks for.", pl.host, SetupCommand(c.Env, "roots")))
+			"what the sandbox may write of it is writable in config.toml, which %s asks for.", hostShown, SetupCommand(c.Env, "roots")))
 		if rc.sole != nil {
 			v.Warnings = append(v.Warnings, fmt.Sprintf("The root there is now, %s, is mounted at %s itself. With two, each is mounted at %s/NAME, so it moves to %s/%s.",
 				rc.sole.Path, config.WorkDir, config.WorkDir, config.WorkDir, rc.sole.Name))
@@ -362,7 +363,7 @@ func (v *ProposalView) checkTyped(typed string) error {
 // rootNote says what is left once pl's root is written to config.toml.
 func (a *App) rootNote(pl plan) string {
 	return fmt.Sprintf("Wrote the roots to %s: %s mounts %s at %s/%s, and ends running sessions.",
-		a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)), envCommand(a.Cfg.Env, "restart"), pl.host, config.WorkDir, pl.root.Name)
+		a.short(filepath.Join(a.Cfg.EnvDir, config.FileName)), envCommand(a.Cfg.Env, "restart"), proposal.Printable(pl.host), config.WorkDir, pl.root.Name)
 }
 
 // removeApplied removes e once it is applied, and tells sessions what a

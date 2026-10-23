@@ -19,7 +19,10 @@ import (
 // Handler answers, on the host, what the sync in the sandbox asks, and
 // bounds the run.
 type Handler struct {
-	// Conflict settles a conflict; nil aborts the sync.
+	// Conflict settles a conflict; nil aborts the sync. At most
+	// MaxConflicts are put to it in one run, and none once it aborted: the
+	// sync stops at an abort, and one that sends another conflict is
+	// ended.
 	Conflict func(*Conflict) Reply
 	// Ask answers a prompt; nil refuses it. At most MaxAsks are put to it
 	// in one run; the rest are refused.
@@ -39,6 +42,15 @@ type Handler struct {
 // retry or two of those; any more is the sandbox asking for the asking's
 // sake.
 const MaxAsks = 10
+
+// MaxConflicts bounds the conflicts one run puts to Handler.Conflict, as
+// MaxAsks bounds the prompts: each is the person's to settle, and the
+// sandbox decides how many it sends. Past it the sync is aborted.
+const MaxConflicts = 200
+
+// errAfterAbort is a sync that went on settling conflicts once told to
+// stop.
+var errAfterAbort = errors.New("the sync in the sandbox sent another conflict after it was told to stop")
 
 // Result is what a sync or a status ended with: Report (a sync, also one
 // that failed on its way), Status, and Err when it did not go through.
@@ -178,7 +190,7 @@ func converse(in *Reader, out io.Writer, req Request, h Handler, hello func()) (
 		return nil, fmt.Errorf("sending the sync its request: %w", err)
 	}
 	res := &Result{}
-	asks := 0
+	asks, conflicts, aborted := 0, 0, false
 	for {
 		var m Message
 		err := in.Read(&m)
@@ -191,10 +203,14 @@ func converse(in *Reader, out io.Writer, req Request, h Handler, hello func()) (
 		var reply Reply
 		switch m.Type {
 		case TypeConflict:
+			if aborted {
+				return nil, errAfterAbort
+			}
 			reply = Reply{Abort: true}
-			if m.Conflict != nil && h.Conflict != nil {
+			if conflicts++; m.Conflict != nil && h.Conflict != nil && conflicts <= MaxConflicts {
 				reply = h.Conflict(m.Conflict)
 			}
+			aborted = reply.Abort
 		case TypeAsk:
 			reply = Reply{Abort: true}
 			if asks++; m.Ask != nil && h.Ask != nil && asks <= MaxAsks {

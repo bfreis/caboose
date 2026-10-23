@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -68,15 +69,17 @@ func webDaemon(t *testing.T, h *harness, lg *syncLog) (*server, func()) {
 	return <-got, stop
 }
 
-func tokenFile(h *harness) string { return filepath.Join(h.dir, TokenFile) }
+// oldTokenFile is where a daemon once kept the page's token, which none
+// reads or writes now.
+func oldTokenFile(h *harness) string { return filepath.Join(h.dir, "web.token") }
 
-func readTokenFile(t *testing.T, h *harness) string {
+// failTokens makes newToken fail until the returned undo.
+func failTokens(t *testing.T) (undo func()) {
 	t.Helper()
-	b, err := os.ReadFile(tokenFile(h))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSuffix(string(b), "\n")
+	was := newToken
+	newToken = func() (string, error) { return "", errors.New("no randomness") }
+	t.Cleanup(func() { newToken = was })
+	return func() { newToken = was }
 }
 
 // webOf asks web for a code, rotating first when rotate is set.
@@ -99,26 +102,21 @@ func tokenOf(t *testing.T, s *server, r *daemonproto.WebResult) string {
 	return tok
 }
 
-// The token is made at the first start, 0600 in the 0700 directory, and
-// is what web hands out; status says how the page stands, never the
-// token.
+// The token is made at the start, kept in memory alone, and is what web
+// hands out; status says how the page stands, never the token.
 func TestWebTokenMade(t *testing.T) {
 	h := newHarness(t)
 	lg := &syncLog{}
 	s, _ := webDaemon(t, h, lg)
-	fi, err := os.Lstat(tokenFile(h))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
-		t.Errorf("%s: %v", TokenFile, fi.Mode())
-	}
-	if di, _ := os.Lstat(h.dir); di.Mode().Perm() != 0o700 {
-		t.Errorf("the directory: %v", di.Mode())
-	}
-	tok := readTokenFile(t, h)
+	tok := s.web.current()
 	if !daemonproto.ValidToken(tok) {
-		t.Fatalf("the file holds %q", tok)
+		t.Fatalf("the token is %q", tok)
+	}
+	ents, _ := os.ReadDir(h.dir)
+	for _, e := range ents {
+		if b, err := os.ReadFile(filepath.Join(h.dir, e.Name())); err == nil && bytes.Contains(b, []byte(tok)) {
+			t.Errorf("%s holds the token", e.Name())
+		}
 	}
 	// Served on the address it bound, which is what the URLs name.
 	bound := servedAddr(t, s)
@@ -161,20 +159,24 @@ func TestWebTokenMade(t *testing.T) {
 	if e != nil || bytes.Contains(wb, []byte(tok)) || !bytes.Contains(wb, []byte(`"web":{`)) {
 		t.Errorf("status from the web: %s %v", wb, e)
 	}
-	if !strings.Contains(lg.String(), "made the page's token") {
+	if !strings.Contains(lg.String(), "made a new token for the page") {
 		t.Errorf("log: %s", lg)
 	}
 }
 
-// The token survives a restart: the page's stored copy stays good.
-func TestWebTokenSurvivesRestart(t *testing.T) {
+// Every start makes a new token: one a page kept from before lets nothing
+// in once the daemon is back.
+func TestWebTokenNewAtEveryStart(t *testing.T) {
 	h := newHarness(t)
 	s, stop := webDaemon(t, h, &syncLog{})
 	tok := s.web.current()
 	stop()
 	s, _ = webDaemon(t, h, &syncLog{})
-	if s.web.current() != tok || readTokenFile(t, h) != tok {
-		t.Error("a restart changed the token")
+	if now := s.web.current(); !daemonproto.ValidToken(now) || now == tok {
+		t.Fatalf("after a restart the token is %q, was %q", now, tok)
+	}
+	if daemonproto.TokenEqual(tok, s.web.current()) {
+		t.Error("the token from before the restart is taken")
 	}
 }
 
@@ -197,32 +199,19 @@ func TestWebTokenRotation(t *testing.T) {
 	if !daemonproto.TokenEqual(tok, s.web.current()) {
 		t.Error("the new token refused")
 	}
-	if readTokenFile(t, h) != tok {
-		t.Error("the file does not hold the new token")
-	}
-	if fi, _ := os.Lstat(tokenFile(h)); fi.Mode().Perm() != 0o600 {
-		t.Errorf("after rotation: %v", fi.Mode())
-	}
 	if tokenOf(t, s, webOf(t, c, false)) != tok {
 		t.Error("web hands out another token")
 	}
-	// The app rotates too; and the new token is the one a restart reads.
+	// The app rotates too; and a restart keeps no rotated token either.
 	a := dialAs(t, h.dir, daemonproto.ClientApp, 0)
 	tok = tokenOf(t, s, webOf(t, a, true))
 	stop()
 	s, _ = webDaemon(t, h, lg)
-	if s.web.current() != tok {
-		t.Error("a restart did not keep the rotated token")
+	if s.web.current() == tok {
+		t.Error("a restart kept the rotated token")
 	}
 	if !strings.Contains(lg.String(), "replaced with a new one") {
 		t.Errorf("log: %s", lg)
-	}
-	// No temp file is left beside it.
-	ents, _ := os.ReadDir(h.dir)
-	for _, e := range ents {
-		if strings.HasPrefix(e.Name(), "."+TokenFile) {
-			t.Errorf("left %s", e.Name())
-		}
 	}
 }
 
@@ -243,70 +232,23 @@ func TestWebMethodIsNotThePages(t *testing.T) {
 	}
 }
 
-// A file that cannot be trusted is replaced by a new token, and the log
-// says so without either token.
-func TestWebTokenUntrustedFileReplaced(t *testing.T) {
+// A token file left in the directory is never read, nor written: the
+// token is the daemon's memory's alone.
+func TestWebTokenNeverReadFromDisk(t *testing.T) {
 	planted := "P" + strings.Repeat("q", 42)
-	cases := map[string]func(t *testing.T, p string){
-		"mode 0644": func(t *testing.T, p string) { write(t, p, planted+"\n", 0o644) },
-		"mode 0640": func(t *testing.T, p string) { write(t, p, planted+"\n", 0o640) },
-		"mode 0400": func(t *testing.T, p string) { write(t, p, planted, 0o400) },
-		"short":     func(t *testing.T, p string) { write(t, p, planted[:42]+"\n", 0o600) },
-		"long":      func(t *testing.T, p string) { write(t, p, planted+"q\n", 0o600) },
-		"two lines": func(t *testing.T, p string) { write(t, p, planted+"\n\n", 0o600) },
-		"bad char":  func(t *testing.T, p string) { write(t, p, planted[:42]+"=\n", 0o600) },
-		"spaces":    func(t *testing.T, p string) { write(t, p, " "+planted+"\n", 0o600) },
-		"crlf":      func(t *testing.T, p string) { write(t, p, planted+"\r\n", 0o600) },
-		"empty":     func(t *testing.T, p string) { write(t, p, "", 0o600) },
-		"symlink": func(t *testing.T, p string) {
-			target := filepath.Join(filepath.Dir(p), "elsewhere")
-			write(t, target, planted+"\n", 0o600)
-			if err := os.Symlink(target, p); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"fifo": func(t *testing.T, p string) {
-			if err := syscall.Mkfifo(p, 0o600); err != nil {
-				t.Skip(err)
-			}
-		},
+	h := newHarness(t)
+	inTempDir(t, h.home)
+	if err := os.MkdirAll(h.dir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	for name, plant := range cases {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t)
-			inTempDir(t, h.home)
-			if err := os.MkdirAll(h.dir, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			plant(t, tokenFile(h))
-			lg := &syncLog{}
-			s, _ := webDaemon(t, h, lg)
-			tok := s.web.current()
-			if !daemonproto.ValidToken(tok) || tok == planted {
-				t.Fatalf("token %q", tok)
-			}
-			fi, err := os.Lstat(tokenFile(h))
-			if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
-				t.Fatalf("the file: %v %v", fi, err)
-			}
-			if readTokenFile(t, h) != tok {
-				t.Error("the file does not hold the new token")
-			}
-			if daemonproto.TokenEqual(planted, s.web.current()) {
-				t.Error("the planted token taken")
-			}
-			out := lg.String()
-			if !strings.Contains(out, "replaced it with a new token") || strings.Contains(out, tok) || strings.Contains(out, planted) {
-				t.Errorf("log: %s", out)
-			}
-			if name == "symlink" {
-				// The link was replaced, never followed or written through.
-				b, _ := os.ReadFile(filepath.Join(h.dir, "elsewhere"))
-				if string(b) != planted+"\n" {
-					t.Errorf("the symlink's target was written: %q", b)
-				}
-			}
-		})
+	write(t, oldTokenFile(h), planted+"\n", 0o600)
+	s, _ := webDaemon(t, h, &syncLog{})
+	if daemonproto.TokenEqual(planted, s.web.current()) {
+		t.Fatal("the planted token taken")
+	}
+	webOf(t, dialAs(t, h.dir, daemonproto.ClientCLI, 0), true)
+	if b, _ := os.ReadFile(oldTokenFile(h)); string(b) != planted+"\n" {
+		t.Errorf("the file was written: %q", b)
 	}
 }
 
@@ -320,15 +262,11 @@ func write(t *testing.T, p, s string, mode os.FileMode) {
 	}
 }
 
-// A token that cannot be had (web.token is a directory, which no rename
-// replaces) leaves the daemon running with no token: nothing is let in,
-// web hands out none, and status says why.
+// A token that cannot be made leaves the daemon running with no token:
+// nothing is let in, web hands out none, and status says why.
 func TestWebTokenUnavailable(t *testing.T) {
 	h := newHarness(t)
-	inTempDir(t, h.home)
-	if err := os.MkdirAll(tokenFile(h), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	failTokens(t)
 	lg := &syncLog{}
 	s, _ := webDaemon(t, h, lg)
 	if s.web.current() != "" {
@@ -354,21 +292,16 @@ func TestWebTokenUnavailable(t *testing.T) {
 // serves the page, with no restart of the daemon.
 func TestWebRotationAfterNoTokenServes(t *testing.T) {
 	h := newHarness(t)
-	inTempDir(t, h.home)
-	if err := os.MkdirAll(tokenFile(h), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	undo := failTokens(t)
 	s, _ := webDaemon(t, h, &syncLog{})
 	time.Sleep(50 * time.Millisecond)
 	if s.listens() != 0 || s.web.state().Listening {
 		t.Fatal("served with no token")
 	}
-	if err := os.Remove(tokenFile(h)); err != nil {
-		t.Fatal(err)
-	}
+	undo()
 	c := dialAs(t, h.dir, daemonproto.ClientCLI, 0)
 	r := webOf(t, c, true)
-	tok := readTokenFile(t, h)
+	tok := s.web.current()
 	if r.CodeURL == "" || tokenOf(t, s, r) != tok || strings.Contains(r.Error, "token") {
 		t.Errorf("rotate: %+v", r)
 	}
@@ -388,32 +321,21 @@ func TestWebRotationAfterNoTokenServes(t *testing.T) {
 	}
 }
 
-// A rotation that cannot write leaves the old token, says so without a
-// token, and logs none.
+// A rotation that cannot make a token leaves the old one, says so without
+// a token, and logs none.
 func TestWebRotationFailureKeepsTheToken(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root writes a read-only directory")
-	}
 	h := newHarness(t)
 	lg := &syncLog{}
 	s, _ := webDaemon(t, h, lg)
-	inTempDir(t, h.dir)
-	// The hello round trip waits until the daemon has written its state,
-	// which the read-only directory below would otherwise refuse.
 	c := dialAs(t, h.dir, daemonproto.ClientCLI, 0)
 	old := s.web.current()
-	if err := os.Chmod(h.dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(h.dir, 0o700) })
+	undo := failTokens(t)
 	_, err := c.Web(t.Context(), daemonproto.WebParams{Rotate: true, Code: true})
+	undo()
 	if daemonproto.Kind(err) != daemonproto.KindInternal || !strings.Contains(err.Error(), "old one stays") {
 		t.Fatalf("rotate: %v", err)
 	}
-	if err := os.Chmod(h.dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if s.web.current() != old || !daemonproto.TokenEqual(old, s.web.current()) || readTokenFile(t, h) != old {
+	if !daemonproto.TokenEqual(old, s.web.current()) {
 		t.Error("the old token did not stay")
 	}
 	if strings.Contains(lg.String(), old) || strings.Contains(err.Error(), old) {
@@ -427,8 +349,7 @@ func TestWebRotationFailureKeepsTheToken(t *testing.T) {
 func TestWebCodes(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	dir := t.TempDir()
-	w := newWebState(dir, WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171"), Now: clock}, testLogger(t))
+	w := newWebState(WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171"), Now: clock}, testLogger(t))
 	tok := w.current()
 	mint := func() string {
 		t.Helper()
@@ -493,7 +414,7 @@ func TestWebCodes(t *testing.T) {
 func TestWebCodesCapped(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	w := newWebState(t.TempDir(), WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171"), Now: clock}, testLogger(t))
+	w := newWebState(WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171"), Now: clock}, testLogger(t))
 	var codes []string
 	for range maxCodes + 3 {
 		r, err := w.result(true)
@@ -528,7 +449,7 @@ func TestWebCodesCapped(t *testing.T) {
 
 // With no token, a code is never made, and none redeems.
 func TestWebNoTokenNoCode(t *testing.T) {
-	w := newWebState(t.TempDir(), WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171")}, testLogger(t))
+	w := newWebState(WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171")}, testLogger(t))
 	r, err := w.result(true)
 	if err != nil {
 		t.Fatal(err)
@@ -574,9 +495,6 @@ func TestNoWebNoToken(t *testing.T) {
 	if s.web != nil {
 		t.Fatal("web state with no Options.Web")
 	}
-	if _, err := os.Lstat(filepath.Join(dir, TokenFile)); !os.IsNotExist(err) {
-		t.Errorf("%s: %v", TokenFile, err)
-	}
 	c := dialAs(t, dir, daemonproto.ClientCLI, 0)
 	r := webOf(t, c, false)
 	if r.Listening || r.URL != "" || r.CodeURL != "" || r.Error == "" {
@@ -584,9 +502,6 @@ func TestNoWebNoToken(t *testing.T) {
 	}
 	if _, err := c.Web(t.Context(), daemonproto.WebParams{Rotate: true}); daemonproto.Kind(err) != daemonproto.KindBadRequest {
 		t.Errorf("rotate: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(dir, TokenFile)); !os.IsNotExist(err) {
-		t.Errorf("after rotate, %s: %v", TokenFile, err)
 	}
 	if st, err := c.Status(t.Context()); err != nil || st.Daemon.Web != nil {
 		t.Errorf("status: %+v %v", st, err)
@@ -625,7 +540,7 @@ func TestWebAddrLoopbackOnly(t *testing.T) {
 func TestWebServedState(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
-	w := newWebState(t.TempDir(), WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171"), Now: clock}, testLogger(t))
+	w := newWebState(WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:7171"), Now: clock}, testLogger(t))
 	if st := w.state(); st.Listening || st.Error == "" || !st.Since.Equal(now) {
 		t.Errorf("start: %+v", st)
 	}
@@ -717,16 +632,3 @@ func TestTokenComparedOnlyInConstantTime(t *testing.T) {
 }
 
 func testLogger(t *testing.T) *log.Logger { return log.New(testLog{t}, "", 0) }
-
-// A file of another user's is not taken, however good its token.
-func TestReadTokenRefusesAnotherOwner(t *testing.T) {
-	p := filepath.Join(t.TempDir(), TokenFile)
-	tok := strings.Repeat("Q", 43)
-	write(t, p, tok+"\n", 0o600)
-	if got, why := readToken(p, ownUID()); got != tok || why != "" {
-		t.Fatalf("own file: %q %q", got, why)
-	}
-	if got, why := readToken(p, ownUID()+1); got != "" || !strings.Contains(why, "another user") {
-		t.Errorf("another's file: %q %q", got, why)
-	}
-}

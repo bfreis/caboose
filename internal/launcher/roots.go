@@ -3,6 +3,8 @@ package launcher
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -220,4 +222,101 @@ func (a *App) noteReadOnlyRoots() {
 	}
 	a.Note("every root is read-only to the %s, so nothing in it can change your projects: list the parts it may write in writable ('%s' asks)",
 		a.noun(), SetupCommand(a.Cfg.Env, "roots"))
+}
+
+// otherWritable is every host path a sandbox of another environment
+// under CABOOSE_HOME can write, or will at its next start, physical: what
+// its configured roots would mount writable (config.toml's, sandbox or
+// not, as configuredPaths counts them for a restore), and every mount of
+// its sandbox when it has one now (writableOf). This environment's own
+// are the overlap of its roots, which ResolveRoots refuses. An
+// environment whose engine cannot be asked counts by its configured
+// parts alone (its sandbox is not running then); one whose config.toml
+// does not load is in unknown, as "ENV: why".
+func (a *App) otherWritable() (paths, unknown []string) {
+	names, err := a.envsWithDir()
+	if err != nil {
+		return nil, []string{fmt.Sprintf("the environments: %v", err)}
+	}
+	add := func(p string) {
+		if p != "" && !slices.Contains(paths, p) {
+			paths = append(paths, p)
+		}
+	}
+	for _, n := range names {
+		if n == a.Cfg.Env {
+			continue
+		}
+		app, err := a.envApp(n)
+		if err != nil {
+			unknown = append(unknown, fmt.Sprintf("%s: its config.toml does not load (%v); fix it, or remove the environment", n, err))
+			continue
+		}
+		for _, m := range rootMounts(app.Cfg.Roots) {
+			if !m.ReadOnly {
+				add(physicalOr(m.Source))
+			}
+		}
+		if b, ok, err := a.sandboxBox(n); err == nil && ok {
+			// A sandbox there whose mounts cannot be read may still
+			// mount more than its config.toml now says: refuse.
+			live, err := writableOf(b)
+			if err != nil {
+				unknown = append(unknown, fmt.Sprintf("%s: its sandbox's mounts cannot be read (%v)", n, err))
+				continue
+			}
+			for _, p := range live {
+				add(p)
+			}
+		}
+	}
+	return paths, unknown
+}
+
+// strictlyHolds reports whether w holds p, by identity, and is not p
+// itself: a sandbox can swap what lies inside its writable mount, never
+// the mount point itself, so a root another environment mounts writable
+// whole, at the same directory, is shared, not exposed.
+func strictlyHolds(w, p string) bool {
+	if !config.HoldsDir(w, p) || filepath.Clean(w) == filepath.Clean(p) {
+		return false
+	}
+	wi, werr := os.Stat(w)
+	pi, perr := os.Stat(p)
+	return werr != nil || perr != nil || !os.SameFile(wi, pi)
+}
+
+// rootInWritable says why root r, resolved, cannot be mounted when it
+// lies inside one of writable (strictlyHolds), or a symlink met on the
+// way to it lies in one, by identity: the sandbox that writes there can
+// swap it for a symlink to anywhere (~/.ssh, say) before the mount is
+// made. A root that is one of writable is shared, and fine. "" when none
+// of that is so.
+func rootInWritable(r config.Root, writable []string) string {
+	for _, w := range writable {
+		if w != "" && strictlyHolds(w, r.Host) {
+			return fmt.Sprintf("is in %s, which another environment's sandbox can write, and so could put a symbolic link to anywhere in its place; name a directory no sandbox writes", w)
+		}
+	}
+	return config.LinkInPaths(r, writable)
+}
+
+// checkRootReach refuses, just before a sandbox is created, a root that
+// lies, or is reached through a symlink that lies, where another
+// environment's sandbox can write (otherWritable). An environment whose
+// config.toml does not load refuses the launch, failing closed, naming it.
+func (a *App) checkRootReach() error {
+	if len(a.Cfg.Roots) == 0 {
+		return nil
+	}
+	ws, unknown := a.otherWritable()
+	if len(unknown) > 0 {
+		return Die("what another environment's sandbox can write, where the roots might lie, cannot be told: %s (its directory is under %s)", strings.Join(unknown, "; "), filepath.Join(a.Cfg.CabooseHome, "envs"))
+	}
+	for _, r := range a.Cfg.Roots {
+		if why := rootInWritable(r, ws); why != "" {
+			return Die("root %s, %s, %s (%s).", r.Name, r.Host, why, a.Cfg.RootsOrigin())
+		}
+	}
+	return nil
 }

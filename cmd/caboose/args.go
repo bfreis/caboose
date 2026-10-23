@@ -161,8 +161,11 @@ asked for, and the proposals waiting for 'caboose apply'. The caboose
 daemon serves it on 127.0.0.1 only, at port 7171 (a checkout's build:
 7172). The address opened carries a one-time code after '#code=', which
 the page trades for its token: it opens the page once, within 60 s, and
-the token itself is never in an address. The daemon is started when none
-runs. If something else holds the port it says so and opens nothing.
+the token itself is never in an address. The daemon makes a new token
+every time it starts, and the page keeps it in that tab alone: a new tab,
+or a page open from before the daemon started again, needs 'caboose ui'
+again. The daemon is started when none runs. If something else holds the
+port it says so and opens nothing.
 
   requests | proposals   open that page
   ENV                    open that environment's page
@@ -188,18 +191,22 @@ ACTION is one of:
   (none)           the pending requests, newest first
   --all            the decided ones too
   show N           request N in full
-  approve N        allow it once (a URL opens; a connection or the alias's
-                   run is allowed once, within 15 minutes)
+  approve N        allow it once: exactly what it shows (a URL opens; one
+                   connection to that host and port, or one run of the
+                   alias with those arguments, within 15 minutes)
   approve N --for DURATION
                    allow it for DURATION: whole hours or days, 1h to 7d,
-                   such as 8h or 2d (see 'caboose grants')
+                   such as 8h or 2d (see 'caboose grants'); the alias with
+                   any arguments, the host on any port
   approve N --always
-                   allow it for good by editing config.toml. The change
-                   is shown as it would be written, and made only when
-                   you type yes on a terminal.
+                   allow it for good by editing config.toml, as --for
+                   covers it. The change is shown as it would be written,
+                   and made only when you type yes on a terminal.
   deny N           refuse it
 
-Other requests for the same thing are decided with a longer allow. The
+A request for another port, or the alias with other arguments, is a
+request of its own. Other requests for the same alias or host are decided
+with a longer allow. The
 daemon answers while the environment's link runs (it is started if need
 be); with CABOOSE_DATA_DIR set it does not serve the environment.`},
 	{Name: "grants", Usage: "[revoke ID]", Args: ownArgs,

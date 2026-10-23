@@ -36,7 +36,7 @@ func (s *Syncer) Pending() (*Pending, error) {
 	if err != nil {
 		return nil, err
 	}
-	e, err := ExportLive(s.Home, c)
+	e, err := exportLive(s.Home, c, s.maxFile())
 	if err != nil {
 		return nil, err
 	}
@@ -44,10 +44,10 @@ func (s *Syncer) Pending() (*Pending, error) {
 	p := &Pending{Export: e}
 	repo := s.repo()
 	for path, f := range e.Files {
-		data, mode, err := repo.ReadFile(path)
+		data, mode, err := repo.ReadFileMax(path, s.maxFile())
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-		case err != nil && !errors.Is(err, nofollow.ErrNotPlain):
+		case err != nil && !errors.Is(err, nofollow.ErrNotPlain) && !errors.Is(err, nofollow.ErrTooLarge):
 			return nil, err
 		case err == nil && string(data) == string(f.Data) && mode&0o100 != 0 == f.Exec:
 			continue

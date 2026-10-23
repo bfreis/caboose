@@ -103,8 +103,11 @@ propose again.
 
 **A root** is checked on the host, at its physical path, symlinks resolved;
 that path is also what is written into `config.toml`, so a symlink the
-sandbox could change later does not decide what is mounted. Refused
-outright:
+sandbox could change later does not decide what is mounted. The home and
+caboose's own state are judged by the directories' identity on disk, and
+names in the home ignoring case, so another name for the same directory (a
+bind mount, a firmlink, another case on a case-insensitive disk) is refused
+too. Refused outright:
 
 - `/`, your home directory, or any directory holding it;
 - anything inside a hidden directory of the home (`~/.ssh`, `~/.config`,
@@ -112,7 +115,12 @@ outright:
 - anything holding caboose's own state, or inside it: `~/.caboose`, the
   environment, the data dir (the sandbox could change its own
   configuration, and read the Claude login);
-- anything overlapping a root, or a name a root already has;
+- anything overlapping a root, by path or by identity, or a name a root
+  already has;
+- anything inside what another environment's sandbox can write, as its
+  `config.toml` says or its sandbox mounts now, which that sandbox could
+  swap for a symbolic link before the next launch (the very directory it
+  mounts writable may be shared);
 - a path that does not exist, or is not a directory.
 
 A root a proposal adds is mounted read-only: what of it the sandbox may

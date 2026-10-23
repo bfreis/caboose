@@ -291,3 +291,66 @@ func TestIncomingOnAMachineThatJustJoined(t *testing.T) {
 
 // any reports whether anything is waiting to be sent.
 func (p *Pending) any() bool { return len(p.Changed)+len(p.Deleted) > 0 }
+
+// A file over MaxFile in the home is never read whole, nor exported: what
+// the repo has of it is kept, and it is said as too large.
+func TestPendingSkipsTooLargeFiles(t *testing.T) {
+	needGit(t)
+	a := newMachine(t, "a", newRemote(t))
+	a.write(mem("r", "MEMORY.md"), "- one\n")
+	a.sync()
+	p := a.path(mem("r", "MEMORY.md"))
+	if err := os.Truncate(p, MaxFile+1); err != nil {
+		t.Fatal(err)
+	}
+	pd := a.pending()
+	if pd.any() || !slices.Equal(pd.Export.TooLarge, []string{mem("r", "MEMORY.md")}) {
+		t.Fatalf("changed %v, deleted %v, too large %v", pd.Changed, pd.Deleted, pd.Export.TooLarge)
+	}
+	if r := a.sync(); !slices.Equal(r.TooLarge, []string{mem("r", "MEMORY.md")}) {
+		t.Errorf("report: too large %v", r.TooLarge)
+	}
+}
+
+// A ~/.claude.json over MaxFile (Claude Code's grows with its projects)
+// stops no sync. In the sandbox, where the sync runs on its own files,
+// it is read whole: its mcpServers export and take a remote's change.
+// Bounded, as the host reads, it is left as it is and said, and the rest
+// of the sync goes through.
+func TestLargeClaudeJSONSyncs(t *testing.T) {
+	needGit(t)
+	big := `{"numStartups":1,"projects":{"/work/x":{"history":"` + strings.Repeat("x", MaxFile+10) + `"}}}`
+	for _, inSandbox := range []bool{true, false} {
+		remote := newRemote(t)
+		a := newMachine(t, "a", remote)
+		b := newMachine(t, "b", remote)
+		a.s.InSandbox, b.s.InSandbox = inSandbox, inSandbox
+		a.sync()
+		b.sync()
+		b.write(".claude.json", big)
+		b.sync()
+		a.write(".claude.json", `{"numStartups":1,"mcpServers":{"s":{"command":"x"}}}`)
+		a.write(mem("r", "MEMORY.md"), "- one\n")
+		a.sync()
+		for range 2 {
+			b.s.Sandbox = nil
+			r, err := b.s.Sync()
+			if err != nil {
+				t.Fatalf("in sandbox %v: %v", inSandbox, err)
+			}
+			if !inSandbox && !slices.Contains(r.TooLarge, ".claude.json") {
+				t.Errorf("bounded: too large %v", r.TooLarge)
+			}
+		}
+		got, err := os.ReadFile(b.path(".claude.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if merged := strings.Contains(string(got), `"mcpServers"`); merged != inSandbox {
+			t.Errorf("in sandbox %v: mcpServers merged %v", inSandbox, merged)
+		}
+		if _, err := os.Stat(b.path(mem("r", "MEMORY.md"))); err != nil {
+			t.Errorf("in sandbox %v: the rest did not sync: %v", inSandbox, err)
+		}
+	}
+}

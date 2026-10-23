@@ -485,6 +485,9 @@ func (a *App) createContainer(mayBuild bool) error {
 	if err := c.CheckWritableParts(); err != nil {
 		return Die("%v", err)
 	}
+	if err := a.checkRootReach(); err != nil {
+		return err
+	}
 	spec.Mounts = append(spec.Mounts, dataMounts(c.DataDir, platform, sb, c.Roots)...)
 	spec.Labels = append(spec.Labels, assets.LabelRoots+"="+rootsLabel(c.Roots))
 	spec.Labels = append(spec.Labels, assets.LabelWritable+"="+writableLabel(c.Roots))

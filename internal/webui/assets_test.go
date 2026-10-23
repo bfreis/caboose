@@ -73,6 +73,21 @@ var forbiddenJS = []string{
 // stringTimer is setTimeout or setInterval given a string.
 var stringTimer = regexp.MustCompile(`set(Timeout|Interval)\s*\(\s*["'` + "`" + `]`)
 
+// The page keeps its token in the tab's sessionStorage, never in
+// localStorage, which whatever answers on the page's origin while the
+// daemon is down could read back.
+func TestAssetsKeepTheTokenInTheTab(t *testing.T) {
+	files := embedded(t)
+	for name, b := range files {
+		if strings.HasSuffix(name, ".mjs") && !strings.HasSuffix(name, ".test.mjs") && strings.Contains(string(b), "localStorage") {
+			t.Errorf("%s uses localStorage", name)
+		}
+	}
+	if !strings.Contains(string(files["app.mjs"]), "storage: () => w.sessionStorage") {
+		t.Error("app.mjs does not keep the token in sessionStorage")
+	}
+}
+
 func TestAssetsUseNoHTMLSinks(t *testing.T) {
 	for name, b := range embedded(t) {
 		if !strings.HasSuffix(name, ".mjs") || strings.HasSuffix(name, ".test.mjs") {

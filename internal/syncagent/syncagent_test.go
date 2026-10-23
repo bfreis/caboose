@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -572,5 +573,32 @@ func TestRunEdges(t *testing.T) {
 	}
 	if asked != MaxAsks {
 		t.Errorf("asked %d times", asked)
+	}
+}
+
+// Conflicts are bounded as asks are: no more than MaxConflicts reach the
+// person, the sync is aborted past them, and one that sends another
+// conflict after an abort is ended.
+func TestRunBoundsConflicts(t *testing.T) {
+	hello := `echo '{"type":"hello","version":1}'; read req; `
+	loop := func(n int) string {
+		return hello + `i=0; while [ $i -lt ` + fmt.Sprint(n) + ` ]; do echo '{"type":"conflict","conflict":{"path":"x"}}'; read r || exit 0; i=$((i+1)); done; echo '{"type":"error","error":{"kind":"sync","message":"x"}}'`
+	}
+	settled := 0
+	_, err := Run(exec.Command("sh", "-c", loop(MaxConflicts+5)), Request{}, Handler{Conflict: func(*Conflict) Reply {
+		settled++
+		return Reply{Resolution: &statesync.Resolution{Content: []byte("x")}}
+	}}, nil)
+	if !errors.Is(err, errAfterAbort) || settled != MaxConflicts {
+		t.Errorf("settled %d, %v", settled, err)
+	}
+
+	settled = 0
+	_, err = Run(exec.Command("sh", "-c", loop(5)), Request{}, Handler{Conflict: func(*Conflict) Reply {
+		settled++
+		return Reply{Abort: true}
+	}}, nil)
+	if !errors.Is(err, errAfterAbort) || settled != 1 {
+		t.Errorf("after an abort: settled %d, %v", settled, err)
 	}
 }

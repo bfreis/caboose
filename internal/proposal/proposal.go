@@ -436,7 +436,7 @@ func read(d nofollow.Dir, name string) (*Proposal, time.Time, []byte, error) {
 	if fi.Size() > MaxSize {
 		return nil, fi.ModTime(), nil, fmt.Errorf("larger than %d KiB", MaxSize>>10)
 	}
-	data, _, err := d.ReadFile(rel)
+	data, _, err := d.ReadFileMax(rel, MaxSize)
 	if err != nil {
 		return nil, fi.ModTime(), nil, err
 	}

@@ -526,7 +526,8 @@ func TestRequestOffers(t *testing.T) {
 		}
 	}
 	r = w.offers(daemonproto.ClientCLI, uid)
-	if r.Offered(daemonproto.ScopeAlways) != nil || len(r.Withheld) != 1 || r.Withheld[0].Scope != "always" || !strings.Contains(r.Withheld[0].Why, "hostile") {
+	if r.Offered(daemonproto.ScopeAlways) != nil || r.Offered(daemonproto.ScopeHours) != nil || len(r.Withheld) != 2 ||
+		r.Withheld[0].Scope != "hours" || r.Withheld[1].Scope != "always" || !strings.Contains(r.Withheld[1].Why, "hostile") {
 		t.Fatalf("hostile URL: %+v", r)
 	}
 	if _, err := w.answer(uid, daemonproto.AnswerParams{Verdict: "allow", Scope: "always", ConfirmDiff: strings.Repeat("a", 64)}); kindOf(err) != daemonproto.KindBadRequest {

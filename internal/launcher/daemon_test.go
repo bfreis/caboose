@@ -108,7 +108,7 @@ func TestDaemonStatusCreatesNothing(t *testing.T) {
 // No daemon directory is ever reachable from a sandbox: no mount
 // createContainer makes, nor any directory the vm backend shares for them,
 // is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev (the
-// web page's token, web.token, in each), the broker's files, the jobs'
+// daemon's socket and log in each), the broker's files, the jobs'
 // log (EnvDir/jobs.log), or the environment's checkpoint store, EnvDir/checkpoints.
 func TestDaemonDirsAreInNoMount(t *testing.T) {
 	for _, iso := range isolations {
@@ -120,13 +120,13 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				t.Fatal(err)
 			}
 			b.Cfg.Roots = []config.Root{{Name: "dev", Host: root, Container: "/work/dev"}}
-			// The web page's token, in each daemon directory.
+			// The daemon's log, in each daemon directory.
 			var tokens []string
 			for _, d := range daemon.Dirs(b.tmp) {
 				if err := os.MkdirAll(d, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				tok := filepath.Join(d, daemon.TokenFile)
+				tok := filepath.Join(d, daemon.LogFile)
 				if err := os.WriteFile(tok, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}

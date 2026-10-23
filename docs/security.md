@@ -388,10 +388,16 @@ request from the command line, `caboose requests` (the daemon starts if it
 is not running; it answers while the environment's link runs). Each
 request is shown with what allowing it does, in caboose's words, then what
 the sandbox says of it, which is only its claim. `requests approve N`
-allows it once (a URL opens; an outbound connection may be made, or an
-alias run, once, within 15 minutes), `--for 8h` or `--for 2d` for some hours (1h to 7d;
-listed by `caboose grants`, ended by `caboose grants revoke ID`), and
-`--always` for good. `--always` edits `config.toml`: it shows the literal
+allows it once: exactly the request shown (a URL opens; one connection to
+that host on that port may be made, or the alias run with those very
+arguments, once, within 15 minutes). A request for another port, or the
+alias with other arguments, is a request of its own, filed and asked
+apart, never merged into one already shown. `--for 8h` or `--for 2d`
+allows for some hours (1h to 7d; listed by `caboose grants`, ended by
+`caboose grants revoke ID`), and `--always` for good: both cover the
+whole alias, with any arguments, or the whole host, on any port
+`egress_ports` allows. Each offer says which, in the words of its
+effect. `--always` edits `config.toml`: it shows the literal
 change, line by line, and writes it only after you type `yes` on a
 terminal, to the same lines `caboose setup` edits (comments and other
 settings stay; the comments on the line it replaces, or inside an array it replaces, go with it, and the diff shows that), and
@@ -523,8 +529,9 @@ nothing else:
   (`TestUIPortsNeverForwarded`).
 - **The token is the boundary.** Every call of the page's API needs the
   page's token in a request header (never a cookie or the address); it is
-  32 random bytes, kept in the daemon's directory in a file only you can
-  read, in no mount, compared in constant time, never logged. It is never
+  32 random bytes, made anew every time the daemon starts and kept in its
+  memory alone (no file), compared in constant time, never logged; the
+  page keeps it in the tab's `sessionStorage`, nowhere lasting. It is never
   in a URL, so never in a browser's history or a command's arguments.
   The page's own HTML and style load without it, and hold nothing secret.
 - **Checks on every request**, before anything runs: the `Host` must be
@@ -579,8 +586,13 @@ never the page's. See [the web UI](web-ui.md) for what is still exposed.
 not refused under `trust = "fallible"`: `caboose doctor` reports it as a
 problem and `caboose ui` warns about it, since a sandbox on the host's network can listen on
 7171 while the daemon is not running and take the page's place. Another
-local process can do the same then: the page's proof keeps it from
-getting the token, but it can show you a page of its own. A `vm`
+local process can do the same then. A page loaded from it, a reload of an
+open tab say, can read the token that tab kept (the page keeps it in the
+tab's `sessionStorage`, nowhere lasting), and can show you a page of its
+own; but the daemon makes a new token every time it starts, so a token
+read while it was down lets nothing in once it is back. A page opened
+fresh against it gets no token at all: the page's proof keeps it from
+being sent one. A `vm`
 profile takes no `run_args`, and `hostile` allows only `vm`, so a `vm`
 sandbox cannot be put on the host's network this way and `D3` passes
 there without this case; the page is the host's, so a `container` or
@@ -610,18 +622,25 @@ packages, a Dockerfile section, one root, one alias alone, or one writable
 part of a root alone. Anything more is refused whole, not offered; so is
 text with control or invisible formatting characters. A proposed root is
 refused when it is your home, a hidden directory in it, caboose's own
-state, or overlaps another; you type its name to accept it. A proposed
-writable part is refused when it is in no root, reached through a symbolic
-link, already writable, or the home, a hidden directory of it or caboose's
-state; you type its root's name to accept it, and it takes effect at the
-next `caboose restart`.
+state, or overlaps another, judged by the directories' identity on disk
+so that another name for one is refused too; you type its name to accept
+it. A proposed writable part is refused when it is in no root, reached
+through a symbolic link, already writable, or the home, a hidden directory
+of it or caboose's state; you type its root's name to accept it, and it
+takes effect at the next `caboose restart`.
 `caboose apply` shows each proposal whole before anything is written.
 
 ### What the host reads from the sandbox
 
 In effect. Wherever the host reads or writes a directory the sandbox can
 also write (the kept home, the sync repository, the proposals), it never
-follows a symbolic or hard link the sandbox could have planted.
+follows a symbolic or hard link the sandbox could have planted. Every
+file it reads there has a size limit, checked before the file is read,
+and every directory it walks a limit on entries and depth, so a huge or
+sparse file, or a deep tree, the sandbox made costs the host nothing: the
+sandbox config over 256 KiB is not used (the last good copy stands in),
+and a file over 16 MiB is not read when the host shows what a sync would
+send (the sync itself runs in the sandbox, on the sandbox's own files).
 
 ### Sync
 
@@ -693,8 +712,9 @@ Stated plainly, so that nobody relies on them:
   flooding the link with requests, holding the web page's connections
   open (bounded, not prevented).
 - **Another process of your own user**: it can talk to the daemon, and
-  answer requests, as you; it can read the web page's token, and take the
-  page's port while the daemon is not running.
+  answer requests, as you; it can get the web page's token (from the
+  browser, or the daemon's memory), and take the page's port while the
+  daemon is not running.
 - **Your own settings that widen the sandbox**: `engine_socket = true`
   (root on the host), `run_args` (caboose refuses only those that override
   its own flags and mounts or publish onto the web UI's ports; doctor

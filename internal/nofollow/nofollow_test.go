@@ -2,6 +2,7 @@ package nofollow
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,18 +58,18 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-func TestReadFile(t *testing.T) {
+func TestReadFileMaxReads(t *testing.T) {
 	top, _ := layout(t)
-	data, mode, err := Dir(top).ReadFile("a/b/f")
+	data, mode, err := Dir(top).ReadFileMax("a/b/f", 1<<20)
 	if err != nil || string(data) != "plain" || !mode.IsRegular() {
-		t.Fatalf("ReadFile = %q, %v, %v", data, mode, err)
+		t.Fatalf("ReadFileMax = %q, %v, %v", data, mode, err)
 	}
-	if _, _, err := Dir(top).ReadFile("a/b/missing"); !errors.Is(err, fs.ErrNotExist) {
+	if _, _, err := Dir(top).ReadFileMax("a/b/missing", 1<<20); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("missing: err = %v, want ErrNotExist", err)
 	}
 	for _, rel := range []string{"../x", "/a", "a/../secret", "a//b", ""} {
-		if _, _, err := Dir(top).ReadFile(rel); err == nil {
-			t.Errorf("ReadFile(%q) succeeded", rel)
+		if _, _, err := Dir(top).ReadFileMax(rel, 1<<20); err == nil {
+			t.Errorf("ReadFileMax(%q) succeeded", rel)
 		}
 	}
 }
@@ -94,7 +95,7 @@ func TestReadFileMax(t *testing.T) {
 	if _, _, err := Dir(top).ReadFileMax("big", 1<<20); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("sparse: %v", err)
 	}
-	// Links are refused as ReadFile refuses them.
+	// Links are refused.
 	symlink(t, filepath.Join(top, "secret"), filepath.Join(top, "ln"))
 	if _, _, err := Dir(top).ReadFileMax("ln", 100); !errors.Is(err, ErrNotPlain) {
 		t.Errorf("link: %v", err)
@@ -116,7 +117,7 @@ func TestReadRefusesLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{"a/b/in", "a/b/out", "a/lb/f", "a/b/hard"} {
-		data, _, err := Dir(top).ReadFile(rel)
+		data, _, err := Dir(top).ReadFileMax(rel, 1<<20)
 		notPlain(t, rel, err)
 		if data != nil {
 			t.Errorf("%s: read %q", rel, data)
@@ -160,7 +161,7 @@ func TestSwapIsCaught(t *testing.T) {
 				symlink(t, target, p)
 			}
 			defer func() { testHookOpened = nil }()
-			data, _, err := Dir(top).ReadFile("a/b/f")
+			data, _, err := Dir(top).ReadFileMax("a/b/f", 1<<20)
 			notPlain(t, "swapped "+swap, err)
 			if data != nil {
 				t.Errorf("read %q", data)
@@ -310,6 +311,49 @@ func TestWalk(t *testing.T) {
 	}
 	if err := d.Walk("missing", func(string, fs.DirEntry) error { t.Error("called"); return nil }); err != nil {
 		t.Errorf("walking a missing dir: %v", err)
+	}
+}
+
+// Walk stops at a tree deeper than MaxDepth, and ReadDir and Walk at more
+// entries than the bound: the directory's writer decides both.
+func TestWalkBounds(t *testing.T) {
+	top := t.TempDir()
+	deep := top
+	for i := 0; i <= MaxDepth+1; i++ {
+		deep = filepath.Join(deep, "d")
+	}
+	if err := os.MkdirAll(deep, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	err := Dir(top).Walk("", func(string, fs.DirEntry) error { n++; return nil })
+	if !errors.Is(err, ErrTooMany) || n != MaxDepth+1 {
+		t.Errorf("deep: %v after %d entries", err, n)
+	}
+
+	defer func(m int) { maxEntries = m }(maxEntries)
+	maxEntries = 10
+	wide := filepath.Join(top, "wide")
+	for i := 0; i < 11; i++ {
+		if err := os.MkdirAll(filepath.Join(wide, fmt.Sprint(i)), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Dir(top).ReadDir("wide"); !errors.Is(err, ErrTooMany) {
+		t.Errorf("ReadDir of 11: %v", err)
+	}
+	if err := os.Remove(filepath.Join(wide, "10")); err != nil {
+		t.Fatal(err)
+	}
+	if es, err := Dir(top).ReadDir("wide"); err != nil || len(es) != 10 {
+		t.Errorf("ReadDir of 10: %d, %v", len(es), err)
+	}
+	// Ten entries in wide and one more below them: the whole walk counts.
+	if err := os.MkdirAll(filepath.Join(wide, "0", "x"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := Dir(top).Walk("wide", func(string, fs.DirEntry) error { return nil }); !errors.Is(err, ErrTooMany) {
+		t.Errorf("Walk of 11: %v", err)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/bfreis/caboose/internal/apkobuild/pkgset"
@@ -789,6 +790,10 @@ type Root struct {
 	// to it, as written (CheckWritable): the rest of the root is read-only.
 	// ["."] is the whole root; nil is none of it.
 	Writable []string
+	// Via are the symlinks ResolveRoots met on the way from the
+	// configured path to Host, each where it was found: what a sandbox
+	// that can write where one lies could repoint before the next launch.
+	Via []string
 }
 
 // WholeWritable reports whether the whole root is writable.
@@ -1031,9 +1036,13 @@ const RootsHelp = `       The roots are the directories mounted into the sandbox
 
 // ResolveRoots checks every root is a directory, makes each absolute and
 // physical (symlinks resolved), as `cd "$root" && pwd -P` does, and refuses
-// a root that holds CABOOSE_HOME (CabooseHomeRootProblem) and roots that
-// overlap: a project under two of them would have two container paths, and
-// so two sets of Claude Code state.
+// a root that holds CABOOSE_HOME (CabooseHomeRootProblem) or is inside it,
+// by identity (HoldsDir), roots that overlap, by identity too: a project
+// under two of them would have two container paths, and so two sets of
+// Claude Code state; and a root reached through a symlink in another
+// root's writable part, which the sandbox could have pointed anywhere
+// (Via keeps the symlinks met, for the check against every sandbox's
+// writable paths just before a sandbox is created).
 func (c *Config) ResolveRoots() error {
 	for i := range c.Roots {
 		r := &c.Roots[i]
@@ -1046,21 +1055,29 @@ func (c *Config) ResolveRoots() error {
 		case !fi.IsDir():
 			return c.rootError(*r, "is not a directory")
 		}
-		p, err := Physical(r.Host)
+		p, via, err := physicalVia(r.Host)
 		if err != nil {
 			return c.rootError(*r, err.Error())
 		}
-		r.Host = p
+		r.Host, r.Via = p, via
 		if why := CabooseHomeRootProblem(p, c.CabooseHome, c.Home); why != "" {
 			return c.rootError(*r, why)
+		}
+		if HoldsDir(c.CabooseHome, p) {
+			return c.rootError(*r, "is inside CABOOSE_HOME ("+c.CabooseHome+"), where caboose keeps every environment's configuration, data dirs, checkpoints and the daemon's socket: a sandbox could read or change them")
 		}
 		if err := c.checkWritableParts(*r); err != nil {
 			return err
 		}
 	}
+	for _, r := range c.Roots {
+		if why := LinkInWritable(r, c.Roots); why != "" {
+			return c.rootError(r, why)
+		}
+	}
 	for i, a := range c.Roots {
 		for _, b := range c.Roots[i+1:] {
-			if Within(a.Host, b.Host) || Within(b.Host, a.Host) {
+			if Within(a.Host, b.Host) || Within(b.Host, a.Host) || HoldsDir(a.Host, b.Host) || HoldsDir(b.Host, a.Host) {
 				return fmt.Errorf("roots %s (%s) and %s (%s) overlap (%s): a project under both would have two\n"+
 					"       paths in the container. Name directories that do not contain one another.",
 					a.Name, a.Host, b.Name, b.Host, c.RootsOrigin())
@@ -1131,6 +1148,85 @@ func WritablePartProblem(host, w string) (at, problem string) {
 
 func (c *Config) rootError(r Root, problem string) error {
 	return fmt.Errorf("root %s, %s, %s (%s).\n%s", r.Name, r.Host, problem, c.RootsOrigin(), RootsHelp)
+}
+
+// LinkInWritable says why root r, resolved, cannot be mounted when a
+// symlink met on the way to it (r.Via) lies in a writable part of one of
+// roots, judged by identity: the sandbox that writes there can point it
+// anywhere, ~/.ssh say, between two launches. "" when none does.
+func LinkInWritable(r Root, roots []Root) string {
+	for _, l := range r.Via {
+		for _, o := range roots {
+			for _, w := range o.WritableHost() {
+				if HoldsDir(w, filepath.Dir(l)) {
+					return fmt.Sprintf("is reached through the symbolic link %s, in the writable part %s of the root %s, which the sandbox can point anywhere; name the directory it leads to now (%s) in config.toml if that is the one meant, after checking it", l, w, o.Name, r.Host)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// LinkInPaths is LinkInWritable for host paths some sandbox can write,
+// physical (another environment's included): "" when no symlink of
+// r.Via lies in one.
+func LinkInPaths(r Root, writable []string) string {
+	for _, l := range r.Via {
+		for _, w := range writable {
+			if w != "" && HoldsDir(w, filepath.Dir(l)) {
+				return fmt.Sprintf("is reached through the symbolic link %s, in %s, which a sandbox can write and so point anywhere; name the directory it leads to now (%s) in config.toml if that is the one meant, after checking it", l, w, r.Host)
+			}
+		}
+	}
+	return ""
+}
+
+// maxLinks bounds the symlinks physicalVia follows, as the kernel bounds
+// a lookup's.
+const maxLinks = 255
+
+// physicalVia is Physical(p), with every symlink met on the way, each at
+// the path it was found at.
+func physicalVia(p string) (string, []string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", nil, err
+	}
+	var via []string
+	cur, rest := "/", strings.Split(strings.TrimPrefix(abs, "/"), "/")
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		if name == "" || name == "." {
+			continue
+		}
+		if name == ".." {
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return "", nil, err
+		}
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		if len(via) == maxLinks {
+			return "", nil, &fs.PathError{Op: "resolve", Path: abs, Err: syscall.ELOOP}
+		}
+		via = append(via, next)
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", nil, err
+		}
+		if filepath.IsAbs(target) {
+			cur = "/"
+		}
+		rest = append(strings.Split(strings.TrimPrefix(target, "/"), "/"), rest...)
+	}
+	return cur, via, nil
 }
 
 // Physical returns p made absolute with every symlink resolved: the

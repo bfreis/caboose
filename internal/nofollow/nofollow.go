@@ -183,29 +183,15 @@ func (d Dir) Lstat(rel string) (fs.FileInfo, error) {
 	return r.Lstat(name)
 }
 
-// ReadFile reads the plain file at rel, and returns its mode with it.
-func (d Dir) ReadFile(rel string) ([]byte, fs.FileMode, error) {
-	r, name, err := d.parent(rel, false)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer r.Close()
-	f, fi, err := d.openFile(r, rel, name, os.O_RDONLY)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	return data, fi.Mode(), err
-}
-
 // ErrTooLarge is returned by ReadFileMax for a file over its limit.
 var ErrTooLarge = errors.New("file too large")
 
-// ReadFileMax is ReadFile for a file of at most max bytes: one whose size
-// is over it is refused before a byte is read, and what grows past it while
-// being read is cut off there, so a sparse or growing file costs max+1
-// bytes at most. The error is ErrTooLarge.
+// ReadFileMax reads the plain file at rel, of at most max bytes, and
+// returns its mode with it. One whose size is over max is refused before a
+// byte is read, and what grows past it while being read is cut off there,
+// so a sparse or growing file costs max+1 bytes at most. The error is
+// ErrTooLarge. There is no unbounded read: whoever writes the directory
+// decides how large its files are.
 func (d Dir) ReadFileMax(rel string, max int64) ([]byte, fs.FileMode, error) {
 	r, name, err := d.parent(rel, false)
 	if err != nil {
@@ -228,8 +214,29 @@ func (d Dir) ReadFileMax(rel string, max int64) ([]byte, fs.FileMode, error) {
 	return data, fi.Mode(), err
 }
 
-// ReadDir lists the directory at rel, sorted by name.
+// MaxDepth and MaxEntries bound what Walk walks, and MaxEntries what
+// ReadDir lists: whoever writes the directory decides how deep and wide its
+// tree is, and each level is opened from the top again.
+const (
+	MaxDepth   = 64
+	MaxEntries = 200000
+)
+
+// maxEntries is MaxEntries, lowered by tests.
+var maxEntries = MaxEntries
+
+// ErrTooMany is returned for a directory, or a tree, over MaxEntries or
+// MaxDepth.
+var ErrTooMany = errors.New("too many entries, or too deep, to read")
+
+// ReadDir lists the directory at rel, sorted by name: at most MaxEntries,
+// else ErrTooMany.
 func (d Dir) ReadDir(rel string) ([]fs.DirEntry, error) {
+	return d.readDir(rel, maxEntries)
+}
+
+// readDir is ReadDir for at most max entries.
+func (d Dir) readDir(rel string, max int) ([]fs.DirEntry, error) {
 	r, err := d.open(rel, false)
 	if err != nil {
 		return nil, err
@@ -240,9 +247,22 @@ func (d Dir) ReadDir(rel string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	defer f.Close()
-	es, err := f.ReadDir(-1)
+	var es []fs.DirEntry
+	for {
+		batch, err := f.ReadDir(1024)
+		es = append(es, batch...)
+		if len(es) > max {
+			return nil, &fs.PathError{Op: "readdir", Path: path.Join(string(d), rel), Err: ErrTooMany}
+		}
+		if errors.Is(err, io.EOF) || err == nil && len(batch) == 0 {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 	slices.SortFunc(es, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
-	return es, err
+	return es, nil
 }
 
 // WriteFile replaces the file at rel with data, making the directories on
@@ -370,15 +390,26 @@ func (d Dir) Rename(oldRel, newRel string) error {
 // Walk calls fn for every entry under the directory at rel, depth first and
 // in name order, with the entry's path relative to d. Directories are
 // entered only when plain; fn returning fs.SkipDir for one skips it. A
-// missing rel is walked as empty.
+// missing rel is walked as empty. A tree deeper than MaxDepth below rel, or
+// of more than MaxEntries entries, is ErrTooMany once Walk reaches past
+// the bound, after fn has seen what came before.
 func (d Dir) Walk(rel string, fn func(rel string, e fs.DirEntry) error) error {
-	es, err := d.ReadDir(rel)
+	left := maxEntries
+	return d.walk(rel, fn, 0, &left)
+}
+
+func (d Dir) walk(rel string, fn func(rel string, e fs.DirEntry) error, depth int, left *int) error {
+	if depth > MaxDepth {
+		return &fs.PathError{Op: "walk", Path: path.Join(string(d), rel), Err: ErrTooMany}
+	}
+	es, err := d.readDir(rel, *left)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	*left -= len(es)
 	for _, e := range es {
 		p := path.Join(rel, e.Name())
 		err := fn(p, e)
@@ -387,7 +418,7 @@ func (d Dir) Walk(rel string, fn func(rel string, e fs.DirEntry) error) error {
 				continue
 			}
 			if err == nil {
-				err = d.Walk(p, fn)
+				err = d.walk(p, fn, depth+1, left)
 			}
 		}
 		if err != nil {

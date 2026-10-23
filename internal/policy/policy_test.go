@@ -281,7 +281,10 @@ func TestGrantMatching(t *testing.T) {
 		want Verdict
 	}{
 		{"live", live(KindAlias, "alias:build", "g"), VerdictAllow},
-		{"once", Grant{ID: "g", Kind: KindAlias, Key: "alias:build", Once: true, Expires: t0.Add(time.Minute)}, VerdictAllow},
+		{"once", Grant{ID: "g", Kind: KindAlias, Key: "alias:build", Once: true, Exact: `"target"="test"`, Expires: t0.Add(time.Minute)}, VerdictAllow},
+		// A once grant is for the request shown: other arguments ask.
+		{"once, other args", Grant{ID: "g", Kind: KindAlias, Key: "alias:build", Once: true, Exact: `"target"="prod"`, Expires: t0.Add(time.Minute)}, VerdictAsk},
+		{"once, no args", Grant{ID: "g", Kind: KindAlias, Key: "alias:build", Once: true, Expires: t0.Add(time.Minute)}, VerdictAsk},
 		{"expired", Grant{ID: "g", Kind: KindAlias, Key: "alias:build", Expires: t0}, VerdictAsk},
 		{"zero expiry", Grant{ID: "g", Kind: KindAlias, Key: "alias:build"}, VerdictAsk},
 		{"wrong kind", live(KindEgress, "alias:build", "g"), VerdictAsk},
@@ -294,6 +297,48 @@ func TestGrantMatching(t *testing.T) {
 		if d.Verdict != c.want || (d.Verdict == VerdictAllow) != (d.Grant == "g") {
 			t.Errorf("%s: %+v", c.name, d)
 		}
+	}
+}
+
+// A once grant for a connection is for its port; a timed one for every
+// port of the host.
+func TestEgressOnceGrantHoldsThePort(t *testing.T) {
+	p := egressPolicy(t, TrustHostile, "", "")
+	r := Request{Kind: KindEgress, Host: "api.example", Port: 443, Addrs: addrs("140.82.112.3")}
+	other := r
+	other.Port = 22
+	p.Grants = []Grant{{ID: "g", Kind: KindEgress, Key: "egress:api.example", Once: true, Exact: ExactKey(r), Expires: t0.Add(time.Minute)}}
+	if d := Decide(p, r, t0); d.Verdict != VerdictAllow || d.Grant != "g" {
+		t.Errorf("the port allowed: %+v", d)
+	}
+	if d := Decide(p, other, t0); d.Verdict != VerdictAsk {
+		t.Errorf("another port: %+v", d)
+	}
+	p.Grants[0].Once = false
+	if d := Decide(p, other, t0); d.Verdict != VerdictAllow {
+		t.Errorf("a timed grant, another port: %+v", d)
+	}
+	// And for a private address, held exactly too.
+	pr := Request{Kind: KindEgress, Host: "db.corp.example", Port: 22, Addrs: addrs("10.0.0.5")}
+	p.Grants = []Grant{{ID: "g", Kind: KindEgress, Key: "egress:db.corp.example", Once: true, Exact: "443", Addrs: addrs("10.0.0.5"), Expires: t0.Add(time.Minute)}}
+	if d := Decide(p, pr, t0); d.Verdict != VerdictAsk {
+		t.Errorf("private, another port: %+v", d)
+	}
+}
+
+func TestExactKey(t *testing.T) {
+	a := Request{Kind: KindAlias, Args: map[string]string{"b": "2", "a": "1"}}
+	b := Request{Kind: KindAlias, Args: map[string]string{"a": "1", "b": "2"}}
+	if ExactKey(a) != ExactKey(b) || ExactKey(a) != `"a"="1" "b"="2"` {
+		t.Errorf("%q, %q", ExactKey(a), ExactKey(b))
+	}
+	// No splicing one argument into two.
+	c := Request{Kind: KindAlias, Args: map[string]string{"a": `1" "b"="2`}}
+	if ExactKey(c) == ExactKey(a) {
+		t.Errorf("spliced: %q", ExactKey(c))
+	}
+	if ExactKey(Request{Kind: KindEgress, Port: 22}) != "22" || ExactKey(Request{Kind: KindOpenURL, Origin: "https://x"}) != "" {
+		t.Error("egress, url")
 	}
 }
 

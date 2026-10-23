@@ -66,7 +66,8 @@ func TestEffectPrintable(t *testing.T) {
 
 func TestAnswerEffect(t *testing.T) {
 	al := Request{Kind: KindAlias, Alias: "build"}
-	eg := Request{Kind: KindEgress, Host: "api.example"}
+	aa := Request{Kind: KindAlias, Alias: "deploy", Args: map[string]string{"env": "staging", "a": "x y"}}
+	eg := Request{Kind: KindEgress, Host: "api.example", Port: 443}
 	ur := Request{Kind: KindOpenURL, URL: "https://docs.example/x", Origin: "https://docs.example"}
 	pv := Request{Kind: KindEgress, Host: "git.corp.example", Addrs: addrs("140.82.112.3", "::ffff:10.0.0.7", "10.0.0.7", "192.168.1.2")}
 	for _, c := range []struct {
@@ -75,18 +76,19 @@ func TestAnswerEffect(t *testing.T) {
 		hours int
 		want  string
 	}{
-		{al, ScopeOnce, 0, "allows that once"},
-		{eg, ScopeOnce, 0, "allows that once"},
+		{al, ScopeOnce, 0, "allows this one run of alias build, with no arguments: another run, or other arguments, asks again"},
+		{aa, ScopeOnce, 0, `allows this one run of alias deploy, with exactly "a=x y" env=staging: another run, or other arguments, asks again`},
+		{eg, ScopeOnce, 0, "allows one connection to api.example on port 443: another connection, or another port, asks again"},
 		{ur, ScopeOnce, 0, "opens that URL now, and allows nothing more"},
-		{al, ScopeHours, 8, "allows alias build in environment work for 8 hours"},
-		{eg, ScopeHours, 1, "allows connections to api.example in environment work for 1 hour"},
+		{al, ScopeHours, 8, "allows alias build with any arguments in environment work for 8 hours"},
+		{eg, ScopeHours, 1, "allows connections to api.example on any port egress_ports allows in environment work for 1 hour"},
 		{ur, ScopeHours, 2, "allows opening URLs of https://docs.example in environment work for 2 hours"},
 		{al, ScopeHours, 0, ""},
-		{al, ScopeAlways, 0, `sets policy = "allow" in [alias.build] of /h/config.toml`},
-		{eg, ScopeAlways, 0, `adds "api.example" to egress_allow in [vm.default] of /h/config.toml`},
+		{al, ScopeAlways, 0, `sets policy = "allow" in [alias.build] of /h/config.toml: every run of it, with any arguments, without asking`},
+		{eg, ScopeAlways, 0, `adds "api.example" to egress_allow in [vm.default] of /h/config.toml: connections to it on any port egress_ports allows, without asking`},
 		{ur, ScopeAlways, 0, `adds "https://docs.example" to open_urls_allow in [link] of /h/config.toml`},
-		{pv, ScopeHours, 2, "allows connections to git.corp.example at 10.0.0.7, 192.168.1.2 in environment work for 2 hours"},
-		{pv, ScopeAlways, 0, `adds "git.corp.example" to egress_allow in [vm.default] of /h/config.toml`},
+		{pv, ScopeHours, 2, "allows connections to git.corp.example at 10.0.0.7, 192.168.1.2 on any port egress_ports allows in environment work for 2 hours"},
+		{pv, ScopeAlways, 0, `adds "git.corp.example" to egress_allow in [vm.default] of /h/config.toml: connections to it on any port egress_ports allows, without asking`},
 		{Request{Kind: KindHostExec}, ScopeAlways, 0, ""},
 		{Request{Kind: KindAlias}, ScopeOnce, 0, ""},
 		{al, Scope(0), 0, ""},

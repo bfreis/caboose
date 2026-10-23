@@ -31,10 +31,15 @@ type Export struct {
 	// files and directories: symlinks, hard links (see internal/nofollow).
 	// They are never followed; what the repo has of them is kept.
 	Refused []string
+	// TooLarge are home paths that would have synced but are over MaxFile:
+	// never read whole, and what the repo has of them is kept.
+	TooLarge []string
 	// Shadowed are sync rules that matched files, but only files an
 	// earlier rule of their entry took: first match wins, so they never
 	// decide anything. A rule written in the wrong order, most likely.
 	Shadowed []string
+
+	max int64 // the largest file read whole
 }
 
 // kept reports whether repo path p is to be left as the repo has it.
@@ -62,7 +67,12 @@ func (e *Export) refuse(rel, repoPath string) {
 // name says: a symlink or a hard link is refused, never followed, anywhere on a
 // path -- one to .credentials.json would otherwise export the Claude login.
 func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
-	e := &Export{Files: map[string]File{}, Keep: map[string]bool{}}
+	return exportLive(dir, c, MaxFile)
+}
+
+// exportLive is ExportLive reading no file over max whole.
+func exportLive(dir string, c *sandboxcfg.Config, max int64) (*Export, error) {
+	e := &Export{Files: map[string]File{}, Keep: map[string]bool{}, max: max}
 	d := nofollow.Dir(dir)
 	first, later := map[*sandboxcfg.Rule]bool{}, map[*sandboxcfg.Rule]bool{}
 	for i := range c.Keep {
@@ -126,6 +136,7 @@ func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
 		}
 	}
 	sort.Strings(e.Refused)
+	sort.Strings(e.TooLarge)
 	sort.Strings(e.Shadowed)
 	return e, nil
 }
@@ -136,12 +147,16 @@ func ExportLive(dir string, c *sandboxcfg.Config) (*Export, error) {
 // through rewriting it; one with none of the keys has nothing to export,
 // and the repo's copy reads as deleted.
 func (e *Export) addFile(d nofollow.Dir, rel, repoPath string, r *sandboxcfg.Rule) error {
-	data, mode, err := d.ReadFile(rel)
+	data, mode, err := d.ReadFileMax(rel, e.max)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case errors.Is(err, nofollow.ErrNotPlain):
 		e.refuse(rel, repoPath)
+		return nil
+	case errors.Is(err, nofollow.ErrTooLarge):
+		e.TooLarge = append(e.TooLarge, rel)
+		e.Keep[repoPath] = true
 		return nil
 	case err != nil:
 		return err

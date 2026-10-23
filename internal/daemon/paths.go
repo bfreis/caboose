@@ -12,9 +12,6 @@
 //	              commands racing to start it end with one daemon
 //	daemon.json   what the running daemon says of itself (State)
 //	daemon.log    its log, capped
-//	web.token     the web page's token (0600), when the daemon serves the
-//	              page: only the daemon reads it, and hands it out only on
-//	              the socket
 //	replaced.json what caboose a daemon exited for, by a replace
 //	              (Replaced), so that no client brings back an older one
 //
@@ -40,7 +37,6 @@ const (
 	StartLockFile = "start.lock"
 	StateFile     = "daemon.json"
 	LogFile       = "daemon.log"
-	TokenFile     = "web.token"
 	ReplacedFile  = "replaced.json"
 )
 

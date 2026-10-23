@@ -37,14 +37,16 @@ type Sandbox struct {
 // Err saying why. With no file at all, the defaults are in effect; roots
 // are the roots they list (the container paths of the host config's).
 func LoadSandboxConfig(dir string, roots []string) (*Sandbox, error) {
-	data, _, err := nofollow.Dir(dir).ReadFile(SandboxConfig)
+	data, _, err := nofollow.Dir(dir).ReadFileMax(SandboxConfig, sandboxcfg.MaxSize)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		d := sandboxcfg.Default(roots)
 		c, err := sandboxcfg.Parse(d)
 		return &Sandbox{Config: c, Data: d, Absent: true}, err
-	case errors.Is(err, nofollow.ErrNotPlain):
+	case errors.Is(err, nofollow.ErrNotPlain), errors.Is(err, nofollow.ErrTooLarge):
 		// Read as one that does not parse: the last good copy stands in.
+		// One over the limit is refused before it is read, whatever size
+		// the sandbox made it.
 	case err != nil:
 		return nil, err
 	}

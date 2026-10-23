@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
@@ -286,5 +287,45 @@ func TestVMStarted(t *testing.T) {
 	l.Close()
 	if _, ok := v.Started(); ok {
 		t.Fatal("Started once the socket is closed")
+	}
+}
+
+// The console is the guest's to fill: Logs reads its last consoleTail
+// bytes alone, from the first whole line in them, and makes what it
+// writes printable.
+func TestVMLogsTailPrintable(t *testing.T) {
+	dir := t.TempDir()
+	v := &VM{Dir: vm.Dir(dir)}
+	f, err := os.Create(v.Dir.Console())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("first line, far back\n" + strings.Repeat("x", consoleTail) + "\nlast \x1b]52;c;evil\x07line\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Sparse past the end of what is read: never read.
+	if err := f.Truncate(1 << 40); err != nil {
+		t.Skip(err)
+	}
+	if _, err := f.WriteAt([]byte("\nend \x1b[2Jline\n"), 1<<40); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	var out bytes.Buffer
+	if err := v.Logs(&out, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != `end \u001B[2Jline`+"\n" {
+		t.Errorf("logs %q", got)
+	}
+	// A small console is read whole. Its lines end in \r\n, as a tty's
+	// do: one \r is dropped from each, and a tab kept, never escaped; any
+	// other \r is.
+	if err := os.WriteFile(v.Dir.Console(), []byte("a\tb\r\nb\x07\r\r\nc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := v.Logs(&out, nil, 5); err != nil || out.String() != "a\tb\nb\\u0007\\u000D\nc\n" {
+		t.Errorf("small: %q %v", out.String(), err)
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/assets"
+	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/proposal"
 )
@@ -340,6 +342,68 @@ func TestProposedRootRefusals(t *testing.T) {
 	}
 }
 
+// The home's hidden directories and ~/Library are judged ignoring case,
+// as a case-insensitive volume finds them: a root proposed under another
+// case of the home is still in ~/.caboose or ~/.ssh.
+func TestProposedRootHomeIgnoringCase(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	home := e.a.Cfg.Home
+	e.mkdir(".caboose/daemon")
+	e.mkdir(".ssh")
+	e.mkdir("library/x")
+	e.mkdir("ok")
+	e.a.Cfg.Home = filepath.Join(filepath.Dir(home), "HOME")
+	for _, tc := range []struct{ path, want string }{
+		{filepath.Join(home, ".caboose", "daemon"), "is in ~/.caboose"},
+		{filepath.Join(home, ".ssh"), "is in ~/.ssh"},
+		{filepath.Join(home, "library", "x"), "is in ~/library"},
+		{filepath.Join(home, "ok"), ""},
+	} {
+		_, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "x", Path: tc.path})
+		got := strings.Join(refusals, "\n")
+		if tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: refusals %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+// caboose's state is judged by identity: a root holding an environment's
+// directory not made yet, under a second name for the root, which no
+// comparison of paths sees.
+func TestProposedRootStateByIdentity(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	home := e.a.Cfg.Home
+	e.mkdir("real")
+	symlink(t, filepath.Join(home, "real"), filepath.Join(home, "second"))
+	e.a.Cfg.CabooseHome = filepath.Join(filepath.Dir(home), "elsewhere")
+	e.a.Cfg.EnvDir = filepath.Join(home, "second", "env")
+	e.a.Cfg.DataDir = filepath.Join(home, "second", "env", "data")
+	_, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "x", Path: "~/real"})
+	if got := strings.Join(refusals, "\n"); !strings.Contains(got, "overlaps this environment") {
+		t.Errorf("refusals %q", got)
+	}
+}
+
+// The host path a proposed root leads to, through a symlink the sandbox
+// may have made, is shown escaped: a directory's name can hold control
+// characters.
+func TestProposedRootShowsHostPathEscaped(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	home := e.a.Cfg.Home
+	e.mkdir("dev/sub/\x1b]52;c;evil\x07")
+	symlink(t, filepath.Join(home, "dev", "sub", "\x1b]52;c;evil\x07"), filepath.Join(home, "dev", "l"))
+	e.a.Cfg.File = &config.File{Roots: map[string]config.FileRoot{"dev": {Host: "~/dev"}}}
+	host, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "x", Path: "~/dev/l"})
+	got := strings.Join(refusals, "\n")
+	if !strings.Contains(got, "overlaps the root ~/dev") || strings.ContainsAny(got, "\x1b\x07") {
+		t.Errorf("refusals %q", got)
+	}
+	pl := plan{root: &proposal.Root{Name: "x", Path: "~/dev/l"}, host: host}
+	if note := e.a.rootNote(pl); strings.ContainsAny(note, "\x1b\x07") {
+		t.Errorf("note %q", note)
+	}
+}
+
 // What the sandbox wrote is never put on the terminal as it is: a file's
 // name, or an error quoting the file, has its control characters escaped.
 func TestApplyEscapesWhatTheSandboxWrote(t *testing.T) {
@@ -390,5 +454,132 @@ func TestDeleteProposalErrorIsPrintable(t *testing.T) {
 	}
 	if got := out.String(); strings.ContainsAny(got, "\x1b\a") || !strings.Contains(got, `\u001B`) {
 		t.Errorf("output %q", got)
+	}
+}
+
+// otherEnv makes environment name's directory, with conf as its
+// config.toml ("" for none).
+func otherEnv(t *testing.T, e *setupEnv, name, conf string) {
+	t.Helper()
+	dir := config.EnvDirFor(e.a.Cfg.CabooseHome, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if conf != "" {
+		if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(conf), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A proposed root in what another environment's sandbox can write is
+// refused, whether that sandbox exists now or only its config.toml says
+// so: that sandbox could swap it for a symlink to anywhere before a
+// launch. One whose writable paths cannot be had at all is refused too.
+func TestProposedRootInWhatASandboxWrites(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	home := e.a.Cfg.Home
+	e.mkdir("shared/x")
+	e.mkdir("live/x")
+	e.mkdir("ok")
+	if err := os.MkdirAll(e.a.Cfg.EnvDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	otherEnv(t, e, "other", "[roots]\nshared = { host = \"~/shared\", writable = [\".\"] }\n")
+	theirs := sandbox(nil, filepath.Join(home, "live"))
+	e.a.envBox = func(env string) (backend.Backend, bool, error) {
+		if env == "other" {
+			return theirs, true, nil
+		}
+		return &backendtest.Fake{}, true, nil
+	}
+	for _, tc := range []struct{ path, want string }{
+		{"~/shared/x", "which a sandbox can write"},
+		{"~/live/x", "which a sandbox can write"},
+		{"~/ok", ""},
+		// The very directory another environment mounts writable whole is
+		// shared: a sandbox cannot replace its own mount point.
+		{"~/shared", ""},
+	} {
+		_, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "x", Path: tc.path})
+		got := strings.Join(refusals, "\n")
+		if tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: refusals %q, want %q", tc.path, got, tc.want)
+		}
+	}
+	// Its sandbox cannot be asked, but its config.toml says enough.
+	e.a.envBox = func(string) (backend.Backend, bool, error) { return nil, false, errors.New("engine down") }
+	if _, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "x", Path: "~/shared/x"}); !strings.Contains(strings.Join(refusals, "\n"), "which a sandbox can write") {
+		t.Errorf("configured only: %q", refusals)
+	}
+	// Its config.toml does not load.
+	otherEnv(t, e, "other", "not toml [[[")
+	_, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "ok", Path: "~/ok"})
+	if got := strings.Join(refusals, "\n"); !strings.Contains(got, "cannot be checked against what the sandboxes can write") || !strings.Contains(got, "other: its config.toml does not load") {
+		t.Errorf("an environment that cannot be read: %q", got)
+	}
+}
+
+// Just before a sandbox is created, a root that lies, or is reached
+// through a symlink that lies, where another environment's sandbox can
+// write is refused: configured there or mounted now. A root that is the
+// very directory another environment mounts writable whole is shared,
+// and fine. An environment whose engine is down counts by its config.toml
+// alone; one whose config.toml does not load refuses, named.
+func TestCheckRootReach(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	home := e.a.Cfg.Home
+	e.mkdir("shared/x")
+	e.mkdir("ok")
+	if err := os.MkdirAll(e.a.Cfg.EnvDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	down := func(string) (backend.Backend, bool, error) { return nil, false, errors.New("engine down") }
+	e.a.envBox = down
+	e.a.Cfg.Roots = []config.Root{{Name: "x", Host: filepath.Join(home, "shared", "x"), Container: "/work/x"}}
+	if err := e.a.checkRootReach(); err != nil {
+		t.Fatalf("no other environment: %v", err)
+	}
+	otherEnv(t, e, "other", "[roots]\nshared = { host = \"~/shared\", writable = [\".\"] }\n")
+	if err := e.a.checkRootReach(); err == nil || !strings.Contains(err.Error(), "another environment's sandbox can write") {
+		t.Errorf("a plain directory in a configured writable part, its engine down: %v", err)
+	}
+	e.a.Cfg.Roots = []config.Root{{Name: "shared", Host: filepath.Join(home, "shared"), Container: "/work/shared"}}
+	if err := e.a.checkRootReach(); err != nil {
+		t.Errorf("a root another environment mounts writable whole, shared: %v", err)
+	}
+	theirs := sandbox(nil, filepath.Join(home, "shared"))
+	e.a.envBox = func(string) (backend.Backend, bool, error) { return theirs, true, nil }
+	if err := e.a.checkRootReach(); err != nil {
+		t.Errorf("the same, its sandbox mounting it now: %v", err)
+	}
+	e.a.envBox = down
+	e.a.Cfg.Roots = []config.Root{{Name: "p", Host: filepath.Join(home, "ok"), Container: "/work/p", Via: []string{filepath.Join(home, "shared", "l")}}}
+	if err := e.a.checkRootReach(); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("a link in a configured writable part: %v", err)
+	}
+	e.a.Cfg.Roots = []config.Root{{Name: "p", Host: filepath.Join(home, "ok"), Container: "/work/p", Via: []string{filepath.Join(home, "elsewhere", "l")}}}
+	if err := e.a.checkRootReach(); err != nil {
+		t.Errorf("elsewhere, the other environment's engine down: %v", err)
+	}
+	// A link where its sandbox mounts something writable now.
+	live := sandbox(nil, filepath.Join(home, "elsewhere"))
+	e.a.envBox = func(string) (backend.Backend, bool, error) { return live, true, nil }
+	if err := e.a.checkRootReach(); err == nil || !strings.Contains(err.Error(), "which a sandbox can write") {
+		t.Errorf("a link where the live sandbox writes: %v", err)
+	}
+	// Its sandbox is there, but its mounts cannot be read: it may mount
+	// more than its config.toml now says, so the launch is refused.
+	blind := &failingBox{Fake: sandbox(nil, filepath.Join(home, "elsewhere")), mounts: errors.New("timed out")}
+	e.a.envBox = func(string) (backend.Backend, bool, error) { return blind, true, nil }
+	e.a.Cfg.Roots = []config.Root{{Name: "p", Host: filepath.Join(home, "ok"), Container: "/work/p"}}
+	if err := e.a.checkRootReach(); err == nil || !strings.Contains(err.Error(), "other: its sandbox's mounts cannot be read") {
+		t.Errorf("a sandbox whose mounts cannot be read: %v", err)
+	}
+	// Its config.toml does not load: the launch is refused, naming it.
+	otherEnv(t, e, "other", "not toml [[[")
+	e.a.envBox = down
+	if err := e.a.checkRootReach(); err == nil || !strings.Contains(err.Error(), "other: its config.toml does not load") || !strings.Contains(err.Error(), "fix it, or remove the environment") {
+		t.Errorf("a config.toml that does not load: %v", err)
 	}
 }

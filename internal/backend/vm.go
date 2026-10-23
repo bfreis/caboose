@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/hvsock"
+	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/vm"
 )
 
@@ -427,14 +429,60 @@ func (v *VM) Mounts() ([]Mount, error) {
 	return out, nil
 }
 
-// Logs writes the console's last lines.
+// consoleTail is how much of the console's end Logs reads: the guest
+// writes the file, as much as it likes, until the next boot.
+const consoleTail = 256 << 10
+
+// Logs writes the console's last lines, from its last consoleTail bytes
+// alone, made printable: they are the guest's, and go to a terminal.
 func (v *VM) Logs(stdout, _ io.Writer, lines int) error {
-	b, err := os.ReadFile(v.Dir.Console())
+	b, err := readTail(v.Dir.Console(), consoleTail)
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(stdout, lastLines(string(b), lines))
+	out := lastLines(string(b), lines)
+	var sb strings.Builder
+	for _, l := range strings.SplitAfter(out, "\n") {
+		line, nl := strings.CutSuffix(l, "\n")
+		// The console is a tty: its lines end in \r\n, and a tab is
+		// layout, both shown as the terminal would, never escaped.
+		line = strings.TrimSuffix(line, "\r")
+		parts := strings.Split(line, "\t")
+		for i, p := range parts {
+			parts[i] = proposal.Printable(p)
+		}
+		sb.WriteString(strings.Join(parts, "\t"))
+		if nl {
+			sb.WriteString("\n")
+		}
+	}
+	_, err = io.WriteString(stdout, sb.String())
 	return err
+}
+
+// readTail is the last n bytes of the file at p, less the line cut in
+// two where they start.
+func readTail(p string, n int64) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	off := max(0, fi.Size()-n)
+	b, err := io.ReadAll(io.NewSectionReader(f, off, n))
+	if err != nil {
+		return nil, err
+	}
+	if off > 0 {
+		if i := bytes.IndexByte(b, '\n'); i >= 0 {
+			b = b[i+1:]
+		}
+	}
+	return b, nil
 }
 
 // lastLines is s's last n lines, each with its newline.

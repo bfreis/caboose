@@ -38,48 +38,77 @@ func (a *App) checkProposedRoot(r proposal.Root) (host string, refusals, warning
 		return "", []string{fmt.Sprintf("The root %s is not a directory.", shown)}, nil
 	}
 	refuse := func(format string, args ...any) { refusals = append(refusals, fmt.Sprintf(format, args...)) }
+	// host is where a symlink led, which the sandbox may have named: it is
+	// shown only as printable text.
+	hostShown := proposal.Printable(host)
 
-	home := physicalOr(c.Home)
+	// The home, its hidden directories and ~/Library, by path ignoring
+	// case and by identity, as a writable part is judged: a second name
+	// for the home (a bind mount, a firmlink, another case on a
+	// case-insensitive volume) is the home.
 	switch {
 	case host == "/":
 		refuse("The root %s is the whole disk.", shown)
-	case home != "" && config.Within(home, host):
-		refuse("The root %s (%s) is your home directory, or holds it: it would hand the sandbox your keys, tokens and everything else in it.", shown, host)
-	case home != "" && config.Within(host, home):
-		first, _, _ := strings.Cut(strings.TrimPrefix(host, home+"/"), "/")
-		if strings.HasPrefix(first, ".") || strings.EqualFold(first, "Library") {
-			refuse("The root %s (%s) is in ~/%s, where tools keep their settings and credentials.", shown, host, first)
+	case c.Home != "" && config.HoldsDir(host, c.Home):
+		refuse("The root %s (%s) is your home directory, or holds it: it would hand the sandbox your keys, tokens and everything else in it.", shown, hostShown)
+	default:
+		name, ok := a.homeEntryNamed(host)
+		if !ok {
+			name, ok = a.homeEntryOf(host)
+		}
+		if ok {
+			refuse("The root %s (%s) is in ~/%s, where tools keep their settings and credentials.", shown, hostShown, proposal.Printable(name))
 		}
 	}
 	// A root holding CABOOSE_HOME, by path and by identity (a second name
 	// for the root, or for a directory above CABOOSE_HOME, that no path
-	// comparison sees), is said with a narrower root to use instead.
+	// comparison sees), is said with a narrower root to use instead. One
+	// in or at caboose's state is judged by identity too.
 	if why := config.CabooseHomeRootProblem(host, c.CabooseHome, c.Home); why != "" {
-		refuse("The root %s (%s) %s.", shown, host, why)
+		refuse("The root %s (%s) %s.", shown, hostShown, why)
 	} else {
 		for _, own := range []struct{ what, dir string }{
 			{"caboose's home", c.CabooseHome},
 			{"this environment", c.EnvDir},
 			{"the data dir", c.DataDir},
 		} {
-			p := physicalOr(own.dir)
-			if p != "" && (config.Within(host, p) || config.Within(p, host)) {
-				refuse("The root %s (%s) overlaps %s, %s: the sandbox could change its own configuration, and read the Claude login.", shown, host, own.what, p)
+			if own.dir != "" && (config.HoldsDir(host, own.dir) || config.HoldsDir(own.dir, host)) {
+				refuse("The root %s (%s) overlaps %s, %s: the sandbox could change its own configuration, and read the Claude login.", shown, hostShown, own.what, proposal.Printable(physicalOr(own.dir)))
 				break
 			}
 		}
+	}
+	// The other roots by path and by identity: another spelling of a
+	// directory in a root (another case, a firmlink, a bind mount) is in
+	// it, and one in a writable part could be swapped for a symlink to
+	// anywhere before the next launch.
+	overlaps := func(o string) bool {
+		return config.Within(host, o) || config.Within(o, host) || config.HoldsDir(o, host) || config.HoldsDir(host, o)
 	}
 	for _, o := range a.fileRoots() {
 		if o.Name == r.Name {
 			refuse("There is a root named %s already, at %s.", r.Name, o.Path)
 		}
-		if oh := a.hostPath(o.Path); config.Within(host, oh) || config.Within(oh, host) {
-			refuse("The root %s (%s) overlaps the root %s: a project under both would have two paths in the sandbox.", shown, host, o.Path)
+		if oh := a.hostPath(o.Path); overlaps(oh) {
+			refuse("The root %s (%s) overlaps the root %s: a project under both would have two paths in the sandbox.", shown, hostShown, o.Path)
 		}
 	}
 	for _, m := range a.mountedRoots() {
-		if mh := physicalOr(m.Host); mh != "" && (config.Within(host, mh) || config.Within(mh, host)) && !a.configuredRoot(mh) {
-			refuse("The root %s (%s) overlaps %s, which the %s mounts at %s.", shown, host, m.Host, a.noun(), m.Container)
+		if mh := physicalOr(m.Host); mh != "" && overlaps(mh) && !a.configuredRoot(mh) {
+			refuse("The root %s (%s) overlaps %s, which the %s mounts at %s.", shown, hostShown, m.Host, a.noun(), m.Container)
+		}
+	}
+	// What another environment's sandbox can write, configured or live, by
+	// identity too: a root there is that sandbox's to swap for a symlink.
+	// This environment's own is the overlap with its roots, above.
+	if ws, unknown := a.otherWritable(); len(unknown) > 0 {
+		refuse("The root %s (%s) cannot be checked against what the sandboxes can write: %s.", shown, hostShown, proposal.Printable(strings.Join(unknown, "; ")))
+	} else {
+		for _, w := range ws {
+			if w != "" && strictlyHolds(w, host) {
+				refuse("The root %s (%s) is in %s, which a sandbox can write: it could put a symbolic link to anywhere in its place.", shown, hostShown, proposal.Printable(w))
+				break
+			}
 		}
 	}
 	if len(refusals) > 0 {
@@ -92,9 +121,30 @@ func (a *App) checkProposedRoot(r proposal.Root) (host string, refusals, warning
 		if more {
 			list += ", and more"
 		}
-		warnings = append(warnings, fmt.Sprintf("%s holds what looks like credentials or keys: %s. The sandbox could read them all.", host, list))
+		warnings = append(warnings, fmt.Sprintf("%s holds what looks like credentials or keys: %s. The sandbox could read them all.", hostShown, list))
 	}
 	return host, nil, warnings
+}
+
+// homeEntryNamed is the hidden directory of the home, or ~/Library, that p
+// is in by its path, ignoring case as a case-insensitive volume does: the
+// home as configured and as its physical path.
+func (a *App) homeEntryNamed(p string) (string, bool) {
+	p = filepath.Clean(p)
+	for _, home := range []string{a.Cfg.Home, physicalOr(a.Cfg.Home)} {
+		if home == "" || home == "/" {
+			continue
+		}
+		home = filepath.Clean(home)
+		if len(p) <= len(home)+1 || !strings.EqualFold(p[:len(home)+1], home+"/") {
+			continue
+		}
+		first, _, _ := strings.Cut(p[len(home)+1:], "/")
+		if strings.HasPrefix(first, ".") || strings.EqualFold(first, "Library") {
+			return first, true
+		}
+	}
+	return "", false
 }
 
 // configuredRoot reports whether host is one of config.toml's roots, which

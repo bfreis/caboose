@@ -2,14 +2,11 @@ package launcher
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/daemonproto"
 )
 
@@ -230,56 +227,5 @@ func TestDoctorWebListener(t *testing.T) {
 	}
 	if p := webRows(c, "web ports"); len(p) != 1 || !strings.Contains(p[0].text, "forward_ports") {
 		t.Errorf("ports row %+v", p)
-	}
-}
-
-func TestDoctorWebToken(t *testing.T) {
-	a, _, _ := newCLIApp(t, &fakeDaemon{})
-	a.Cfg.CabooseHome = t.TempDir()
-	dir := a.daemonDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	tok := filepath.Join(dir, daemon.TokenFile)
-	level := func() finding {
-		c := &checkup{}
-		a.doctorWebToken(c)
-		r := webRows(c, "web token")
-		if len(r) != 1 {
-			t.Fatalf("%+v", c.rows)
-		}
-		if strings.Contains(r[0].text, "SECRETSECRET") {
-			t.Error("row shows the token")
-		}
-		return r[0]
-	}
-	if f := level(); f.level != levelNote {
-		t.Errorf("missing: %+v", f)
-	}
-	if err := os.WriteFile(tok, []byte("SECRETSECRET\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if f := level(); f.level != levelOK {
-		t.Errorf("0600: %+v", f)
-	}
-	if err := os.Chmod(tok, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if f := level(); f.level != levelProblem || !strings.Contains(f.text, "0644") {
-		t.Errorf("0644: %+v", f)
-	}
-	// A link is not followed.
-	if err := os.Remove(tok); err != nil {
-		t.Fatal(err)
-	}
-	real := filepath.Join(t.TempDir(), "real")
-	if err := os.WriteFile(real, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(real, tok); err != nil {
-		t.Fatal(err)
-	}
-	if f := level(); f.level != levelProblem {
-		t.Errorf("symlink: %+v", f)
 	}
 }
