@@ -22,7 +22,7 @@ var (
 
 // iconPoints is the images' size in points.
 const (
-	iconPointsW = 26
+	iconPointsW = 22
 	iconPointsH = 18
 )
 

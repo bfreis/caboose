@@ -19,7 +19,7 @@ import (
 // (docs/assets/logo.svg) reduced to what reads at 18 points: the railcar's
 // silhouette (the cupola under its overhanging roof, the roof overhanging
 // the body, the underframe) and two wheels below it, without the logo's
-// slats, railings and lamp. Every edge but the wheels' lies on the 1x
+// slats, railings and lamp, and shortened as the app's icon is. Every edge but the wheels' lies on the 1x
 // pixel grid, so both scales are crisp. Running is the silhouette filled,
 // with the cupola's window cut out and a hub in each wheel; idle is the same silhouette's outline,
 // one point wide, with the roof's lower edge drawn across, and the wheels
@@ -49,19 +49,19 @@ var (
 	// layers are the silhouette's rows of boxes, top to bottom, each
 	// starting where the one before it ends.
 	layers = []box{
-		{8, 0, 18, 1},   // the cupola's roof
-		{9, 1, 17, 4},   // the cupola
-		{2, 4, 24, 6},   // the roof
-		{3, 6, 23, 10},  // the body
-		{1, 10, 25, 12}, // the underframe
+		{6, 0, 16, 1},   // the cupola's roof
+		{7, 1, 15, 4},   // the cupola
+		{2, 4, 20, 6},   // the roof
+		{3, 6, 19, 10},  // the body
+		{1, 10, 21, 12}, // the underframe
 	}
 	// window is the cupola's window, cut from the filled silhouette;
 	// eave is the roof's lower edge across the body, a line in the
 	// outline, which closes the cupola's window there.
-	window = box{11, 2, 15, 3}
-	eave   = box{2, 5, 24, 6}
+	window = box{9, 2, 13, 3}
+	eave   = box{2, 5, 20, 6}
 	// wheels are circles, a point clear of the underframe.
-	wheels = []struct{ cx, cy, r float64 }{{6.5, 15.5, 2.5}, {19.5, 15.5, 2.5}}
+	wheels = []struct{ cx, cy, r float64 }{{6.5, 15.5, 2.5}, {15.5, 15.5, 2.5}}
 	// stroke is the outline's width, hub the radius of the hole in a
 	// filled wheel, in points: one whole pixel at 1x, four at 2x.
 	stroke = 1
