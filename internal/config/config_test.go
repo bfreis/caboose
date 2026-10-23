@@ -241,7 +241,7 @@ func TestDefaults(t *testing.T) {
 		Image: "caboose:default", Container: "caboose-default", DataDir: "/h/.caboose/envs/default/data",
 		Roots:     []Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}},
 		AutoBuild: true, Tmux: true, KeepVersions: 2, ReadyTimeout: 600, Home: "/h",
-		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: KindContainer,
+		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", CheckpointRequests: CheckpointRequestsAllow, Isolation: KindContainer,
 		ImageProfile: ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true},
 		Egress:       true, EgressPorts: DefaultEgressPorts,
 		Trust: TrustFallible}

@@ -118,6 +118,24 @@ func TestDecideHostExec(t *testing.T) {
 	}
 }
 
+func TestDecideCheckpoint(t *testing.T) {
+	r := Request{Kind: KindCheckpoint}
+	runCases(t, []decideCase{
+		{"fallible allow", Policy{Trust: TrustFallible, CheckpointRequests: CheckpointAllow}, r, VerdictAllow, "allow:checkpoint_requests"},
+		{"hostile allow", Policy{Trust: TrustHostile, CheckpointRequests: CheckpointAllow}, r, VerdictAllow, "allow:checkpoint_requests"},
+		{"fallible off", Policy{Trust: TrustFallible, CheckpointRequests: CheckpointOff}, r, VerdictDeny, "deny:checkpoint_requests-off"},
+		{"hostile off", Policy{Trust: TrustHostile, CheckpointRequests: CheckpointOff}, r, VerdictDeny, "deny:checkpoint_requests-off"},
+		{"unset", Policy{Trust: TrustFallible}, r, VerdictDeny, "deny:checkpoint_requests-policy"},
+		{"odd", Policy{Trust: TrustFallible, CheckpointRequests: "Allow"}, r, VerdictDeny, "deny:checkpoint_requests-policy"},
+	})
+	if k := GrantKey(r); k != "" {
+		t.Errorf("GrantKey = %q", k)
+	}
+	if e := Effect(Policy{}, r); !strings.Contains(e, "checkpoint") {
+		t.Errorf("Effect = %q", e)
+	}
+}
+
 func aliasPolicy(trust Trust, pol string) Policy {
 	return Policy{
 		Trust:    trust,

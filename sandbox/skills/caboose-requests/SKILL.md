@@ -1,6 +1,6 @@
 ---
 name: caboose-requests
-description: Use when something the sandbox needs is refused or waits for a person on the host - a connection answered 403 with "pending #N", an open of a URL that says "pending", an alias that exits 75 or 77, a host the egress proxy will not reach - or when you can tell ahead that you will need one. Explains how to ask the user on the host with the caboose_request tool or caboose-agent request, what to put in it, never to wait for the answer, how to find out what was decided, and what the exit codes mean.
+description: Use when something the sandbox needs is refused or waits for a person on the host - a connection answered 403 with "pending #N", an open of a URL that says "pending", an alias that exits 75 or 77, a host the egress proxy will not reach - or when you can tell ahead that you will need one, or want the host to take a checkpoint now (caboose-agent checkpoint) before something risky. Explains how to ask the user on the host with the caboose_request tool or caboose-agent request, what to put in it, never to wait for the answer, how to find out what was decided, and what the exit codes mean.
 ---
 
 # Asking the host for what the sandbox cannot do alone
@@ -59,6 +59,18 @@ requests [--all] [--since N] [--json]`: it lists the host's own description of
 each request, its state (`pending`, `allowed`, `denied`, `expired`), how long
 an allow lasts, and the reason for a denial. A request nobody answers expires
 and counts as denied. Do not poll in a loop.
+
+## A checkpoint now
+
+Before something risky (a large refactor, a mass delete, a rewrite of
+history), `caboose-agent checkpoint` has the host copy every path its
+`[checkpoints]` lists now (or `caboose-agent checkpoint PATH...`, container
+paths among them). It asks no person: it prints each checkpoint's ID, and
+exits 0 when all were taken, 1 when some were not (with why), 75 when asked
+too often (later, not in a loop), 77 when the user turned it off, 69 when the
+host takes none here. At most one per path a
+minute and 10 requests an hour; do not call it in a loop. The user restores
+one on the host; you cannot.
 
 ## Good to know
 

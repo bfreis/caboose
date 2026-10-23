@@ -257,6 +257,8 @@ func (a *App) runCheckup(c *checkup, offline bool) {
 	running := state == "running"
 	c.checking("the daemon and the link")
 	a.doctorDaemon(c, running)
+	c.checking("the checkpoints")
+	a.doctorCheckpoints(c, running)
 	agentKeys, agentWhy := []string(nil), "the "+a.noun()+" is not running"
 	if running {
 		c.checking("inside the " + a.noun())

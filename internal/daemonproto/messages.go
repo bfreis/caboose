@@ -269,6 +269,9 @@ type EnvStatus struct {
 	// Pending is how many requests wait for an answer in the environment's
 	// broker; absent while none does, or no link of this daemon serves it.
 	Pending int `json:"pending,omitempty"`
+	// Checkpoints is the environment's checkpoint schedule; absent while
+	// the daemon runs none for it.
+	Checkpoints *CheckpointStatus `json:"checkpoints,omitempty"`
 }
 
 // StatusResult is the result of status.
@@ -332,6 +335,11 @@ func (e *EnvStatus) validate() error {
 	}
 	if e.Pending < 0 {
 		return bad("negative pending count")
+	}
+	if e.Checkpoints != nil {
+		if err := e.Checkpoints.validate(); err != nil {
+			return err
+		}
 	}
 	return checkText("last error", e.LastError, maxMessage)
 }

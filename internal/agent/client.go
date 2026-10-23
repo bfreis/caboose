@@ -381,6 +381,15 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
                       a person's yes on the host (pending #N), 77 when
                       refused, 127 for no such alias, 126 when it cannot run
   aliases [--json]    the host's aliases: names, descriptions, parameters
+  checkpoint [--json] [PATH...]
+                      have the host take a checkpoint now of each PATH, a
+                      container path among [checkpoints] paths in its
+                      config.toml (none: every one of them), as its schedule
+                      would; prints each checkpoint's ID. At most one per
+                      path a minute and 10 requests an hour. Exits 0 when
+                      every path was taken, 1 when some were not, 75 when
+                      asked too often (try again later), 77 when
+                      checkpoint_requests is off, 69 when the host takes none
   request KIND [--alias NAME] [--arg KEY=VALUE]... [--host H --port P] [--url U]
           [--context TEXT] [--option TEXT]... [--recommend TEXT]
           [--meanwhile TEXT] [--session ID] [--json]
@@ -452,6 +461,8 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		return runCommand(rest, stdin, stdout, stderr, usage)
 	case "aliases":
 		return aliasesCommand(rest, stdout, stderr, usage)
+	case "checkpoint":
+		return checkpointCommand(rest, stdout, stderr, usage)
 	case "request":
 		return requestCommand(rest, stdout, stderr, usage)
 	case "requests":

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bfreis/caboose/internal/backend"
 )
@@ -46,6 +47,9 @@ type Fake struct {
 	// Log is what the sandbox's entrypoint said; Logs writes its last
 	// lines.
 	Log string
+	// StartedAt is Started's answer while the sandbox runs; zero is a
+	// backend that cannot tell.
+	StartedAt time.Time
 
 	// CreateErr, StartErr, StopErr and RemoveErr fail those calls, which
 	// then change nothing.
@@ -67,7 +71,20 @@ type Fake struct {
 	Calls []string
 }
 
-var _ backend.Backend = (*Fake)(nil)
+var (
+	_ backend.Backend = (*Fake)(nil)
+	_ backend.Starter = (*Fake)(nil)
+)
+
+// Started is StartedAt while the sandbox runs and it is set.
+func (f *Fake) Started() (time.Time, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Status != "running" || f.StartedAt.IsZero() {
+		return time.Time{}, false
+	}
+	return f.StartedAt, true
+}
 
 func (f *Fake) exists() bool { return f.Status != "" && f.Status != "absent" }
 

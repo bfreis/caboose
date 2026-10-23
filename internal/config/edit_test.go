@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -245,5 +246,96 @@ func TestEditMultiLineArray(t *testing.T) {
 				t.Error(err)
 			}
 		})
+	}
+}
+
+// [checkpoints] paths, as setup writes it: made from the template's
+// commented table, added to a file that lacks it, replaced in one that has
+// it, and cleared.
+func TestEditCheckpoints(t *testing.T) {
+	set := func(paths ...string) Edit { return Edit{Set: map[string]any{"checkpoints.paths": paths}} }
+	clear := Edit{Unset: []string{"checkpoints.paths"}}
+	for _, tc := range []struct {
+		name string
+		in   string
+		e    Edit
+		want string
+		read []string
+	}{
+		{"from the template's commented table",
+			"# About.\n#[checkpoints]\n#paths = [\"/work/dev/myproject\", \"~/.claude\"]\n\n[session]\ntmux = false\n",
+			set("/work/dev/a"),
+			"# About.\n[checkpoints]\npaths = [\"/work/dev/a\"]\n\n[session]\ntmux = false\n",
+			[]string{"/work/dev/a"}},
+		{"added to a file without the table",
+			"format = 1\n",
+			set("/work/dev/a", "~/.claude"),
+			"format = 1\n\n[checkpoints]\npaths = [\"/work/dev/a\", \"~/.claude\"]\n",
+			[]string{"/work/dev/a", "~/.claude"}},
+		{"into an empty file", "", set("~/.claude"), "[checkpoints]\npaths = [\"~/.claude\"]\n", []string{"~/.claude"}},
+		{"replaces the table's value",
+			"[checkpoints]\npaths = [\"/work/dev/a\"] # mine\n\n[session]\ntmux = false\n",
+			set("/work/dev/b", "/work/dev/c"),
+			"[checkpoints]\npaths = [\"/work/dev/b\", \"/work/dev/c\"]\n\n[session]\ntmux = false\n",
+			[]string{"/work/dev/b", "/work/dev/c"}},
+		{"replaces a multi-line value",
+			"[checkpoints]\npaths = [\n  \"/work/dev/a\",\n  \"~/.claude\",\n]\n[session]\ntmux = false\n",
+			set("/work/dev/b"),
+			"[checkpoints]\npaths = [\"/work/dev/b\"]\n[session]\ntmux = false\n",
+			[]string{"/work/dev/b"}},
+		{"uncomments a commented line in an active table",
+			"[checkpoints]\n#paths = [\"/x\"]\n",
+			set("/work/dev/a"),
+			"[checkpoints]\npaths = [\"/work/dev/a\"]\n",
+			[]string{"/work/dev/a"}},
+		{"clears by commenting out",
+			"[checkpoints]\npaths = [\"/work/dev/a\", \"~/.claude\"]\n\n[session]\ntmux = false\n",
+			clear,
+			"[checkpoints]\n#paths = [\"/work/dev/a\", \"~/.claude\"]\n\n[session]\ntmux = false\n",
+			nil},
+		{"clearing a file without the table changes nothing", "format = 1\n", clear, "format = 1\n", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(EditFile([]byte(tc.in), tc.e))
+			if got != tc.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, tc.want)
+			}
+			if err := CheckEdit("config.toml", []byte(tc.in), []byte(got), tc.e); err != nil {
+				t.Error(err)
+			}
+			f, err := ParseFile("config.toml", []byte(got))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(f.Checkpoints, tc.read) {
+				t.Errorf("reads back %q, want %q", f.Checkpoints, tc.read)
+			}
+		})
+	}
+}
+
+// The template itself, set and cleared in turn, keeps its comments and
+// reads back.
+func TestEditCheckpointsTemplate(t *testing.T) {
+	data := []byte(Template)
+	for _, paths := range [][]string{{"/work/dev/a"}, {"/work/dev/a", "~/.claude"}, nil} {
+		prev := data
+		e := Edit{Set: map[string]any{"checkpoints.paths": paths}}
+		if paths == nil {
+			e = Edit{Unset: []string{"checkpoints.paths"}}
+		}
+		data = EditFile(data, e)
+		if err := CheckEdit("config.toml", prev, data, e); err != nil {
+			t.Fatalf("%v\n%s", err, data)
+		}
+		f, err := ParseFile("config.toml", data)
+		if err != nil || !slices.Equal(f.Checkpoints, paths) {
+			t.Fatalf("%v: %q, want %q\n%s", err, f.Checkpoints, paths, data)
+		}
+	}
+	for _, l := range strings.Split(Template, "\n") {
+		if strings.HasPrefix(l, "# ") && !strings.Contains(string(data), l) {
+			t.Errorf("lost %q", l)
+		}
 	}
 }

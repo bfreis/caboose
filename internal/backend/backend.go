@@ -13,6 +13,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/bfreis/caboose/internal/docker"
 )
@@ -48,6 +49,13 @@ type Backend interface {
 	Mounts() ([]Mount, error)
 	// Logs writes the last lines of what the sandbox's entrypoint said.
 	Logs(stdout, stderr io.Writer, lines int) error
+}
+
+// Starter is a Backend that can tell when the running sandbox started.
+type Starter interface {
+	// Started is when the sandbox last started, and false while it does
+	// not run or when that cannot be told.
+	Started() (time.Time, bool)
 }
 
 // Linker is a Backend whose agent serves the link on a port of its own,

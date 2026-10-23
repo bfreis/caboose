@@ -22,6 +22,13 @@ const (
 	TrustHostile  = "hostile"
 )
 
+// The values of [link] checkpoint_requests: whether a session may ask for
+// a checkpoint of [checkpoints] paths now (caboose-agent checkpoint).
+const (
+	CheckpointRequestsAllow = "allow"
+	CheckpointRequestsOff   = "off"
+)
+
 // aliasKey is the family of [alias.NAME] tables.
 const aliasKey = "alias"
 
@@ -278,6 +285,9 @@ var originSyntax = regexp.MustCompile(`^https?://([a-z0-9]([a-z0-9.-]*[a-z0-9])?
 func (f *File) checkPolicyKeys() error {
 	if t, ok := f.Vals["trust"].(string); ok && t != TrustFallible && t != TrustHostile {
 		return fmt.Errorf(`trust: %q is not "fallible" or "hostile"`, t)
+	}
+	if v, ok := f.Vals["link.checkpoint_requests"].(string); ok && v != CheckpointRequestsAllow && v != CheckpointRequestsOff {
+		return fmt.Errorf(`checkpoint_requests in [link]: %q is not "allow" or "off"`, v)
 	}
 	if v, ok := f.Vals["link.open_urls_allow"].([]any); ok {
 		for _, e := range v {

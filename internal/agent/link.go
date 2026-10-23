@@ -70,10 +70,12 @@ type Link struct {
 	hostExec  bool
 	aliasesOn bool // the hello offered OpAliasRun and OpAliases
 	broker    bool // the hello offered OpBrokerRequest and OpBrokerRequests
-	presence  *presence
-	scanEvery time.Duration
-	helloed   chan struct{}
-	helloOnce sync.Once
+	// checkpointsOn is whether the hello offered OpCheckpoint.
+	checkpointsOn bool
+	presence      *presence
+	scanEvery     time.Duration
+	helloed       chan struct{}
+	helloOnce     sync.Once
 }
 
 // Config is what a Link needs beyond its stdio.
@@ -172,6 +174,7 @@ func (l *Link) readControl() {
 			}
 			l.mu.Lock()
 			l.hostExec, l.roots, l.aliasesOn, l.broker = m.HostExec, m.Roots, m.AliasesOn, m.Broker
+			l.checkpointsOn = m.CheckpointsOn
 			l.mu.Unlock()
 			l.helloOnce.Do(func() { close(l.helloed) })
 		case agentproto.TypeResponse:
@@ -277,6 +280,8 @@ func (l *Link) serveClient(c net.Conn) {
 		resp = l.aliasesRequest()
 	} else if m.Op == agentproto.OpBrokerRequest || m.Op == agentproto.OpBrokerRequests {
 		resp = l.brokerClient(c, m)
+	} else if m.Op == agentproto.OpCheckpoint {
+		resp = l.checkpointRequest(m.Paths)
 	} else {
 		resp = l.request(agentproto.Message{Op: m.Op, URL: m.URL, Title: m.Title, Text: m.Text})
 	}

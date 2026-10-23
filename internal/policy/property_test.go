@@ -25,16 +25,17 @@ const (
 )
 
 var (
-	trustPool    = []Trust{TrustFallible, TrustFallible, TrustFallible, TrustHostile, TrustHostile, "", "Fallible", "trusted"}
-	kindPool     = []Kind{KindAlias, KindAlias, KindEgress, KindEgress, KindEgress, KindOpenURL, KindOpenURL, KindHostExec, "", "ALIAS", "exec"}
-	aliasNames   = []string{"foo", "foobar", "fo", "build", ""}
-	openURLsPool = []string{OpenAsk, OpenAsk, OpenAllow, OpenOff, "", "yes"}
-	policyPool   = []string{"", AliasAllow, AliasAsk, AliasAsk, AliasDeny, "Allow"}
-	originPool   = []string{"https://docs.example", "https://docs.example:8443", "http://docs.example", "https://evil.example"}
-	hostPool     = []string{"a.example", "b.a.example", "example", "x.nip.io", "evil.example", "A.example", "a..b"}
-	paramValues  = []string{"all", "test", "x", "/Users/me/dev/proj/run.sh", "/opt/tool"}
-	writablePool = []string{"/Users/me/dev/proj", "/users/ME/dev/Proj", "/Users/me/dev/other/out", "/opt", "/", "", "rel/dir", "/Users/me/dev/proj/"}
-	pathPool     = []string{
+	trustPool      = []Trust{TrustFallible, TrustFallible, TrustFallible, TrustHostile, TrustHostile, "", "Fallible", "trusted"}
+	kindPool       = []Kind{KindAlias, KindAlias, KindEgress, KindEgress, KindEgress, KindOpenURL, KindOpenURL, KindHostExec, KindCheckpoint, "", "ALIAS", "exec"}
+	checkpointPool = []string{CheckpointAllow, CheckpointAllow, CheckpointOff, "", "Allow", "ask"}
+	aliasNames     = []string{"foo", "foobar", "fo", "build", ""}
+	openURLsPool   = []string{OpenAsk, OpenAsk, OpenAllow, OpenOff, "", "yes"}
+	policyPool     = []string{"", AliasAllow, AliasAsk, AliasAsk, AliasDeny, "Allow"}
+	originPool     = []string{"https://docs.example", "https://docs.example:8443", "http://docs.example", "https://evil.example"}
+	hostPool       = []string{"a.example", "b.a.example", "example", "x.nip.io", "evil.example", "A.example", "a..b"}
+	paramValues    = []string{"all", "test", "x", "/Users/me/dev/proj/run.sh", "/opt/tool"}
+	writablePool   = []string{"/Users/me/dev/proj", "/users/ME/dev/Proj", "/Users/me/dev/other/out", "/opt", "/", "", "rel/dir", "/Users/me/dev/proj/"}
+	pathPool       = []string{
 		"/usr/bin/make", "/opt/tool/bin/x", "/Users/me/dev/proj/bin/run", "/USERS/me/DEV/proj/run",
 		"/Users/me/dev/project/run", "/Users/me/dev/other/out", "/Users/me/dev/other/outer/x",
 		"/opt", "/", "usr/bin/make", "/usr/bin/../bin/make", "",
@@ -145,13 +146,14 @@ var keys = grantKeyPool()
 func (g *gen) policy() Policy {
 	rng := g.rng
 	p := Policy{
-		Trust:        pick(rng, trustPool),
-		HostExec:     rng.IntN(2) == 0,
-		OpenURLs:     pick(rng, openURLsPool),
-		OpenURLAllow: subset(rng, originPool, 2),
-		Aliases:      map[string]Alias{},
-		Writable:     subset(rng, writablePool, 3),
-		WritableIDs:  subset(rng, idPool, 2),
+		Trust:              pick(rng, trustPool),
+		HostExec:           rng.IntN(2) == 0,
+		OpenURLs:           pick(rng, openURLsPool),
+		OpenURLAllow:       subset(rng, originPool, 2),
+		CheckpointRequests: pick(rng, checkpointPool),
+		Aliases:            map[string]Alias{},
+		Writable:           subset(rng, writablePool, 3),
+		WritableIDs:        subset(rng, idPool, 2),
 	}
 	for _, n := range aliasNames {
 		if n != "" && rng.IntN(3) > 0 {
@@ -515,7 +517,7 @@ func TestPropertyUnknownAndDeterministic(t *testing.T) {
 			return fmt.Sprintf("two decisions: %+v and %+v", d, d2)
 		}
 		switch r.Kind {
-		case KindAlias, KindEgress, KindOpenURL, KindHostExec:
+		case KindAlias, KindEgress, KindOpenURL, KindHostExec, KindCheckpoint:
 		default:
 			if d.Verdict != VerdictDeny || d.Rule != "deny:unknown-kind" {
 				return fmt.Sprintf("kind %q decided %+v", r.Kind, d)
@@ -567,6 +569,26 @@ func TestPropertyGrantPrivateNeedsAddress(t *testing.T) {
 			if !held {
 				return fmt.Sprintf("private address %s allowed by grant %s, which does not hold it", a, d.Grant)
 			}
+		}
+		return ""
+	})
+}
+
+// A checkpoint is allowed exactly when checkpoint_requests is "allow",
+// whatever the trust and the grants; it never asks, and no grant allows
+// one.
+func TestPropertyCheckpoint(t *testing.T) {
+	forCases(t, "checkpoint", func(g *gen, p Policy, r Request) string {
+		if r.Kind != KindCheckpoint {
+			return ""
+		}
+		d := Decide(p, r, t0)
+		want := VerdictDeny
+		if p.CheckpointRequests == CheckpointAllow {
+			want = VerdictAllow
+		}
+		if d.Verdict != want || d.Grant != "" {
+			return fmt.Sprintf("checkpoint_requests %q, trust %q: %+v", p.CheckpointRequests, p.Trust, d)
 		}
 		return ""
 	})

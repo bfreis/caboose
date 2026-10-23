@@ -48,6 +48,7 @@ func (e *setupEnv) reload() {
 	}
 	e.a.Cfg.Isolation, e.a.Cfg.Profile, e.a.Cfg.AutoSync = cfg.Isolation, cfg.Profile, cfg.AutoSync
 	e.a.Cfg.ImageProfile, e.a.Cfg.AutoBuild = cfg.ImageProfile, cfg.AutoBuild
+	e.a.Cfg.Checkpoints = cfg.Checkpoints
 }
 
 // file is the environment's config.toml, parsed.
@@ -444,19 +445,19 @@ func TestSetupSyncNone(t *testing.T) {
 // create the container) it writes nothing but the template.
 func TestSetupWholeRunOrder(t *testing.T) {
 	e := newSetupEnv(t, "default", "[user]\n\tname = Me\n\temail = me@example.invalid\n", false)
-	if err := e.run("\n\n\nn\n\n\n\n\n"); err != nil {
+	if err := e.run("\n\n\n\nn\n\n\n\n\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	out := e.errb.String()
 	last := -1
-	for _, h := range []string{"\n  Roots ", "\n  Image ", "\n  Isolation ", "\n  Container ", "\n  Git ", "\n  Sync ", "is set up", "\n  Claude login "} {
+	for _, h := range []string{"\n  Roots ", "\n  Checkpoints ", "\n  Image ", "\n  Isolation ", "\n  Container ", "\n  Git ", "\n  Sync ", "is set up", "\n  Claude login "} {
 		i := strings.Index(out, h)
 		if i <= last {
 			t.Errorf("%q out of order (at %d, after %d):\n%s", h, i, last, out)
 		}
 		last = i
 	}
-	e.wantOut("· Not created: the first launch creates it", "! Not logged in yet. Run caboose in a project under ", "Roots 1/7", "Claude login 7/7")
+	e.wantOut("· Not created: the first launch creates it", "! Not logged in yet. Run caboose in a project under ", "Roots 1/8", "Claude login 8/8")
 	if b, _ := os.ReadFile(e.configPath()); string(b) != config.Template {
 		t.Errorf("config.toml:\n%s", b)
 	}

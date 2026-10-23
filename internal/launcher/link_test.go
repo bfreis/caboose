@@ -329,7 +329,8 @@ func TestLinkDialsALinker(t *testing.T) {
 // defaults, and the default isolation.
 func settingsFor(forwardPorts, openURLs string) linkSettings {
 	return linkSettings{ForwardPorts: forwardPorts, OpenURLs: openURLs,
-		Egress: true, EgressPorts: config.DefaultEgressPorts, Isolation: isolationContainer, Trust: config.TrustFallible}
+		Egress: true, EgressPorts: config.DefaultEgressPorts, Isolation: isolationContainer, Trust: config.TrustFallible,
+		CheckpointRequests: config.CheckpointRequestsAllow}
 }
 
 // withIsolation is s serving a sandbox of another isolation.

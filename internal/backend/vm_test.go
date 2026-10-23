@@ -1,11 +1,13 @@
 package backend
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/vm"
@@ -238,5 +240,51 @@ func TestCreateRefuses(t *testing.T) {
 		if v.State() != "absent" {
 			t.Errorf("%+v: left a record", c.spec)
 		}
+	}
+}
+
+// Started is vmm.pid's mtime while vmm serves the socket, and false with
+// no listener or no vmm.pid.
+func TestVMStarted(t *testing.T) {
+	d, err := os.MkdirTemp("", "cbvm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	v := NewVM("t", vm.Dir(d), nil)
+	if _, ok := v.Started(); ok {
+		t.Fatal("Started with no socket")
+	}
+	l, err := net.Listen("unix", vm.Dir(d).Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	if _, ok := v.Started(); ok {
+		t.Fatal("Started with no vmm.pid")
+	}
+	if err := os.WriteFile(vm.Dir(d).PID(), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(vm.Dir(d).PID(), at, at); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := v.Started()
+	if !ok || !got.Equal(at) {
+		t.Fatalf("Started = %v, %v; want %v", got, ok, at)
+	}
+	l.Close()
+	if _, ok := v.Started(); ok {
+		t.Fatal("Started once the socket is closed")
 	}
 }

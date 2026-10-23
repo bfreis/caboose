@@ -90,8 +90,14 @@ var tables = map[string]map[string]valueType{
 		"open_urls":     typeString,
 		"ssh_agent":     typeString,
 		"host_exec":     typeBool,
+		// Whether a session may ask for a checkpoint now: "allow" or "off".
+		"checkpoint_requests": typeString,
 		// Origins, scheme://host[:port], that may be opened without asking.
 		"open_urls_allow": typeStrings,
+	},
+	"checkpoints": {
+		// Container paths (or ~/...) the host copies into the checkpoint store.
+		"paths": typeStrings,
 	},
 }
 
@@ -152,6 +158,9 @@ type File struct {
 	// Aliases are the [alias.NAME] tables, checked; Cwd is as written (a
 	// ~ is expanded when the Config is made).
 	Aliases map[string]Alias
+	// Checkpoints is [checkpoints] paths, checked and normalised
+	// (CheckCheckpoints); nil when the file sets none.
+	Checkpoints []string
 }
 
 // FileRoot is a [roots] entry as written: the host path, ~ and all, the
@@ -245,6 +254,17 @@ func ParseFile(path string, data []byte) (*File, error) {
 	}
 	if err := f.checkPolicyKeys(); err != nil {
 		return nil, fail("%v", err)
+	}
+	if v, ok := f.Vals[checkpointsKey].([]any); ok {
+		var list []string
+		for _, e := range v {
+			list = append(list, e.(string))
+		}
+		paths, err := CheckCheckpoints(list)
+		if err != nil {
+			return nil, fail("[checkpoints]: %v", err)
+		}
+		f.Checkpoints = paths
 	}
 	if v, ok := f.Vals["format"]; ok {
 		if n := v.(int64); n != FileFormat {
@@ -562,6 +582,25 @@ format = 1    # this file's structure
 # nothing after it. Ignored under trust = "hostile", where every URL asks,
 # and with open_urls = "off".
 #open_urls_allow = ["https://github.com"]
+# Whether a session may ask for a checkpoint of [checkpoints] paths now
+# (caboose-agent checkpoint), beside the schedule's: "allow" or "off". It
+# copies only paths listed there, at most once a minute each and ten
+# requests an hour, under either trust.
+#checkpoint_requests = "allow"
+
+# Paths of the sandbox whose files this machine is to copy into
+# checkpoints, kept in this environment's checkpoints/ directory, which no
+# sandbox mounts. Each is a container path: a writable part of a root (or
+# a path inside one), or a kept path of the home, written ~/... (such as
+# ~/.claude; the login is never copied). At most 32, none inside another.
+# None by default. The daemon takes a checkpoint of each every 10 minutes
+# while the sandbox runs, and one when it stops; they are kept every 10
+# minutes for 2 hours, hourly for 48 hours, daily for 7 days.
+# 'caboose setup checkpoints' fills this in; 'caboose checkpoint list',
+# 'create' and 'restore ID --to DIR' use them.
+#[checkpoints]
+#paths = ["/work/dev/myproject", "~/.claude"]
+
 # A command on this machine that sessions can ask for by name
 # (caboose-agent aliases lists them, caboose-agent run NAME runs one):
 # argv and enum parameters only, no shell. One whose command resolves

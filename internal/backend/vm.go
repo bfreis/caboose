@@ -384,6 +384,22 @@ func (v *VM) DialLink() (io.ReadWriteCloser, error) {
 	return hvsock.Dial(v.Dir.Socket(), agentproto.PortLink, 10*time.Second)
 }
 
+var _ Starter = (*VM)(nil)
+
+// Started is when vmm wrote vmm.pid, which it does as it starts and
+// removes as it ends, while vmm serves the VM's socket; false while it
+// does not, or with no vmm.pid to tell by.
+func (v *VM) Started() (time.Time, bool) {
+	if !v.Dir.Serving() {
+		return time.Time{}, false
+	}
+	fi, err := os.Lstat(v.Dir.PID())
+	if err != nil || !fi.Mode().IsRegular() || fi.ModTime().IsZero() {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
+}
+
 func (v *VM) Labels() (map[string]string, error) {
 	st, err := v.Dir.ReadState()
 	if err != nil {

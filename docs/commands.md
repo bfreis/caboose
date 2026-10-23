@@ -4,13 +4,17 @@
 |---|---|
 | `caboose` | start or attach the session for the current directory (run it *in* the repo) |
 | `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
-| `caboose setup [roots \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks); see [Setup](configuration.md#setup) |
+| `caboose setup [roots \| checkpoints \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks): the roots, which paths to take [checkpoints](checkpoints.md#choosing-the-paths) of, the image, the isolation, git and sync; see [Setup](configuration.md#setup) |
 | `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root), and apply them; see [Proposals](proposals.md) |
 | `caboose requests [--all]` | what the sandbox asked for and waits on: URLs to open, connections through the `vm` proxy, runs of an alias whose `policy` is `"ask"`; `requests show N`, `requests approve N [--for 8h \| --always]`, `requests deny N` answer them |
 | `caboose grants [revoke ID]` | the timed and once grants in force, with the time each has left; `revoke ID` ends one |
 | `caboose permissions` | what this environment's sandbox may do now: trust, roots, aliases, host exec, URLs, outbound rules, grants, how many Claude Code sessions run in it and how many lack caboose's mod, and, when the sandbox was created with other roots, writable parts or trust than `config.toml` now gives, that those take effect at `caboose -e NAME restart` |
+| `caboose checkpoint list [PATH\|KEY] [--json]` | the [checkpoints](checkpoints.md) of the `[checkpoints]` paths: whether each path is copied now, and its checkpoints, newest first |
+| `caboose checkpoint create [PATH]...` | a checkpoint now of each PATH, or of every path listed |
+| `caboose checkpoint restore ID --to DIR` | copy a checkpoint into DIR, a new directory, made safe to open; see [Restoring](checkpoints.md#restoring) |
+| `caboose checkpoint release ID` | unpin a checkpoint pinned after a sharp shrink; see [Releasing a pin](checkpoints.md#releasing-a-pin) |
 | `caboose doctor [--offline]` | what, if anything, is wrong, and the command that fixes each problem; see [below](#when-something-is-wrong) |
-| `caboose status` | the sandbox, version, platform, live sessions, disk use |
+| `caboose status` | the sandbox, version, the checkpoints (when paths are set: how many, how long since the newest, or what fails), platform, live sessions, disk use |
 | `caboose version` | launcher version, and whether the image matches it |
 | `caboose update` | update caboose to the latest release now; see [Updates](getting-started.md#updates) |
 | `caboose build [--pull]` | build (or rebuild) the image: the base, checked, then the layer; see [What a build does](images.md#what-a-build-does) |
@@ -92,6 +96,7 @@ the roots it expects), the Docker engine, the image against this launcher
 and its base, the container against the image, the roots and what it keeps,
 the Claude login, Claude Code in it, live sessions, the SSH
 agent, the daemon and the link,
+the [checkpoints](checkpoints.md#when-something-is-wrong) (for an environment with `[checkpoints] paths`),
 the sandbox's git identity and commit signing, and the sync. Each
 row starts with a mark: `✓` when all is well, `!` for a note (worth
 knowing; it clears up by itself, or is a choice), `✗` for a problem

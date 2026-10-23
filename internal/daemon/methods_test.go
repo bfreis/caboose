@@ -19,7 +19,7 @@ func TestMethodTable(t *testing.T) {
 		daemonproto.MethodPing, daemonproto.MethodStatus, daemonproto.MethodEnsureLink, daemonproto.MethodRestartLink,
 		daemonproto.MethodStopLink, daemonproto.MethodStop, daemonproto.MethodReplace,
 		daemonproto.MethodRequests, daemonproto.MethodRequest, daemonproto.MethodAnswer, daemonproto.MethodGrants,
-		daemonproto.MethodRevoke, daemonproto.MethodPermissions,
+		daemonproto.MethodRevoke, daemonproto.MethodPermissions, daemonproto.MethodCheckpoints, daemonproto.MethodWritable,
 	}
 	// Served to a client of a newer protocol, which is to replace the
 	// daemon: these alone.
@@ -81,9 +81,9 @@ func paramsFor(name string) json.RawMessage {
 	switch name {
 	case daemonproto.MethodReplace:
 		p = &daemonproto.ReplaceParams{Version: "v9.9.9"}
-	case daemonproto.MethodEnsureLink, daemonproto.MethodRestartLink, daemonproto.MethodStopLink:
+	case daemonproto.MethodEnsureLink, daemonproto.MethodRestartLink, daemonproto.MethodStopLink, daemonproto.MethodCheckpoints:
 		p = &daemonproto.EnvParams{Env: "alpha"}
-	case daemonproto.MethodPing, daemonproto.MethodStatus, daemonproto.MethodStop:
+	case daemonproto.MethodPing, daemonproto.MethodStatus, daemonproto.MethodStop, daemonproto.MethodWritable:
 		return nil
 	default:
 		p = brokerParams(name)
@@ -96,17 +96,26 @@ func paramsFor(name string) json.RawMessage {
 type allServices struct {
 	links *countingLinks
 	br    *fakeBrokers
+	cp    *fakeCheckpoints
+	wr    *fakeWritable
 }
 
 func (a *allServices) reached() int {
-	return a.links.served() + len(a.br.served())
+	a.cp.mu.Lock()
+	n := len(a.cp.envs)
+	a.cp.mu.Unlock()
+	a.wr.mu.Lock()
+	n += a.wr.calls
+	a.wr.mu.Unlock()
+	return n + a.links.served() + len(a.br.served())
 }
 
 func startAll(t *testing.T) (string, *allServices) {
 	t.Helper()
-	a := &allServices{links: &countingLinks{}, br: &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}}}
+	a := &allServices{links: &countingLinks{}, br: &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}},
+		cp: &fakeCheckpoints{result: &daemonproto.CheckpointsResult{Env: "alpha"}}, wr: &fakeWritable{result: &daemonproto.WritableResult{}}}
 	dir := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t},
-		Links: a.links, Brokers: a.br})
+		Links: a.links, Brokers: a.br, Checkpoints: a.cp, Writable: a.wr})
 	return dir, a
 }
 

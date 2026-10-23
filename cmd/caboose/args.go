@@ -54,14 +54,14 @@ already running ignores them, and says so.`},
 	{Name: "setup", Usage: "[SECTION]...", Args: ownArgs,
 		Summary: "set up the environment (creating it, after asking)",
 		Help: `Asks for what the defaults do not know, on the terminal, each question
-showing what is there now as its default: the roots, what the sandbox
-is built on, what isolates it (and, on OrbStack, getting gVisor's runsc; under
-vm on a Mac, raising kern.maxvnodes),
-its git identity and commit signing, and whether and where to sync. Naming
-SECTIONs -- roots, image, isolation, git, sync -- asks only those. A
-whole run also brings the sandbox up and ends at the Claude login. Only
-what an answer changed is written, so a re-run is safe; with no terminal
-it refuses.`},
+showing what is there now as its default: the roots, which paths to take
+checkpoints of, what the sandbox is built on, what isolates it (and, on
+OrbStack, getting gVisor's runsc; under vm on a Mac, raising
+kern.maxvnodes), its git identity and commit signing, and whether and
+where to sync. Naming SECTIONs -- roots, checkpoints, image, isolation,
+git, sync -- asks only those. A whole run also brings the sandbox up and
+ends at the Claude login. Only what an answer changed is written, so a
+re-run is safe; with no terminal it refuses.`},
 	{Name: "apply", Args: noArgs,
 		Summary: "review the changes sessions proposed, and apply them",
 		Help: `A session in the sandbox cannot change what the sandbox is: it proposes
@@ -187,6 +187,38 @@ the grants in force say: the trust level, the isolation, the roots and
 how far each can be written, the aliases (the commands on this machine
 they run), host exec, URL opening, the outbound proxy's allow and deny
 lists, and the grants with the time each has left.`},
+	{Name: "checkpoint", Usage: "ACTION", Args: ownArgs,
+		Summary: "list, take, restore or release [checkpoints] copies",
+		Help: `The paths [checkpoints] in config.toml lists are copied on this machine,
+by the daemon every 10 minutes while the sandbox runs, into this
+environment's checkpoints/ directory, which no sandbox mounts.
+
+ACTION is one of:
+  list [PATH|KEY] [--json]
+                 each path, whether it is copied now and why not, and its
+                 checkpoints, newest first, then those of paths no longer
+                 listed; with the daemon's schedule when it answers
+  create [PATH]...
+                 a checkpoint now of each PATH, or of every path listed;
+                 a PATH must be in [checkpoints] paths
+  restore ID --to DIR
+                 copy checkpoint ID (KEY@STAMP, or KEY@latest) into DIR,
+                 which must not exist: never over anything, never in
+                 place. A checkpoint of the live path is taken first. In
+                 the copy, setuid, setgid and sticky bits are cleared. It
+                 warns when a sandbox can write DIR.
+  release ID
+                 unpin checkpoint ID: one is pinned, kept whatever its
+                 age, when the next checkpoint of its path holds half or
+                 less of it, until a later one holds as much again. Once
+                 released, the retention rules keep or prune it
+
+Each path's newest checkpoint is always kept, and ages count from it, so
+time with none taken (a sandbox left stopped) ages none. Below the soft
+free-space floor, max(10 GiB, 5%), the daemon skips its checkpoints and
+notifies; create still takes one, down to the hard floor.
+
+The checks come before anything is written; on any failure it exits 1.`},
 	{Name: "daemon", Usage: "[ACTION]", Args: ownArgs, Hidden: true,
 		Summary: "the host daemon: how it is, or stop or restart it",
 		Help: `One daemon per CABOOSE_HOME runs in the background, for every

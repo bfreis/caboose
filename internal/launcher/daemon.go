@@ -151,7 +151,7 @@ func (a *App) runDaemon() error {
 	dir := a.daemonDir()
 	dev := a.installed().kind == installDev
 	links := NewDaemonLinks(DaemonLinksOptions{Dir: dir, Dev: dev, CabooseHome: a.Cfg.CabooseHome,
-		NewApp: DaemonApp(DaemonGetenv(a.getenv), a.Checkout)})
+		NewApp: DaemonApp(DaemonGetenv(a.getenv), a.Checkout), Checkpoints: &CheckpointOptions{Notify: SystemNotify}})
 	if daemonLinksSetup != nil {
 		daemonLinksSetup(links)
 	}
@@ -159,7 +159,7 @@ func (a *App) runDaemon() error {
 	links.WillRecover()
 	defer hostlink.KillHostExecs()
 	err := daemon.Run(ctx, daemon.Options{Dir: dir, Version: currentVersion(), Dev: dev, LockWait: daemon.StartWait,
-		Links: links, Brokers: links, Ready: func(lg *log.Logger) {
+		Links: links, Brokers: links, Checkpoints: links, Writable: links, Ready: func(lg *log.Logger) {
 			for _, n := range notes {
 				lg.Print(n)
 			}

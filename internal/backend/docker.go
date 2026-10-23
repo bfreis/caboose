@@ -5,6 +5,8 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/bfreis/caboose/internal/docker"
 )
@@ -97,6 +99,22 @@ func (d *Docker) Command(s ExecSpec) *exec.Cmd {
 func (d *Docker) Labels() (map[string]string, error) { return d.CLI.ContainerLabels(d.Name) }
 
 func (d *Docker) Image() string { return d.CLI.ContainerImage(d.Name) }
+
+var _ Starter = (*Docker)(nil)
+
+// Started is the container's State.StartedAt, while it runs.
+func (d *Docker) Started() (time.Time, bool) {
+	out, err := d.CLI.Output("inspect", "--type=container", "-f", "{{.State.Running}} {{.State.StartedAt}}", d.Name)
+	running, at, ok := strings.Cut(strings.TrimSpace(out), " ")
+	if err != nil || !ok || running != "true" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, at)
+	if err != nil || t.IsZero() || t.Year() < 2000 {
+		return time.Time{}, false
+	}
+	return t, true
+}
 
 func (d *Docker) Mounts() ([]Mount, error) {
 	ms, err := d.CLI.Mounts(d.Name)

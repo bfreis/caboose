@@ -101,7 +101,50 @@ const (
 	// descriptions and parameters only. Offered in the host's hello
 	// (AliasesOn).
 	OpAliases = "aliases"
+	// OpCheckpoint is a client of `caboose-agent checkpoint`: a checkpoint
+	// taken now of Paths, container paths of [checkpoints] paths in the
+	// host's config.toml (none: every one of them). The host maps each to
+	// the host directory it copies itself, and takes none it does not
+	// list. The response's Checkpoints say, per path, the checkpoint
+	// taken or why none was; a refusal of the whole request is a response
+	// alone, whose Reason is one of the Checkpoint* codes. Offered in the
+	// host's hello (CheckpointsOn), so it needs no new Version.
+	OpCheckpoint = "checkpoint"
 )
+
+// The Reason of a refused OpCheckpoint.
+const (
+	// CheckpointOff: the host's policy refuses it (checkpoint_requests).
+	CheckpointOff = "off"
+	// CheckpointBad: a path is not one the sandbox can name.
+	CheckpointBad = "bad"
+	// CheckpointLimit: asked too often.
+	CheckpointLimit = "limit"
+	// CheckpointUnavailable: the host takes none now: no paths are
+	// configured, the store cannot be reached, its link takes none.
+	CheckpointUnavailable = "unavailable"
+)
+
+// The bounds of an OpCheckpoint's paths, which the agent keeps to before
+// it sends one and the host checks again: config.toml's own (a test holds
+// the two to each other).
+const (
+	MaxCheckpointPaths = 32
+	MaxCheckpointPath  = 1024
+)
+
+// CheckpointWait is the longest the host spends on one OpCheckpoint: the
+// wait for another checkpoint to finish and the takes themselves. The
+// agent waits a little longer for its answer.
+const CheckpointWait = 5 * time.Minute
+
+// CheckpointTaken is one path of an OpCheckpoint's answer: the
+// checkpoint's ID when one was taken, else Reason, why not.
+type CheckpointTaken struct {
+	Path   string `json:"path"`
+	ID     string `json:"id,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
 
 // The Reason of a refused OpAliasRun.
 const (
@@ -304,7 +347,7 @@ type Message struct {
 	Ports    []int     `json:"ports,omitempty"`
 	Forwards []Forward `json:"forwards,omitempty"`
 
-	// Paths are TypeChanged's paths.
+	// Paths are TypeChanged's paths, and OpCheckpoint's.
 	Paths []string `json:"paths,omitempty"`
 
 	Exec *ExecRequest `json:"exec,omitempty"`
@@ -371,6 +414,12 @@ type Message struct {
 	AliasesOn bool `json:"aliases_on,omitempty"`
 	// Aliases are OpAliases' answer, at most MaxAliases.
 	Aliases []AliasInfo `json:"aliases,omitempty"`
+	// CheckpointsOn, in the host's hello, offers OpCheckpoint: its link
+	// takes checkpoints when the sandbox asks.
+	CheckpointsOn bool `json:"checkpoints_on,omitempty"`
+	// Checkpoints are OpCheckpoint's answer, one per path asked for (every
+	// configured one when none was), at most MaxCheckpointPaths.
+	Checkpoints []CheckpointTaken `json:"checkpoints,omitempty"`
 }
 
 // Forward is one port the host was asked to forward, and what came of it.

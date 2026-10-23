@@ -51,6 +51,8 @@ func Effect(p Policy, r Request) string {
 		return fmt.Sprintf("open %s in the browser", shown(r.URL, maxShownURL))
 	case KindHostExec:
 		return "run a command on the host, through host_exec"
+	case KindCheckpoint:
+		return "take a checkpoint now of paths [checkpoints] already copies"
 	}
 	return "an unknown request, which the host refuses"
 }

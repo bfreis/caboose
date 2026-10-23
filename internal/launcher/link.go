@@ -94,19 +94,25 @@ type linkSettings struct {
 	// EgressDeny is egress_deny, as ParseAllow reads it: what a link with
 	// no broker refuses (the broker reads it from config.toml itself).
 	EgressDeny string `json:"egress_deny,omitempty"`
+	// CheckpointRequests is checkpoint_requests: what a link with no
+	// broker decides the checkpoints the sandbox asks for by.
+	CheckpointRequests string `json:"checkpoint_requests,omitempty"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
 		Egress: c.Egress, EgressPorts: c.EgressPorts, EgressAllow: strings.Join(c.EgressAllow, " "),
 		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c), HostExec: c.HostExec,
-		Trust: c.Trust, EgressDeny: strings.Join(c.EgressDeny, " ")}
+		Trust: c.Trust, EgressDeny: strings.Join(c.EgressDeny, " "), CheckpointRequests: c.CheckpointRequests}
 	if c.SSHAgent != "" {
 		s.SSHAgent, s.SSHAgentFrom = c.SSHAgent, sshAgentOrigin(c)
 	}
 	// A Config not from config.Load leaves it unset: the default.
 	if s.EgressPorts == "" {
 		s.EgressPorts = config.DefaultEgressPorts
+	}
+	if s.CheckpointRequests == "" {
+		s.CheckpointRequests = config.CheckpointRequestsAllow
 	}
 	return s
 }
@@ -434,6 +440,10 @@ type linkRun struct {
 	// dialogs is the URL dialog queue the link shares with the process's
 	// other links (the daemon's); nil is one of its own.
 	dialogs *dialogQueue
+	// checkpoints takes the checkpoints the sandbox asks for, within
+	// cpLimits, the environment's; nil (a helper of its own) offers none.
+	checkpoints hostlink.Checkpointer
+	cpLimits    *hostlink.CheckpointLimits
 }
 
 // newLinkRunner is a link for this environment, as config.toml has it
@@ -451,6 +461,8 @@ func (a *App) newLinkRunner(o linkRun) (*linkRunner, error) {
 	r.cfg.Log = r.log
 	r.cfg.Mods = r.setMods
 	r.cfg.AliasTmp = aliasTmp(a.daemonDir())
+	r.cfg.Checkpoints, r.cfg.CheckpointLimits = o.checkpoints, o.cpLimits
+	r.cfg.CheckpointRequests = settings.CheckpointRequests
 	if o.actions != nil {
 		r.cfg.Actions = o.actions
 	}
@@ -734,6 +746,7 @@ func (r *linkRunner) reload() {
 	r.cfg.Ports, r.cfg.OpenURL, r.cfg.Egress = lc.ports, next.OpenURLs, lc.egress
 	r.cfg.HostExec = hostExecOffer(lc.hostExec)
 	r.cfg.Trust = next.Trust
+	r.cfg.CheckpointRequests = next.CheckpointRequests
 	sess := r.sess
 	r.reloaded = sess != nil
 	r.mu.Unlock()

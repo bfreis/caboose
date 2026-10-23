@@ -74,6 +74,7 @@ is `name = "host path"`, or a table with `host` and optionally `path` and
 | `open_urls` | `"ask"` | whether the sandbox may open URLs in your browser: `"ask"`, `"allow"` or `"off"`; see [the host link](host-link.md#urls-and-notifications) |
 | `ssh_agent` | the agent `ssh` here would use; none under `trust = "hostile"` | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over, and the only way a `hostile` sandbox gets one. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead of a socket named here, but `"none"` still gives none. See [SSH agent](ssh.md) |
 | `open_urls_allow` | `[]` | origins the sandbox may open in your browser without asking when `open_urls` is `"ask"` (`"off"` still refuses every URL): `"https://host"` or `"http://host:port"`, lowercase, with nothing after the host or port (no path, not even a `/`). Ignored under `trust = "hostile"`, where every URL asks. See [Trust](#trust) |
+| `checkpoint_requests` | `"allow"` | whether a session may ask for a checkpoint now of paths [`[checkpoints]`](#checkpoints) lists (`caboose-agent checkpoint`): `"allow"` or `"off"`; under either `trust`, since it copies nothing the schedule does not. At most one per path a minute and 10 requests an hour. See [Checkpoints](checkpoints.md#asked-for-by-the-sandbox) |
 | `host_exec` | `false` | let sessions run commands on this machine, as you, through the link (`caboose-agent host CMD`). **Sessions, and whatever steers them (a web page, a repo they work on), can then run anything on this machine as you**: meant for an environment whose point is a separate login or tools, not containment. See [the host link](host-link.md#host-commands) |
 
 ## Isolation profiles
@@ -401,7 +402,7 @@ work = "~/work"               # /work/work
 A root that holds `CABOOSE_HOME` (`~/.caboose`), such as `~` itself, is
 refused, as the roots are read, in `caboose setup roots` and in a proposed
 root (`caboose apply`): a sandbox
-could change caboose's configuration and data dirs through
+could change caboose's configuration, data dirs and checkpoints through
 it. The refusal names a narrower root, a directory under it that does not
 hold `CABOOSE_HOME` (`~/dev` instead of `~`). It is judged by the
 directories' identity on disk, so another name for the same directory is
@@ -554,6 +555,87 @@ still go through the proxy, and so are decided by `egress_allow` and
 
 `caboose doctor` and `caboose permissions` show the level first.
 
+## `[checkpoints]`
+
+The paths whose files caboose's daemon copies, on this machine, into
+`~/.caboose/envs/<env>/checkpoints/`, which no sandbox mounts:
+
+- while the sandbox runs, a checkpoint of each path every 10 minutes, the
+  first as soon as the daemon's link to the sandbox starts, and one more
+  when the sandbox stops;
+- they are kept every 10 minutes for 2 hours, then the newest of each hour
+  for 48 hours, then the newest of each day for 7 days, and pruned once an
+  hour while the daemon runs (it stays while a sandbox runs, and leaves a
+  few minutes after the last stops), and again when it starts. Ages count
+  from the path's newest checkpoint, which is always kept, not from the
+  clock: an environment left stopped for a month keeps what it kept when
+  it stopped. A key whose path is no longer listed is pruned by the same
+  rule;
+- when a checkpoint holds half or less of the entries, or of the bytes,
+  of the one before it, and that one held more than 1,000 entries or
+  100 MiB, the one before it is pinned: kept whatever its age, until a
+  later checkpoint holds as many entries and bytes again, or `caboose
+  checkpoint release ID`;
+- one checkpoint is taken at a time, across all environments; one that
+  fails is tried again 10 minutes later;
+- with less free than the larger of 10 GiB and 5% of the disk holding
+  the checkpoints, the daemon skips them (`caboose checkpoint create`
+  still takes one), and prunes none early for it; with less than the
+  larger of 1 GiB and 1%, none is taken at all;
+- you get a notification when a checkpoint fails, when a path stops
+  standing for a directory, when the disk holding the checkpoints runs
+  low, when a sandbox could reach the store (then none is taken), and
+  when a checkpoint shrinks sharply as above (it names the earlier one,
+  pinned, to restore from). Each at most once an hour.
+
+They are taken by the daemon, only for an environment at its default data
+dir: a command run with `CABOOSE_DATA_DIR` set gets none.
+`caboose setup checkpoints` chooses the paths, `caboose checkpoint list`
+shows the checkpoints, `caboose checkpoint create` takes one now, `caboose checkpoint release ID` unpins one, and `caboose checkpoint restore ID --to DIR` copies one into a new
+directory, refusing one inside `~/.caboose` or one any environment's
+sandbox can write, or would at its next start ([Checkpoints](checkpoints.md)). `caboose status` and `caboose
+doctor` report on them ([when something is
+wrong](checkpoints.md#when-something-is-wrong)); deleting `~/.caboose/envs/<env>/`
+deletes them.
+
+```toml
+[checkpoints]
+paths = ["/work/dev/myproject", "~/.claude"]
+```
+
+| Key | Default | |
+|---|---|---|
+| `paths` | none | container paths, at most 32, none at or inside another |
+
+Each path is written as the sandbox sees it, absolute and clean, or under
+the sandbox's home as `~/...` (`/home/agent/...` is read as the same). The
+whole home, `~` alone, is refused: name the kept paths in it. A path that
+is not of this form is an error naming it.
+
+Which host directory a path stands for is worked out each time, from the
+roots, the running sandbox and the sandbox config of the time; a path
+that stands for none is skipped, with the reason, and never stops the
+others:
+
+- a path under a root is copied when it is, or is inside, a writable part
+  of the root, either as `config.toml` says or as the running sandbox has
+  it mounted (a sandbox created by a caboose that recorded no writable
+  parts counts as writing all of its roots). So a part you have made
+  read-only is still copied until the restart that mounts it so. The copy
+  is made from the root's directory on this machine;
+- a path under the home, `~/REL`, is copied when `REL` is, or is inside, a
+  path the sandbox keeps (a `[[keep]]` entry of its
+  `~/.config/caboose/sandbox.toml`, or one caboose itself keeps, such as
+  `~/.claude`), or one the running sandbox has mounted. The copy is always
+  made from the environment's data dir, `data/home/REL`: the sandbox's
+  config only says which of those paths qualify, never a path on this
+  machine. Claude Code's login, `~/.claude/.credentials.json`, is never
+  copied;
+- a path that is missing, or runs through a symbolic link, is skipped:
+  nothing is followed;
+- a path that is, holds or is inside a checkpoint store or the daemon's
+  directory, of any environment, is refused, whatever root reaches it.
+
 ## `[alias.NAME]`
 
 An alias is a command on this machine that a session may run with
@@ -671,7 +753,7 @@ one, `caboose-base:<env>`.
 ## Setup
 
 ```sh
-caboose setup                  # every section: roots, image, isolation, git, sync,
+caboose setup                  # every section: roots, checkpoints, image, isolation, git, sync,
                                # and the container and the login along the way
 caboose setup git              # only the git identity and signing
 ```

@@ -116,6 +116,14 @@ type Config struct {
 	// daemon directory's alias-tmp. "" offers no aliases (OpAliasRun,
 	// OpAliases), and so does a Config with no Decide.
 	AliasTmp string
+	// Checkpoints takes the checkpoints the sandbox asks for
+	// (OpCheckpoint), and CheckpointLimits bounds how often, one per
+	// environment (a Host's own when nil). nil offers none.
+	Checkpoints      Checkpointer
+	CheckpointLimits *CheckpointLimits
+	// CheckpointRequests is [link] checkpoint_requests, which the
+	// fallback decision (Decide nil) decides OpCheckpoint by.
+	CheckpointRequests string
 	// Mods, when set, is told the agent's count of Claude Code sessions
 	// and of those with caboose's mod (TypeMods), checked, whenever it
 	// changes.
@@ -139,6 +147,7 @@ type Host struct {
 	closing  bool           // Run is waiting for them: hostExec adds no more
 	reqs     requestsState  // OpBrokerRequests' bucket and waits
 	alias    aliasState     // OpAliasRun's bucket
+	cpBusy   bool           // an OpCheckpoint is being served
 	lastMods *agentproto.ModsInfo
 }
 
@@ -183,6 +192,7 @@ func Run(sess *agentproto.Session, cfg Config) error {
 	hello.HostExec = cfg.HostExec != nil
 	hello.Broker = cfg.Decide != nil
 	hello.AliasesOn = h.aliasesOn()
+	hello.CheckpointsOn = h.checkpointsOn()
 	for _, r := range cfg.Relay {
 		hello.Roots = append(hello.Roots, r.Container)
 	}
@@ -409,6 +419,8 @@ func (h *Host) answer(m agentproto.Message) {
 			err = h.notify(m.Title, m.Text)
 		case agentproto.OpBrokerRequest:
 			err = h.brokerRequest(m.Ask, &r)
+		case agentproto.OpCheckpoint:
+			err = h.checkpoint(m.Paths, &r)
 		default:
 			err = fmt.Errorf("unknown request %q", clip(m.Op, 40))
 		}

@@ -413,6 +413,14 @@ Each run is a line in `link.log`, by name and arguments; each decision is
 in `decisions.log`. At most 16 aliases and host commands run at once, and a
 sandbox that asks too often is told to try again shortly.
 
+## Checkpoints
+
+`caboose-agent checkpoint [PATH...]` has the daemon take a checkpoint now
+of paths [`[checkpoints]`](checkpoints.md#asked-for-by-the-sandbox) lists,
+as `checkpoint_requests` says (`"allow"` by default, or `"off"`). The host
+offers it in its hello only from a link the daemon runs; the agent says so
+when the host offers none.
+
 ## Asking the host ahead of time
 
 A crossing that asks is refused as `pending #N` at once (above), and the
@@ -485,6 +493,9 @@ sandbox is:
   filed), never what `egress_deny` names. A program that ignores the proxy
   settings leaves through the VM's NAT instead (except under `trust = "hostile"`, where the VM has no NAT and reaches nothing that way), and under `container` and
   `gvisor` the engine's network is unrestricted;
+- a checkpoint the sandbox asks for copies only a path `[checkpoints]`
+  lists, resolved on the host; the paths it sends are bounded, must be
+  printable, absolute and clean (or `~/...`), and any other is refused;
 - a host command runs only when `host_exec`, in the host's `config.toml`,
   says so, and never under `trust = "hostile"`: the agent asking is not
   enough. It runs the request's own

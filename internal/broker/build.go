@@ -32,12 +32,13 @@ func (b *Broker) Reload() error {
 	c := s.Config
 	b.complete(&s)
 	p := policy.Policy{
-		Trust:        policy.Trust(c.Trust),
-		HostExec:     c.HostExec,
-		OpenURLs:     c.OpenURLs,
-		OpenURLAllow: slices.Clone(c.OpenURLsAllow),
-		Aliases:      map[string]policy.Alias{},
-		Egress:       b.egress(c),
+		Trust:              policy.Trust(c.Trust),
+		HostExec:           c.HostExec,
+		OpenURLs:           c.OpenURLs,
+		OpenURLAllow:       slices.Clone(c.OpenURLsAllow),
+		CheckpointRequests: c.CheckpointRequests,
+		Aliases:            map[string]policy.Alias{},
+		Egress:             b.egress(c),
 	}
 	p.Writable, p.WritableIDs = b.writable()
 	for _, a := range c.Aliases {

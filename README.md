@@ -81,7 +81,7 @@ building from a checkout.
 ```sh
 caboose                    # start or attach the session for this project
 caboose claude --resume    # pass arguments to claude
-caboose setup              # roots, image, isolation, git identity, sync
+caboose setup              # roots, checkpoints, image, isolation, git identity, sync
 caboose apply              # review and apply the changes sessions proposed
 caboose doctor             # what is wrong, and the command that fixes it
 caboose status             # the sandbox, sessions, disk use
@@ -102,6 +102,7 @@ caboose help               # every command
 | [The image](docs/images.md) | what the sandbox is built from: packages, a Dockerfile, or an image of your own, and what it must contain |
 | [The sandbox config](docs/sandbox-config.md) | what the sandbox keeps of its home, and what of that syncs |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |
+| [Checkpoints](docs/checkpoints.md) | copies of what the sandbox works on, kept on the host every 10 minutes, and restoring one |
 | [The host link](docs/host-link.md) | ports forwarded to your localhost, URLs and notifications from the sandbox, the VM's outbound connections, and commands run on the host where you allow it |
 | [SSH agent and commit signing](docs/ssh.md) | agent forwarding on macOS and Linux, `ssh_agent`, 1Password, signing |
 | [Caveats](docs/caveats.md) | what to know before you rely on it, including the docker socket |

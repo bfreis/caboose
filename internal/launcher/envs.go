@@ -42,6 +42,29 @@ func (a *App) envNames() ([]string, error) {
 	return sorted, nil
 }
 
+// envsWithDir is envNames less every environment, but this one, that has
+// no directory under CABOOSE_HOME: one with none has no sandbox of its, and
+// a container on the engine by its name belongs to another CABOOSE_HOME
+// (a throwaway CABOOSE_HOME's "default" is the person's own sandbox).
+// A directory that cannot be looked at is kept, so that a caller asking
+// what the sandboxes reach fails closed on it.
+func (a *App) envsWithDir() ([]string, error) {
+	names, err := a.envNames()
+	if err != nil {
+		return nil, err
+	}
+	out := names[:0]
+	for _, n := range names {
+		if n != a.Cfg.Env {
+			if _, err := os.Stat(config.EnvDirFor(a.Cfg.CabooseHome, n)); errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // listEnvs shows every environment, the current one marked, each with its
 // container and that container's state.
 func (a *App) listEnvs() error {

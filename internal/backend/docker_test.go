@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/docker"
 )
@@ -105,5 +106,36 @@ func TestDockerRefusesEgress(t *testing.T) {
 	}
 	if _, err := os.Stat(p + ".ran"); err == nil {
 		t.Error("docker ran")
+	}
+}
+
+// Started is the running container's State.StartedAt, asked by name, and
+// nothing for one that does not run, or a time docker cannot give.
+func TestDockerStarted(t *testing.T) {
+	for _, tc := range []struct {
+		says string
+		want time.Time
+		ok   bool
+	}{
+		{"true 2026-10-18T12:00:00.123456789Z", time.Date(2026, 10, 18, 12, 0, 0, 123456789, time.UTC), true},
+		{"false 2026-10-18T12:00:00Z", time.Time{}, false},
+		{"true 0001-01-01T00:00:00Z", time.Time{}, false},
+		{"true soon", time.Time{}, false},
+		{"", time.Time{}, false},
+	} {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "docker")
+		script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"" + dir + "/args\"\necho '" + tc.says + "'\n"
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := NewDocker(&docker.CLI{Path: p}, "box").Started()
+		if ok != tc.ok || !got.Equal(tc.want) {
+			t.Errorf("%q: %v, %v", tc.says, got, ok)
+		}
+		args, _ := os.ReadFile(filepath.Join(dir, "args"))
+		if string(args) != "inspect --type=container -f {{.State.Running}} {{.State.StartedAt}} box\n" {
+			t.Errorf("asked %q", args)
+		}
 	}
 }

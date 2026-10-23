@@ -119,10 +119,10 @@ type statusData struct {
 	// false when the config could not be read.
 	keeps   []string
 	keepsOK bool
-	// daemon and link are the host's lines; lv is the daemon's view
-	// they came from.
-	lv           linkView
-	daemon, link string
+	// daemon, link and checkpoints are the host's lines;
+	// lv is the daemon's view they came from.
+	lv                           linkView
+	daemon, link, checkpointLine string
 
 	running bool
 	// The running part.
@@ -157,6 +157,7 @@ func (a *App) collectStatus() *statusData {
 	d.running = d.state == "running"
 	d.daemon = a.daemonLine(d.lv)
 	d.link = a.linkLine(d.lv, d.running)
+	d.checkpointLine = a.checkpointLine(d.lv, d.running, defaultCkSeams())
 	if !d.running {
 		return d
 	}
@@ -224,6 +225,9 @@ func (a *App) renderStatus(d *statusData) error {
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	fmt.Fprintf(out, "daemon    : %s\n", d.daemon)
 	fmt.Fprintf(out, "link      : %s\n", d.link)
+	if d.checkpointLine != "" {
+		fmt.Fprintf(out, "checkpoints: %s\n", d.checkpointLine)
+	}
 	// From the status the daemon already gave: no call of its own, and the
 	// daemon is never started for it.
 	if d.lv.Env != nil && d.lv.Env.Pending > 0 {

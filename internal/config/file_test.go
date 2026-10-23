@@ -132,7 +132,7 @@ func TestProfileSelection(t *testing.T) {
 
 func TestConfigFileRefuses(t *testing.T) {
 	for name, tc := range map[string]struct{ body, err string }{
-		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [alias.NAME], [apko.NAME], [build], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation, trust; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
+		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [alias.NAME], [apko.NAME], [build], [checkpoints], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation, trust; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
 		"a misspelled table key": {"[session]\ntmuz = true", "unknown setting in [session] tmuz (known: auto_sync, hostname, keep_versions, ready_timeout, tmux, tz;"},
 		"another table":          {"[mounts]\ndev = \"/x\"", "unknown top-level setting mounts"},
 		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: cpus, egress, egress_allow, egress_deny, egress_ports, memory;"},
@@ -158,6 +158,7 @@ func TestConfigFileRefuses(t *testing.T) {
 		"a run arg not text":     {"[container.a]\nrun_args = [\"--init\", 1]", "run_args in [container.a] must be an array of strings"},
 		"an empty run arg":       {"[container.a]\nrun_args = [\"\"]", "must be an array of strings"},
 		"open_urls":              {"[link]\nopen_urls = \"sometimes\"", `open_urls in [link]: "sometimes" is not "ask", "allow" or "off"`},
+		"checkpoint_requests":    {"[link]\ncheckpoint_requests = \"ask\"", `checkpoint_requests in [link]: "ask" is not "allow" or "off"`},
 		"roots not a table":      {`roots = "/x"`, "roots must be a table"},
 		"empty roots":            {"[roots]", "[roots] names no roots"},
 		"a bad root name":        {"[roots]\n\"My Dev\" = \"/x\"", "'My Dev' is not a root name"},

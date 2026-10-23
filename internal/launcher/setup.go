@@ -17,7 +17,7 @@ import (
 
 // SetupSections are the parts of caboose setup that can be run alone, in
 // the order a whole run takes them.
-var SetupSections = []string{"roots", "image", "isolation", "git", "sync"}
+var SetupSections = []string{"roots", "checkpoints", "image", "isolation", "git", "sync"}
 
 // Setup is `caboose setup [SECTION...]`: it sets up the environment,
 // creating it first if it does not exist (after asking), then asks each
@@ -79,6 +79,8 @@ func (a *App) setupRun(p *prompter, sections []string) error {
 		switch s {
 		case "roots":
 			err = a.setupRoots(p)
+		case "checkpoints":
+			err = a.setupCheckpoints(p)
 		case "image":
 			err = a.setupImage(p)
 		case "isolation":

@@ -67,7 +67,8 @@ time, it:
 Nothing has to be set up first: a launch runs on defaults, and says in one
 line that `caboose setup` has not been run, and while the sandbox has no
 git identity, that commits in it will fail. `caboose setup` asks for what
-the defaults do not know: the [roots](configuration.md#roots), [what it is
+the defaults do not know: the [roots](configuration.md#roots), which paths to take
+[checkpoints](checkpoints.md) of (none by default), [what it is
 built on](images.md), the sandbox's
 [git identity and signing](configuration.md#git-identity-and-commit-signing), and whether
 and where to [sync](sync.md).

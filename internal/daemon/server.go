@@ -85,6 +85,26 @@ type Brokers interface {
 	Call(ctx context.Context, who, method, env string, params json.RawMessage) (any, error)
 }
 
+// Checkpoints is what the daemon serves the checkpoints method with: a
+// listing of an environment's checkpoints, read from its store. A daemon
+// given none answers it with daemonproto.KindUnknownMethod.
+type Checkpoints interface {
+	// Checkpoints lists env's checkpoints (env already checked to be a
+	// valid name). An error that is a *daemonproto.Error goes to the
+	// client as it is, any other as KindInternal.
+	Checkpoints(ctx context.Context, env string) (*daemonproto.CheckpointsResult, error)
+}
+
+// Writable is what the daemon serves the writable method with: the host
+// paths the sandboxes reach, read off them when asked. A daemon given
+// none answers it with daemonproto.KindUnknownMethod.
+type Writable interface {
+	// Writable reads, afresh, what every sandbox under CABOOSE_HOME can
+	// write and the roots each mounts read-only. An error is an answer it
+	// could not make; the client then works it out itself.
+	Writable(ctx context.Context) (*daemonproto.WritableResult, error)
+}
+
 type noLinks struct{}
 
 func (noLinks) Serve(context.Context, string, string) (*daemonproto.LinkResult, error) {
@@ -110,6 +130,10 @@ type Options struct {
 	Links Links
 	// Brokers serves the request broker's methods; nil serves none.
 	Brokers Brokers
+	// Checkpoints serves the checkpoints method; nil serves none.
+	Checkpoints Checkpoints
+	// Writable serves the writable method; nil serves none.
+	Writable Writable
 	// Ready, when set, runs once, in a goroutine of its own, as soon as
 	// the daemon holds its lock and serves its socket, with its log: what
 	// only the one daemon of the directory may do (start the links it ran

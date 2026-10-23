@@ -159,6 +159,10 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		return exit(stderr, app.Grants(inv.Args))
 	case "permissions":
 		return exit(stderr, app.Permissions())
+	case "checkpoint":
+		// Before the roots are resolved too: a restore is most needed when
+		// something is broken, a missing root included.
+		return exit(stderr, app.Checkpoint(inv.Args))
 	}
 	if err := cfg.ResolveRoots(); err != nil {
 		return exit(stderr, launcher.Die("%v", err))

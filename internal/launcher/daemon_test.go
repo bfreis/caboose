@@ -12,6 +12,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
+	"github.com/bfreis/caboose/internal/checkpoint"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/saferm"
@@ -105,8 +106,9 @@ func TestDaemonStatusCreatesNothing(t *testing.T) {
 
 // No daemon directory is ever reachable from a sandbox: no mount
 // createContainer makes, nor any directory the vm backend shares for them,
-// is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev, or the
-// broker's files.
+// is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev, the
+// broker's files, or the environment's checkpoint store,
+// EnvDir/checkpoints.
 func TestDaemonDirsAreInNoMount(t *testing.T) {
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
@@ -135,6 +137,12 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// The environment's checkpoint store, beside the data dir too.
+			store := checkpoint.StoreDir(envDir)
+			if err := os.MkdirAll(filepath.Join(store, "k", "20261018T120000Z"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			private = append(private, store)
 			if err := b.createContainer(false); err != nil {
 				t.Fatalf("createContainer: %v\n%s", err, b.errb)
 			}
@@ -155,7 +163,7 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				}
 				for _, f := range private {
 					if config.Within(src, f) || config.Within(f, src) {
-						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker keeps", src, f)
+						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker or the checkpoint store keeps", src, f)
 					}
 				}
 			}

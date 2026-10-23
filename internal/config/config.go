@@ -113,6 +113,10 @@ type Config struct {
 	// this machine, as the user, through the link. The host's key, never
 	// the sandbox config's: it is the hole in the wall.
 	HostExec bool
+	// CheckpointRequests is [link] checkpoint_requests: whether a session
+	// may ask for a checkpoint of [checkpoints] paths now,
+	// CheckpointRequestsAllow (the default) or CheckpointRequestsOff.
+	CheckpointRequests string
 
 	// OpenURLsAllow is [link] open_urls_allow: origins (scheme://host[:port])
 	// the sandbox may open without asking; ignored under trust = hostile.
@@ -124,6 +128,12 @@ type Config struct {
 	// Aliases are the [alias.NAME] tables, by name: host commands a session
 	// may run, argv and enum parameters only. Cwd has its ~ expanded.
 	Aliases []Alias
+	// Checkpoints is [checkpoints] paths: the container paths whose host
+	// directories are copied into the environment's checkpoint store, as
+	// CheckCheckpoints normalised them (~/REL for one under the home).
+	// The host's key alone, never the sandbox config's: it decides which
+	// host paths the host reads. None by default.
+	Checkpoints []string
 
 	// Isolation is the kind of the profile in use (KindContainer,
 	// KindGVisor, KindVM), and Profile its "<kind>.<name>", "" when no
@@ -327,23 +337,24 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		cabooseHome = home + "/.caboose"
 	}
 	c := &Config{
-		Env:          env,
-		CabooseHome:  cabooseHome,
-		Image:        ImageFor(env),
-		Container:    ContainerFor(env),
-		AutoBuild:    true,
-		Tmux:         true,
-		KeepVersions: 2,
-		ReadyTimeout: 600,
-		ForwardPorts: DefaultForwardPorts,
-		OpenURLs:     "ask",
-		Trust:        TrustFallible,
-		Isolation:    KindContainer,
-		ImageProfile: DefaultImageProfile(),
-		Egress:       true,
-		EgressPorts:  DefaultEgressPorts,
-		Home:         home,
-		Getenv:       getenv,
+		Env:                env,
+		CabooseHome:        cabooseHome,
+		Image:              ImageFor(env),
+		Container:          ContainerFor(env),
+		AutoBuild:          true,
+		Tmux:               true,
+		KeepVersions:       2,
+		ReadyTimeout:       600,
+		ForwardPorts:       DefaultForwardPorts,
+		OpenURLs:           "ask",
+		CheckpointRequests: CheckpointRequestsAllow,
+		Trust:              TrustFallible,
+		Isolation:          KindContainer,
+		ImageProfile:       DefaultImageProfile(),
+		Egress:             true,
+		EgressPorts:        DefaultEgressPorts,
+		Home:               home,
+		Getenv:             getenv,
 	}
 	if err := c.readVariables(); err != nil {
 		return nil, err
@@ -436,12 +447,19 @@ func (c *Config) readFile() error {
 	str("link.ssh_agent", &c.SSHAgent)
 	c.SSHAgent = expandTilde(c.SSHAgent, c.Home)
 	boolean("link.host_exec", &c.HostExec)
+	str("link.checkpoint_requests", &c.CheckpointRequests)
+	switch c.CheckpointRequests {
+	case CheckpointRequestsAllow, CheckpointRequestsOff:
+	default:
+		return fail(`checkpoint_requests in [link]: %q is not "allow" or "off"`, c.CheckpointRequests)
+	}
 	if v, ok := f.Vals["link.open_urls_allow"].([]any); ok {
 		for _, o := range v {
 			c.OpenURLsAllow = append(c.OpenURLsAllow, o.(string))
 		}
 	}
 	str("trust", &c.Trust)
+	c.Checkpoints = slices.Clone(f.Checkpoints)
 	for _, name := range slices.Sorted(maps.Keys(f.Aliases)) {
 		a := f.Aliases[name]
 		if a.Cwd != "" {

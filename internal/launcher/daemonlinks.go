@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bfreis/caboose/internal/checkpoint"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/daemonproto"
@@ -46,9 +47,16 @@ type DaemonLinks struct {
 	// every environment.
 	recovering atomic.Bool
 
+	// cp turns on the checkpoint schedules, nil off; cpGate lets one
+	// checkpoint run at a time across them.
+	cp      *CheckpointOptions
+	cpGate  *checkpoint.Gate
+	schedWG sync.WaitGroup
+
 	mu     sync.Mutex
 	log    *log.Logger
 	envs   map[string]*envLink
+	scheds map[string]*schedRun // under mu
 	closed bool
 }
 
@@ -65,6 +73,9 @@ type DaemonLinksOptions struct {
 	// Decide, when set, is what makes an environment's link's decisions;
 	// nil decides as its config.toml says.
 	Decide func(env string) hostlink.Decider
+	// Checkpoints, when set, runs each environment's checkpoint schedule
+	// while this daemon serves it; nil runs none.
+	Checkpoints *CheckpointOptions
 }
 
 // envLink is one environment's link, as the daemon knows it.
@@ -78,6 +89,9 @@ type envLink struct {
 	state   string        // daemonproto's Link*; "" before any operation
 	since   time.Time
 	lastErr string
+	// cpLimits bound the checkpoints its sandbox asks for, across its
+	// links' restarts; made at the first link that offers them.
+	cpLimits *hostlink.CheckpointLimits
 }
 
 // linkInstance is one run of a link.
@@ -86,6 +100,10 @@ type linkInstance struct {
 	execs  *hostlink.Execs
 	cancel context.CancelFunc
 	done   chan struct{} // closed once it has stopped and let go of link.lock
+	lock   *os.File      // link.lock, held while it runs
+
+	lockMu   sync.Mutex // held while released changes, and while lock is looked at
+	released bool       // link.lock has been let go of, or is being
 }
 
 var _ daemon.Links = (*DaemonLinks)(nil)
@@ -93,7 +111,8 @@ var _ daemon.Links = (*DaemonLinks)(nil)
 // NewDaemonLinks is the daemon's links, none running yet.
 func NewDaemonLinks(o DaemonLinksOptions) *DaemonLinks {
 	l := &DaemonLinks{dir: filepath.Clean(o.Dir), dev: o.Dev, home: o.CabooseHome, newApp: o.NewApp, decide: o.Decide,
-		gate: hostlink.NewExecGate(), dialogs: newDialogQueue(), log: log.New(io.Discard, "", 0), envs: map[string]*envLink{}}
+		gate: hostlink.NewExecGate(), dialogs: newDialogQueue(), log: log.New(io.Discard, "", 0), envs: map[string]*envLink{},
+		cp: o.Checkpoints, cpGate: checkpoint.NewGate(), scheds: map[string]*schedRun{}}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	return l
 }
@@ -290,12 +309,14 @@ func (l *DaemonLinks) start(e *envLink, app *App) error {
 		unlock()
 		return err
 	}
-	in := &linkInstance{execs: hostlink.NewExecs(), done: make(chan struct{})}
+	in := &linkInstance{execs: hostlink.NewExecs(), done: make(chan struct{}), lock: lock}
 	var decide hostlink.Decider
 	if l.decide != nil {
 		decide = l.decide(e.name)
 	}
-	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate, decide: decide, lock: lock, dialogs: l.dialogs})
+	cp, cpLimits := l.agentCheckpoints(e)
+	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate, decide: decide, lock: lock, dialogs: l.dialogs,
+		checkpoints: cp, cpLimits: cpLimits})
 	if err != nil {
 		out.Close()
 		unlock()
@@ -312,9 +333,15 @@ func (l *DaemonLinks) start(e *envLink, app *App) error {
 		stopped := ctx.Err() != nil
 		cancel()
 		out.Close()
+		in.lockMu.Lock()
+		in.released = true
 		unlock()
+		in.lockMu.Unlock()
 		e.ended(in, err, stopped, app)
+		// The sandbox may have stopped: its schedule looks now.
+		l.schedule(e)
 	}()
+	l.schedule(e)
 	return nil
 }
 
@@ -437,15 +464,21 @@ func (l *DaemonLinks) Envs() []daemonproto.EnvStatus {
 		known := e.state != ""
 		e.mu.Unlock()
 		if known {
-			out = append(out, e.status())
+			st := e.status()
+			st.Checkpoints = checkpointStatus(l.schedStatus(e.name), time.Now())
+			out = append(out, st)
 		}
 	}
 	slices.SortFunc(out, func(a, b daemonproto.EnvStatus) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 
-// Busy reports whether a link runs: one runs only while its sandbox does.
+// Busy reports whether a link runs (one runs only while its sandbox
+// does), or a checkpoint is being taken.
 func (l *DaemonLinks) Busy() bool {
+	if l.checkpointing() {
+		return true
+	}
 	l.mu.Lock()
 	envs := make([]*envLink, 0, len(l.envs))
 	for _, e := range l.envs {
@@ -489,6 +522,9 @@ func (l *DaemonLinks) Close() {
 	}
 	// No link's dialog is queued or timed out after.
 	l.dialogs.close()
+	// The schedules end at the cancel; a checkpoint being copied stops
+	// (a whole-tree clone finishes first).
+	l.schedWG.Wait()
 }
 
 // WillRecover says that Recover is to run: until it has, Recovering
@@ -547,6 +583,9 @@ func (l *DaemonLinks) Recover(lg *log.Logger) {
 		e.op.Lock()
 		action, err := l.ensure(e, app, false)
 		e.op.Unlock()
+		// Its schedule runs whether or not the sandbox does: the prunes,
+		// and the leftovers of a daemon that went mid-checkpoint.
+		l.schedule(e)
 		switch {
 		case err != nil:
 			l.logf("recovery: environment %s: %v", name, err)

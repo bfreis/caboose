@@ -69,6 +69,10 @@ const (
 	KindEgress   Kind = "egress"
 	KindOpenURL  Kind = "open_url"
 	KindHostExec Kind = "host_exec"
+	// KindCheckpoint is a checkpoint taken now of paths [checkpoints]
+	// already copies on its schedule: it widens no reach, so it is decided
+	// by checkpoint_requests alone, under either trust, and never asks.
+	KindCheckpoint Kind = "checkpoint"
 )
 
 // Request is one thing the sandbox asks for, with the facts the caller
@@ -138,6 +142,9 @@ type Policy struct {
 	OpenURLs string
 	// OpenURLAllow is [link] open_urls_allow: origins opened without asking.
 	OpenURLAllow []string
+	// CheckpointRequests is [link] checkpoint_requests: "allow" or "off".
+	// Anything else, the empty value included, refuses.
+	CheckpointRequests string
 	// Aliases are the [alias.NAME] tables, by name.
 	Aliases map[string]Alias
 	// Egress is the outbound proxy's settings; nil when there is none.
@@ -235,6 +242,12 @@ const (
 	AliasDeny  = config.AliasDeny
 )
 
+// The checkpoint_requests settings.
+const (
+	CheckpointAllow = config.CheckpointRequestsAllow
+	CheckpointOff   = config.CheckpointRequestsOff
+)
+
 // The open_urls settings.
 const (
 	OpenAllow = "allow"
@@ -273,6 +286,8 @@ func Decide(p Policy, r Request, now time.Time) Decision {
 		return decideOpenURL(p, r, now)
 	case KindEgress:
 		return decideEgress(p, r, now)
+	case KindCheckpoint:
+		return decideCheckpoint(p)
 	}
 	return deny("deny:unknown-kind", "the host does not know this kind of request")
 }
@@ -359,6 +374,21 @@ func decideHostExec(p Policy) Decision {
 		return deny("deny:host_exec-off", "%s", agentproto.HostExecOff)
 	}
 	return allow("allow:host_exec", "host_exec = true in [link] of config.toml")
+}
+
+// decideCheckpoint decides a checkpoint the sandbox asks for now. The
+// trust does not enter into it: it copies only what [checkpoints] paths
+// already has copied on its schedule, into a store no sandbox reaches. No
+// grant applies (GrantKey is "" for it), and nothing asks: no person
+// waits on a checkpoint.
+func decideCheckpoint(p Policy) Decision {
+	switch p.CheckpointRequests {
+	case CheckpointOff:
+		return deny("deny:checkpoint_requests-off", `checkpoints asked for by the sandbox are off: checkpoint_requests = "off" in [link] of config.toml on the host`)
+	case CheckpointAllow:
+		return allow("allow:checkpoint_requests", `checkpoint_requests = "allow" in [link] of config.toml`)
+	}
+	return deny("deny:checkpoint_requests-policy", `checkpoint_requests %q in [link] is not "allow" or "off"`, clip(printable(p.CheckpointRequests), 32))
 }
 
 func decideAlias(p Policy, r Request, now time.Time) Decision {

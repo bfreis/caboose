@@ -74,9 +74,9 @@ func CabooseHomeRootProblem(host, cabooseHome, home string) string {
 		return ""
 	}
 	if HoldsDir(cabooseHome, host) {
-		return "is CABOOSE_HOME (" + cabooseHome + "), where caboose keeps every environment's configuration and data dirs: a sandbox could change them; name the directory that holds your projects instead"
+		return "is CABOOSE_HOME (" + cabooseHome + "), where caboose keeps every environment's configuration, data dirs and checkpoints: a sandbox could change them; name the directory that holds your projects instead"
 	}
-	why := "holds CABOOSE_HOME (" + cabooseHome + "), where caboose keeps every environment's configuration and data dirs: a sandbox could change them"
+	why := "holds CABOOSE_HOME (" + cabooseHome + "), where caboose keeps every environment's configuration, data dirs and checkpoints: a sandbox could change them"
 	if alt := narrowerRoot(host, cabooseHome); alt != "" {
 		return why + "; use " + tildeFor(alt, home) + " instead of " + tildeFor(host, home)
 	}

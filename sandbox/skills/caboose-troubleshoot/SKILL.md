@@ -213,6 +213,13 @@ The link also warns by notification when the VM holds over half of
 `kern.maxvnodes`, and again over 80%; `link.log` has it.
 @@END@@
 
+## Lost files on a host that takes checkpoints
+
+If files were deleted or overwritten in a project and the host takes
+checkpoints of it, the user restores them on the host, never from in here:
+`caboose checkpoint list` shows what exists, and `caboose checkpoint
+restore ID --to DIR` copies one into a new directory.
+
 ## Requests and caboose's Claude Code mod
 
 `caboose-agent request` and `caboose-agent requests` (and the mod's tools

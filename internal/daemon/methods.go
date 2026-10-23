@@ -54,6 +54,10 @@ func (s *server) methods() []method {
 		{name: daemonproto.MethodGrants, run: s.runBroker(daemonproto.MethodGrants)},
 		{name: daemonproto.MethodRevoke, run: s.runBroker(daemonproto.MethodRevoke)},
 		{name: daemonproto.MethodPermissions, run: s.runBroker(daemonproto.MethodPermissions)},
+		{name: daemonproto.MethodCheckpoints, run: s.runCheckpoints},
+		// The host paths the sandboxes write, for the command line's
+		// restore.
+		{name: daemonproto.MethodWritable, run: s.runWritable},
 	}
 }
 
@@ -212,4 +216,40 @@ func (s *server) runBroker(name string) func(context.Context, caller, json.RawMe
 		}
 		return res, nil, nil
 	}
+}
+
+// runCheckpoints is checkpoints: an environment's checkpoints, fitted to
+// a frame.
+func (s *server) runCheckpoints(ctx context.Context, _ caller, params json.RawMessage) (any, func(), *daemonproto.Error) {
+	if s.opts.Checkpoints == nil {
+		return nil, nil, s.unserved(daemonproto.MethodCheckpoints)
+	}
+	var p daemonproto.EnvParams
+	if e := decode(daemonproto.MethodCheckpoints, params, &p); e != nil {
+		return nil, nil, e
+	}
+	res, err := s.opts.Checkpoints.Checkpoints(ctx, p.Env)
+	if err != nil {
+		return nil, nil, protoError(err)
+	}
+	if res != nil {
+		daemonproto.FitCheckpoints(res)
+	}
+	return res, nil, nil
+}
+
+// runWritable is writable: what the sandboxes write, read afresh.
+func (s *server) runWritable(ctx context.Context, _ caller, params json.RawMessage) (any, func(), *daemonproto.Error) {
+	if s.opts.Writable == nil {
+		return nil, nil, s.unserved(daemonproto.MethodWritable)
+	}
+	var p struct{}
+	if e := decode(daemonproto.MethodWritable, params, &p); e != nil {
+		return nil, nil, e
+	}
+	res, err := s.opts.Writable.Writable(ctx)
+	if err != nil {
+		return nil, nil, protoError(err)
+	}
+	return res, nil, nil
 }
