@@ -728,6 +728,34 @@ type Root struct {
 	Host string
 	// Container is where the container sees it.
 	Container string
+	// Writable are the parts of the root the sandbox may write, relative
+	// to it, as written (CheckWritable): the rest of the root is read-only.
+	// ["."] is the whole root; nil is none of it.
+	Writable []string
+}
+
+// WholeWritable reports whether the whole root is writable.
+func (r Root) WholeWritable() bool { return len(r.Writable) == 1 && r.Writable[0] == "." }
+
+// WritableHost are the host paths of the root's writable parts: Host
+// joined with each (physical once ResolveRoots has run), Host itself when
+// the whole root is writable.
+func (r Root) WritableHost() []string { return r.writableUnder(r.Host) }
+
+// WritableContainer are the container paths of the root's writable parts,
+// as WritableHost are the host's.
+func (r Root) WritableContainer() []string { return r.writableUnder(r.Container) }
+
+func (r Root) writableUnder(base string) []string {
+	var out []string
+	for _, w := range r.Writable {
+		if w == "." {
+			out = append(out, base)
+		} else {
+			out = append(out, base+"/"+w)
+		}
+	}
+	return out
 }
 
 // FileRoots are [roots] as written, checked: names sorted, each host path
@@ -750,7 +778,10 @@ func FileRoots(file map[string]FileRoot, home string) ([]Root, error) {
 		if err := CheckContainerPath(ctr); err != nil {
 			return nil, fmt.Errorf("root %s: %v", name, err)
 		}
-		roots = append(roots, Root{Name: name, Host: path.Clean(host), Container: ctr})
+		if err := CheckWritable(fr.Writable); err != nil {
+			return nil, fmt.Errorf("root %s: %v", name, err)
+		}
+		roots = append(roots, Root{Name: name, Host: path.Clean(host), Container: ctr, Writable: slices.Clone(fr.Writable)})
 	}
 	for i, a := range roots {
 		for _, b := range roots[i+1:] {
@@ -892,6 +923,22 @@ func SameRoots(a, b []Root) bool {
 	return true
 }
 
+// SameWritable reports whether a and b make the same parts of the same
+// roots (by container path) writable, in any order. SameRoots leaves the
+// writable parts out, since the roots a container reports have none.
+func SameWritable(a, b []Root) bool {
+	set := func(roots []Root) map[string]bool {
+		m := map[string]bool{}
+		for _, r := range roots {
+			for _, w := range r.WritableContainer() {
+				m[w] = true
+			}
+		}
+		return m
+	}
+	return maps.Equal(set(a), set(b))
+}
+
 // DescribeRoots is roots for a message: "/h/dev at /work/dev, /h/w at
 // /work/w".
 func DescribeRoots(roots []Root) string {
@@ -927,8 +974,9 @@ const RootsHelp = `       The roots are the directories mounted into the sandbox
 
 // ResolveRoots checks every root is a directory, makes each absolute and
 // physical (symlinks resolved), as `cd "$root" && pwd -P` does, and refuses
-// roots that overlap: a project under two of them would have two container
-// paths, and so two sets of Claude Code state.
+// a root that holds CABOOSE_HOME (CabooseHomeRootProblem) and roots that
+// overlap: a project under two of them would have two container paths, and
+// so two sets of Claude Code state.
 func (c *Config) ResolveRoots() error {
 	for i := range c.Roots {
 		r := &c.Roots[i]
@@ -946,6 +994,12 @@ func (c *Config) ResolveRoots() error {
 			return c.rootError(*r, err.Error())
 		}
 		r.Host = p
+		if why := CabooseHomeRootProblem(p, c.CabooseHome, c.Home); why != "" {
+			return c.rootError(*r, why)
+		}
+		if err := c.checkWritableParts(*r); err != nil {
+			return err
+		}
 	}
 	for i, a := range c.Roots {
 		for _, b := range c.Roots[i+1:] {
@@ -957,6 +1011,65 @@ func (c *Config) ResolveRoots() error {
 		}
 	}
 	return nil
+}
+
+// CheckWritableParts runs ResolveRoots' check of every root's writable
+// parts again, on roots already made physical: for just before the
+// sandbox is created, when the one it replaces, which could write
+// whatever it had writable, is gone.
+func (c *Config) CheckWritableParts() error {
+	for _, r := range c.Roots {
+		if err := c.checkWritableParts(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkWritableParts refuses a writable part of r (whose Host is physical)
+// that WritablePartProblem finds a problem with.
+func (c *Config) checkWritableParts(r Root) error {
+	for _, w := range r.Writable {
+		if at, problem := WritablePartProblem(r.Host, w); problem != "" {
+			return fmt.Errorf("root %s: writable part %q, at %s, %s (%s).\n"+
+				"       A writable part must be a real directory under the root, with no symbolic link on the way;\n"+
+				"       create it, or fix the writable list of root %s.", r.Name, w, at, problem, c.RootsOrigin(), r.Name)
+		}
+	}
+	return nil
+}
+
+// WritablePartProblem says what is wrong with writable part w (as
+// CheckWritable allows it) of the root at host, a physical path, and
+// where: "" when nothing is. A part that is missing, is not a directory or
+// is, or is below, a symlink is refused: every component from the root
+// down is looked at without following a link. A part reached through one
+// could point anywhere, and the components above the part are in the
+// read-only rest of the root, so the sandbox cannot swap one for a link
+// later. "." is the root itself, which ResolveRoots checks.
+func WritablePartProblem(host, w string) (at, problem string) {
+	if w == "." {
+		return "", ""
+	}
+	cur := host
+	if cur == "/" {
+		cur = ""
+	}
+	for _, comp := range strings.Split(w, "/") {
+		cur += "/" + comp
+		fi, err := os.Lstat(cur)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return cur, "does not exist"
+		case err != nil:
+			return cur, err.Error()
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return cur, "is a symbolic link"
+		case !fi.IsDir():
+			return cur, "is not a directory"
+		}
+	}
+	return "", ""
 }
 
 func (c *Config) rootError(r Root, problem string) error {

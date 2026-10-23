@@ -47,19 +47,26 @@ func (a *App) checkProposedRoot(r proposal.Root) (host string, refusals, warning
 		refuse("The root %s (%s) is your home directory, or holds it: it would hand the sandbox your keys, tokens and everything else in it.", shown, host)
 	case home != "" && config.Within(host, home):
 		first, _, _ := strings.Cut(strings.TrimPrefix(host, home+"/"), "/")
-		if strings.HasPrefix(first, ".") || first == "Library" {
+		if strings.HasPrefix(first, ".") || strings.EqualFold(first, "Library") {
 			refuse("The root %s (%s) is in ~/%s, where tools keep their settings and credentials.", shown, host, first)
 		}
 	}
-	for _, own := range []struct{ what, dir string }{
-		{"caboose's home", c.CabooseHome},
-		{"this environment", c.EnvDir},
-		{"the data dir", c.DataDir},
-	} {
-		p := physicalOr(own.dir)
-		if p != "" && (config.Within(host, p) || config.Within(p, host)) {
-			refuse("The root %s (%s) overlaps %s, %s: the sandbox could change its own configuration, and read the Claude login.", shown, host, own.what, p)
-			break
+	// A root holding CABOOSE_HOME, by path and by identity (a second name
+	// for the root, or for a directory above CABOOSE_HOME, that no path
+	// comparison sees), is said with a narrower root to use instead.
+	if why := config.CabooseHomeRootProblem(host, c.CabooseHome, c.Home); why != "" {
+		refuse("The root %s (%s) %s.", shown, host, why)
+	} else {
+		for _, own := range []struct{ what, dir string }{
+			{"caboose's home", c.CabooseHome},
+			{"this environment", c.EnvDir},
+			{"the data dir", c.DataDir},
+		} {
+			p := physicalOr(own.dir)
+			if p != "" && (config.Within(host, p) || config.Within(p, host)) {
+				refuse("The root %s (%s) overlaps %s, %s: the sandbox could change its own configuration, and read the Claude login.", shown, host, own.what, p)
+				break
+			}
 		}
 	}
 	for _, o := range a.fileRoots() {

@@ -124,7 +124,8 @@ func (a *App) checkExisting() error {
 }
 
 // mountedRoots are the roots the container actually has mounted -- its
-// mounts at the container paths its LabelRoots names -- or nil when the
+// mounts at the container paths its LabelRoots names, each with the
+// writable parts its LabelWritable records (mountedWritable) -- or nil when the
 // container does not exist yet, in which case the configured ones are
 // about to become the truth anyway.
 //
@@ -148,7 +149,7 @@ func (a *App) mountedRoots() []config.Root {
 	var roots []config.Root
 	for _, m := range mounts {
 		if slices.Contains(paths, m.Target) {
-			roots = append(roots, config.Root{Host: m.Source, Container: m.Target})
+			roots = append(roots, config.Root{Host: m.Source, Container: m.Target, Writable: mountedWritable(labels, m.Target)})
 		}
 	}
 	return roots
@@ -470,8 +471,16 @@ func (a *App) createContainer(mayBuild bool) error {
 	if err != nil {
 		return Die("%v", err)
 	}
+	// The roots' writable parts were checked when the roots were
+	// resolved; again now, when a sandbox this one replaces, which could
+	// write them, is gone, and a link it left in a part's path would point
+	// the mount anywhere.
+	if err := c.CheckWritableParts(); err != nil {
+		return Die("%v", err)
+	}
 	spec.Mounts = append(spec.Mounts, dataMounts(c.DataDir, platform, sb, c.Roots)...)
 	spec.Labels = append(spec.Labels, assets.LabelRoots+"="+rootsLabel(c.Roots))
+	spec.Labels = append(spec.Labels, assets.LabelWritable+"="+writableLabel(c.Roots))
 	// The runtime and the user it needs, probed against the image just
 	// ensured (isolation.go).
 	if err := a.isolate(&spec); err != nil {
@@ -583,13 +592,11 @@ func dataMounts(d, platform string, sb *datadir.Sandbox, roots []config.Root) []
 		backend.Mount{Source: d + "/" + datadir.ManagedDir, Target: datadir.ManagedTarget, ReadOnly: true},
 	)
 	// Each root at a path of its own that is the same on every machine:
-	// /work/<name> (config.WorkDir), or its long form's, and labelled (by
-	// createContainer) so that mountedRoots tells them from the other
-	// mounts.
-	for _, r := range roots {
-		ms = append(ms, backend.Mount{Source: r.Host, Target: r.Container})
-	}
-	return ms
+	// /work/<name> (config.WorkDir), or its long form's, read-only but for
+	// its writable parts, and labelled (by createContainer) so that
+	// mountedRoots tells them from the other mounts, and what of them is
+	// writable.
+	return append(ms, rootMounts(roots)...)
 }
 
 // ensureImage makes sure the image exists before a container is created
@@ -838,6 +845,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		return err
 	}
 	a.noteSetup()
+	a.noteReadOnlyRoots()
 	if err := a.syncSandboxInstructions(); err != nil {
 		return err
 	}
@@ -853,6 +861,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 			return err
 		}
 		a.warnIfRootsDrifted()
+		a.warnIfWritableDrifted()
 		a.warnIfKeepDrifted()
 		a.warnIfInstructionsUnmounted()
 		a.warnIfRunArgsDrifted()

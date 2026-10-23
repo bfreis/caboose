@@ -213,6 +213,28 @@ outside the repo.
   container's roots label), which differ from the configured ones until a
   restart. The sync and the sandbox config compare container paths, not
   root names.
+- **Roots are read-only but for their writable parts.** `rootMounts`
+  (`internal/launcher/roots.go`) is the whole plan: each root read-only
+  unless its `writable` is `["."]`, each part a writable mount at its own
+  path under the root's, parents first (the vm guest binds in the order
+  given, and `planShares` refuses a mount listed before one that holds
+  it). It takes the roots and nothing else: nothing of the sandbox's may
+  reach it. `planShares` refuses a read-only share
+  that is or is inside a writable one, and allows one that holds a
+  writable one; never loosen the first. The parts are checked for links
+  and missing components at `ResolveRoots` and again just before
+  `Create` (`config.CheckWritableParts`), when a sandbox being replaced is
+  gone. The container is labelled with them (`assets.LabelWritable`, set
+  even when empty, every root in it); `mountedRoots` reads it back, and a
+  container without it, or a root it does not name, counts as wholly
+  writable, failing closed. A change, or a missing label, is a restart
+  (`writableDrift`), never `assets.Compat`.
+  The gVisor relay watches only the writable parts: the agent's touch
+  fails on a read-only mount. A root that holds `CABOOSE_HOME` is refused
+  at `ResolveRoots`, in `setup roots` (`badRootPath`) and in a proposal
+  (`config.CabooseHomeRootProblem`, by identity through `config.HoldsDir`:
+  a `CABOOSE_HOME` not made yet by its nearest existing ancestor), naming
+  a narrower root.
 - **This repo is not mounted at a path of its own.** It is visible only
   because it sits under a root like any other checkout, at its place
   under `/work`. Don't add a second mount for it.

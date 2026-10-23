@@ -15,7 +15,9 @@
 
   ! Everything under
     TMP/home/src/other
-    becomes readable and writable from the sandbox.
+    becomes readable from the sandbox. It is mounted read-only: what the sandbox
+    may write of it is writable in config.toml, which caboose setup roots asks
+    for.
   ! TMP/home/src/other
     holds what looks like credentials or keys: .env. The sandbox could read them
     all.

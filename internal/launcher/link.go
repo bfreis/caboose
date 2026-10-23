@@ -818,19 +818,30 @@ func (r *linkRunner) serveDialed(ctx context.Context, l backend.Linker) error {
 	return runErr
 }
 
-// relayRoots are the roots whose changes the link relays into the
-// container: those it has mounted, when it was created under an isolation
-// that turns none of the host's edits into inotify events inside (gVisor).
-// Under runc the engine passes them on itself.
+// relayRoots are the directories whose changes the link relays into the
+// container: the writable parts of the roots it has mounted (a whole root
+// where all of it is), when it was created under an isolation that turns
+// none of the host's edits into inotify events inside (gVisor). Under runc
+// the engine passes them on itself. The relay raises an event by setting
+// a file's mode, which a read-only mount refuses, so the read-only rest of
+// a root is not relayed.
 func (r *linkRunner) relayRoots() []hostlink.Root {
 	// A VM's virtio-fs raises no event for the Mac's edits either.
 	iso, _, ok := r.a.createdIsolation()
 	if !ok || iso != isolationGVisor && iso != isolationVM {
 		return nil
 	}
+	return writableRelay(r.a.mountedRoots())
+}
+
+// writableRelay is relayRoots for mounted roots.
+func writableRelay(mounted []config.Root) []hostlink.Root {
 	var roots []hostlink.Root
-	for _, m := range r.a.mountedRoots() {
-		roots = append(roots, hostlink.Root{Host: m.Host, Container: m.Container})
+	for _, m := range mounted {
+		hosts, ctrs := m.WritableHost(), m.WritableContainer()
+		for i := range hosts {
+			roots = append(roots, hostlink.Root{Host: hosts[i], Container: ctrs[i]})
+		}
 	}
 	return roots
 }

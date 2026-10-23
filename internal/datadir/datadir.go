@@ -431,12 +431,34 @@ func declaresModule(path string) bool {
 	return false
 }
 
-// DescribeMounts is what replaces @@CABOOSE_ROOTS@@: each root's host path
-// and where the container has it, as Markdown.
+// describedParts is how many writable parts of a root DescribeMounts names.
+const describedParts = 8
+
+// DescribeMounts is what replaces @@CABOOSE_ROOTS@@: each root's host path,
+// where the container has it and what of it the container may write, as
+// Markdown. A root with many writable parts names the first
+// describedParts of them, and how many more there are.
 func DescribeMounts(roots []config.Root) string {
 	var parts []string
 	for _, r := range roots {
-		parts = append(parts, "`"+r.Host+"` at `"+r.Container+"`")
+		d := "`" + r.Host + "` at `" + r.Container + "`"
+		switch {
+		case r.WholeWritable():
+			d += " (writable)"
+		case len(r.Writable) == 0:
+			d += " (read-only)"
+		default:
+			var w []string
+			all := r.WritableContainer()
+			for _, p := range all[:min(len(all), describedParts)] {
+				w = append(w, "`"+p+"`")
+			}
+			if more := len(all) - describedParts; more > 0 {
+				w = append(w, fmt.Sprintf("%d more", more))
+			}
+			d += " (read-only but " + strings.Join(w, ", ") + ")"
+		}
+		parts = append(parts, d)
 	}
 	return strings.Join(parts, ", ")
 }

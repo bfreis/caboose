@@ -62,6 +62,7 @@ stop
 -- stderr
 caboose: VM removed
 caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: every root is read-only to the VM, so nothing in it can change your projects: list the parts it may write in writable ('caboose setup roots' asks)
 caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
 caboose: starting the sandbox's VM
 caboose: VM recreated
@@ -97,6 +98,7 @@ caboose: restart will kill these live session(s):
   proj-abc123-2
 caboose: continue? [y/N] caboose: VM removed
 caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: every root is read-only to the VM, so nothing in it can change your projects: list the parts it may write in writable ('caboose setup roots' asks)
 caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
 caboose: starting the sandbox's VM
 caboose: VM recreated
@@ -113,6 +115,7 @@ caboose: restart will kill these live session(s):
 caboose: CABOOSE_FORCE=1 set, continuing.
 caboose: VM removed
 caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: every root is read-only to the VM, so nothing in it can change your projects: list the parts it may write in writable ('caboose setup roots' asks)
 caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
 caboose: starting the sandbox's VM
 caboose: VM recreated
@@ -124,6 +127,7 @@ remove create
 -- stdout
 -- stderr
 caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: every root is read-only to the VM, so nothing in it can change your projects: list the parts it may write in writable ('caboose setup roots' asks)
 caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
 caboose: starting the sandbox's VM
 caboose: VM recreated

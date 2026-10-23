@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/bfreis/caboose/internal/assets"
@@ -291,7 +292,8 @@ func (a *App) showPlan(p *prompter, pl plan) {
 			p.note("    proposed as %s", proposal.Printable(pl.root.Path))
 		}
 		p.blank()
-		p.warn("Everything under %s becomes readable and writable from the sandbox.", pl.host)
+		p.warn("Everything under %s becomes readable from the sandbox. It is mounted read-only: "+
+			"what the sandbox may write of it is writable in config.toml, which %s asks for.", pl.host, p.code(SetupCommand(a.Cfg.Env, "roots")))
 	}
 }
 
@@ -513,8 +515,15 @@ func (a *App) exportProposals() {
 		}
 		s.Apko = &proposal.ApkoState{Packages: ip.Packages, Defaults: ip.Defaults, Installed: installed}
 	}
+	mounted := a.mountedRoots()
 	for _, r := range a.fileRoots() {
-		s.Roots[r.Name] = proposal.StateRoot{Host: r.Path, Path: r.container()}
+		sr := proposal.StateRoot{Host: r.Path, Path: r.container(), Writable: append([]string{}, r.Writable...)}
+		for _, m := range mounted {
+			if m.Container == r.container() && !slices.Equal(m.Writable, r.Writable) {
+				sr.Mounted = append([]string{}, m.Writable...)
+			}
+		}
+		s.Roots[r.Name] = sr
 	}
 	if err := proposal.WriteCurrent(c.DataDir, s); err != nil {
 		a.Note("not telling sessions what a proposal is made against: %s", proposal.Printable(err.Error()))

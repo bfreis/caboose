@@ -102,6 +102,11 @@ outright:
 - anything overlapping a root, or a name a root already has;
 - a path that does not exist, or is not a directory.
 
+A root a proposal adds is mounted read-only: no proposal can make any part
+of a root writable, which is `writable` in `config.toml`, yours to edit
+(`caboose setup roots` asks). Applying one keeps the other roots' writable
+parts as they are.
+
 Otherwise `apply` warns when the directory holds what looks like
 credentials (`.env` files, `.ssh`, `*.pem`, ...), and asks you to type the
 root's name to confirm. Adding a second root to a single one at `/work`
@@ -151,8 +156,8 @@ checks until the hour is over.
 `current/` next to them is written by the host at every launch and after
 every `apply`: `state.toml`, with the image profile in use (`image`,
 `"<kind>.<name>"`) and what can be proposed for it, and the roots
-`config.toml` has (each a `[roots.NAME]` with its `host` and container
-`path`). Under `apko` it lists the profile's own `packages`, `defaults`, and
+`config.toml` has (each a `[roots.NAME]` with its `host`, container
+`path`, and `writable`: the parts the sandbox may write). Under `apko` it lists the profile's own `packages`, `defaults`, and
 every package `installed`; under `dockerfile`, where the Dockerfile comes
 from (`dockerfile`, the profile's own, or `seed`, caboose's, when the
 profile has none yet) and its hash, with the file itself as `Dockerfile`

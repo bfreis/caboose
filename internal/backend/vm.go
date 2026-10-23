@@ -234,8 +234,13 @@ func SharePaths(ms []Mount) ([]string, error) {
 // directory of the share, and is bound read-only too: the host refuses its
 // writes, so the guest's root cannot make it writable by remounting. That
 // holds only while no writable share reaches the same files, so a
-// read-only mount whose directory is, is inside, or holds a writable
-// mount's is refused.
+// read-only mount whose directory is, or is inside, a writable mount's is
+// refused: the guest could write it through that one. A read-only mount
+// that holds a writable one is allowed (a read-only root with its writable
+// parts): what is under the writable one is meant to be written, and the
+// rest is reached through the read-only directory alone. The guest binds
+// the mounts in the order given, so the writable one has to come after
+// the read-only one that holds it, or that one covers it.
 func planShares(ms []Mount) ([]vm.Share, []agentproto.GuestMount, error) {
 	var shares []vm.Share
 	type key struct {
@@ -244,7 +249,12 @@ func planShares(ms []Mount) ([]vm.Share, []agentproto.GuestMount, error) {
 	}
 	names := map[key]string{}
 	var mounts []agentproto.GuestMount
-	for _, m := range ms {
+	for i, m := range ms {
+		for _, later := range ms[i+1:] {
+			if t := path.Clean(m.Target); t != path.Clean(later.Target) && within(t, path.Clean(later.Target)) {
+				return nil, nil, fmt.Errorf("mount at %s comes before the mount at %s, which holds it and would cover it", m.Target, later.Target)
+			}
+		}
 		if !filepath.IsAbs(m.Source) {
 			return nil, nil, fmt.Errorf("mount source %q is not an absolute path", m.Source)
 		}
@@ -275,8 +285,8 @@ func planShares(ms []Mount) ([]vm.Share, []agentproto.GuestMount, error) {
 			continue
 		}
 		for _, rw := range shares {
-			if !rw.ReadOnly && (within(ro.Path, rw.Path) || within(rw.Path, ro.Path)) {
-				return nil, nil, fmt.Errorf("read-only mount source %s overlaps the writable mount source %s: the guest could write it through that one", ro.Path, rw.Path)
+			if !rw.ReadOnly && within(ro.Path, rw.Path) {
+				return nil, nil, fmt.Errorf("read-only mount source %s is, or is inside, the writable mount source %s: the guest could write it through that one", ro.Path, rw.Path)
 			}
 		}
 	}

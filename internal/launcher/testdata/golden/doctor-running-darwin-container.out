@@ -3,7 +3,7 @@
 
   ✓ caboose       VERSION, a VERSIONelopment build; it does not update itself
   ✓ env           default
-  ✓ roots         TMP at /work
+  ✓ roots         TMP at /work (read-only)
   ✓ data dir      TMP/data
   ! instructions  caboose's instructions are not written yet; the next launch writes them to TMP/data/claude-code/CLAUDE.md (/etc/claude-code/CLAUDE.md in the container, read-only)
   ! login         not logged in to Claude yet; the first session asks (run caboose in a project)

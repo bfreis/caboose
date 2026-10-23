@@ -315,7 +315,9 @@ func (a *App) doctorConfig(c *checkup) bool {
 		c.problem("roots", "point the roots at directories that exist ("+cfg.RootsOrigin()+")", "%s", firstLine(err.Error()))
 		return false
 	}
-	c.ok("roots", "%s", mountList(cfg.Roots))
+	// Each root with what the sandbox may write of it: read-only, a whole
+	// root writable, or the parts.
+	c.ok("roots", "%s", accessList(cfg.Roots))
 	return true
 }
 
@@ -528,6 +530,9 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	if mounted := a.mountedRoots(); rootsOK && len(mounted) > 0 && !config.SameRoots(mounted, cfg.Roots) {
 		c.problem("roots", "caboose restart"+endsSessions, "the %s mounts %s; the configuration says %s",
 			noun, mountList(mounted), mountList(cfg.Roots))
+	}
+	if d := a.writableDrift(); rootsOK && d != "" {
+		c.problem("roots", "caboose restart"+endsSessions, "%s", d)
 	}
 	if d := a.keepDrift(); d != "" {
 		c.problem("keep", "caboose restart"+endsSessions, "the %s %s", noun, d)

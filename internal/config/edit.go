@@ -298,10 +298,7 @@ func (ed *editor) setRoots(roots map[string]FileRoot) {
 	block := []string{"[" + rootsKey + "]"}
 	for _, name := range slices.Sorted(maps.Keys(roots)) {
 		r := roots[name]
-		v := tomlValue(r.Host)
-		if r.Path != "" {
-			v = "{ host = " + tomlValue(r.Host) + ", path = " + tomlValue(r.Path) + " }"
-		}
+		v := inlineRoot(r)
 		block = append(block, name+" = "+v)
 	}
 	// Comment lines in the old table are kept, after the new entries.
@@ -351,7 +348,7 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 				return fmt.Errorf("[%s] would be lost", p)
 			}
 		}
-		if !e.SetRoots && !maps.Equal(o.Roots, f.Roots) {
+		if !e.SetRoots && !sameFileRoots(o.Roots, f.Roots) {
 			return fmt.Errorf("[roots] would change")
 		}
 	}
@@ -381,7 +378,7 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 			return fmt.Errorf("[%s] is not there", t)
 		}
 	}
-	if e.SetRoots && !maps.Equal(f.Roots, e.Roots) {
+	if e.SetRoots && !sameFileRoots(f.Roots, e.Roots) {
 		return fmt.Errorf("[roots] reads back as %v, not %v", f.Roots, e.Roots)
 	}
 	return nil
@@ -420,11 +417,7 @@ func (e Edit) Snippet() string {
 		b.WriteString("[" + rootsKey + "]\n")
 		for _, name := range slices.Sorted(maps.Keys(e.Roots)) {
 			r := e.Roots[name]
-			if r.Path != "" {
-				fmt.Fprintf(&b, "%s = { host = %s, path = %s }\n", name, tomlValue(r.Host), tomlValue(r.Path))
-			} else {
-				fmt.Fprintf(&b, "%s = %s\n", name, tomlValue(r.Host))
-			}
+			fmt.Fprintf(&b, "%s = %s\n", name, inlineRoot(r))
 		}
 	}
 	return b.String()
@@ -477,4 +470,29 @@ func tomlValue(v any) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// inlineRoot writes r as a [roots] value: the short form when it has
+// nothing but a host, else an inline table of host and whichever of path
+// and writable it has.
+func inlineRoot(r FileRoot) string {
+	if r.Path == "" && len(r.Writable) == 0 {
+		return tomlValue(r.Host)
+	}
+	parts := []string{"host = " + tomlValue(r.Host)}
+	if r.Path != "" {
+		parts = append(parts, "path = "+tomlValue(r.Path))
+	}
+	if len(r.Writable) > 0 {
+		parts = append(parts, "writable = "+tomlValue(r.Writable))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
+
+// sameFileRoots reports whether a and b are the same [roots], writable
+// lists in order and all.
+func sameFileRoots(a, b map[string]FileRoot) bool {
+	return maps.EqualFunc(a, b, func(x, y FileRoot) bool {
+		return x.Host == y.Host && x.Path == y.Path && slices.Equal(x.Writable, y.Writable)
+	})
 }

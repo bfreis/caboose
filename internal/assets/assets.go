@@ -126,6 +126,14 @@ const (
 	// the rest, since a root may be mounted anywhere. Set on every
 	// container, as LabelRunArgs is.
 	LabelRoots = "dev.bfreis.caboose.roots"
+	// LabelWritable is on the container too: what of each root it was
+	// created able to write, as a JSON object of each root's container
+	// path and its writable parts as config.toml lists them, sorted ([]
+	// for none: read-only; ["."] for the whole root). Set on every
+	// container, as LabelRunArgs is; a container without it, or a root it
+	// does not name, is read as wholly writable, failing closed, and is
+	// drift that 'caboose restart' fixes.
+	LabelWritable = "dev.bfreis.caboose.writable"
 )
 
 // Compat is the version of what the launcher expects of a container it did

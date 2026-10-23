@@ -2,6 +2,7 @@ package datadir
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -56,12 +57,12 @@ func TestSourceKinds(t *testing.T) {
 
 func TestExpandPlaceholders(t *testing.T) {
 	f := Facts{Env: "work", Isolation: "gvisor", Profile: "gvisor.main", ImageProfile: "apko.default", Version: "v1.2",
-		Roots: []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "dev", Host: "/h/dev", Container: "/work/dev"}}}
+		Roots: []config.Root{{Name: "a", Host: "/a", Container: "/work/a", Writable: []string{"."}}, {Name: "dev", Host: "/h/dev", Container: "/work/dev", Writable: []string{"p", "q/r"}}}}
 	got, err := Expand([]byte("@@CABOOSE_ROOTS@@|@@CABOOSE_ENV@@|`caboose@@CABOOSE_ENV_FLAG@@ apply`|@@CABOOSE_ISOLATION@@|@@CABOOSE_PROFILE@@|@@CABOOSE_IMAGE@@|@@CABOOSE_VERSION@@|@@CABOOSE_SOURCE@@|@@CABOOSE_UPSTREAM@@ & \\1\n"), f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "`/a` at `/work/a`, `/h/dev` at `/work/dev`|work|`caboose -e work apply`|gvisor|gvisor.main|apko.default|v1.2|" +
+	want := "`/a` at `/work/a` (writable), `/h/dev` at `/work/dev` (read-only but `/work/dev/p`, `/work/dev/q/r`)|work|`caboose -e work apply`|gvisor|gvisor.main|apko.default|v1.2|" +
 		UpstreamURL + "|" + UpstreamURL + " & \\1\n"
 	if string(got) != want {
 		t.Errorf("got  %q\nwant %q", got, want)
@@ -364,12 +365,25 @@ func TestInstallManagedSkillsNeverFollowLinks(t *testing.T) {
 	}
 }
 
+// A root with many writable parts names the first few, and how many more
+// there are: the line goes into every session.
+func TestDescribeMountsManyParts(t *testing.T) {
+	r := config.Root{Host: "/h", Container: "/work"}
+	for i := range describedParts + 3 {
+		r.Writable = append(r.Writable, fmt.Sprintf("p%02d", i))
+	}
+	got := DescribeMounts([]config.Root{r, {Host: "/x", Container: "/work/x"}})
+	if !strings.Contains(got, "`/work/p07`, 3 more)") || strings.Contains(got, "p08") || !strings.HasSuffix(got, ", `/x` at `/work/x` (read-only)") {
+		t.Errorf("%s", got)
+	}
+}
+
 // What the values hold is never read as a placeholder: a clone the sandbox
 // named @@X@@, or a root path with @@ in it, expands fine.
 func TestExpandValuesAreNotPlaceholders(t *testing.T) {
 	f := Facts{Roots: []config.Root{{Host: "/h/@@ROOT@@", Container: "/work"}}, Version: "@@V@@", Env: "e@@x@@"}
 	got, err := Expand([]byte("@@CABOOSE_ROOTS@@ @@CABOOSE_VERSION@@ @@CABOOSE_ENV@@\n"), f)
-	if err != nil || string(got) != "`/h/@@ROOT@@` at `/work` @@V@@ e@@x@@\n" {
+	if err != nil || string(got) != "`/h/@@ROOT@@` at `/work` (read-only) @@V@@ e@@x@@\n" {
 		t.Errorf("%q %v", got, err)
 	}
 }

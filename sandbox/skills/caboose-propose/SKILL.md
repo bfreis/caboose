@@ -23,7 +23,9 @@ launch and after every `apply`. It is the authority, not these instructions:
 - dockerfile: `dockerfile` (`"dockerfile"`, the profile's own, or `"seed"`,
   caboose's, when the profile has none yet), its `dockerfile_sha256`, and the
   file itself as `current/Dockerfile`.
-- `[roots.NAME]`: each root's `host` path and container `path`.
+- `[roots.NAME]`: each root's `host` path, container `path`, and
+  `writable`: the parts of it the sandbox may write (`"."` for all of it);
+  the rest is read-only.
 
 ## 2. Write ~/.caboose-proposals/NAME.toml
 
@@ -138,6 +140,11 @@ mount, a name already used, and a path that does not exist or is not a
 directory. It warns about what looks like credentials, and asks the user to
 type the name.
 
+A proposed root is mounted read-only: no proposal can make any part of a
+root writable. That is `writable` in the root's `[roots]` entry, which only
+the user edits (`caboose setup roots` asks). Say so when a write is what the
+user needs.
+
 If `state.toml` shows a single root mounted at `/work` itself, adding one
 moves that root to `/work/NAME`: every project path changes, and Claude
 Code's per-project state (memory, resumable conversations) stays under the
@@ -178,6 +185,7 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | forwarded ports, URL opening, host commands | `forward_ports`, `open_urls`, `host_exec` in `[link]` (within seconds) |
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |
+| what of a root the sandbox may write | `writable` in its `[roots]` entry, or `caboose setup roots`; a restart |
 | tmux, time zone, hostname | `tmux`, `tz`, `hostname` in `[session]` (`tmux`, `tz`: the next session; `hostname`: a restart) |
 
 @@IF isolation=vm@@

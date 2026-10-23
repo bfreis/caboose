@@ -49,10 +49,16 @@ type ApkoState struct {
 }
 
 // StateRoot is one root in state.toml: its host path as config.toml has
-// it, and its path in the sandbox.
+// it, its path in the sandbox, and the parts of it the sandbox may write,
+// relative to it, as config.toml lists them (["."] for all of it; none:
+// read-only).
 type StateRoot struct {
-	Host string `toml:"host"`
-	Path string `toml:"path"`
+	Host     string   `toml:"host"`
+	Path     string   `toml:"path"`
+	Writable []string `toml:"writable"`
+	// Mounted is what the sandbox that exists may write of the root now,
+	// when that differs from Writable (until a restart); nil otherwise.
+	Mounted []string `toml:"mounted_writable,omitempty"`
 }
 
 // stateFile is State as state.toml has it.
@@ -86,6 +92,14 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 # dockerfile_sha256 its hash, which a proposal names.
 #
 # ref: an image of the user's own; nothing in it can be proposed.
+#
+# roots: config.toml's roots, each with its host path, its path in the
+# sandbox, and writable: the parts of it the sandbox may write, relative to
+# it ("." for all of it). The rest of each root is read-only: a write there
+# fails with "Read-only file system". Only the user changes writable, in
+# config.toml, and the sandbox takes the change at its next restart; a
+# proposal cannot. Until then, mounted_writable says what the sandbox that
+# runs now may write, when that differs.
 
 `
 

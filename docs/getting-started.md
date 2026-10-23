@@ -55,6 +55,10 @@ time, it:
    `auto_build = false` in `[build]` turns this off: a missing image is then an
    error telling you to run `caboose build`.
 2. **Creates the container**, with the roots and the data dir mounted.
+   Every root is read-only to the sandbox but for the parts its `writable`
+   lists, and the default one lists none: until you name the projects it
+   may change (`caboose setup roots` asks), sessions can read them and
+   write nothing in them. A launch says so.
 3. **Installs Claude Code** into the persisted `~/.local` on its first boot
    (up to `ready_timeout` seconds, 600 by default) — once per data dir and
    [platform](images.md#switching-between-images), not once per image build.

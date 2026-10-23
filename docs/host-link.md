@@ -160,8 +160,9 @@ On a Mac these use `open` and `osascript`; on Linux `xdg-open`,
 Under a `gvisor` or `vm` profile, an edit made on this machine under
 the roots never becomes an inotify event in the sandbox: a dev server's reload, a
 watch-mode test or a `--watch` build there would not see it. So the link
-watches the roots the container mounts (FSEvents on a Mac, inotify on
-Linux) and sends the agent the paths that changed. The agent sets each
+watches the writable parts of the roots the container mounts (a whole
+root where all of it is writable; FSEvents on a Mac, inotify on Linux)
+and sends the agent the paths that changed. The agent sets each
 one's mode to what it already is, which raises `IN_ATTRIB` inside and
 leaves the file's contents and times alone; for a file deleted or renamed
 away, it does that to its directory. Under a `container` profile the engine passes
@@ -177,7 +178,10 @@ Limits: a deleted file raises nothing itself, so a watcher sees its
 directory change, not the file's name (tools that look at the directory
 again when it changes notice); nothing in a `.git` directory is relayed; a burst of more than 64
 changes in one directory is relayed as that directory, and of more than
-4096 at once as the roots themselves, for watchers to look again. A file
+4096 at once as the watched directories themselves, for watchers to look
+again. The read-only rest of a root is not relayed: the agent's touch
+would fail on a read-only mount, so a watcher there needs its polling
+mode. A file
 the sandbox writes is seen here too, and relayed back, so a watcher there
 sees that change twice. `link.log` says which roots it watches, or why it
 cannot.
@@ -357,9 +361,11 @@ sandbox is:
 - file changes go one way, from the host: the agent only touches paths
   under `/work` the host names, never through a symlink, and only regular
   files and directories;
-- an outbound connection reaches only `egress_ports`, and only public
-  addresses as your Mac resolves them, unless `egress_allow` says
-  otherwise.
+- under `vm`, an outbound connection made through the proxy reaches only
+  `egress_ports`, and only public addresses as your Mac resolves them,
+  unless `egress_allow` says otherwise. A program that ignores the proxy
+  settings leaves through the VM's NAT instead, and under `container` and
+  `gvisor` the engine's network is unrestricted;
 - a host command runs only when `host_exec`, in the host's `config.toml`,
   says so: the agent asking is not enough. It runs the request's own
   command line, through no shell, in a directory under a mounted root,

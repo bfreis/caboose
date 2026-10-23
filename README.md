@@ -58,7 +58,8 @@ building from a checkout.
   checkouts. Claude Code updates itself in place, and the sandbox can be
   recreated at any time without losing anything.
 - **Only what you mount.** The sandbox sees the roots you name (default
-  `~/dev`, at `/work/dev` inside) and nothing else on your disk. Your SSH agent
+  `~/dev`, at `/work/dev` inside), read-only but for the parts you let it
+  write, and nothing else on your disk. Your SSH agent
   (or the one you name) is forwarded, so git pushes and signs commits with
   keys that never enter the sandbox.
 - **A way back to you.** Servers listening in the sandbox are forwarded to

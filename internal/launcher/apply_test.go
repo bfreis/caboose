@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -208,7 +209,7 @@ func TestApplyRoot(t *testing.T) {
 	if err := e.apply("1\nothre\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("/work/other", phys, "readable and writable from the sandbox", "credentials or keys: .env",
+	e.wantOut("/work/other", phys, "becomes readable from the sandbox. It is mounted read-only", "credentials or keys: .env",
 		"That is not other")
 	if c := e.configFile(); c != "" {
 		t.Errorf("config.toml written on a wrong name:\n%s", c)
@@ -232,7 +233,7 @@ func TestApplyRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Roots["dev"].Host != "~/dev" || f.Roots["other"].Host != "~/src/other" || len(f.Roots) != 2 {
+	if f.Roots["dev"].Host != "~/dev" || f.Roots["other"].Host != "~/src/other" || len(f.Roots) != 2 || f.Roots["other"].Writable != nil {
 		t.Errorf("roots %v", f.Roots)
 	}
 	if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -241,6 +242,26 @@ func TestApplyRoot(t *testing.T) {
 }
 
 // A root through a symlink is judged, and written, as where it leads.
+// Applying a root keeps what the other roots let the sandbox write, and
+// adds the new one read-only.
+func TestApplyRootKeepsWritable(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.dir("dev/p")
+	e.dir("src/other")
+	e.writeConfig("[roots]\ndev = { host = \"~/dev\", writable = [\"p\"] }\n")
+	e.propose("other.toml", "title = \"Mount other\"\n[roots]\nother = \"~/src/other\"\n")
+	if err := e.apply("1\nother\n"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	f, err := config.ParseFile("config.toml", []byte(e.configFile()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.Roots["dev"].Writable, []string{"p"}) || f.Roots["other"].Writable != nil || len(f.Roots) != 2 {
+		t.Errorf("roots %+v\n%s", f.Roots, e.configFile())
+	}
+}
+
 func TestApplyRootThroughASymlink(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	real := e.dir("src/real")
@@ -287,7 +308,7 @@ func TestProposedRootRefusals(t *testing.T) {
 		{"x", "~/ok/to-ssh", "in ~/.ssh"},
 		{"x", "~/Library/Keychains", "in ~/Library"},
 		{"x", e.a.Cfg.DataDir, "overlaps caboose's home"},
-		{"x", e.a.Cfg.CabooseHome, "overlaps caboose's home"},
+		{"x", e.a.Cfg.CabooseHome, "is CABOOSE_HOME"},
 		{"x", "~/dev/sub", "overlaps the root ~/dev"},
 		{"ok", "~/ok", ""},
 		{"x", "~/nope", "does not exist"},
@@ -299,6 +320,19 @@ func TestProposedRootRefusals(t *testing.T) {
 			t.Errorf("%s: refusals %q, want %q", tc.path, got, tc.want)
 		}
 	}
+	// A CABOOSE_HOME not made yet, under a second name for the root: no
+	// path comparison sees it, the identity of its nearest ancestor does.
+	e.mkdir("real")
+	if err := os.Symlink(filepath.Join(home, "real"), filepath.Join(home, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	prev := e.a.Cfg.CabooseHome
+	e.a.Cfg.CabooseHome = filepath.Join(home, "alias", "caboose")
+	_, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "real", Path: "~/real"})
+	if got := strings.Join(refusals, "\n"); !strings.Contains(got, "holds CABOOSE_HOME") {
+		t.Errorf("refusals %q", got)
+	}
+	e.a.Cfg.CabooseHome = prev
 	// A name one of several roots has is taken.
 	e.a.Cfg.File = &config.File{Roots: map[string]config.FileRoot{"dev": {Host: "~/dev"}}}
 	if _, refusals, _ := e.a.checkProposedRoot(proposal.Root{Name: "dev", Path: "~/ok"}); len(refusals) != 1 || !strings.Contains(refusals[0], "named dev already") {

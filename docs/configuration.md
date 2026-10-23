@@ -37,14 +37,16 @@ packages = ["graphviz", "postgresql-17-client"]
 
 | Key | Default | |
 |---|---|---|
-| `format` | `1` | the file's structure, which `caboose setup` writes; a file of a newer format than this caboose reads is refused, saying `caboose update` |
+| `format` | `1` | the file's structure, which `caboose setup` writes; a file saying any other format is refused (a newer one saying `caboose update`) |
 | `isolation` | the one profile defined, else `container` | the [isolation profile](#isolation-profiles) the sandbox runs under, `"<kind>.<name>"` |
 | `image` | the one profile defined, else `apko.default` | the [image profile](#image-profiles) the sandbox is built from, `"<kind>.<name>"` |
 
 ## `[roots]`
 
 The host directories the sandbox can reach; see [roots](#roots). Each entry
-is `name = "host path"`, or a table with `host` and `path`.
+is `name = "host path"`, or a table with `host` and optionally `path` and
+`writable`. Every root is read-only to the sandbox but for the parts its
+`writable` lists; see [Read-only roots and writable parts](#read-only-roots-and-writable-parts).
 
 ## `[build]`
 
@@ -96,7 +98,7 @@ Each kind has its own keys, and a key another kind has is an error, so
 | `container`, `gvisor` | `engine_socket` | `false` | mount this machine's engine socket (`DOCKER_HOST`'s unix socket, else `/var/run/docker.sock`): **removes the isolation**, see [caveats](caveats.md) |
 | `vm` | `cpus` | half the CPUs | the VM's CPUs; at least 1 |
 | `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` |
-| `vm` | `egress` | `true` | whether the sandbox's outbound connections are made from this machine, so a VPN's routes and DNS apply; `false` is the VM's own NAT. See [the host link](host-link.md#outbound-connections) |
+| `vm` | `egress` | `true` | whether the sandbox's outbound connections through the link's proxy (HTTP(S) through the proxy settings, ssh through its `ProxyCommand`) are made from this machine, so a VPN's routes and DNS apply. The VM keeps its own NAT beside the proxy, and a program that ignores the proxy settings leaves through it, unrestricted. `false` is the VM's own NAT alone. See [the host link](host-link.md#outbound-connections) |
 | `vm` | `egress_ports` | `[22, 80, 443]` | the ports the sandbox may reach that way, written as `forward_ports` is; `[]` for none |
 | `vm` | `egress_allow` | `[]` | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
 
@@ -392,8 +394,19 @@ projects = "~/dev/projects"   # /work/projects
 work = "~/work"               # /work/work
 ```
 
+A root that holds `CABOOSE_HOME` (`~/.caboose`), such as `~` itself, is
+refused, as the roots are read, in `caboose setup roots` and in a proposed
+root (`caboose apply`): a sandbox
+could change caboose's configuration and data dirs through
+it. The refusal names a narrower root, a directory under it that does not
+hold `CABOOSE_HOME` (`~/dev` instead of `~`). It is judged by the
+directories' identity on disk, so another name for the same directory is
+refused too, and a `CABOOSE_HOME` not made yet by its nearest existing
+parent.
+
 A root that must sit at another container path (a script expects it
-there) takes the long form, a table with `host` and `path`, or the same as
+there), or that has writable parts (below), takes the long form: a table
+with `host` (required) and optionally `path` and `writable`, or the same as
 an inline table:
 
 ```toml
@@ -403,6 +416,46 @@ path = "/opt/tools"
 
 # or: tools = { host = "~/src/tools", path = "/opt/tools" }
 ```
+
+### Read-only roots and writable parts
+
+A root is **read-only** to the sandbox unless its long form lists the
+parts it may write, as paths relative to the root. They are mounted
+read-write over the read-only root at the same container path, so every
+file keeps the path it has otherwise. A root with no `writable`, a short
+form included, is read-only throughout: nothing in the sandbox can change
+it. So is the default root, `dev = "~/dev"`, when `config.toml` has no
+`[roots]`: `caboose setup roots` asks, for each root, which directories
+under it the sandbox may write, and a launch says when it can write none.
+
+```toml
+[roots.dev]
+host = "~/dev"
+writable = ["you/project", "you/other"]   # /work/dev/you/project, ...
+# path = "/work/dev"                          # as before: optional
+```
+
+- `writable = ["."]` makes the whole root writable; `"."` is then the only
+  entry. `writable = []` is the same as leaving it out.
+- Each entry is relative and clean (`a/b`, not `./a`, `a/`, `a//b`), with
+  no `..`, no leading `/`, no control or invisible character, and no `:`,
+  `,` or `\`; at most 64 per root; none twice, and none inside another
+  (it would mean nothing). These are checked when the file is read.
+- At every launch, and again just before the sandbox is created, every
+  component of an entry, from the root down, must exist and be a real
+  directory: a symbolic link anywhere on the way, a missing entry, or an
+  entry that is not a directory is refused, naming the entry. The
+  components above the last stay in the read-only part of the root, so
+  the sandbox cannot swap one for a link afterwards.
+- Writable parts are the host's setting: the sandbox cannot widen them,
+  and no proposal can. Changing them takes `caboose restart`, like any
+  change to the roots; until then a launch, and `caboose doctor`, say that
+  the sandbox may write other parts than the configuration says. A
+  sandbox created by a caboose from before read-only roots writes every
+  root whole until that restart.
+- Under gVisor and vm, the host's edits reach file watchers in the
+  sandbox only in the writable parts (as attribute changes); in the
+  read-only rest, a watcher needs its polling mode.
 
 The rules:
 
@@ -432,8 +485,8 @@ Bind mounts are fixed when the container is created, so changing the roots
 once a container exists needs `caboose restart`, which kills running
 sessions (it asks first); until then a launch warns that they differ.
 
-Everything under the roots is readable and **writable** from inside the
-container. That is the point, but it is also the whole of what the sandbox
+Everything under the roots is readable from inside the container, and
+the writable parts are writable too. That is the whole of what the sandbox
 can reach on your disk, so choose them accordingly.
 
 ## Environments
@@ -497,8 +550,14 @@ and setup shows the lines to change by hand.
   several moves `/work/x` to `/work/<name>/x` — is listed and asks first: Claude Code
   keeps each project's memories and history under its path, and will not
   find them under the old one (nothing is moved or deleted). Removing one
-  of several keeps the other's name, and so its paths. A container that
-  exists keeps the roots it was created with until `caboose restart`.
+  of several keeps the other's name, and so its paths. Then, for each
+  root, it asks which directories under it the sandbox may write: paths
+  relative to the root, separated by spaces, `.` for all of it, empty for
+  none (when the root has some already, Enter keeps them and `-` is none),
+  asked again until each is a real directory under the root. A path with a
+  space in it is written into `config.toml` by hand. A container that
+  exists keeps the roots it was created with, and what of them it may
+  write, until `caboose restart`.
 - **image** keeps what the sandbox is built from, or changes it, as an
   [image profile](#image-profiles): caboose's packages (the default),
   package groups you choose one by one (an `apko` profile with

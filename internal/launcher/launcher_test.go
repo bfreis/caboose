@@ -314,13 +314,17 @@ func TestCreateContainerMounts(t *testing.T) {
 		t.Run(iso, func(t *testing.T) {
 			b := newBoxApp(t, iso, &backendtest.Fake{})
 			tmp, data := b.tmp, b.data
+			// dev read-only but for two parts, w writable whole.
 			var roots []config.Root
-			for _, name := range []string{"dev", "w"} {
-				roots = append(roots, config.Root{Name: name, Host: filepath.Join(tmp, name), Container: "/work/" + name})
-				if err := os.Mkdir(filepath.Join(tmp, name), 0o755); err != nil {
-					t.Fatal(err)
+			for name, w := range map[string][]string{"dev": {"a/b", "c"}, "w": {"."}} {
+				roots = append(roots, config.Root{Name: name, Host: filepath.Join(tmp, name), Container: "/work/" + name, Writable: w})
+				for _, p := range w {
+					if err := os.MkdirAll(filepath.Join(tmp, name, p), 0o755); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
+			slices.SortFunc(roots, func(x, y config.Root) int { return strings.Compare(x.Name, y.Name) })
 			b.Cfg.Roots = roots
 			// The user's own entries, beside the defaults.
 			sbx := filepath.Join(data, datadir.SandboxConfig)
@@ -357,9 +361,10 @@ func TestCreateContainerMounts(t *testing.T) {
 				if kinds[m.Source] == "MISSING" {
 					t.Errorf("mount source missing at creation: %+v", m)
 				}
-				// caboose's instructions alone are read-only: the
-				// sandbox reads them, and writes everything else.
-				if m.ReadOnly != (m.Target == datadir.ManagedTarget) {
+				// caboose's instructions and the read-only root alone
+				// are read-only: the sandbox reads them, and writes
+				// everything else.
+				if m.ReadOnly != (m.Target == datadir.ManagedTarget || m.Target == "/work/dev") {
 					t.Errorf("%s: read-only %v", m.Target, m.ReadOnly)
 				}
 				if strings.HasPrefix(m.Target, "/work") {
@@ -411,9 +416,28 @@ func TestCreateContainerMounts(t *testing.T) {
 					t.Errorf("%s: %v, want a 0700 dir", p, fi)
 				}
 			}
-			// Each root at /work/<name>, whatever its host path.
-			if w := []backend.Mount{mount(tmp+"/dev", "/work/dev"), mount(tmp+"/w", "/work/w")}; !reflect.DeepEqual(rootMounts, w) {
+			// Each root at /work/<name>, whatever its host path; its
+			// writable parts at their paths under it, after it.
+			ro := mount(tmp+"/dev", "/work/dev")
+			ro.ReadOnly = true
+			if w := []backend.Mount{ro, mount(tmp+"/w", "/work/w"), mount(tmp+"/dev/c", "/work/dev/c"), mount(tmp+"/dev/a/b", "/work/dev/a/b")}; !reflect.DeepEqual(rootMounts, w) {
 				t.Errorf("root mounts = %v, want %v", rootMounts, w)
+			}
+			labels, _ := b.box.Labels()
+			if got, want := labels[assets.LabelWritable], `{"/work/dev":["a/b","c"],"/work/w":["."]}`; got != want {
+				t.Errorf("writable label %q, want %q", got, want)
+			}
+			// The same mounts as a VM shares them: the read-only root holds
+			// writable parts, which is allowed, and they come after it.
+			if _, err := backend.SharePaths(spec.Mounts); err != nil {
+				t.Errorf("a VM could not share these mounts: %v", err)
+			}
+			// And read back as the sandbox has them.
+			for _, m := range b.mountedRoots() {
+				want := map[string][]string{"/work/dev": {"a/b", "c"}, "/work/w": {"."}}[m.Container]
+				if !slices.Equal(m.Writable, want) {
+					t.Errorf("mounted %s writable %q, want %q", m.Container, m.Writable, want)
+				}
 			}
 		})
 	}

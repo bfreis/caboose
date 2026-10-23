@@ -162,8 +162,8 @@ func TestConfigFileRefuses(t *testing.T) {
 		"empty roots":            {"[roots]", "[roots] names no roots"},
 		"a bad root name":        {"[roots]\n\"My Dev\" = \"/x\"", "'My Dev' is not a root name"},
 		"a root not a path":      {"[roots]\ndev = 1", "root dev must be a path"},
-		"a long root, no path":   {"[roots.dev]\nhost = \"/x\"", "root dev must be a path, or a table of exactly host"},
-		"a long root, more":      {"[roots.dev]\nhost = \"/x\"\npath = \"/y\"\nmode = \"ro\"", "root dev must be a path, or a table of exactly host"},
+		"a long root, no host":   {"[roots.dev]\npath = \"/y\"", "root dev must be a path, or a table of host"},
+		"a long root, more":      {"[roots.dev]\nhost = \"/x\"\npath = \"/y\"\nmode = \"ro\"", "root dev: unknown setting mode (known: host, path, writable;"},
 		"bad TOML":               {"[session\n", cfgPath + ": toml"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -258,9 +258,10 @@ func TestFormat(t *testing.T) {
 		}
 	}
 	for data, want := range map[string]string{
-		"format = 2\n":             "c.toml is format 2, and this caboose reads up to format 1",
-		"format = 2\nfuture = 1\n": "c.toml is format 2, and this caboose reads up to format 1",
-		"format = 0\n":             "format must be a whole number",
+		"format = 2\n":             "c.toml is format 2, and this caboose reads format 1",
+		"format = 3\nfuture = 1\n": "c.toml is format 3, and this caboose reads format 1",
+		"format = 0\n":             "format must be 1",
+		"format = -1\n":            "format must be 1",
 		"format = \"1\"\n":         "format must be a whole number",
 	} {
 		if _, err := ParseFile("c.toml", []byte(data)); err == nil || !strings.Contains(err.Error(), want) {
@@ -305,7 +306,18 @@ func TestTemplate(t *testing.T) {
 		lines = append(lines, l)
 	}
 	c, err := Load(envOf(map[string]string{"HOME": "/h"}), fakeFS{cfgPath: strings.Join(lines, "\n")}, "")
-	if err != nil || c.Profile != "gvisor.default" || len(c.Roots) != 2 {
+	if err != nil || c.Profile != "gvisor.default" || len(c.Roots) != 3 {
 		t.Errorf("uncommented: %+v %v", c, err)
+	}
+}
+
+// The template ships to every user: it describes settings as they work,
+// never as they are meant to some day.
+func TestTemplateSaysWhatIsEnforced(t *testing.T) {
+	low := strings.ToLower(Template)
+	for _, s := range []string{"not enforced", "planned", "not yet", "will be able", "nothing runs"} {
+		if strings.Contains(low, s) {
+			t.Errorf("the template says %q", s)
+		}
 	}
 }

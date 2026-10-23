@@ -17,8 +17,8 @@ import (
 const FileName = "config.toml"
 
 // FileFormat is the config.toml structure this caboose reads and writes. A
-// file of a newer one is refused: it may mean something this caboose
-// cannot tell.
+// file saying any other format is refused: a newer one may mean something
+// this caboose cannot tell.
 const FileFormat = 1
 
 // ConfigDoc is where config.toml is documented, for errors that send the
@@ -148,9 +148,14 @@ type File struct {
 	Format int
 }
 
-// FileRoot is a [roots] entry as written: the host path, ~ and all, and
-// the container path when the long form names one ("" for /work/<name>).
-type FileRoot struct{ Host, Path string }
+// FileRoot is a [roots] entry as written: the host path, ~ and all, the
+// container path when the long form names one ("" for /work/<name>), and
+// the parts of the root the sandbox may write (nil: none; see
+// CheckWritable).
+type FileRoot struct {
+	Host, Path string
+	Writable   []string
+}
 
 // Has reports whether the file sets key, a dotted name.
 func (f *File) Has(key string) bool {
@@ -189,7 +194,7 @@ func ParseFile(path string, data []byte) (*File, error) {
 	// The format first: a newer file may have keys this caboose does not
 	// know, and what it needs to hear is that it is too old.
 	if n, ok := raw["format"].(int64); ok && n > FileFormat {
-		return nil, fmt.Errorf("%s is format %d, and this caboose reads up to format %d: 'caboose update' installs one that reads it", path, n, FileFormat)
+		return nil, fmt.Errorf("%s is format %d, and this caboose reads format %d: 'caboose update' installs one that reads it", path, n, FileFormat)
 	}
 	for _, k := range slices.Sorted(maps.Keys(raw)) {
 		v := raw[k]
@@ -227,12 +232,10 @@ func ParseFile(path string, data []byte) (*File, error) {
 		}
 	}
 	if v, ok := f.Vals["format"]; ok {
-		switch n := v.(int64); {
-		case n < 1:
-			return nil, fail("format must be a whole number, 1 or more")
-		default:
-			f.Format = int(n)
+		if n := v.(int64); n != FileFormat {
+			return nil, fail("format must be %d", FileFormat)
 		}
+		f.Format = FileFormat
 	}
 	return f, nil
 }
@@ -379,7 +382,8 @@ func unknownKey(table, key string) string {
 }
 
 // readRoots reads the [roots] table: at least one entry, each a host path
-// by a name, or the long form, a table of exactly host and path.
+// by a name, or the long form, a table of host (required), path and
+// writable (optional).
 func readRoots(v any) (map[string]FileRoot, error) {
 	table, ok := v.(map[string]any)
 	if !ok {
@@ -400,12 +404,41 @@ func readRoots(v any) (map[string]FileRoot, error) {
 			}
 			roots[name] = FileRoot{Host: e}
 		case map[string]any:
-			host, hok := e["host"].(string)
-			p, pok := e["path"].(string)
-			if len(e) != 2 || !hok || !pok || host == "" || p == "" {
-				return nil, fmt.Errorf(`root %s must be a path, or a table of exactly host = "path on this machine" and path = "path in the sandbox"`, name)
+			long := fmt.Errorf(`root %s must be a path, or a table of host = "path on this machine", and optionally path = "path in the sandbox" and writable = ["part", ...]`, name)
+			for k := range e {
+				if k != "host" && k != "path" && k != "writable" {
+					return nil, fmt.Errorf("root %s: unknown setting %s (known: host, path, writable; see %s)", name, k, ConfigDoc)
+				}
 			}
-			roots[name] = FileRoot{Host: host, Path: p}
+			host, hok := e["host"].(string)
+			if !hok || host == "" {
+				return nil, long
+			}
+			r := FileRoot{Host: host}
+			if pv, set := e["path"]; set {
+				p, pok := pv.(string)
+				if !pok || p == "" {
+					return nil, long
+				}
+				r.Path = p
+			}
+			if wv, set := e["writable"]; set {
+				list, lok := wv.([]any)
+				if !lok {
+					return nil, fmt.Errorf("root %s: writable must be an array of paths relative to the root", name)
+				}
+				for _, x := range list {
+					s, sok := x.(string)
+					if !sok {
+						return nil, fmt.Errorf("root %s: writable must be an array of paths relative to the root", name)
+					}
+					r.Writable = append(r.Writable, s)
+				}
+				if err := CheckWritable(r.Writable); err != nil {
+					return nil, fmt.Errorf("root %s: %v", name, err)
+				}
+			}
+			roots[name] = r
 		default:
 			return nil, fmt.Errorf("root %s must be a path", name)
 		}
@@ -442,12 +475,15 @@ format = 1    # this file's structure
 
 # The directories holding your projects, each mounted into the sandbox at
 # /work/<name>, or at a path of its own in the long form. By default
-# dev = "~/dev". A sole root may take path = "/work" itself.
+# dev = "~/dev". A sole root may take path = "/work" itself. Every root is
+# read-only to the sandbox but for what the long form's writable lists:
+# paths relative to the root, real directories (no symlinks, no ..), each
+# mounted read-write at its own path under the root's; "." is the whole
+# root. A change takes 'caboose restart'.
 #[roots]
 #dev = "~/dev"
-#[roots.tools]
-#host = "~/src/tools"
-#path = "/opt/tools"
+#tools = { host = "~/src/tools", path = "/opt/tools" }
+#work = { host = "~/work", writable = ["site", "docs/notes"] }
 
 #[build]
 # Build a missing image, or rebuild a stale one, when the sandbox is
@@ -515,9 +551,10 @@ format = 1    # this file's structure
 # and half its memory, at most 8G.
 #cpus = 4
 #memory = "8G"
-# Make the sandbox's outbound connections from this machine, through the
-# link, so that a VPN's routes and DNS apply as they do here; false uses
-# the VM's own NAT.
+# Make the sandbox's outbound connections through the link's proxy from
+# this machine, so that a VPN's routes and DNS apply as they do here. The
+# VM keeps its own NAT beside it, which a program that ignores the proxy
+# settings uses, unrestricted; false uses the NAT alone.
 #egress = true
 # The ports the sandbox may reach that way: ports and "a-b" ranges.
 #egress_ports = [22, 80, 443]

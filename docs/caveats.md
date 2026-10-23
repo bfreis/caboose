@@ -23,12 +23,16 @@
   running it. Point `DOCKER_HOST` at a socket proxy instead if you only want
   read-only endpoints. `caboose status` always says which side of this line a
   container is on.
-- A caboose checkout under a root is, like any other checkout
+- Every root is read-only from inside the sandbox but for the parts its
+  `writable` lists, and those a mistaken command or a hostile agent can
+  change or delete entirely. List only what the sandbox needs to write.
+- A caboose checkout in a writable part is, like any other checkout
   there, **writable** from inside — and its `CLAUDE.md` invites the agent to
   edit the launcher's source and the layer, which the *host* then
   builds and executes. That is the price of being able to fix the sandbox
-  from within it; keep the checkout outside every root if you would
-  rather not pay it, and it becomes invisible from inside. An installed
+  from within it; keep the checkout out of every writable part if you
+  would rather not pay it (outside every root, and it becomes invisible
+  from inside). An installed
   binary with no checkout has nothing there to edit.
 - [Updates](getting-started.md#updates) are checked against the `checksums.txt` of the same
   release, which catches a download cut short or damaged, not a release

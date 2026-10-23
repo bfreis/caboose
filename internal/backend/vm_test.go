@@ -71,8 +71,8 @@ func TestPlanShares(t *testing.T) {
 }
 
 // A read-only share is read-only only while no writable share reaches the
-// same files: one whose directory is a writable one's, is inside one, or
-// holds one is refused, in either order.
+// same files: one whose directory is a writable one's, or is inside one,
+// is refused, in either order.
 func TestPlanSharesRefusesOverlap(t *testing.T) {
 	d := t.TempDir()
 	home := filepath.Join(d, "home")
@@ -92,11 +92,10 @@ func TestPlanSharesRefusesOverlap(t *testing.T) {
 		{"same dir, ro first", []Mount{ro(filepath.Join(home, ".claude")), rw(filepath.Join(home, ".claude"))}},
 		{"a file's dir", []Mount{rw(filepath.Join(home, ".claude.json")), ro(filepath.Join(home, ".claude.json"))}},
 		{"ro inside rw", []Mount{rw(home), ro(filepath.Join(home, ".claude"))}},
-		{"ro holds rw", []Mount{ro(home), rw(filepath.Join(home, ".claude"))}},
 		{"rw is /", []Mount{rw("/"), ro(filepath.Join(home, ".claude"))}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, _, err := planShares(tc.ms); err == nil || !strings.Contains(err.Error(), "overlaps the writable mount") {
+			if _, _, err := planShares(tc.ms); err == nil || !strings.Contains(err.Error(), "the guest could write it through that one") {
 				t.Errorf("err %v", err)
 			}
 		})
@@ -107,6 +106,78 @@ func TestPlanSharesRefusesOverlap(t *testing.T) {
 	}
 	if _, _, err := planShares([]Mount{rw(home), ro(filepath.Join(d, "home2"))}); err != nil {
 		t.Errorf("disjoint dirs refused: %v", err)
+	}
+}
+
+// A read-only root with writable parts inside it: the parent a read-only
+// share, each part a writable one, bound parent first, each at its own
+// path under the parent's target. A part's share holds only the part.
+func TestPlanSharesReadOnlyParentWritableChild(t *testing.T) {
+	d := t.TempDir()
+	root := filepath.Join(d, "dev")
+	for _, p := range []string{"a/proj", "b"} {
+		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shares, mounts, err := planShares([]Mount{
+		{Source: root, Target: "/work/dev", ReadOnly: true},
+		{Source: filepath.Join(root, "a/proj"), Target: "/work/dev/a/proj"},
+		{Source: filepath.Join(root, "b"), Target: "/work/dev/b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantShares := []vm.Share{
+		{Name: "m0", Path: root, ReadOnly: true},
+		{Name: "m1", Path: filepath.Join(root, "a/proj")},
+		{Name: "m2", Path: filepath.Join(root, "b")},
+	}
+	if !reflect.DeepEqual(shares, wantShares) {
+		t.Errorf("shares %+v", shares)
+	}
+	tag := vm.ShareTag
+	wantMounts := []agentproto.GuestMount{
+		{Tag: tag, Path: "m0", Target: "/work/dev", ReadOnly: true},
+		{Tag: tag, Path: "m1", Target: "/work/dev/a/proj"},
+		{Tag: tag, Path: "m2", Target: "/work/dev/b"},
+	}
+	if !reflect.DeepEqual(mounts, wantMounts) {
+		t.Errorf("mounts %+v", mounts)
+	}
+	// Still refused the other way round: a read-only part of a writable
+	// root could be written through the root's share.
+	if _, _, err := planShares([]Mount{
+		{Source: root, Target: "/work/dev"},
+		{Source: filepath.Join(root, "b"), Target: "/work/dev/b", ReadOnly: true},
+	}); err == nil {
+		t.Error("a read-only share inside a writable one was taken")
+	}
+}
+
+// The guest binds the mounts in the order given, so one listed before a
+// mount whose target holds its own would be covered by it: refused,
+// whichever is read-only.
+func TestPlanSharesRefusesChildBeforeParent(t *testing.T) {
+	d := t.TempDir()
+	root := filepath.Join(d, "dev")
+	if err := os.MkdirAll(filepath.Join(root, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, ms := range [][]Mount{
+		{{Source: filepath.Join(root, "proj"), Target: "/work/dev/proj"}, {Source: root, Target: "/work/dev", ReadOnly: true}},
+		{{Source: filepath.Join(d, "x"), Target: "/a/b/"}, {Source: filepath.Join(d, "y"), Target: "/a"}},
+	} {
+		if _, _, err := planShares(ms); err == nil || !strings.Contains(err.Error(), "would cover it") {
+			t.Errorf("%v: err %v", ms, err)
+		}
+	}
+	// Siblings, and a name that only starts with another's, are no nesting.
+	if _, _, err := planShares([]Mount{
+		{Source: filepath.Join(d, "p"), Target: "/work/dev2"},
+		{Source: root, Target: "/work/dev", ReadOnly: true},
+	}); err != nil {
+		t.Errorf("siblings refused: %v", err)
 	}
 }
 

@@ -1,6 +1,6 @@
 ---
 name: caboose-troubleshoot
-description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac. Explains causes per isolation and what the user runs on the host.
+description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac. Explains causes per isolation and what the user runs on the host.
 ---
 
 # When the sandbox misbehaves
@@ -43,12 +43,27 @@ port, whether it is forwarded, not in `forward_ports` (`[link]` of
 `config.toml`), or already in use on the host.
 @@IF isolation=gvisor,vm@@
 
+## "Read-only file system" under a root
+
+Each root is mounted read-only but for its writable parts, which
+`~/.caboose-proposals/current/state.toml` lists (`writable`, relative to
+the root; `"."` for all of it; `mounted_writable`, when shown, is what this
+sandbox has until a restart). A write anywhere else fails with `EROFS`,
+by design: nothing in here can change it, and no proposal can either. Tell
+the user which directory needs writing; they add it to the root's
+`writable` in `config.toml` (`caboose@@CABOOSE_ENV_FLAG@@ setup roots`
+asks), and it takes `caboose@@CABOOSE_ENV_FLAG@@ restart`, which ends
+running sessions. Until then, only a copy outside the roots can be
+written, and a restart loses it unless it is in a kept path.
+
 ## Host edits and file watchers
 
 The host's edits under the roots do not become inotify events in here by
-themselves. The link watches the roots on the host and raises an event for
-each changed path by setting its mode to what it already is: an
-`IN_ATTRIB`, not `IN_MODIFY`.
+themselves. The link watches the roots' writable parts on the host and
+raises an event for each changed path by setting its mode to what it
+already is: an `IN_ATTRIB`, not `IN_MODIFY`. A read-only mount refuses that,
+so edits in the read-only rest of a root raise no event at all: a watcher
+there needs its polling mode.
 
 - Watchers that take any event as a change (Node's `fs.watch` and the tools
   on it) see it. One that ignores attribute changes (Go's fsnotify reports

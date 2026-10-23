@@ -144,7 +144,10 @@ vm_setup() {
     # symlink to /private/tmp.
     VM_WORK="$(cd "$VM_WORK" && pwd -P)"
     VM_HOME="$VM_WORK/home"; VM_DATA="$VM_WORK/data"; VM_ROOT="$VM_WORK/root"; VM_PROJ="$VM_ROOT/proj"
-    mkdir -p "$VM_HOME" "$VM_DATA" "$VM_PROJ" || return 1
+    # The root's writable parts, which have to be directories before the VM
+    # is created: the project, and sync/, where the sync's remote goes. The
+    # rest of the root is read-only to the VM.
+    mkdir -p "$VM_HOME" "$VM_DATA" "$VM_PROJ" "$VM_ROOT/sync" || return 1
     # The kernel and the builder disk are the checkout's vm-dist/, which a
     # launcher built from it looks in.
     # None of the caller's settings: no CABOOSE_* of theirs (CABOOSE_FORCE included), and
@@ -159,14 +162,14 @@ vm_setup() {
     vm_config 2 vm
 }
 
-# vm_config KEEP KIND: the group's config.toml: the one root at /work, a
-# boot timeout, keep_versions KEEP, and the isolation KIND, a vm profile or,
+# vm_config KEEP KIND: the group's config.toml: the one root at /work,
+# writable only in proj and sync (vm_setup makes them), a boot timeout, keep_versions KEEP, and the isolation KIND, a vm profile or,
 # for 'container', none (the default).
 vm_config() {
     {
         printf 'format = 1\n'
         [ "$2" = vm ] && printf 'isolation = "vm.suite"\n'
-        printf '\n[roots.work]\nhost = "%s"\npath = "/work"\n' "$VM_ROOT"
+        printf '\n[roots.work]\nhost = "%s"\npath = "/work"\nwritable = ["proj", "sync"]\n' "$VM_ROOT"
         printf '\n[session]\nready_timeout = %s\nkeep_versions = %s\n' "$VM_T_BOOT" "$1"
         [ "$2" = vm ] && printf '\n[vm.suite]\n'
     } > "$VM_HOME/envs/default/config.toml"
@@ -266,6 +269,20 @@ vm_group() {
         "$(cat "$VM_PROJ/caboose-test-root" 2>/dev/null)"
     echo 'from the host' > "$VM_PROJ/caboose-test-host"
     check 'and one the host writes there is in the VM' 'from the host' "$(vsh 'cat /work/proj/caboose-test-host')"
+    # Outside the writable parts the root is read-only, to root in the guest
+    # too: the VM reads what is there, and its writes fail, leaving the host's
+    # files as they were and adding none.
+    echo 'from the host' > "$VM_ROOT/caboose-test-ro"
+    check 'the VM reads the root outside its writable parts' 'from the host' "$(vsh 'cat /work/caboose-test-ro')"
+    check 'but cannot overwrite a file there' refused \
+        "$(vsh 'echo from the VM > /work/caboose-test-ro 2>/dev/null && echo written || echo refused')"
+    check 'nor add one' refused \
+        "$(vsh 'echo from the VM > /work/caboose-test-ro-new 2>/dev/null && echo written || echo refused')"
+    check 'nor a directory' refused \
+        "$(vsh 'mkdir /work/caboose-test-ro-dir 2>/dev/null && echo written || echo refused')"
+    check "which leaves the host's file as it was" 'from the host' "$(cat "$VM_ROOT/caboose-test-ro" 2>/dev/null)"
+    check 'and adds nothing beside it' '1 1' \
+        "$(exists "$VM_ROOT/caboose-test-ro-new") $(exists "$VM_ROOT/caboose-test-ro-dir")"
     check "caboose's instructions are in the VM, as the launcher wrote them" 0 \
         "$(vsh 'cat /etc/claude-code/CLAUDE.md' | cmp -s - "$VM_DATA/claude-code/CLAUDE.md"; echo $?)"
     # What the launcher wrote, kept here: a write that got through changes
@@ -332,14 +349,14 @@ else:
     check 'what the VM writes to a kept path is in the data dir' kept \
         "$(cat "$VM_DATA/home/.claude/caboose-test-keep" 2>/dev/null)"
 
-    # caboose sync, against a bare repo under the root: the sync runs in
-    # the VM, which sees it at /work/sync-remote.git. Another machine is
-    # a clone on the host.
-    local remote="$VM_ROOT/sync-remote.git" probe="$VM_DATA/home/.config/caboose/caboose-test-sync" path
+    # caboose sync, against a bare repo in the root's writable sync/: the
+    # sync runs in the VM, which sees it at /work/sync/remote.git and pushes
+    # into it. Another machine is a clone on the host.
+    local remote="$VM_ROOT/sync/remote.git" probe="$VM_DATA/home/.config/caboose/caboose-test-sync" path
     git init -q --bare "$remote"
     mkdir -p "$(dirname "$probe")"
     echo 'from this machine' > "$probe"
-    vcc "$VM_T_CMD" sync --remote /work/sync-remote.git >"$VM_WORK/sync.log" 2>&1; rc=$?
+    vcc "$VM_T_CMD" sync --remote /work/sync/remote.git >"$VM_WORK/sync.log" 2>&1; rc=$?
     check 'caboose sync pushes to a remote the VM reaches' 0 "$rc"
     [ "$rc" -eq 0 ] || vm_show "$VM_WORK/sync.log"
     path="$(git --git-dir="$remote" ls-tree -r --name-only main 2>/dev/null | grep 'caboose-test-sync$' | head -1)"
@@ -518,6 +535,7 @@ restore() {
         CLAUDE_MD_BACKUP=""
     fi
     restore_users_md
+    rm -f "$ROOT/caboose-test-ro" "$ROOT/caboose-test-ro-new"
     [ -n "$ORIGINAL_LINK" ] && ln -sfn "$ORIGINAL_LINK" "$BIN/claude"
     find "$VERSIONS" -maxdepth 1 -name '0.0.*' -delete 2>/dev/null
     if [ -n "$ORIGINAL_LINK" ] && [ ! -e "$VERSIONS/$(basename "$ORIGINAL_LINK")" ]; then
@@ -662,6 +680,45 @@ check 'it names this checkout at its container path' 0 \
     "$(docker exec "$CONTAINER" grep -qF "$checkout_in_container" "$inside" 2>/dev/null; echo $?)"
 check 'which is where the container has it' 0 \
     "$(docker exec "$CONTAINER" test -f "$checkout_in_container/tests/run.sh"; echo $?)"
+
+# checkout_access: how the container has the checkout mounted, from the
+# mount that holds it (the longest destination above it): rw, ro, or
+# nothing when none does. A root is read-only but for the writable parts
+# config.toml lists, so which this is depends on the environment's roots.
+checkout_access() {
+    local best="" mode="" dest rw
+    while IFS=' ' read -r rw dest; do
+        case "$checkout_in_container/" in "${dest%/}/"*) ;; *) continue ;; esac
+        [ "${#dest}" -gt "${#best}" ] || continue
+        best="$dest"; if [ "$rw" = true ]; then mode=rw; else mode=ro; fi
+    done < <(docker inspect --type=container -f '{{range .Mounts}}{{.RW}} {{.Destination}}{{"\n"}}{{end}}' "$CONTAINER" 2>/dev/null)
+    printf '%s\n' "$mode"
+}
+# ro_root_checks: where the checkout is in a read-only part of its root,
+# neither the agent nor root in the container can write there, and the
+# host's tree is left as it was. Where the environment's roots make it
+# writable, there is nothing to refuse, and the checks are skipped.
+ro_root_checks() {
+    local ro="caboose-test-ro" new="caboose-test-ro-new"
+    case "$(checkout_access)" in
+        ro) ;;
+        rw) skip "the checkout is in a writable part of its root: a refused write is untried"; return 0 ;;
+        *) bad 'a mount holds the checkout'; return 0 ;;
+    esac
+    echo 'from the host' > "$ROOT/$ro"
+    # Not read back in the container first: under gVisor a file the host
+    # adds outside the writable parts may reach it only later.
+    check 'the agent cannot add a file there' refused \
+        "$(docker exec "$CONTAINER" sh -c "echo x > '$checkout_in_container/$new'" >/dev/null 2>&1 && echo written || echo refused)"
+    check 'nor can root in the container' refused \
+        "$(docker exec -u 0 "$CONTAINER" sh -c "echo x > '$checkout_in_container/$new'" >/dev/null 2>&1 && echo written || echo refused)"
+    check 'nor change one' refused \
+        "$(docker exec -u 0 "$CONTAINER" sh -c "echo x > '$checkout_in_container/$ro'" >/dev/null 2>&1 && echo written || echo refused)"
+    check "which leaves the host's file as it was" 'from the host' "$(cat "$ROOT/$ro" 2>/dev/null)"
+    check 'and adds nothing beside it' 1 "$(exists "$ROOT/$new")"
+    rm -f "$ROOT/$ro" "$ROOT/$new"
+}
+ro_root_checks
 
 # Installing per launch rather than per container start is the point: an edit
 # has to reach the next session without a restart. shell is a launch
@@ -1425,6 +1482,7 @@ if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"'; th
         "$(docker exec "$CONTAINER" sh -c 'echo x >> /etc/claude-code/CLAUDE.md' >/dev/null 2>&1 && echo 0 || echo 1)"
     check 'nor can root under gVisor' 1 \
         "$(docker exec -u 0 "$CONTAINER" sh -c 'echo x >> /etc/claude-code/CLAUDE.md' >/dev/null 2>&1 && echo 0 || echo 1)"
+    ro_root_checks
     check 'doctor names the isolation' 'gvisor (runsc)' \
         "$(cd "$ROOT" && "$CC" doctor --offline 2>/dev/null | sed -n 's/^  ✓ isolation  *//p')"
     restore_config

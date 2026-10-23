@@ -13,8 +13,17 @@ import (
 
 // setupRoot is one root as setup edits it: Path is the host path as
 // written in config.toml (~ and all), Container the long form's path in
-// the sandbox, "" for /work/<Name>.
-type setupRoot struct{ Name, Path, Container string }
+// the sandbox, "" for /work/<Name>, and Writable the parts of it the
+// sandbox may write, as config.toml lists them.
+type setupRoot struct {
+	Name, Path, Container string
+	Writable              []string
+}
+
+// equal reports whether r and o are the same root, writable parts and all.
+func (r setupRoot) equal(o setupRoot) bool {
+	return r.Name == o.Name && r.Path == o.Path && r.Container == o.Container && slices.Equal(r.Writable, o.Writable)
+}
 
 // container is where the container mounts r.
 func (r setupRoot) container() string {
@@ -30,7 +39,8 @@ func (a *App) fileRoots() []setupRoot {
 	if f := a.Cfg.File; f != nil && len(f.Roots) > 0 {
 		var roots []setupRoot
 		for _, name := range slices.Sorted(maps.Keys(f.Roots)) {
-			roots = append(roots, setupRoot{name, f.Roots[name].Host, f.Roots[name].Path})
+			fr := f.Roots[name]
+			roots = append(roots, setupRoot{name, fr.Host, fr.Path, slices.Clone(fr.Writable)})
 		}
 		return roots
 	}
@@ -41,7 +51,7 @@ func (a *App) fileRoots() []setupRoot {
 func rootsEdit(roots []setupRoot) config.Edit {
 	e := config.Edit{SetRoots: true, Roots: map[string]config.FileRoot{}}
 	for _, r := range roots {
-		e.Roots[r.Name] = config.FileRoot{Host: r.Path, Path: r.Container}
+		e.Roots[r.Name] = config.FileRoot{Host: r.Path, Path: r.Container, Writable: slices.Clone(r.Writable)}
 	}
 	return e
 }
@@ -59,15 +69,17 @@ func rootsEdit(roots []setupRoot) config.Edit {
 func (a *App) setupRoots(p *prompter) error {
 	c := a.Cfg
 	cur := a.fileRoots()
-	p.heading("Roots", "The directories that hold your projects. The sandbox mounts each at /work/NAME.")
+	p.heading("Roots", "The directories that hold your projects. The sandbox mounts each at /work/NAME, "+
+		"read-only but for the parts of it you let it write.")
 	roots := slices.Clone(cur)
+	asked := map[string]bool{} // the roots whose writable parts were asked for, by name
 	for first := true; ; first = false {
 		if !first {
 			p.blank()
 		}
 		rows := make([][2]string, len(roots))
 		for i, r := range roots {
-			rows[i] = [2]string{r.container(), "← " + r.Path}
+			rows[i] = [2]string{r.container(), "← " + r.Path + " (" + describeWritable(r.Writable) + ")"}
 		}
 		p.table(rows)
 		problems := a.rootProblems(roots)
@@ -82,14 +94,37 @@ func (a *App) setupRoots(p *prompter) error {
 		}
 		var acts []action
 		if len(problems) == 0 {
-			acts = append(acts, action{"Use these", func() error { done = true; return nil }})
+			acts = append(acts, action{"Use these", func() error {
+				// Each root's writable parts, asked once a run: the
+				// question a first run must not skip.
+				for i := range roots {
+					if asked[roots[i].Name] {
+						continue
+					}
+					if err := a.askWritable(p, &roots[i]); err != nil {
+						return err
+					}
+				}
+				done = true
+				return nil
+			}})
 		}
 		for i := range roots {
-			acts = append(acts, action{"Change " + rootLabel(roots, i), func() error { return a.changeRoot(p, roots, i) }})
+			acts = append(acts, action{"Change " + rootLabel(roots, i), func() error {
+				if err := a.changeRoot(p, roots, i); err != nil {
+					return err
+				}
+				asked[roots[i].Name] = true
+				return nil
+			}})
 		}
 		acts = append(acts, action{"Add another root", func() error {
 			var err error
+			n := len(roots)
 			roots, err = a.addRoot(p, roots)
+			if err == nil && len(roots) > n {
+				asked[roots[n].Name] = true
+			}
 			return err
 		}})
 		if len(roots) > 1 {
@@ -120,7 +155,7 @@ func (a *App) setupRoots(p *prompter) error {
 		}
 	}
 
-	if slices.Equal(roots, cur) {
+	if slices.EqualFunc(roots, cur, setupRoot.equal) {
 		p.same("Nothing changed")
 		return nil
 	}
@@ -145,7 +180,7 @@ func (a *App) setupRoots(p *prompter) error {
 	}
 	p.ok("Wrote them to %s", a.short(filepath.Join(c.EnvDir, config.FileName)))
 	if a.state() != "absent" {
-		p.warn("The %s keeps the roots it was created with: %s remounts them, and ends running sessions.", a.noun(), p.code("caboose restart"))
+		p.warn("The %s keeps the roots it was created with, and what of them it may write: %s remounts them, and ends running sessions.", a.noun(), p.code("caboose restart"))
 	}
 	return nil
 }
@@ -166,13 +201,16 @@ func (a *App) hostPath(p string) string {
 }
 
 // rootProblems is what keeps roots from being used: a path that is not an
-// existing directory, roots that hold one another, or container paths
-// config.FileRoots refuses.
+// existing directory, a writable part that is not a real directory under
+// it, roots that hold one another, or container paths config.FileRoots
+// refuses.
 func (a *App) rootProblems(roots []setupRoot) []string {
 	var out []string
 	for _, r := range roots {
 		if why := a.badRootPath(r.Path); why != "" {
 			out = append(out, why)
+		} else if why := writableProblem(a.hostPath(r.Path), r.Writable); why != "" {
+			out = append(out, "Writable part of "+r.Name+" "+why+" (change "+r.Name+" to fix it)")
 		}
 	}
 	if _, err := config.FileRoots(rootsEdit(roots).Roots, a.Cfg.Home); err != nil && len(out) == 0 {
@@ -202,6 +240,9 @@ func (a *App) badRootPath(p string) string {
 		return fmt.Sprintf("%s: %v", p, err)
 	case !fi.IsDir():
 		return p + " is not a directory"
+	}
+	if why := config.CabooseHomeRootProblem(physicalOr(full), a.Cfg.CabooseHome, a.Cfg.Home); why != "" {
+		return p + " " + why
 	}
 	return ""
 }
@@ -273,14 +314,72 @@ func rootNameFor(path string) string {
 	return name
 }
 
-// changeRoot asks for roots[i]'s new directory, in place.
+// changeRoot asks for roots[i]'s new directory, in place, and then what
+// of it the sandbox may write.
 func (a *App) changeRoot(p *prompter, roots []setupRoot, i int) error {
 	path, err := a.askRootPath(p, roots[i].Path)
 	if err != nil || path == "" {
 		return err
 	}
 	roots[i].Path = path
-	return nil
+	return a.askWritable(p, &roots[i])
+}
+
+// describeWritable is a root's writable list, for setup's table.
+func describeWritable(w []string) string {
+	switch {
+	case len(w) == 0:
+		return "read-only"
+	case len(w) == 1 && w[0] == ".":
+		return "writable"
+	}
+	return "writable: " + strings.Join(w, " ")
+}
+
+// askWritable asks which directories under r the sandbox may write, until
+// the answer is a list config.toml takes and each is a real directory
+// under the root (config.WritablePartProblem): paths relative to it,
+// separated by spaces; "." for all of it; empty for none -- or, when it
+// has some already, Enter to keep them and "-" for none.
+func (a *App) askWritable(p *prompter, r *setupRoot) error {
+	host := a.hostPath(r.Path)
+	def := strings.Join(r.Writable, " ")
+	question := "Which directories under " + r.Path + " may the sandbox write? " +
+		"Paths relative to it, separated by spaces; . for all of it; empty for none"
+	if def != "" {
+		question = "Which directories under " + r.Path + " may the sandbox write? " +
+			"Paths relative to it, separated by spaces; . for all of it; - for none"
+	}
+	for {
+		answer, err := p.ask(question, def)
+		if err != nil {
+			return err
+		}
+		var list []string
+		if answer != "-" {
+			list = strings.Fields(answer)
+		}
+		if why := writableProblem(host, list); why != "" {
+			p.fail("%s", why)
+			continue
+		}
+		r.Writable = list
+		return nil
+	}
+}
+
+// writableProblem is why list cannot be the writable parts of the root at
+// host, or "".
+func writableProblem(host string, list []string) string {
+	if err := config.CheckWritable(list); err != nil {
+		return capFirst(err.Error())
+	}
+	for _, w := range list {
+		if at, problem := config.WritablePartProblem(host, w); problem != "" {
+			return fmt.Sprintf("%s: %s %s; a writable part must be a real directory under the root, with no symbolic link on the way", w, at, problem)
+		}
+	}
+	return ""
 }
 
 // addRoot asks for another root, at /work/NAME. A sole root at /work
@@ -301,6 +400,9 @@ func (a *App) addRoot(p *prompter, roots []setupRoot) ([]setupRoot, error) {
 		return nil, err
 	}
 	roots[len(roots)-1].Name = name
+	if err := a.askWritable(p, &roots[len(roots)-1]); err != nil {
+		return nil, err
+	}
 	return roots, nil
 }
 

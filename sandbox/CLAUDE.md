@@ -30,9 +30,9 @@ background work goes on.
   `caboose@@CABOOSE_ENV_FLAG@@ restart` always loses it.
 - There is no Docker daemon in here unless the profile sets
   `engine_socket = true` (the host's engine, root-equivalent on the host).
-- The host's edits under the roots reach file watchers only as attribute
-  changes, and a directory held open can list stale contents: `stat` a file
-  by name before taking it for gone. See the caboose-troubleshoot skill.
+- The host's edits reach file watchers only as attribute changes, and only in
+  writable parts; a directory held open can list stale contents: `stat` a
+  file by name before taking it for gone. See the caboose-troubleshoot skill.
 @@END@@
 @@IF isolation=vm@@
 ## This sandbox: a Linux VM on the user's Mac
@@ -46,18 +46,18 @@ background work goes on.
   says). Its images sit on a disk that is kept; its containers can
   bind-mount `/work` paths, and a port they publish is forwarded like any
   other.
-- The Mac's edits under the roots reach file watchers only as attribute
-  changes, and outbound traffic goes through the host for proxy-aware
+- The Mac's edits reach file watchers only as attribute changes, and only in
+  writable parts; outbound traffic goes through the host for proxy-aware
   clients only (below). See the caboose-troubleshoot skill.
 @@END@@
 
 ## Paths
 
 The host directories that hold the projects (roots) are mounted at fixed
-container paths: @@CABOOSE_ROOTS@@. These paths are the same on every
-machine. A host path someone pastes in is not a path in here: translate it
-through that mapping. Nothing is reachable at a second path. A changed root
-takes `caboose@@CABOOSE_ENV_FLAG@@ restart`.
+container paths, read-only but for their writable parts: @@CABOOSE_ROOTS@@.
+A write elsewhere fails, and only the user can change that. The paths are the
+same on every machine: translate a host path through that mapping. Nothing
+is reachable at a second path. A changed root takes `caboose@@CABOOSE_ENV_FLAG@@ restart`.
 
 ## What is kept
 

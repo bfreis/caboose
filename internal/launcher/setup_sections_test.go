@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,13 +86,68 @@ func TestSetupRootsKeepsTheDefault(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	// change it, to a directory that is not there, then Enter: the
 	// default is still the current one; use these.
-	if err := e.run("2\n/nonexistent\n\n\n", "roots"); err != nil {
+	if err := e.run("2\n/nonexistent\n\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("/work/dev ← ~/dev\n", "? Use these roots? 1 Use these 2 Change dev (~/dev) 3 Add another root\n",
+	e.wantOut("/work/dev ← ~/dev (read-only)\n", "? Use these roots? 1 Use these 2 Change dev (~/dev) 3 Add another root\n",
 		"✗ /nonexistent does not exist\n? Directory (an absolute path, or one starting with ~/): [~/dev] ", "· Nothing changed")
 	if f := e.file(); len(f.Roots) != 0 {
 		t.Errorf("wrote roots: %+v", f)
+	}
+}
+
+// Using the roots asks what of each the sandbox may write, until the
+// answer is a list of real directories under it; a first run is asked too.
+func TestSetupRootsAsksWritable(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.mkdir("dev/p")
+	e.mkdir("dev/q/r")
+	e.mkdir("elsewhere")
+	if err := os.Symlink(filepath.Join(e.a.Cfg.Home, "elsewhere"), filepath.Join(e.a.Cfg.Home, "dev", "l")); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.run("\n../x\nl/sub\nmissing\np . \np q/r\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("? Which directories under ~/dev may the sandbox write? Paths relative to it, separated by spaces; . for all of it; empty for none",
+		`✗ Writable "../x" has a ".." component`,
+		"✗ l/sub: "+filepath.Join(e.a.Cfg.Home, "dev", "l")+" is a symbolic link",
+		"✗ missing: "+filepath.Join(e.a.Cfg.Home, "dev", "missing")+" does not exist",
+		`✗ Writable "." is the whole root and must be the only entry`,
+		"✓ Wrote them to "+e.configPath())
+	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"].Host != "~/dev" || !slices.Equal(f.Roots["dev"].Writable, []string{"p", "q/r"}) {
+		t.Errorf("roots = %+v", f.Roots)
+	}
+	// Again: Enter keeps them, and nothing changes.
+	e.errb.Reset()
+	if err := e.run("\n\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("/work/dev ← ~/dev (writable: p q/r)", "; - for none: [p q/r] ", "· Nothing changed")
+	// "-" is none: the root is read-only again.
+	e.errb.Reset()
+	if err := e.run("\n-\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	if f := e.file(); len(f.Roots["dev"].Writable) != 0 || f.Roots["dev"].Host != "~/dev" {
+		t.Errorf("roots = %+v", f.Roots)
+	}
+}
+
+// A writable part that is no longer a directory keeps the roots from
+// being used as they are: changing the root asks again.
+func TestSetupRootsBadWritable(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.mkdir("dev/p")
+	e.writeConfig("[roots]\ndev = { host = \"~/dev\", writable = [\"gone\"] }\n")
+	// The menu starts at changing dev: keep its directory, then p; use
+	// these.
+	if err := e.run("\n\np\n\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("✗ Writable part of dev gone: " + filepath.Join(e.a.Cfg.Home, "dev", "gone") + " does not exist")
+	if f := e.file(); !slices.Equal(f.Roots["dev"].Writable, []string{"p"}) {
+		t.Errorf("roots = %+v", f.Roots)
 	}
 }
 
@@ -103,7 +159,7 @@ func TestSetupRootsReplacesAMissingDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.mkdir("src")
-	if err := e.run("\n/nonexistent\nsrc\n~/src\n\n", "roots"); err != nil {
+	if err := e.run("\n/nonexistent\nsrc\n~/src\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("✗ ~/dev does not exist\n", "? These roots cannot be used as they are. Fix them: 1 Change dev (~/dev) 2 Add another root\nchoose 1-2 [1]: ",
@@ -125,16 +181,16 @@ func TestSetupRootsAddsASecond(t *testing.T) {
 	e.writeConfig("# my notes\n[session]\nkeep_versions = 3\n")
 	// add; ~/work; name: an invalid one, dev (taken), then the default;
 	// use these.
-	if err := e.run("3\n~/work\nBad Name\ndev\n\n\n", "roots"); err != nil {
+	if err := e.run("3\n~/work\nBad Name\ndev\n\n\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut(
 		"? Name for ~/work, mounted at /work/NAME: [work] ",
 		"✗ 'Bad Name' is not a root name",
 		"✗ Another root is named 'dev'\n",
-		"/work/dev ← ~/dev\n /work/work ← ~/work\n",
+		"/work/dev ← ~/dev (read-only)\n /work/work ← ~/work (read-only)\n",
 		"1 Use these 2 Change dev (~/dev) 3 Change work (~/work) 4 Add another root 5 Remove dev (~/dev) 6 Remove work (~/work)\n",
-		"! The container keeps the roots it was created with: caboose restart remounts them",
+		"! The container keeps the roots it was created with, and what of them it may write: caboose restart remounts them",
 	)
 	if e.said("anyway?") {
 		t.Errorf("asked about moving projects that stay put:\n%s", e.errb)
@@ -155,7 +211,7 @@ func TestSetupRootsLongFormSoleRoot(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("work")
 	e.writeConfig("[roots.dev]\nhost = \"~/dev\"\npath = \"/work\"\n")
-	if err := e.run("3\n~/work\n\n\ny\n", "roots"); err != nil {
+	if err := e.run("3\n~/work\n\n\n\n\ny\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("! Projects under ~/dev move from /work/... to /work/dev/...", "? Change the roots anyway? [y/N] ")
@@ -184,7 +240,7 @@ func TestSetupRootsMoveDeclined(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("work")
 	e.writeConfig("[roots.dev]\nhost = \"~/dev\"\npath = \"/work\"\n")
-	if err := e.run("3\n~/work\n\n\n\n", "roots"); err != nil {
+	if err := e.run("3\n~/work\n\n\n\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("· Nothing changed")
@@ -199,7 +255,7 @@ func TestSetupRootsRemovesOne(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("work")
 	e.writeConfig("[roots]\ndev = \"~/dev\"\nwork = \"~/work\"\n")
-	if err := e.run("6\n\ny\n", "roots"); err != nil {
+	if err := e.run("6\n\n\ny\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("! Projects under ~/work are no longer mounted (they were at /work/work)\n")
@@ -218,7 +274,7 @@ func TestSetupRootsOverlap(t *testing.T) {
 	e.writeConfig("[roots]\ndev = \"~/dev\"\nsub = \"~/dev/sub\"\n")
 	// no "use these": 1 change dev, 2 change sub, 3 add, 4 remove dev,
 	// 5 remove sub. Remove sub, then use these.
-	if err := e.run("5\n\ny\n", "roots"); err != nil {
+	if err := e.run("5\n\n\ny\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	e.wantOut("✗ ~/dev and ~/dev/sub overlap", "1 Change dev (~/dev)\n")
@@ -241,7 +297,7 @@ func TestSetupRootsUnsafeEdit(t *testing.T) {
 	if err := os.WriteFile(e.configPath(), []byte(odd), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := e.run("2\n~/src\n\ny\n", "roots")
+	err := e.run("2\n~/src\n\n\ny\n", "roots")
 	if err == nil || !strings.Contains(err.Error(), "cannot edit "+e.configPath()+" safely") ||
 		!strings.Contains(err.Error(), `dev = "~/src"`) {
 		t.Fatalf("err = %v", err)
@@ -388,7 +444,7 @@ func TestSetupSyncNone(t *testing.T) {
 // create the container) it writes nothing but the template.
 func TestSetupWholeRunOrder(t *testing.T) {
 	e := newSetupEnv(t, "default", "[user]\n\tname = Me\n\temail = me@example.invalid\n", false)
-	if err := e.run("\n\nn\n\n\n\n\n"); err != nil {
+	if err := e.run("\n\n\nn\n\n\n\n\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
 	out := e.errb.String()
@@ -403,5 +459,22 @@ func TestSetupWholeRunOrder(t *testing.T) {
 	e.wantOut("· Not created: the first launch creates it", "! Not logged in yet. Run caboose in a project under ", "Roots 1/7", "Claude login 7/7")
 	if b, _ := os.ReadFile(e.configPath()); string(b) != config.Template {
 		t.Errorf("config.toml:\n%s", b)
+	}
+}
+
+// A root that holds CABOOSE_HOME cannot be used, and the refusal names a
+// narrower one; asked again, it is refused as the directory typed.
+func TestSetupRootsRefusesCabooseHome(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.a.Cfg.CabooseHome = filepath.Join(e.a.Cfg.Home, ".caboose")
+	e.mkdir(".caboose")
+	e.writeConfig("[roots]\ndev = \"~\"\n")
+	if err := e.run("\n~\n~/dev\n\n\ny\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("✗ ~ holds CABOOSE_HOME", "use ~/dev instead of ~\n", "choose 1-2 [1]: ",
+		"✓ Wrote them to "+e.configPath())
+	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"].Host != "~/dev" {
+		t.Errorf("roots = %+v", f.Roots)
 	}
 }
