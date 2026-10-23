@@ -11,6 +11,7 @@ import (
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // The user's own `docker run` arguments (config.RunArgs) go in after
@@ -131,6 +132,16 @@ func checkRunArg(arg string, targets, env []string) error {
 		if slices.Contains(env, v) || slices.ContainsFunc(ownedEnvPrefixes, func(p string) bool { return strings.HasPrefix(v, p) }) {
 			return fmt.Errorf("caboose sets %s itself", v)
 		}
+	case "publish":
+		// Publishing onto the host's web UI port would make the sandbox
+		// the page's listener, which nothing of caboose's may ever do.
+		lo, hi, err := publishedHostPorts(value)
+		if err != nil {
+			return err
+		}
+		if p, ok := uiport.Covering(lo, hi); ok {
+			return fmt.Errorf("publishes onto port %d of this machine: it is %s, which a sandbox may never listen on", p, uiport.What)
+		}
 	case "label":
 		if strings.HasPrefix(value, labelPrefix) {
 			return fmt.Errorf("caboose's labels are its own")
@@ -155,6 +166,72 @@ func checkRunArg(arg string, targets, env []string) error {
 		}
 	}
 	return nil
+}
+
+// publishedHostPorts is the range of host ports a --publish value,
+// [IP:][HOST:]CONTAINER[/PROTO] with HOST and CONTAINER a port or a range
+// of them, binds; 0, 0 when it names none (docker picks free ports
+// then). A value it cannot read is refused rather than guessed at.
+func publishedHostPorts(value string) (lo, hi int, err error) {
+	bad := fmt.Errorf("cannot tell which port of this machine it publishes on; write it as [IP:]HOST:CONTAINER")
+	v, _, _ := strings.Cut(value, "/")
+	i := strings.LastIndex(v, ":")
+	if _, _, err := portRange(v[i+1:]); err != nil {
+		return 0, 0, bad
+	}
+	if i < 0 {
+		return 0, 0, nil // the container's port alone
+	}
+	rest := v[:i]
+	if strings.HasPrefix(rest, "[") {
+		end := strings.Index(rest, "]")
+		if end < 0 || !strings.HasPrefix(rest[end+1:], ":") {
+			return 0, 0, bad
+		}
+		rest = rest[end+2:]
+	} else if j := strings.LastIndex(rest, ":"); j >= 0 {
+		rest = rest[j+1:]
+	}
+	if rest == "" {
+		return 0, 0, nil // IP::CONTAINER: a free port
+	}
+	if lo, hi, err = portRange(rest); err != nil {
+		return 0, 0, bad
+	}
+	return lo, hi, nil
+}
+
+// portRange is s, a port or a range of them "a-b", as its ends.
+func portRange(s string) (lo, hi int, err error) {
+	a, b, isRange := strings.Cut(s, "-")
+	if lo, err = portNumber(a); err != nil {
+		return 0, 0, err
+	}
+	hi = lo
+	if isRange {
+		if hi, err = portNumber(b); err != nil {
+			return 0, 0, err
+		}
+		if hi < lo {
+			return 0, 0, fmt.Errorf("ends before it starts")
+		}
+	}
+	return lo, hi, nil
+}
+
+// portNumber is s as a port, 1 to 65535, digits only.
+func portNumber(s string) (int, error) {
+	if s == "" || strings.Trim(s, "0123456789") != "" || len(s) > 5 {
+		return 0, fmt.Errorf("not a port")
+	}
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("not a port")
+	}
+	return n, nil
 }
 
 // mountTarget is where a --volume, --mount or --tmpfs value mounts, clean,
@@ -217,16 +294,55 @@ var wideningFlags = []string{
 	"pid", "ipc", "uts", "userns", "cgroupns", "volume", "mount", "volumes-from",
 }
 
-// wideningRunArgs are those of args that widen what the sandbox reaches.
+// wideningRunArgs are those of args that widen what the sandbox reaches:
+// a widening flag, or the host's network (hostNetworkArgs), in order.
 func wideningRunArgs(args []string) []string {
 	var w []string
-	for _, arg := range args {
-		name, value, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
-		if slices.Contains(wideningFlags, name) || (name == "network" || name == "net") && value == "host" {
+	for i, arg := range args {
+		name, _, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if slices.Contains(wideningFlags, name) {
 			w = append(w, arg)
+		} else if h, ok := hostNetworkAt(args, i); ok {
+			w = append(w, h)
 		}
 	}
 	return w
+}
+
+// hostNetworkArgs are those of args that put the container on the
+// engine's host network, as hostNetworkAt says them.
+func hostNetworkArgs(args []string) []string {
+	var w []string
+	for i := range args {
+		if h, ok := hostNetworkAt(args, i); ok {
+			w = append(w, h)
+		}
+	}
+	return w
+}
+
+// hostNetworkAt reports whether args[i] puts the container on the
+// engine's host network, and says it as written: --network=host or
+// --net=host, or the flag and "host" as two arguments, or as one with a
+// space between (checkRunArgs refuses those two, but the network is said
+// anyway).
+func hostNetworkAt(args []string, i int) (string, bool) {
+	arg := args[i]
+	flag, value, ok := strings.Cut(arg, "=")
+	if !ok {
+		flag, value, ok = strings.Cut(strings.TrimSpace(arg), " ")
+		value = strings.TrimSpace(value)
+	}
+	if flag != "--network" && flag != "--net" {
+		return "", false
+	}
+	switch {
+	case ok && value == "host":
+		return arg, true
+	case !ok && i+1 < len(args) && args[i+1] == "host":
+		return arg + " " + args[i+1], true
+	}
+	return "", false
 }
 
 // runArgsLabel is the value of assets.LabelRunArgs for args.

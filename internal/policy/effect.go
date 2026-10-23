@@ -224,3 +224,52 @@ func privateNote(r Request) string {
 	}
 	return " at " + strings.Join(shownAddrs, ", ")
 }
+
+// EgressRuleEffect says what adding (add) or removing an entry of
+// egress_deny (deny) or egress_allow does to environment env under trust
+// t, in the host's words. entry is one entry as ParseAllowList takes it.
+// Under trust = fallible a host that resolves only to public addresses
+// connects whatever egress_allow says, so removing an allow entry changes
+// nothing for it, and the effect says so.
+func EgressRuleEffect(t Trust, deny, add bool, entry, env string) string {
+	target, byName := ruleTarget(entry)
+	fallible := t == TrustFallible
+	switch {
+	case deny && add:
+		return fmt.Sprintf("denies connections to %s from environment %s, whatever egress_allow or a grant says", target, env)
+	case deny:
+		return fmt.Sprintf("stops denying connections to %s from environment %s, which the other rules decide again", target, env)
+	case add:
+		s := fmt.Sprintf("allows connections to %s from environment %s", target, env)
+		if !fallible {
+			s += " without asking"
+		}
+		if byName {
+			s += " at any address it resolves to, private ones included"
+		}
+		if fallible {
+			s += " (public hosts connect anyway under trust = fallible)"
+		}
+		return s
+	}
+	if fallible {
+		return fmt.Sprintf("changes nothing for public hosts, which connect anyway under trust = fallible: connections to %s from environment %s that reach a private or local address ask again", target, env)
+	}
+	return fmt.Sprintf("connections to %s from environment %s ask again (trust = %s asks for every host egress_allow does not name)", target, env, TrustHostile)
+}
+
+// ruleTarget is what an egress_allow or egress_deny entry names, and
+// whether it names hosts by name.
+func ruleTarget(entry string) (string, bool) {
+	e := shown(entry, maxShownHost)
+	if strings.Contains(entry, "/") {
+		return "addresses in " + e, false
+	}
+	if _, err := netip.ParseAddr(entry); err == nil {
+		return "address " + e, false
+	}
+	if rest, ok := strings.CutPrefix(e, "*."); ok {
+		return "every name under " + rest, true
+	}
+	return e, true
+}

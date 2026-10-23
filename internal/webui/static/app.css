@@ -1,0 +1,364 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --muted: #4a4a4a;
+  --bg: #ffffff;
+  --panel: #f4f4f4;
+  --line: #767676;
+  --accent: #0b57d0;
+  --warn-bg: #fff4d6;
+  --warn-fg: #5c3b00;
+  --sandbox-bg: #ececf4;
+  --sandbox-line: #5a5a8a;
+  --add-bg: #dff3e2;
+  --del-bg: #fbe0e0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8e8e8;
+    --muted: #bdbdbd;
+    --bg: #151515;
+    --panel: #212121;
+    --line: #8a8a8a;
+    --accent: #8ab4f8;
+    --warn-bg: #3b2f10;
+    --warn-fg: #ffd98a;
+    --sandbox-bg: #25253a;
+    --sandbox-line: #8c8cc4;
+    --add-bg: #17331d;
+    --del-bg: #3a1c1c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 48rem;
+  padding: 1rem;
+  font-family: system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  overflow-wrap: break-word;
+}
+
+a {
+  color: var(--accent);
+}
+
+h1 {
+  font-size: 1.5rem;
+}
+
+h2 {
+  font-size: 1.25rem;
+  margin-top: 2rem;
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem;
+}
+
+h4 {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+
+small {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.brand {
+  font-weight: bold;
+  margin: 0;
+}
+
+nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+nav [aria-current="page"] {
+  font-weight: bold;
+  text-decoration: none;
+}
+
+/* What a sandbox wrote: isolated, so a right-to-left run cannot reorder
+   the host's text around it, and long text whole in a block that
+   scrolls. */
+.sandbox {
+  unicode-bidi: isolate;
+}
+
+.sandbox-block {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.sandbox-says {
+  border: 2px dashed var(--sandbox-line);
+  background: var(--sandbox-bg);
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.sandbox-says p,
+.sandbox-says dl {
+  margin: 0.25rem 0;
+}
+
+.sandbox-says dt {
+  font-weight: bold;
+}
+
+.sandbox-says dd {
+  margin: 0 0 0.5rem;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: var(--panel);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1rem;
+}
+
+.effect {
+  font-size: 1.15rem;
+  font-weight: bold;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.cmd {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 0 0.25rem;
+  user-select: all;
+}
+
+.warning {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-left: 0.35rem solid var(--warn-fg);
+  padding: 0.25rem 0.5rem;
+}
+
+.warning:empty {
+  display: none;
+}
+
+.btn {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--line);
+  border-radius: 0.25rem;
+  padding: 0.35rem 0.8rem;
+  min-height: 2.5rem;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  color: var(--muted);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+
+.btn-act {
+  border-color: var(--accent);
+  font-weight: bold;
+}
+
+.egress-list li {
+  margin: 0.25rem 0;
+}
+
+.answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.answer-group {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--line);
+  min-height: 2.5rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+}
+
+th,
+td {
+  border: 1px solid var(--line);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+/* A narrow window stacks a table's cells: each row a block, each cell a
+   line labelled with its column's head (data-label), the head row out of
+   sight but still read by assistive technology, so the page never
+   scrolls sideways. pages.mjs gives every part its role, which display
+   alone would take from it in some browsers. */
+@media (max-width: 40rem) {
+  table,
+  thead,
+  tbody,
+  tr,
+  th,
+  td {
+    display: block;
+  }
+
+  table {
+    border: 0;
+  }
+
+  thead tr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  tbody tr {
+    border: 1px solid var(--line);
+    margin: 0 0 0.5rem;
+  }
+
+  tbody th,
+  tbody td {
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+
+  tbody td[data-label]::before {
+    content: attr(data-label) ": ";
+    font-weight: bold;
+  }
+}
+
+dl {
+  margin: 0.5rem 0;
+}
+
+dt {
+  font-weight: bold;
+}
+
+dd {
+  margin: 0 0 0.5rem 1rem;
+}
+
+pre {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.log {
+  max-height: 24rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 0.5rem;
+  white-space: pre-wrap;
+}
+
+.diff {
+  border: 1px solid var(--line);
+  padding: 0;
+  max-height: 20rem;
+}
+
+.diff-line {
+  display: block;
+  min-height: 1.4em;
+  padding: 0 0.5rem;
+  white-space: pre-wrap;
+}
+
+.diff-add {
+  background: var(--add-bg);
+}
+
+.diff-del {
+  background: var(--del-bg);
+}
+
+/* The sign leads each line, so the change is never told by color alone. */
+.diff-add::before {
+  content: "added: ";
+}
+
+.diff-del::before {
+  content: "removed: ";
+}
+
+dialog.confirm {
+  max-width: min(40rem, calc(100vw - 2rem));
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--fg);
+  border-radius: 0.25rem;
+  padding: 1rem;
+}
+
+dialog.confirm::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+dialog.confirm .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+#live-alert:not(:empty) {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-left: 0.35rem solid var(--warn-fg);
+  padding: 0.25rem 0.5rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -249,26 +249,8 @@ func (a *App) askRef(p *prompter, cur config.ImageProfile) (string, error) {
 // never mounted into the container: the host's to write as it would any
 // file of the user's.
 func (a *App) writeImageDir(p *prompter, dir string, data []byte) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Die("%v", err)
-	}
-	f, err := os.CreateTemp(dir, ".Dockerfile-*")
-	if err != nil {
-		return Die("%v", err)
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(f.Name(), 0o644)
-	}
-	if err == nil {
-		err = os.Rename(f.Name(), filepath.Join(dir, "Dockerfile"))
-	}
-	if err != nil {
-		return Die("writing %s: %v", filepath.Join(dir, "Dockerfile"), err)
+	if err := writeDockerfile(dir, data); err != nil {
+		return err
 	}
 	p.ok("Wrote %s; it is yours to edit from here on", a.short(filepath.Join(dir, "Dockerfile")))
 	return nil

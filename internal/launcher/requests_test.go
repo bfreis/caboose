@@ -306,7 +306,7 @@ func TestBrokerErrorsAreFriendly(t *testing.T) {
 	} {
 		fd := &fakeDaemon{}
 		fd.br.Err = &daemonproto.Error{Kind: kind, Message: map[string]string{
-			daemonproto.KindNotOwner: "no link serves default", daemonproto.KindNotAllowed: "a daemon client may not answer",
+			daemonproto.KindNotOwner: "no link serves default", daemonproto.KindNotAllowed: "a web client may not answer",
 			daemonproto.KindBrokerUnavailable: "the broker cannot serve now"}[kind]}
 		a, _, _ := newCLIApp(t, fd)
 		err := a.Requests([]string{"deny", "1"})

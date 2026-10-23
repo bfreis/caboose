@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"log"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,16 @@ type fakeLinks struct {
 	recovering bool
 	// closeTakes is how long Close takes, as ending host commands does.
 	closeTakes time.Duration
+	// jobs is how many jobs ExecCounts says run, which
+	// HostExecs counts beside the commands.
+	jobs int
+}
+
+// ExecCounts is the commands in flight and the jobs, in one read.
+func (f *fakeLinks) ExecCounts() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inFlight, f.jobs
 }
 
 func (f *fakeLinks) Serve(context.Context, string, string) (*daemonproto.LinkResult, error) {
@@ -40,7 +51,7 @@ func (f *fakeLinks) Busy() bool {
 func (f *fakeLinks) HostExecs() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.inFlight
+	return f.inFlight + f.jobs
 }
 
 func (f *fakeLinks) Recovering() bool {
@@ -101,6 +112,25 @@ type replaceDaemon struct {
 	// noLockCheck: another daemon may take the lock as soon as this one
 	// lets go of it.
 	noLockCheck bool
+	logs        *syncBuf
+}
+
+// syncBuf is a log written by the daemon and read by the test.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 const replaceProto = 2
@@ -111,8 +141,8 @@ func startReplaceDaemon(t *testing.T, version string, links *fakeLinks) *replace
 	replaceRecheck = 20 * time.Millisecond
 	t.Cleanup(func() { replaceRecheck = old })
 	h := newHarness(t)
-	d := &replaceDaemon{t: t, dir: h.dir, links: links, stopped: make(chan Stopped, 1)}
-	runInProcess(t, Options{Dir: h.dir, Version: version, Idle: time.Minute, Log: testLog{t}, Links: links, Protocol: replaceProto,
+	d := &replaceDaemon{t: t, dir: h.dir, links: links, stopped: make(chan Stopped, 1), logs: &syncBuf{}}
+	runInProcess(t, Options{Dir: h.dir, Version: version, Idle: time.Minute, Log: io.MultiWriter(testLog{t}, d.logs), Links: links, Protocol: replaceProto,
 		OnStop: func(st Stopped, lg *log.Logger) {
 			if lg == nil {
 				t.Error("OnStop got no log")
@@ -486,5 +516,41 @@ func TestStopWaitsForTheHostCommandsEnd(t *testing.T) {
 				return !h
 			})
 		})
+	}
+}
+
+// The forced-replace log, the replace's answer and the status each say how
+// many host commands and how many jobs, never one count
+// for both.
+func TestReplaceAndStatusSeparateCommandsFromJobs(t *testing.T) {
+	links := &fakeLinks{busy: true, jobs: 1}
+	links.enter()
+	links.enter()
+	d := startReplaceDaemon(t, "v1.0.0", links)
+	st, err := d.mustClient(replaceProto).Status(context.Background())
+	if err != nil || st.Daemon.HostExecs != 3 || st.Daemon.Jobs != 1 {
+		t.Fatalf("status %+v, %v", st.Daemon, err)
+	}
+	r, err := d.mustClient(replaceProto+1).Replace(context.Background(), "v2.0.0", true)
+	if err != nil || !r.Exiting || r.HostExecs != 3 || r.Jobs != 1 {
+		t.Fatalf("replace: %+v, %v", r, err)
+	}
+	d.waitStopped(2 * time.Second)
+	if got, want := d.logs.String(), "killing 2 host command(s) and ending 1 job(s)"; !strings.Contains(got, want) {
+		t.Errorf("log %q lacks %q", got, want)
+	}
+}
+
+// A replace that waits says the same of what it waits for.
+func TestWaitingReplaceLogSeparatesCommandsFromJobs(t *testing.T) {
+	links := &fakeLinks{jobs: 2}
+	links.enter()
+	d := startReplaceDaemon(t, "v1.0.0", links)
+	r, err := d.mustClient(replaceProto).Replace(context.Background(), "v1.2.0", false)
+	if err != nil || r.Exiting || r.HostExecs != 3 || r.Jobs != 2 {
+		t.Fatalf("replace: %+v, %v", r, err)
+	}
+	if got, want := d.logs.String(), "host commands (1 running) and jobs (2 running)"; !strings.Contains(got, want) {
+		t.Errorf("log %q lacks %q", got, want)
 	}
 }

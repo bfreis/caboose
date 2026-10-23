@@ -48,7 +48,7 @@ func TestInFlightDeniedAtOpen(t *testing.T) {
 func TestMarkInFlight(t *testing.T) {
 	f := newFixture(t)
 	id := mustPending(t, f.decide(urlReq("https://example.com/x")))
-	for _, by := range []string{ByCLI} {
+	for _, by := range []string{ByCLI, ByWeb} {
 		if err := f.b.MarkInFlight(id, by); err == nil {
 			t.Fatalf("a mark by %s", by)
 		}

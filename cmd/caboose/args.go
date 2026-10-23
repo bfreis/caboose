@@ -147,6 +147,29 @@ settings. --foreground runs the link in this terminal instead, to debug it:
 it is refused while the daemon serves the environment ('caboose daemon
 stop' first). With CABOOSE_DATA_DIR set the daemon does not serve the
 command: a launch keeps a detached helper (--background) instead.`},
+	{Name: "ui", Usage: "[PAGE] [OPTIONS]", Args: ownArgs,
+		Summary: "open the web page in your browser",
+		Help: `Usage: caboose ui [requests|proposals|ENV] [--print] [--new-token]
+
+Opens caboose's web page in your browser: the requests the sandboxes
+asked for, and the proposals waiting for 'caboose apply'. The caboose
+daemon serves it on 127.0.0.1 only, at port 7171 (a checkout's build:
+7172). The address opened carries a one-time code after '#code=', which
+the page trades for its token: it opens the page once, within 60 s, and
+the token itself is never in an address. The daemon is started when none
+runs. If something else holds the port it says so and opens nothing.
+
+  requests | proposals   open that page
+  ENV                    open that environment's page
+  --print                print the address instead of opening it (for a
+                         host without a browser); it opens the page once,
+                         within 60 s
+  --new-token            replace the token first: a page open with the old
+                         one is refused from then on, and so is any code
+                         not used yet
+
+'caboose -e ENV ui' opens ENV's page. Packages proposals, restore and
+restart stay in the terminal. See the web UI page of the docs.`},
 	{Name: "requests", Usage: "[ACTION]", Args: ownArgs,
 		Summary: "what the sandbox asked for, and answers to it",
 		Help: `The sandbox asks the host for what config.toml does not allow it: to open

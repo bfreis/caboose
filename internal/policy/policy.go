@@ -23,6 +23,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // Trust is how far the sandbox is trusted: config.toml's trust.
@@ -586,6 +587,19 @@ func decideEgress(p Policy, r Request, now time.Time) Decision {
 			return deny("deny:egress-bad", "%s: an address with a zone cannot be reached through the host", target)
 		}
 	}
+	own := make([]netip.Addr, 0, len(r.Own))
+	for _, a := range r.Own {
+		own = append(own, a.Unmap().WithZone(""))
+	}
+	// The host's caboose web UI approves what a sandbox asks for: no
+	// setting, grant or trust level reaches its port on this machine.
+	if uiport.Is(r.Port) {
+		for _, a := range r.Addrs {
+			if _, _, ok := localRange(a, own); ok {
+				return deny("deny:ui_port", "%s: port %d on %s is %s, which a sandbox never reaches", target, r.Port, a, uiport.What)
+			}
+		}
+	}
 	if !r.Literal && e.Deny.Name(r.Host) {
 		return deny("deny:egress_deny", "%s: egress_deny (config.toml on the host) names it", target)
 	}
@@ -593,10 +607,6 @@ func decideEgress(p Policy, r Request, now time.Time) Decision {
 		if e.Deny.Addr(a) || anyAddr(e.Deny, embeddedV4(a.Unmap())) {
 			return deny("deny:egress_deny", "%s: egress_deny (config.toml on the host) names %s, which it resolves to", target, a)
 		}
-	}
-	own := make([]netip.Addr, 0, len(r.Own))
-	for _, a := range r.Own {
-		own = append(own, a.Unmap().WithZone(""))
 	}
 	for _, a := range r.Addrs {
 		if rg, b, ok := localRange(a, own); ok && !e.Allow.Within(b, rg) {

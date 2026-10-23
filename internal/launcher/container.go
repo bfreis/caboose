@@ -956,8 +956,10 @@ func (a *App) confirmSessionLoss(action string) error {
 		a.Note("CABOOSE_FORCE=1 set, continuing.")
 		return nil
 	}
-	yes, asked := a.askYes("continue?")
+	yes, asked, err := a.askYes("continue?")
 	switch {
+	case err != nil:
+		return err
 	case !asked:
 		return Die("refusing to %s non-interactively with live sessions (set CABOOSE_FORCE=1 to override)", action)
 	case !yes:
@@ -968,27 +970,31 @@ func (a *App) confirmSessionLoss(action string) error {
 
 // askYes asks question on the terminal, no by default. asked is false
 // when there is no terminal to ask on. App.Terminal, when set, is the
-// terminal (the tests' scripted answers; one that fails is none).
-func (a *App) askYes(question string) (yes, asked bool) {
+// terminal (the tests' scripted answers; one that fails is none). An App
+// that may not ask (noTerminal) fails with that error, asking nothing.
+func (a *App) askYes(question string) (yes, asked bool, err error) {
+	if a.noTerminal != nil {
+		return false, false, a.noTerminal
+	}
 	if a.Terminal != nil {
 		t, err := a.Terminal()
 		if err != nil {
-			return false, false
+			return false, false, nil
 		}
 		defer t.Close()
 		fmt.Fprintf(a.Stderr, "caboose: %s [y/N] ", question)
-		return confirmed(t), true
+		return confirmed(t), true, nil
 	}
 	if !tty.IsTerminal(os.Stdin.Fd()) {
-		return false, false
+		return false, false, nil
 	}
 	t, err := os.Open("/dev/tty")
 	if err != nil {
-		return false, false
+		return false, false, nil
 	}
 	defer t.Close()
 	fmt.Fprintf(a.Stderr, "caboose: %s [y/N] ", question)
-	return confirmed(t), true
+	return confirmed(t), true, nil
 }
 
 // confirmed reads one reply line from r and reports whether it is a yes. A

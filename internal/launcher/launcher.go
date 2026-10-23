@@ -199,6 +199,14 @@ type App struct {
 	// running sessions (caboose apply's restart): confirmSessionLoss does
 	// not ask again.
 	lossConfirmed bool
+	// noTerminal, when set, is what every question this App would ask on
+	// a terminal fails with instead (askYes, openTerminal): a daemon's
+	// job has no terminal, and never guesses an answer.
+	noTerminal error
+	// beforeProposalWrite, when set, runs in ApplyPlanned once the plan
+	// is confirmed and before what it writes is checked again: the tests'
+	// way to change a file in between.
+	beforeProposalWrite func()
 	// attach, when set, stands in for Attach at the end of setup: the
 	// tests' way to see it called without attaching anything.
 	attach func(args []string) error
@@ -210,6 +218,9 @@ type App struct {
 	// DaemonDial, when set, stands in for connecting to the daemon
 	// (dialDaemon), starting it when start is set: the tests' fake.
 	DaemonDial func(ctx context.Context, start bool) (DaemonCaller, error)
+	// Opener, when set, stands in for opening a URL in the browser
+	// (caboose ui): the tests' fake.
+	Opener func(url string) error
 	// relDaemon, when set, stands in for the release's daemon an update
 	// asks (releaseDaemon): the tests' fake.
 	relDaemon releaseDaemonAsker

@@ -89,7 +89,7 @@ var hashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // AnswerParams are the params of answer. There is no field for who
 // answers: the daemon takes that from the caller (a socket connection's
-// hello), never from what the client says.
+// hello, or its own web page), never from what the client says.
 type AnswerParams struct {
 	Env     string `json:"env"`
 	ID      uint64 `json:"id"`
@@ -224,9 +224,9 @@ type RequestView struct {
 	Created   time.Time `json:"created"`
 	Expires   time.Time `json:"expires,omitzero"`
 	DecidedAt time.Time `json:"decided_at,omitzero"`
-	// DecidedBy is who answered: "cli" (the kind of client the answer
-	// came through, which the daemon sets, never the answer), "dialog"
-	// (the URL dialog) or "expiry".
+	// DecidedBy is who answered: "cli" or "web" (the kind of
+	// client the answer came through, which the daemon sets, never the
+	// answer), "dialog" (the URL dialog) or "expiry".
 	DecidedBy string `json:"decided_by,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	Seq       uint64 `json:"seq,omitempty"`
@@ -371,18 +371,6 @@ func (o *Offer) validate() error {
 		return bad("an offer's diff over %d bytes", MaxDiff)
 	}
 	return nil
-}
-
-// DiffLines is a config.toml diff as the protocol carries it: one
-// printable line each, tabs made spaces.
-func DiffLines(diff string) []string {
-	var out []string
-	if d := strings.TrimSuffix(diff, "\n"); d != "" {
-		for _, l := range strings.Split(d, "\n") {
-			out = append(out, Text(strings.ReplaceAll(l, "\t", " "), MaxDiff))
-		}
-	}
-	return out
 }
 
 // Validate checks the view and the offers.

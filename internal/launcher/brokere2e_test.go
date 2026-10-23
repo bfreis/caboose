@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/policy"
 	"github.com/bfreis/caboose/internal/saferm"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // brokerDaemonEnv makes the test binary the daemon: the real `caboose
@@ -212,6 +214,31 @@ func TestRequestCommandsAgainstARealDaemon(t *testing.T) {
 	if len(w.procs) != 1 {
 		t.Errorf("%d daemons started", len(w.procs))
 	}
+	// The real daemon serves its page, but never on the user's ports. It
+	// starts listening in a goroutine of its own, after the daemon already
+	// answers: a status may say the page is not served yet, for a moment.
+	if c, err := a.dialDaemon(context.Background(), false); err != nil {
+		t.Errorf("dial: %v", err)
+	} else {
+		var st *daemonproto.StatusResult
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			st, err = c.Status(context.Background())
+			if err != nil || st.Daemon.Web != nil && st.Daemon.Web.Listening || time.Now().After(deadline) {
+				break
+			}
+		}
+		c.Close()
+		if err != nil || st.Daemon.Web == nil || !st.Daemon.Web.Listening {
+			var web any
+			if st != nil {
+				web = st.Daemon.Web
+			}
+			t.Errorf("the daemon's page: %+v %v", web, err)
+		} else if ap, err := netip.ParseAddrPort(st.Daemon.Web.Addr); err != nil || !ap.Addr().IsLoopback() || uiport.Is(int(ap.Port())) || ap.Port() == 0 {
+			t.Errorf("the test daemon serves its page on %s", st.Daemon.Web.Addr)
+		}
+	}
+
 	w.reset()
 	if err := a.Requests([]string{"show", "1"}); err != nil || !strings.Contains(w.out.String(), "session (as the sandbox names it): s1") {
 		t.Errorf("show: %v\n%s", err, w.out)
@@ -277,15 +304,15 @@ func TestRequestCommandsAgainstARealDaemon(t *testing.T) {
 	}
 }
 
-// Over the real socket, no client may say it is the daemon: the hello is
-// refused before any request. The command line's answer is recorded as
-// the command line's.
+// Over the real socket, no client may say it is the daemon's web page
+// (or the daemon): the hello is refused before any request. The command
+// line's answer is recorded as the command line's.
 func TestRealDaemonRefusesOtherClientsAnswers(t *testing.T) {
 	w := newE2EWorld(t)
 	if err := w.app.Requests(nil); err != nil { // starts the daemon
 		t.Fatal(err)
 	}
-	for _, kind := range []string{daemonproto.ClientDaemon} {
+	for _, kind := range []string{daemonproto.ClientWeb, daemonproto.ClientDaemon} {
 		c, err := daemonproto.Dial(context.Background(), daemon.Socket(w.app.daemonDir()), daemonproto.Options{Client: kind, Version: "v1"})
 		if err == nil {
 			c.Close()

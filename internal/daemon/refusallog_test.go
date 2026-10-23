@@ -33,7 +33,7 @@ func (l *lockedLog) count(s string) int {
 // hello".
 func TestConnectionWithoutHelloIsLogged(t *testing.T) {
 	log := &lockedLog{}
-	dir := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: log})
+	dir, _ := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: log})
 	req, err := daemonproto.Request(1, "status", nil)
 	if err != nil {
 		t.Fatal(err)

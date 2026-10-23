@@ -184,7 +184,9 @@ func Stop(ctx context.Context, cfg Config) (bool, error) {
 	// longer than the rest: waited for, and said.
 	execs := 0
 	if st, err := c.Status(ctx); err == nil {
-		execs = st.Daemon.HostExecs
+		// Only the commands the shutdown ends and waits for: the jobs it
+		// leaves alone are not among them.
+		execs = max(st.Daemon.HostExecs-st.Daemon.Jobs, 0)
 	}
 	err = c.Stop(ctx)
 	c.Close()

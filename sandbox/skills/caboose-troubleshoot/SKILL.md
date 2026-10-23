@@ -38,9 +38,14 @@ The daemon takes `PATH` and the SSH agent from a login shell when it
 starts, not from the terminal a command runs in, so a variable exported only
 in that terminal does not reach host commands.
 
+A URL to port 7171 or 7172 is refused on purpose, and neither port is
+forwarded or reached through the outbound proxy on the host: they are the
+host's caboose web UI, and no setting changes that.
+
 A port not reaching the host: `caboose-agent ports` says, for each listening
 port, whether it is forwarded, not in `forward_ports` (`[link]` of
-`config.toml`), or already in use on the host.
+`config.toml`), the web UI's port (never forwarded), or already in use on
+the host.
 @@IF isolation=gvisor,vm@@
 
 ## "Read-only file system" under a root
@@ -49,10 +54,10 @@ Each root is mounted read-only but for its writable parts, which
 `~/.caboose-proposals/current/state.toml` lists (`writable`, relative to
 the root; `"."` for all of it; `mounted_writable`, when shown, is what this
 sandbox has until a restart). A write anywhere else fails with `EROFS`,
-by design: nothing in here can change it, and no proposal can either. Tell
-the user which directory needs writing; they add it to the root's
-`writable` in `config.toml` (`caboose@@CABOOSE_ENV_FLAG@@ setup roots`
-asks), and it takes `caboose@@CABOOSE_ENV_FLAG@@ restart`, which ends
+by design: nothing in here can change it. Propose the directory that needs
+writing (a `[writable]` proposal, caboose-propose skill), or tell the user
+to add it to the root's `writable` in `config.toml`
+(`caboose@@CABOOSE_ENV_FLAG@@ setup roots` asks); either way it takes `caboose@@CABOOSE_ENV_FLAG@@ restart`, which ends
 running sessions. Until then, only a copy outside the roots can be
 written, and a restart loses it unless it is in a kept path.
 

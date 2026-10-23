@@ -25,6 +25,9 @@ type DaemonCaller interface {
 	Grants(ctx context.Context, env string) (*daemonproto.GrantsResult, error)
 	Revoke(ctx context.Context, env, grant string) (*daemonproto.RevokeResult, error)
 	Permissions(ctx context.Context, env string) (*daemonproto.PermissionsResult, error)
+	// Web is the web page's state and address, with a one-time code
+	// that opens it when p.Code: never the token.
+	Web(ctx context.Context, p daemonproto.WebParams) (*daemonproto.WebResult, error)
 	Close() error
 }
 

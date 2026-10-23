@@ -24,7 +24,7 @@ const (
 // entry is one line of decisions.log.
 type entry struct {
 	Time    time.Time      `json:"time"`
-	Event   string         `json:"event"` // "decision", "answer", "expiry", "revoke", "egress-counts", "suppressed"
+	Event   string         `json:"event"` // "decision", "answer", "expiry", "revoke", "egress-edit", "egress-counts", "suppressed"
 	Kind    policy.Kind    `json:"kind,omitempty"`
 	Key     string         `json:"key,omitempty"`
 	Verdict string         `json:"verdict,omitempty"`
@@ -165,4 +165,11 @@ func (l *decisionLog) flushEgressLocked(now time.Time, force bool) {
 		l.write(entry{Time: now, Event: "egress-counts", Kind: policy.KindEgress, Counts: l.counts, Count: l.others, Reason: "connections allowed since " + l.countFrom.Format(time.RFC3339)})
 	}
 	l.countFrom, l.counts, l.others = now, nil, 0
+}
+
+// egressEdit logs a person's edit of egress_allow or egress_deny.
+func (l *decisionLog) egressEdit(now time.Time, by, effect string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.write(entry{Time: now, Event: "egress-edit", Kind: policy.KindEgress, By: by, Reason: shown(effect, 2000)})
 }

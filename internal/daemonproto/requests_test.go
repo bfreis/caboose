@@ -342,9 +342,9 @@ func FuzzBrokerParams(f *testing.F) {
 	})
 }
 
-// A request's offers are checked as the command line relies on: known
-// scopes once each, an effect, hours bounds only for hours, and a diff
-// with its hash only for always, bounded and printable.
+// A request's offers are checked as the page and the command line rely
+// on: known scopes once each, an effect, hours bounds only for hours, and
+// a diff with its hash only for always, bounded and printable.
 func TestRequestResultOffersRefusals(t *testing.T) {
 	view := RequestView{ID: 1, Kind: "egress", State: "pending", Created: time.Now()}
 	hash := strings.Repeat("ab", 32)
@@ -389,7 +389,7 @@ func TestRequestResultOffersRefusals(t *testing.T) {
 }
 
 // Whatever bytes arrive as a permissions report, what validates is within
-// the bounds the command line relies on.
+// the bounds the page and the command line rely on.
 func FuzzPermissionsResult(f *testing.F) {
 	for _, s := range []string{`{}`, `{"env":"e","trust":"fallible","isolation":"vm","drift":["the VM mounts /a at /work/a"]}`,
 		`{"env":"e","drift":["",""]}`, `{"env":"e","roots":[{"name":"r","host":"/h","container":"/work/r","read_only":true}],"drift":null}`} {
@@ -412,7 +412,7 @@ func FuzzPermissionsResult(f *testing.F) {
 }
 
 // Whatever bytes arrive as a request's result, what validates is within
-// the bounds the command line relies on.
+// the bounds the page and the command line rely on.
 func FuzzRequestResult(f *testing.F) {
 	h := strings.Repeat("ab", 32)
 	for _, s := range []string{`{}`, `{"request":{"id":1,"kind":"egress","state":"pending","created":"2026-01-01T00:00:00Z"},"offers":[{"scope":"once","effect":"e"},{"scope":"hours","effect":"e {hours}","hours_min":1,"hours_max":168},{"scope":"always","effect":"e","diff":["-a","+b"],"hash":"` + h + `"}],"withheld":[]}`,

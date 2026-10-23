@@ -12,6 +12,9 @@
 //	              commands racing to start it end with one daemon
 //	daemon.json   what the running daemon says of itself (State)
 //	daemon.log    its log, capped
+//	web.token     the web page's token (0600), when the daemon serves the
+//	              page: only the daemon reads it, and hands it out only on
+//	              the socket
 //
 // The directory is CABOOSE_HOME/daemon for a release, and
 // CABOOSE_HOME/daemon-dev for a build from a checkout, which runs a daemon
@@ -35,6 +38,7 @@ const (
 	StartLockFile = "start.lock"
 	StateFile     = "daemon.json"
 	LogFile       = "daemon.log"
+	TokenFile     = "web.token"
 )
 
 // Dir is the daemon directory under cabooseHome: dev for a build from a

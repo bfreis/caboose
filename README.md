@@ -105,6 +105,7 @@ caboose help               # every command
 | [Checkpoints](docs/checkpoints.md) | copies of what the sandbox works on, kept on the host every 10 minutes, and restoring one |
 | [The host link](docs/host-link.md) | ports forwarded to your localhost, URLs and notifications from the sandbox, the VM's outbound connections, and commands run on the host where you allow it |
 | [SSH agent and commit signing](docs/ssh.md) | agent forwarding on macOS and Linux, `ssh_agent`, 1Password, signing |
+| [The web page](docs/web-ui.md) | `caboose ui`: requests and proposals in a browser, its address and token, and what stays in the terminal |
 | [Caveats](docs/caveats.md) | what to know before you rely on it, including the docker socket |
 | [Contributing](CONTRIBUTING.md) | building, testing and releasing caboose |
 

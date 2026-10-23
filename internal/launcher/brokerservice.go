@@ -58,12 +58,15 @@ func (l *DaemonLinks) brokerOf(env string) (*brokerHandle, error) {
 }
 
 // byOf is who answered, as the broker records it, for the kind of client
-// the daemon says the call came from (never anything the call says): any
-// kind that is not a person's is refused.
+// the daemon says the call came from (never anything the call says). The
+// daemon's method table decides which kinds may answer; this refuses any
+// kind that is not a person's.
 func byOf(who string) (string, error) {
 	switch who {
 	case daemonproto.ClientCLI:
 		return broker.ByCLI, nil
+	case daemonproto.ClientWeb:
+		return broker.ByWeb, nil
 	}
 	return "", daemonproto.NewError(daemonproto.KindNotAllowed, "a %s client may not answer", daemonproto.Text(who, 16))
 }
@@ -128,6 +131,16 @@ func (l *DaemonLinks) Call(_ context.Context, who, method, env string, params js
 		}
 	case daemonproto.MethodPermissions:
 		res, err = l.permissions(env, h)
+	case daemonproto.MethodEditEgress:
+		var p daemonproto.EditEgressParams
+		if e := daemonproto.DecodeParams(frame, &p); e != nil {
+			return nil, e
+		}
+		by, berr := byOf(who)
+		if berr != nil {
+			return nil, berr
+		}
+		res, err = brokerEditEgress(h.b, p, by)
 	default:
 		return nil, daemonproto.NewError(daemonproto.KindUnknownMethod, "this daemon does not serve %q", method)
 	}
@@ -203,8 +216,24 @@ func brokerAnswer(b *broker.Broker, p daemonproto.AnswerParams, by string) (*dae
 	return out, nil
 }
 
+// brokerEditEgress is an egress edit, its diff as the protocol carries
+// it; the hash is of the diff as it is written. As for an "always" offer
+// (requestResult), an edit whose diff the protocol would show otherwise
+// than it is written is not made: the broker refuses it, shown or
+// confirmed, under the same lock as the write.
+func brokerEditEgress(b *broker.Broker, p daemonproto.EditEgressParams, by string) (*daemonproto.EditEgressResult, error) {
+	res, err := b.EditEgress(broker.EgressEdit{AddAllow: p.AddAllow, RemoveAllow: p.RemoveAllow, AddDeny: p.AddDeny, RemoveDeny: p.RemoveDeny,
+		By: by, Confirm: p.ConfirmDiff, Shown: func(diff string) bool { return shownAsWritten(diff, daemonproto.DiffLines(diff)) }})
+	if err != nil {
+		return nil, err
+	}
+	return &daemonproto.EditEgressResult{Diff: daemonproto.DiffLines(res.Diff), Hash: res.DiffHash,
+		Effect: daemonproto.Text(res.Effect, 4096), Written: res.Written}, nil
+}
+
 // requestResult is q with its offers, as the protocol has them. The
-// diff's lines are config.toml's, made printable for the terminal; the hash is of the diff as it would be written.
+// diff's lines are config.toml's, made printable for the page and the
+// terminal; the hash is of the diff as it would be written.
 func requestResult(q broker.RequestInfo, offers []broker.Offer, withheld []broker.Withheld) *daemonproto.RequestResult {
 	r := &daemonproto.RequestResult{Request: requestView(q)}
 	for _, o := range offers {
@@ -316,7 +345,8 @@ func (l *DaemonLinks) permissions(env string, h *brokerHandle) (*daemonproto.Per
 // made printable and bounded as the protocol carries it.
 //
 // The checks each ask the sandbox for its labels and mounts; they are
-// read once here, for every check (onceBox).
+// read once here, for every check (onceBox), since the page asks every
+// few seconds.
 func (a *App) restartDrift() []string {
 	prev := a.Backend
 	a.Backend = &onceBox{Backend: a.box()}

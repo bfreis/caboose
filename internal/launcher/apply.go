@@ -17,7 +17,7 @@ import (
 
 // `caboose apply` is the host's half of a proposal (internal/proposal): a
 // session in the sandbox writes what it would change -- packages of an
-// apko image, a Dockerfile section, a root, an alias -- and apply shows each one and makes
+// apko image, a Dockerfile section, a root, an alias, a writable part of a root -- and apply shows each one and makes
 // the change when the user says so. The sandbox never writes config.toml
 // or a dockerfile profile's dir itself: both decide what it is, and what of the host it
 // reaches, so a person at the host says yes to every change, having seen
@@ -33,7 +33,8 @@ import (
 // change later does not decide what is mounted; and it is confirmed by
 // typing its name, which no habit of pressing Enter gets past. An alias,
 // a command run on this machine, has its own refusal list
-// (apply_alias.go), and is confirmed the same way.
+// (apply_alias.go), and is confirmed the same way; so has a part of a
+// root made writable (apply_writable.go), confirmed by the root's name.
 
 // ApplyCommand is the apply command for env, as SetupCommand is setup's.
 func ApplyCommand(env string) string { return envCommand(env, "apply") }
@@ -117,6 +118,7 @@ type plan struct {
 	// it was made.
 	dockerfile, oldDockerfile []byte
 	source                    string
+	section                   *proposal.Section
 	// packages are an apko profile's packages, as they would be.
 	packages *packagesPlan
 	// root is the root to add, at host, its physical path.
@@ -124,10 +126,12 @@ type plan struct {
 	host string
 	// alias is the alias to write.
 	alias *aliasPlan
+	// writable is the writable part to add.
+	writable *writablePlan
 }
 
 func (pl plan) empty() bool {
-	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil
+	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil && pl.writable == nil
 }
 
 // applyOne shows one proposal and does what the user says with it.
@@ -162,8 +166,8 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 	}
 	p.blank()
 	def := 0
-	if pl.root != nil || pl.alias != nil {
-		def = 1 // a root or an alias is not added on Enter alone
+	if pl.root != nil || pl.alias != nil || pl.writable != nil {
+		def = 1 // a root, an alias or a writable part is not added on Enter alone
 	}
 	i, err := p.choose("Apply this proposal?", []string{"Apply it", "Leave it pending", "Delete it"}, def)
 	if err != nil {
@@ -183,6 +187,20 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 			return err
 		}
 		done.alias = true
+		if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
+			p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
+			return nil
+		}
+		p.ok("Applied %s", name)
+		return nil
+	}
+
+	if pl.writable != nil {
+		ok, err := a.applyWritable(p, pl.writable)
+		if err != nil || !ok {
+			return err
+		}
+		done.config = true
 		if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
 			p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
 			return nil
@@ -269,7 +287,7 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 				refusals = append(refusals, fmt.Sprintf("Its section cannot go into the Dockerfile: %v", err))
 				break
 			}
-			pl.dockerfile, pl.oldDockerfile, pl.source = next, old, source
+			pl.dockerfile, pl.oldDockerfile, pl.source, pl.section = next, old, source, s
 			if source == proposal.SourceSeed {
 				warnings = append(warnings, fmt.Sprintf("%s has no Dockerfile yet: applying this writes caboose's Dockerfile, with this section, as %s, "+
 					"which is yours from then on.", a.short(c.ImageProfile.Dir), a.short(filepath.Join(c.ImageProfile.Dir, "Dockerfile"))))
@@ -301,6 +319,13 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		warnings = append(warnings, warn...)
 		pl.alias = ap
 	}
+
+	if w := pr.Writable; w != nil {
+		wp, why, warn := a.checkProposedWritable(*w)
+		refusals = append(refusals, why...)
+		warnings = append(warnings, warn...)
+		pl.writable = wp
+	}
 	return pl, refusals, warnings
 }
 
@@ -322,6 +347,9 @@ func (a *App) showPlan(p *prompter, pl plan) {
 	if pl.alias != nil {
 		a.showAlias(p, pl.alias)
 	}
+	if pl.writable != nil {
+		a.showWritable(p, pl.writable)
+	}
 	if pl.root != nil {
 		p.say("Mount a host directory into the sandbox ([roots]):")
 		p.table([][2]string{{config.WorkDir + "/" + pl.root.Name, "← " + pl.host}})
@@ -339,19 +367,16 @@ func (a *App) showPlan(p *prompter, pl plan) {
 // own /work/NAME, since /work is for a sole root. It fills edit's
 // roots when the user goes ahead; ok is false when not.
 func (a *App) confirmRoot(p *prompter, pl plan, edit *config.Edit) (ok bool, err error) {
-	cur := a.fileRoots()
-	roots := append([]setupRoot(nil), cur...)
-	if len(roots) == 1 && roots[0].Container == config.WorkDir {
+	rc := a.planRootChange(pl)
+	if rc.sole != nil {
 		p.note("The root there is now, %s, is mounted at %s itself. With two, each is mounted at %s/NAME, so it moves to %s/%s.",
-			roots[0].Path, config.WorkDir, config.WorkDir, config.WorkDir, roots[0].Name)
-		roots[0].Container = ""
+			rc.sole.Path, config.WorkDir, config.WorkDir, config.WorkDir, rc.sole.Name)
 	}
-	roots = append(roots, setupRoot{Name: pl.root.Name, Path: a.rootSpelling(pl.host)})
-	if _, err := config.FileRoots(rootsEdit(roots).Roots, a.Cfg.Home); err != nil {
-		p.fail("The roots cannot take it: %v; nothing was applied, and the proposal is left pending", err)
+	if rc.err != nil {
+		p.fail("The roots cannot take it: %v; nothing was applied, and the proposal is left pending", rc.err)
 		return false, nil
 	}
-	if moves := a.rootMoves(cur, roots); len(moves) > 0 {
+	if moves := rc.moves; len(moves) > 0 {
 		for _, m := range moves {
 			p.warn("%s", capFirst(m))
 		}
@@ -372,7 +397,7 @@ func (a *App) confirmRoot(p *prompter, pl plan, edit *config.Edit) (ok bool, err
 		p.fail("That is not %s: nothing was applied, and the proposal is left pending", pl.root.Name)
 		return false, nil
 	}
-	re := rootsEdit(roots)
+	re := rootsEdit(rc.roots)
 	edit.SetRoots, edit.Roots = re.SetRoots, re.Roots
 	return true, nil
 }

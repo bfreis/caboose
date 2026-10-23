@@ -68,6 +68,17 @@ restart`. With
 `CABOOSE_DATA_DIR` set the daemon does not serve the command's
 environment, so these commands find nothing to answer for.
 
+A packages proposal applied from the web page (see
+[proposals](proposals.md)) runs in the daemon as a job of the
+environment's, one at a time (a second is refused while one runs), and is
+answered at once: its image is built first, for minutes. The job asks
+nothing; a question fails it, with the command to run on a terminal
+instead. What it prints goes to `jobs.log` in the environment's directory
+(`~/.caboose/envs/ENV/jobs.log`, capped, in no mount), `caboose daemon
+status` sees the job for ten minutes after it ends, and its end is a
+notification. An update replacing the daemon waits for a running job as
+it waits for host commands, and starts no new one meanwhile.
+
 Its files are in `CABOOSE_HOME/daemon/` (`~/.caboose/daemon/`), a directory
 only you can enter, and in no mount of any sandbox: `daemon.sock` (the
 socket, which takes connections from your user only), `daemon.lock`,
@@ -128,8 +139,14 @@ Under gVisor the sandbox picks such ports from 16000-65535 instead, so a
 callback below 32768 or above 60999 is not forwarded unless you add those
 ports; under docker and vm it is Linux's range.
 
+Ports 7171 and 7172 are never forwarded, whatever `forward_ports` says
+(`config.toml` refuses a set that holds them): they are caboose's web UI
+on this machine, 7171 a release's and 7172 a checkout's build's, which
+approves what a sandbox asks for.
+
 `caboose-agent ports`, in the sandbox, lists what listens and what came of
-each: forwarded, not in `forward_ports`, or in use on the host.
+each: forwarded, not in `forward_ports`, the web UI's port, or in use on
+the host.
 
 ## URLs and notifications
 
@@ -151,7 +168,9 @@ without asking, and so does an origin in `open_urls_allow`; `"off"`
 refuses every URL. Under `trust = "hostile"` every URL asks, whatever
 `open_urls` and `open_urls_allow` say (`"off"` still refuses). Any other
 scheme, a URL with a user or password in it, or one holding unprintable
-characters is refused whatever the setting.
+characters is refused whatever the setting, and so is any URL to port 7171
+or 7172, whatever host it names: those are the host's caboose web UI, which
+a sandbox never opens (a request to open one is refused, never filed).
 
 Programs open a browser the usual way, and it ends there. The layer puts
 an `xdg-open` in `/usr/local/bin` and sets `BROWSER` to it, so `gh`, Go's
@@ -247,8 +266,10 @@ address, or one of your Mac's own, is refused even for a name it allows,
 since a pattern such as `*.nip.io` would otherwise reach your Mac's
 loopback (`127.0.0.1.nip.io`). Only an address or CIDR within that range
 lets one through (`127.0.0.1`, `169.254.169.254`), and only that very
-address for one of your Mac's own. Only the addresses checked are
-dialled; the name is never looked up again.
+address for one of your Mac's own. Ports 7171 and 7172 on any of those
+addresses are refused even then, whatever `egress_allow`, `egress_ports`,
+an answer or the trust level say: they are caboose's web UI. Only the
+addresses checked are dialled; the name is never looked up again.
 
 A name that resolves to a private address `egress_allow` does not name
 is a request a person answers on the host, as is, under
@@ -473,6 +494,8 @@ sandbox is:
 - which ports forward is `forward_ports`, in the host's `config.toml`,
   which the sandbox cannot write; forwards listen on `127.0.0.1` only, so
   nothing else on your network reaches them; at most 64 ports at once;
+  the web UI's ports, 7171 and 7172, never forward, a URL to either never
+  opens, and the outbound proxy never reaches either on this machine;
 - a forwarded port can squat one of your own services' ports while that
   service is down: a program here connecting to it would talk to the
   sandbox. Keep `forward_ports` to the ranges you use for development,

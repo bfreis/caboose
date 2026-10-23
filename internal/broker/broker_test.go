@@ -713,8 +713,8 @@ func TestAlwaysAllowsNextRequest(t *testing.T) {
 	if !strings.Contains(o.Diff, "someone else's edit") {
 		t.Fatalf("the offer did not follow the file: %q", o.Diff)
 	}
-	res := f.answer(id, Reply{Verdict: ReplyAllow, Scope: ScopeAlways, Confirm: o.DiffHash, By: ByCLI})
-	if !res.Recorded || res.Request.State != StateAllowed || res.Request.DecidedBy != ByCLI || res.Diff != o.Diff || res.DiffHash != o.DiffHash || !strings.Contains(res.Effect, `policy = "allow"`) {
+	res := f.answer(id, Reply{Verdict: ReplyAllow, Scope: ScopeAlways, Confirm: o.DiffHash, By: ByWeb})
+	if !res.Recorded || res.Request.State != StateAllowed || res.Request.DecidedBy != ByWeb || res.Diff != o.Diff || res.DiffHash != o.DiffHash || !strings.Contains(res.Effect, `policy = "allow"`) {
 		t.Fatalf("confirmed: %+v", res)
 	}
 	if _, writes := f.w.calls(); writes != 1 {
@@ -790,9 +790,9 @@ func TestOffers(t *testing.T) {
 	if _, writes := f.w.calls(); writes != 0 {
 		t.Fatal("offering wrote")
 	}
-	f.answer(id, Reply{Verdict: ReplyDeny, By: ByCLI})
+	f.answer(id, Reply{Verdict: ReplyDeny, By: ByWeb})
 	ri, offers, withheld, err = f.b.RequestOffers(id)
-	if err != nil || ri.DecidedBy != ByCLI || offers != nil || withheld != nil {
+	if err != nil || ri.DecidedBy != ByWeb || offers != nil || withheld != nil {
 		t.Fatalf("answered: %+v %+v %+v %v", ri, offers, withheld, err)
 	}
 	if _, _, _, err := f.b.RequestOffers(9999); !errors.Is(err, ErrNotFound) {
@@ -824,7 +824,7 @@ func TestAlwaysTooLongIsNotOffered(t *testing.T) {
 // daemon client may be; any other is refused.
 func TestAnswerBy(t *testing.T) {
 	f := newFixture(t)
-	for _, by := range []string{ByCLI, ByDialog} {
+	for _, by := range []string{ByCLI, ByWeb, ByDialog} {
 		id := mustPending(t, f.decide(aliasReq("build")))
 		if res := f.answer(id, Reply{Verdict: ReplyDeny, By: by}); res.Request.DecidedBy != by {
 			t.Fatalf("%s: %+v", by, res.Request)

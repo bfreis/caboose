@@ -39,6 +39,9 @@ type fakeDaemon struct {
 	// for every call after; Stat answers the dial.
 	Stats       []*daemonproto.StatusResult
 	statusCalls int
+	// WebRes is the answer to web; nil is a listening page.
+	WebRes   *daemonproto.WebResult
+	webCalls []daemonproto.WebParams
 	// OnEnsure runs at each ensure_link.
 	OnEnsure func()
 	// br is the request broker's side (requests_test.go).
@@ -104,6 +107,28 @@ func (f *fakeDaemon) Status(context.Context) (*daemonproto.StatusResult, error) 
 		return nil, errors.New("no status")
 	}
 	return f.Stat, nil
+}
+
+// fakeCode is the one-time code the fake daemon hands out.
+var fakeCode = strings.Repeat("c", daemonproto.CodeLen)
+
+// Web answers web: WebRes, or a listening page at 127.0.0.1:7171, with a
+// code when one is asked for.
+func (f *fakeDaemon) Web(_ context.Context, p daemonproto.WebParams) (*daemonproto.WebResult, error) {
+	f.mu.Lock()
+	f.webCalls = append(f.webCalls, p)
+	f.mu.Unlock()
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	if f.WebRes != nil {
+		return f.WebRes, nil
+	}
+	r := &daemonproto.WebResult{WebState: daemonproto.WebState{Listening: true, Addr: "127.0.0.1:7171"}, URL: "http://127.0.0.1:7171/"}
+	if p.Code {
+		r.CodeURL = r.URL + "#code=" + fakeCode
+	}
+	return r, nil
 }
 
 func (f *fakeDaemon) Close() error { return nil }

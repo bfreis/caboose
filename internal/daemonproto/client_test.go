@@ -505,11 +505,11 @@ func TestStatusStringsChecked(t *testing.T) {
 	}
 }
 
-// No socket client is the daemon: a hello naming daemon gets a
-// bad_request and no daemon hello, and the server errors before any
-// request.
-func TestServerHandshakeRefusesDaemon(t *testing.T) {
-	for _, kind := range []string{ClientDaemon} {
+// No socket client is the daemon's own page or the daemon: a hello naming
+// web or daemon gets a bad_request and no daemon hello, and the server
+// errors before any request.
+func TestServerHandshakeRefusesWebAndDaemon(t *testing.T) {
+	for _, kind := range []string{ClientWeb, ClientDaemon} {
 		_, got, err := rawHandshakeAs(t, kind, 1, 1)
 		if err == nil || len(got) != 1 || got[0].Type != TypeResponse || got[0].Error == nil || got[0].Error.Kind != KindBadRequest {
 			t.Errorf("%s: err %v, frames %+v", kind, err, got)

@@ -1,7 +1,8 @@
 // Package proposal is how a session in the sandbox asks for a change only
 // the host can make: packages added to or removed from an apko image, a
-// section in a dockerfile image's Dockerfile, another root, or an alias
-// (a host command a session may then run).
+// section in a dockerfile image's Dockerfile, another root, an alias
+// (a host command a session may then run), or a part of a root made
+// writable.
 // (What the sandbox keeps of its home is its own to change, in the sandbox
 // config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
@@ -13,8 +14,9 @@
 // an unknown key, a control character or a bidi override that could make
 // the terminal show other than what is there, a section that starts a
 // stage -- and what it may ask for is an allowlist: package names or a
-// Dockerfile section, and one root; or one alias, alone. Nothing else in
-// config.toml can be proposed at all.
+// Dockerfile section, and one root; or one alias, alone; or one path of a
+// root made writable, alone. Nothing else in config.toml can be proposed
+// at all.
 //
 // The host also writes what a proposal is made against into proposals/
 // current/ (WriteCurrent): the Dockerfile the next build uses, and the
@@ -32,6 +34,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -62,6 +65,9 @@ const (
 	// MaxPackages is the most package names one proposal adds and removes
 	// in all.
 	MaxPackages = 64
+	// MaxWritablePath is the longest container path a [writable] proposal
+	// names, in bytes.
+	MaxWritablePath = 1024
 )
 
 // sandboxHint is where what the sandbox keeps is changed instead.
@@ -85,6 +91,13 @@ type Packages struct {
 // its host path as proposed.
 type Root struct{ Name, Path string }
 
+// Writable is a part of a root to make writable: Path, a container path
+// under config.WorkDir, absolute and clean, as the session sees it. What
+// it is on the host is the host's to find out, in caboose apply.
+type Writable struct {
+	Path string `toml:"path"`
+}
+
 // Proposal is one proposal, checked.
 type Proposal struct {
 	// Name is the file's name without Ext.
@@ -103,6 +116,9 @@ type Proposal struct {
 	// Alias is the alias to add, or to replace one of its name with, or
 	// nil; always alone.
 	Alias *Alias
+	// Writable is the part of a root to make writable, or nil; always
+	// alone.
+	Writable *Writable
 }
 
 // file is a proposal as written.
@@ -114,6 +130,7 @@ type file struct {
 	Packages         *Packages            `toml:"packages"`
 	Roots            map[string]string    `toml:"roots"`
 	Alias            map[string]aliasFile `toml:"alias"`
+	Writable         *Writable            `toml:"writable"`
 }
 
 // Parse reads and checks the proposal in file name (with Ext).
@@ -138,7 +155,7 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots] and [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params]; what the sandbox keeps is changed in %s, with no proposal)",
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], and [writable], with path; what the sandbox keeps is changed in %s, with no proposal)",
 			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
@@ -218,10 +235,47 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		p.Alias = a
 	}
 
-	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil {
-		return nil, errors.New("it proposes nothing: no [section], [packages], [roots] or [alias]")
+	if f.Writable != nil {
+		if p.Section != nil || p.Packages != nil || p.Root != nil || p.Alias != nil {
+			return nil, errors.New("[writable] with another change: what the sandbox may write is proposed alone, so that it is confirmed on its own")
+		}
+		w, err := checkWritable(*f.Writable)
+		if err != nil {
+			return nil, err
+		}
+		p.Writable = w
+	}
+
+	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil && p.Writable == nil {
+		return nil, errors.New("it proposes nothing: no [section], [packages], [roots], [alias] or [writable]")
 	}
 	return p, nil
+}
+
+// checkWritable checks a [writable] table: a path in the sandbox, at or
+// under config.WorkDir, absolute, clean and printable. Which root
+// holds it, and what it is on the host, is the host's to judge.
+func checkWritable(w Writable) (*Writable, error) {
+	p := w.Path
+	if p == "" {
+		return nil, errors.New("[writable] needs path: the directory in the sandbox to make writable, under " + config.WorkDir)
+	}
+	if len(p) > MaxWritablePath {
+		return nil, fmt.Errorf("writable.path is over %d bytes", MaxWritablePath)
+	}
+	if err := checkText("writable.path", p, false, MaxWritablePath); err != nil {
+		return nil, err
+	}
+	if strings.ContainsAny(p, ":,\\") {
+		return nil, fmt.Errorf(`writable.path, %q, has a ":", "," or "\", which a mount cannot carry`, Printable(clip(p, 200)))
+	}
+	if !path.IsAbs(p) || path.Clean(p) != p || slices.Contains(strings.Split(p, "/"), "..") {
+		return nil, fmt.Errorf("writable.path, %q, must be an absolute, clean path in the sandbox", Printable(clip(p, 200)))
+	}
+	if !config.Within(p, config.WorkDir) {
+		return nil, fmt.Errorf("writable.path, %q, is not under %s, where the roots are", Printable(clip(p, 200)), config.WorkDir)
+	}
+	return &Writable{Path: p}, nil
 }
 
 // checkPackages checks a [packages] table: package names, each once in

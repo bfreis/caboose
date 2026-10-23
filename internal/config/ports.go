@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // PortSet is a set of ports: which of the sandbox's may be forwarded
@@ -21,6 +23,28 @@ func (s PortSet) Has(p int) bool {
 		}
 	}
 	return false
+}
+
+// UIPort is the first of the web UI's ports (uiport) the set holds, and
+// whether it holds one.
+func (s PortSet) UIPort() (int, bool) {
+	for _, r := range s {
+		if p, ok := uiport.Covering(r.lo, r.hi); ok {
+			return p, true
+		}
+	}
+	return 0, false
+}
+
+// CheckForwardPorts refuses a forward_ports set that holds one of the web
+// UI's ports: the page approves what a sandbox asks for, so a sandbox may
+// never listen on its port on this machine's localhost. key names the
+// setting in the error.
+func CheckForwardPorts(key string, s PortSet) error {
+	if p, ok := s.UIPort(); ok {
+		return fmt.Errorf("%s includes port %d, which is never forwarded: it is %s; leave it out", key, p, uiport.What)
+	}
+	return nil
 }
 
 // ParsePorts reads forward_ports: ports and ranges (3000, 8000-8999)

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -55,7 +56,9 @@ type Links interface {
 	// Busy reports whether something keeps the daemon from exiting idle,
 	// such as a running sandbox it serves.
 	Busy() bool
-	// HostExecs is how many host-exec commands run.
+	// HostExecs is how many host-exec commands run, plus any jobs.
+	// Links that can tell the two apart also have
+	// ExecCounts() (commands, jobs int), which the daemon prefers.
 	HostExecs() int
 	// Recovering reports whether the links the daemon ran before it
 	// started are still being brought back.
@@ -76,7 +79,7 @@ type Links interface {
 // given none answers them with daemonproto.KindUnknownMethod.
 type Brokers interface {
 	// Call handles one such request for env. who is the kind of client
-	// the connection's hello named (daemonproto.ClientCLI), which the
+	// the connection's hello named (daemonproto.ClientCLI, ...), which the
 	// implementation takes who answered from, never anything in params;
 	// params are the request's, already checked to be an object and to
 	// name a valid env. The result is encoded as the response's; an error
@@ -103,6 +106,40 @@ type Writable interface {
 	// write and the roots each mounts read-only. An error is an answer it
 	// could not make; the client then works it out itself.
 	Writable(ctx context.Context) (*daemonproto.WritableResult, error)
+}
+
+// Details is what the daemon serves link_log, env_details and doctor
+// with: read-only facts about an environment, each fitted to its bounds.
+// A daemon given none answers them with daemonproto.KindUnknownMethod.
+// Each takes an env already checked to be a valid name; an error that is a
+// *daemonproto.Error goes to the client as it is, any other as
+// KindInternal.
+type Details interface {
+	// LinkLog is the last lines (1 to daemonproto.MaxLinkLogLines) of
+	// env's link log.
+	LinkLog(ctx context.Context, env string, lines int) (*daemonproto.LinkLogResult, error)
+	// EnvDetails is what status shows of env, as data.
+	EnvDetails(ctx context.Context, env string) (*daemonproto.EnvDetailsResult, error)
+	// Doctor runs doctor's checks for env here.
+	Doctor(ctx context.Context, env string) (*daemonproto.DoctorResult, error)
+}
+
+// Proposals is what the daemon serves proposals, proposal_delete,
+// proposal_apply and proposal_build with: the proposals sessions wrote for an environment, as
+// its config.toml and image would take them. A daemon given none answers
+// them with daemonproto.KindUnknownMethod. Each takes params already
+// checked; errors go to the client as Details' do.
+type Proposals interface {
+	// Proposals lists env's pending proposals.
+	Proposals(ctx context.Context, env string) (*daemonproto.ProposalsResult, error)
+	// ProposalDelete deletes one.
+	ProposalDelete(ctx context.Context, env, file, hash string) error
+	// ProposalApply applies one as it was shown.
+	ProposalApply(ctx context.Context, p daemonproto.ProposalApplyParams) (*daemonproto.ProposalApplyResult, error)
+	// ProposalBuild applies one whose image is built first, as it was
+	// shown, in a job of the environment's (daemonproto.JobApply), and
+	// returns it, running; KindBusy while a job runs for the environment.
+	ProposalBuild(ctx context.Context, p daemonproto.ProposalApplyParams) (*daemonproto.JobInfo, error)
 }
 
 type noLinks struct{}
@@ -134,6 +171,14 @@ type Options struct {
 	Checkpoints Checkpoints
 	// Writable serves the writable method; nil serves none.
 	Writable Writable
+	// Details serves link_log, env_details and doctor; nil serves none.
+	Details Details
+	// Proposals serves the proposal methods; nil serves none.
+	Proposals Proposals
+	// Web turns on the web page's state: its token, made or read at
+	// start, and the web method's answers. nil serves no page and makes
+	// no token: only the production daemon sets it.
+	Web *WebOptions
 	// Ready, when set, runs once, in a goroutine of its own, as soon as
 	// the daemon holds its lock and serves its socket, with its log: what
 	// only the one daemon of the directory may do (start the links it ran
@@ -153,6 +198,12 @@ type Options struct {
 
 	// peerUID reads a connection's peer's user; nil is the system's.
 	peerUID func(net.Conn) (uint32, error)
+	// webRetry is how often the page's listener is tried again when it
+	// could not be had; 0 is defaultWebRetry. For the tests.
+	webRetry time.Duration
+	// onServer, when set, is handed the server once it is made: for the
+	// tests, which call it as the web page would.
+	onServer func(*server)
 	// Protocol is the protocol its hello claims; 0 is
 	// daemonproto.ProtocolVersion. Only tests set it, to play a daemon of
 	// another protocol.
@@ -237,6 +288,17 @@ type server struct {
 	tableOnce sync.Once
 	table     map[string]*method // the method table, by name (lookup)
 
+	web *webState // nil when Options.Web is
+
+	// The page's server, under mu while it serves; webDone, set under
+	// mu, closes once serveWeb returns (nil when it never ran); webActive
+	// is when the page last made an authenticated request, under mu.
+	webSrv    *http.Server
+	webDone   chan struct{}
+	webActive time.Time
+	// webListens counts serveWeb's attempts to listen, under mu: for the
+	// tests, which hold that a daemon with no page never listens.
+	webListens int
 }
 
 // Run is the daemon: it takes the directory's lock (ErrRunning when another
@@ -315,6 +377,14 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	if s.opts.Idle <= 0 {
 		s.opts.Idle = DefaultIdle
 	}
+	if opts.Web != nil {
+		// Holding the lock: only the directory's one daemon writes the
+		// token.
+		s.web = newWebState(dir, *opts.Web, s.log)
+	}
+	if opts.onServer != nil {
+		opts.onServer(s)
+	}
 
 	// Holding the lock, any socket left is a dead daemon's.
 	lg = s.log
@@ -339,6 +409,7 @@ func run(ctx context.Context, opts Options) (st Stopped, lg *log.Logger, closeLo
 	}
 	s.log.Printf("caboose daemon %s started (pid %d, protocol %d, idle exit after %v)", opts.Version, os.Getpid(), daemonproto.ProtocolVersion, s.opts.Idle)
 
+	s.startWeb()
 	go s.accept()
 	go s.idle()
 	if opts.Ready != nil {
@@ -441,6 +512,7 @@ func (s *server) cleanup() {
 	}
 	s.mu.Unlock()
 	s.cancel()
+	s.stopWeb()
 	busy := s.links.Busy()
 	s.mu.Lock()
 	s.result.Busy = busy
@@ -486,11 +558,11 @@ func (s *server) accept() {
 	}
 }
 
-// idle stops the daemon once no client has been connected, and the links
-// not been busy, for Options.Idle. A connection still in its hello
-// counts: the decision and the stopping flag are taken under s.mu, which
-// accept holds to take a connection, so no client is let in to find the
-// daemon gone.
+// idle stops the daemon once no client has been connected, no page has
+// made an authenticated request, and the links not been busy, for
+// Options.Idle. A connection still in its hello counts: the
+// decision and the stopping flag are taken under s.mu, which accept holds
+// to take a connection, so no client is let in to find the daemon gone.
 func (s *server) idle() {
 	every := min(max(s.opts.Idle/10, 10*time.Millisecond), time.Second)
 	t := time.NewTicker(every)
@@ -503,6 +575,10 @@ func (s *server) idle() {
 		case now := <-t.C:
 			busy := s.links.Busy()
 			s.mu.Lock()
+			// A page that polls is a client too.
+			if s.webActive.After(last) {
+				last = s.webActive
+			}
 			switch {
 			case busy || len(s.conns) > 0:
 				last = now
@@ -542,7 +618,15 @@ func (s *server) serve(c *net.UnixConn) {
 		s.log.Printf("a client's hello: %v", err)
 		return
 	}
-	c0 := caller{Kind: hello.Client, hello: hello, cmp: cmp}
+	c0, ok := socketCaller(hello, cmp)
+	if !ok {
+		// The web kind is the daemon's own page's, set by its HTTP
+		// handler; the daemon kind is the daemon's own hello's. Neither
+		// is a socket client's to claim.
+		s.log.Printf("refused a connection whose hello names the kind %q", daemonproto.Text(hello.Client, 16))
+		_ = conn.Write(daemonproto.Failure(0, daemonproto.NewError(daemonproto.KindBadRequest, "the %s kind is not a socket client's: the web kind is only the daemon's own HTTP page", daemonproto.Text(hello.Client, 16))), writeTimeout)
+		return
+	}
 	s.mu.Lock()
 	stopping := s.stopping
 	s.conns[c] = true
@@ -585,12 +669,13 @@ func (s *server) replace(p daemonproto.ReplaceParams, hello *daemonproto.Frame, 
 			s.log.Printf("replace: refused a forced replace from %s, which speaks this daemon's protocol", who)
 			return nil, daemonproto.NewError(daemonproto.KindBadRequest, "force is only for a caboose of a newer protocol; use caboose daemon restart"), nil
 		}
-		n := s.links.HostExecs()
-		s.log.Printf("replace: %s asks to replace this daemon now (as %s), killing %d host command(s)", who, want, n)
+		cmds, jobs := s.execCounts()
+		n := cmds + jobs
+		s.log.Printf("replace: %s asks to replace this daemon now (as %s), killing %d host command(s) and ending %d job(s)", who, want, cmds, jobs)
 		s.mu.Lock()
 		s.result.Forced = true
 		s.mu.Unlock()
-		return &daemonproto.ReplaceResult{Exiting: true, HostExecs: n}, nil, func() {
+		return &daemonproto.ReplaceResult{Exiting: true, HostExecs: n, Jobs: jobs}, nil, func() {
 			s.stop(fmt.Sprintf("replaced by a caboose of protocol %d", hello.Protocol))
 		}
 	}
@@ -606,12 +691,23 @@ func (s *server) replace(p daemonproto.ReplaceParams, hello *daemonproto.Frame, 
 		s.log.Printf("replace: %s asks for %s; no host command runs: exiting", who, want)
 		return &daemonproto.ReplaceResult{Exiting: true}, nil, func() { s.stopReplaced() }
 	}
-	n := s.links.HostExecs()
-	s.log.Printf("replace: %s asks for %s; waiting for the host commands to end (%d running), admitting no new one for %v", who, want, n, replaceHold)
+	cmds, jobs := s.execCounts()
+	n := cmds + jobs
+	s.log.Printf("replace: %s asks for %s; waiting for the host commands (%d running) and jobs (%d running) to end, admitting no new command for %v", who, want, cmds, jobs, replaceHold)
 	if !waiting {
 		go s.awaitDrain(replaceRecheck, time.Now())
 	}
-	return &daemonproto.ReplaceResult{HostExecs: n}, nil, nil
+	return &daemonproto.ReplaceResult{HostExecs: n, Jobs: jobs}, nil, nil
+}
+
+// execCounts is the host commands and the jobs running,
+// read in one call when the links can tell them apart; links that cannot
+// have only commands.
+func (s *server) execCounts() (commands, jobs int) {
+	if c, ok := s.links.(interface{ ExecCounts() (int, int) }); ok {
+		return c.ExecCounts()
+	}
+	return s.links.HostExecs(), 0
 }
 
 // drain closes host exec for good, and reports true, when no host-exec
@@ -644,9 +740,11 @@ func (s *server) awaitDrain(every time.Duration, since time.Time) {
 			}
 			if hold != held {
 				if hold {
-					s.log.Printf("replace: %d host command(s) still run: admitting no new one for %v", s.links.HostExecs(), replaceHold)
+					cmds, jobs := s.execCounts()
+					s.log.Printf("replace: %d host command(s) and %d job(s) still run: admitting no new command for %v", cmds, jobs, replaceHold)
 				} else {
-					s.log.Printf("replace: %d host command(s) still run: admitting new ones again, and waiting", s.links.HostExecs())
+					cmds, jobs := s.execCounts()
+					s.log.Printf("replace: %d host command(s) and %d job(s) still run: admitting new commands again, and waiting", cmds, jobs)
 				}
 				held = hold
 			}
@@ -687,10 +785,15 @@ func (s *server) status() *daemonproto.StatusResult {
 	s.mu.Lock()
 	replacing := s.replacing
 	s.mu.Unlock()
+	cmds, jobs := s.execCounts()
 	info := daemonproto.DaemonInfo{Replacing: replacing,
 		PID: os.Getpid(), Version: s.opts.Version, Protocol: s.protocol(),
-		Started: s.started, Dev: s.opts.Dev, Dir: s.opts.Dir, HostExecs: s.links.HostExecs(),
+		Started: s.started, Dev: s.opts.Dev, Dir: s.opts.Dir, HostExecs: cmds + jobs, Jobs: jobs,
 		Recovering: s.links.Recovering(),
+	}
+	if s.web != nil {
+		w := s.web.state()
+		info.Web = &w
 	}
 	return &daemonproto.StatusResult{Daemon: info, Envs: envs}
 }

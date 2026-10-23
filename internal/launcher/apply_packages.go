@@ -126,20 +126,7 @@ func (a *App) showPackages(p *prompter, pl *packagesPlan) {
 // ok is false when it did not: nothing is written, and the proposal stays.
 func (a *App) applyPackages(p *prompter, pl *packagesPlan, edit *config.Edit) (ok bool) {
 	p.say("Building the image with these packages first: nothing is written unless it builds.")
-	orig := a.Cfg
-	cp := *orig
-	cp.ImageProfile.Packages = slices.Clone(pl.next)
-	a.Cfg = &cp
-	a.deferLock, a.pendingLock = true, nil
-	var err error
-	if a.buildImage != nil {
-		err = a.buildImage()
-	} else {
-		err = a.build(nil, a.Stderr)
-	}
-	a.Cfg = orig
-	writeLock := a.pendingLock
-	a.deferLock, a.pendingLock = false, nil
+	writeLock, err := a.buildPackages(pl)
 	if err != nil {
 		p.fail("The build failed (%v): nothing was applied, and the proposal is left pending. "+
 			"Delete it, or ask the session to propose a list that builds.", err)
@@ -151,12 +138,39 @@ func (a *App) applyPackages(p *prompter, pl *packagesPlan, edit *config.Edit) (o
 		return false
 	}
 	pl.writeLock = writeLock
+	addPackages(pl, edit)
+	return true
+}
+
+// buildPackages builds the image with pl's packages, on a copy of the
+// configuration, writing nothing of its own: writeLock writes the lock it
+// resolved, for once config.toml says what it is of (nil when there is
+// none to write).
+func (a *App) buildPackages(pl *packagesPlan) (writeLock func() error, err error) {
+	orig := a.Cfg
+	cp := *orig
+	cp.ImageProfile.Packages = slices.Clone(pl.next)
+	a.Cfg = &cp
+	a.deferLock, a.pendingLock = true, nil
+	defer func() {
+		a.Cfg = orig
+		a.deferLock, a.pendingLock = false, nil
+	}()
+	if a.buildImage != nil {
+		err = a.buildImage()
+	} else {
+		err = a.build(nil, a.Stderr)
+	}
+	return a.pendingLock, err
+}
+
+// addPackages adds pl's packages to edit.
+func addPackages(pl *packagesPlan, edit *config.Edit) {
 	if edit.Set == nil {
 		edit.Set = map[string]any{}
 	}
 	edit.Set[pl.profile+".packages"] = pl.next
 	edit.Tables = append(edit.Tables, pl.profile)
-	return true
 }
 
 // packagesChanged is why config.toml no longer holds the profile pl was

@@ -173,6 +173,8 @@ type fixture struct {
 	w      *writer
 	open   *opener
 	dialog *dialog
+	// required is Options.RequiredHosts for the next openBroker.
+	required []string
 }
 
 func baseConfig() config.Config {
@@ -202,6 +204,7 @@ func (f *fixture) options() Options {
 		Home: f.home, Env: testEnv, Owner: f.owner, Source: f.src.get,
 		Writable:     func() ([]string, error) { return []string{"/work"}, nil },
 		ConfigWriter: f.w, Opener: f.open, Dialog: f.dialog, Now: f.clock.Now,
+		RequiredHosts: f.required,
 	}
 }
 

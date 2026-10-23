@@ -1,9 +1,11 @@
 package launcher
 
 import (
+	"net/netip"
 	"os"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/nodocker"
 	"github.com/bfreis/caboose/internal/syncagent"
 )
@@ -16,6 +18,11 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// A daemon of the tests never serves its page on the real ports,
+	// where the user's own daemon serves theirs.
+	daemonWeb = func(bool) *daemon.WebOptions {
+		return &daemon.WebOptions{Addr: netip.MustParseAddrPort("127.0.0.1:0")}
+	}
 	// No test runs this machine's ssh or reads its ~/.ssh: one that looks
 	// for an agent sets App.SSH.
 	hostSSH = noSSH

@@ -310,3 +310,68 @@ func TestRespawnAfterReplace(t *testing.T) {
 		})
 	}
 }
+
+// jobLinks are links with some host commands and some jobs running, as
+// the daemon's status counts them together.
+type jobLinks struct {
+	slowLinks
+	execs, jobs int
+}
+
+func (l jobLinks) HostExecs() int         { return l.execs + l.jobs }
+func (l jobLinks) ExecCounts() (int, int) { return l.execs, l.jobs }
+
+// caboose daemon stop says it is ending only the host commands the
+// shutdown ends and waits for, never the jobs counted
+// beside them in the daemon's status.
+func TestDaemonStopSaysOnlyTheCommandsItEnds(t *testing.T) {
+	a := replaceApp(t)
+	var out strings.Builder
+	a.Stdout = &out
+	inProcessDaemon(t, daemon.Options{Dir: a.daemonDir(), Version: "v1.0.0", Idle: time.Minute, Log: io.Discard,
+		Links: jobLinks{execs: 1, jobs: 2}})
+	if err := a.Daemon([]string{"stop"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out.String(), "caboose daemon: stopping, ending 1 host command (waiting up to ") {
+		t.Errorf("output %q, want the line to end 1 host command", out.String())
+	}
+	if !strings.HasSuffix(out.String(), "caboose daemon: stopped\n") {
+		t.Errorf("output %q", out.String())
+	}
+}
+
+// caboose daemon status counts host commands and jobs on
+// lines of their own.
+func TestDaemonStatusSeparatesCommandsFromJobs(t *testing.T) {
+	a := replaceApp(t)
+	var out strings.Builder
+	a.Stdout = &out
+	inProcessDaemon(t, daemon.Options{Dir: a.daemonDir(), Version: "v1.0.0", Idle: time.Minute, Log: io.Discard,
+		Links: jobLinks{execs: 1, jobs: 2}})
+	if err := a.Daemon([]string{"status"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"  host exec : 1 running\n", "  jobs      : 2 running\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status %q lacks %q", out.String(), want)
+		}
+	}
+}
+
+func TestReplaceWaitTexts(t *testing.T) {
+	for _, c := range []struct {
+		total, jobs int
+		text, ends  string
+	}{
+		{2, 0, "waiting for 2 host command(s) to end", "no host command runs (2 do now)"},
+		{3, 2, "waiting for 1 host command(s) and 2 job(s) to end", "no host command or job runs (1 and 2 do now)"},
+	} {
+		if got := replaceWaitText(c.total, c.jobs); got != c.text {
+			t.Errorf("text %q, want %q", got, c.text)
+		}
+		if got := replaceWaitEnds(c.total, c.jobs); got != c.ends {
+			t.Errorf("ends %q, want %q", got, c.ends)
+		}
+	}
+}

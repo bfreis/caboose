@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -47,12 +48,18 @@ func TestCheckpointsMethod(t *testing.T) {
 
 	f := &fakeCheckpoints{result: &daemonproto.CheckpointsResult{Env: "alpha", Paths: []daemonproto.CheckpointListed{{
 		Path: "/work/p", Key: "p-00000000", Checkpoints: []daemonproto.CheckpointView{{ID: "p-00000000@20261018T120000Z", Reason: "interval"}}}}}}
-	dir := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Checkpoints: f})
+	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Checkpoints: f})
 	for _, kind := range []string{daemonproto.ClientCLI} {
 		r, err := dialAs(t, dir, kind, 0).Checkpoints(t.Context(), "alpha")
 		if err != nil || len(r.Paths) != 1 || r.Paths[0].Checkpoints[0].Reason != "interval" {
 			t.Fatalf("%s: %+v, %v", kind, r, err)
 		}
+	}
+	// The web page lists them too.
+	raw, e := s.callWeb(t.Context(), daemonproto.MethodCheckpoints, json.RawMessage(`{"env":"alpha"}`))
+	var r daemonproto.CheckpointsResult
+	if e != nil || json.Unmarshal(raw, &r) != nil || len(r.Paths) != 1 {
+		t.Fatalf("web: %s, %v", raw, e)
 	}
 	c := dialAs(t, dir, daemonproto.ClientCLI, 0)
 	if err := c.Call(t.Context(), daemonproto.MethodCheckpoints, &daemonproto.EnvParams{Env: "../x"}, nil); daemonproto.Kind(err) != daemonproto.KindBadRequest {

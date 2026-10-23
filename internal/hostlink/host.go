@@ -38,6 +38,7 @@ import (
 	"github.com/bfreis/caboose/internal/linkdebug"
 	"github.com/bfreis/caboose/internal/policy"
 	"github.com/bfreis/caboose/internal/proposal"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // The values of open_urls.
@@ -128,6 +129,10 @@ type Config struct {
 	// and of those with caboose's mod (TypeMods), checked, whenever it
 	// changes.
 	Mods func(agentproto.ModsInfo)
+	// Forwarded, when set, is told the sandbox ports now forwarded to the
+	// host (the same on the host), sorted, each time the set may have
+	// changed. It must not block.
+	Forwarded func(ports []int)
 }
 
 // Host serves one session.
@@ -138,6 +143,7 @@ type Host struct {
 	mu       sync.Mutex
 	forwards map[int]*forward
 	refused  map[int]string // port -> why it is not forwarded
+	uiLogged bool           // a web UI port's refusal was logged
 	tokens   float64
 	lastTick time.Time
 	ssh      int // SSH agent connections open
@@ -317,6 +323,16 @@ func (h *Host) reconcile(ports []int) {
 			continue
 		}
 		switch {
+		// The web UI's ports are never forwarded, whatever Ports says:
+		// config.toml refuses them, and this holds for a set read
+		// another way. Logged once a link, as the agent decides how
+		// often it lists them.
+		case uiport.Is(p):
+			h.refused[p] = "the host's caboose web UI port, never forwarded"
+			if !h.uiLogged {
+				h.uiLogged = true
+				h.cfg.Log.Printf("port %d: never forwarded: it is %s", p, uiport.What)
+			}
 		case !h.cfg.Ports.Has(p):
 			h.refused[p] = "not in forward_ports"
 		case len(h.forwards) >= maxForwards:
@@ -341,8 +357,12 @@ func (h *Host) reconcile(ports []int) {
 			msg.Forwards = append(msg.Forwards, agentproto.Forward{Port: p, Reason: h.refused[p]})
 		}
 	}
+	forwarded := slices.Sorted(maps.Keys(h.forwards))
 	h.mu.Unlock()
 	slices.SortFunc(msg.Forwards, func(a, b agentproto.Forward) int { return a.Port - b.Port })
+	if h.cfg.Forwarded != nil {
+		h.cfg.Forwarded(forwarded)
+	}
 	_ = h.sess.Send(msg)
 }
 
@@ -527,7 +547,31 @@ func CheckURL(raw string) (string, error) {
 	if u.Host == "" || u.User != nil {
 		return "", errors.New("the URL must name a host, and no user or password")
 	}
+	// By the port alone, whatever the host: a browser takes loopback in
+	// many spellings (127.1, 2130706433, [::ffff:127.0.0.1], localhost.,
+	// x.localhost), and a name may resolve to it.
+	if p := effectivePort(u); p < 0 || uiport.Is(p) {
+		return "", errors.New("the host's caboose web UI is never opened from a sandbox: a URL to port 7171 or 7172 is refused")
+	}
 	return u.String(), nil
+}
+
+// effectivePort is the port a browser connects to for u, http or https:
+// the one it names, else the scheme's; -1 when it names one that is not a
+// number a browser would take.
+func effectivePort(u *url.URL) int {
+	ps := u.Port()
+	if ps == "" {
+		if u.Scheme == "https" {
+			return 443
+		}
+		return 80
+	}
+	p, err := strconv.Atoi(ps)
+	if err != nil || p < 0 || p > 65535 {
+		return -1
+	}
+	return p
 }
 
 func (h *Host) notify(title, text string) error {

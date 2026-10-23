@@ -300,7 +300,7 @@ func (a *App) updateNow() error {
 		case r.Exiting:
 			u.note("The caboose daemon restarts as %s now; the sandboxes' links come back by themselves.", tag)
 		default:
-			u.note("The caboose daemon restarts as %s once no host command runs (%d do now); the sandboxes' links come back by themselves.", tag, r.HostExecs)
+			u.note("The caboose daemon restarts as %s once %s; the sandboxes' links come back by themselves.", tag, replaceWaitEnds(r.HostExecs, r.Jobs))
 		}
 	}
 	return nil

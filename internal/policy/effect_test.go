@@ -114,3 +114,25 @@ func TestNonPublicAddrs(t *testing.T) {
 		t.Errorf("NonPublicAddrs of an alias = %v", got)
 	}
 }
+
+func TestEgressRuleEffect(t *testing.T) {
+	for _, c := range []struct {
+		trust     Trust
+		deny, add bool
+		entry     string
+		want      string
+	}{
+		{TrustFallible, false, true, "git.corp.example", "allows connections to git.corp.example from environment e at any address it resolves to, private ones included (public hosts connect anyway under trust = fallible)"},
+		{TrustFallible, false, true, "10.0.0.0/8", "allows connections to addresses in 10.0.0.0/8 from environment e (public hosts connect anyway under trust = fallible)"},
+		{TrustHostile, false, true, "*.corp.example", "allows connections to every name under corp.example from environment e without asking at any address it resolves to, private ones included"},
+		{TrustHostile, false, true, "10.1.2.3", "allows connections to address 10.1.2.3 from environment e without asking"},
+		{TrustFallible, false, false, "git.corp.example", "changes nothing for public hosts, which connect anyway under trust = fallible: connections to git.corp.example from environment e that reach a private or local address ask again"},
+		{"", false, false, "git.corp.example", "connections to git.corp.example from environment e ask again (trust = hostile asks for every host egress_allow does not name)"},
+		{TrustFallible, true, true, "ads.example", "denies connections to ads.example from environment e, whatever egress_allow or a grant says"},
+		{TrustHostile, true, false, "ads.example", "stops denying connections to ads.example from environment e, which the other rules decide again"},
+	} {
+		if got := EgressRuleEffect(c.trust, c.deny, c.add, c.entry, "e"); got != c.want {
+			t.Errorf("%+v:\n got %q\nwant %q", c, got, c.want)
+		}
+	}
+}

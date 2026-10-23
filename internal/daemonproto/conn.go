@@ -45,9 +45,10 @@ func (c *Conn) setDeadline(set func(time.Time) error, d time.Duration) {
 // ServerHandshake is the daemon's side of the hello. It waits at most d for
 // the client's hello, answers with the daemon's own, and reports how the
 // client's protocol compares. A client that does not open with a valid hello
-// is refused with KindBadRequest; one on an older protocol gets the daemon's
-// hello (so it can say what it met) and then KindProtocolMismatch, and an
-// error is returned for both. A client on a newer protocol is let through
+// (a hello naming the kind daemon or web included: those are the daemon's
+// own hello's and its own web page's) is refused with KindBadRequest; one
+// on an older protocol gets the daemon's hello (so it can say what it met)
+// and then KindProtocolMismatch, and an error is returned for both. A client on a newer protocol is let through
 // with CompatClientNewer: the daemon should serve it only ping, status,
 // stop and replace, and expects a replace.
 func ServerHandshake(c *Conn, daemonVersion string, d time.Duration) (*Frame, Compat, error) {
@@ -63,8 +64,14 @@ func ServerHandshakeProtocol(c *Conn, daemonVersion string, proto int, d time.Du
 
 func serverHandshake(c *Conn, daemonVersion string, proto int, d time.Duration) (*Frame, Compat, error) {
 	hello, err := c.Read(d)
-	if err == nil && (hello.Type != TypeHello || hello.Client == ClientDaemon) {
+	switch {
+	case err != nil:
+	case hello.Type != TypeHello || hello.Client == ClientDaemon:
 		err = bad("a hello from a client must come first")
+	case hello.Client == ClientWeb:
+		// The web kind is the daemon's own page's, which the daemon's HTTP
+		// handler sets: no socket client may claim it.
+		err = bad("the web kind is only the daemon's own HTTP page, never a socket client")
 	}
 	if err != nil {
 		if errors.Is(err, ErrBadFrame) || errors.Is(err, ErrLineTooLong) {

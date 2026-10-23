@@ -289,6 +289,15 @@ func (f *File) checkPolicyKeys() error {
 	if v, ok := f.Vals["link.checkpoint_requests"].(string); ok && v != CheckpointRequestsAllow && v != CheckpointRequestsOff {
 		return fmt.Errorf(`checkpoint_requests in [link]: %q is not "allow" or "off"`, v)
 	}
+	if v, ok := f.Vals["link.forward_ports"]; ok {
+		set, err := ParsePorts(portsString(v))
+		if err != nil {
+			return err
+		}
+		if err := CheckForwardPorts(displayKey("link.forward_ports"), set); err != nil {
+			return err
+		}
+	}
 	if v, ok := f.Vals["link.open_urls_allow"].([]any); ok {
 		for _, e := range v {
 			if err := CheckOrigin(e.(string)); err != nil {

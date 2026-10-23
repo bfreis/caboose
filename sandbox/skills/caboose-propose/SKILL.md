@@ -1,6 +1,6 @@
 ---
 name: caboose-propose
-description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
+description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a directory of a root made writable, a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
 ---
 
 # Proposing a change to the sandbox
@@ -32,7 +32,8 @@ launch and after every `apply`. It is the authority, not these instructions:
 NAME: lowercase letters, digits, `-` and `_`, starting with a letter or
 digit, at most 32. One request, one proposal. A proposal holds a `title`
 (one line, at most 100 characters), a `reason` (a sentence or two), and the
-image's part for its kind, one root, or both; or one alias, alone.
+image's part for its kind, one root, or both; or one alias, alone; or one
+writable part, alone.
 
 @@IF image=apko@@
 ### apko image: packages
@@ -140,10 +141,9 @@ mount, a name already used, and a path that does not exist or is not a
 directory. It warns about what looks like credentials, and asks the user to
 type the name.
 
-A proposed root is mounted read-only: no proposal can make any part of a
-root writable. That is `writable` in the root's `[roots]` entry, which only
-the user edits (`caboose setup roots` asks). Say so when a write is what the
-user needs.
+A proposed root is mounted read-only. To make a directory of it writable,
+propose that on its own once the root is there (below).
+
 
 If `state.toml` shows a single root mounted at `/work` itself, adding one
 moves that root to `/work/NAME`: every project path changes, and Claude
@@ -182,6 +182,27 @@ script in a project. `caboose-agent aliases` lists the aliases there are
 `pending #N` when the host asks the user first: note the number and carry
 on.
 
+### A writable part: a directory of a root the sandbox may write
+
+```toml
+title = "Let the build write its output"
+reason = "make writes into build/, which is read-only now."
+
+[writable]
+path = "/work/dev/proj/build"    # the directory as the sandbox sees it
+```
+
+Alone in its proposal: one path, absolute and clean, under `/work`, as it
+is seen in here. Check `writable` in `state.toml` first: a path already
+writable (the whole root is, or a part holding it) is refused. The host
+also refuses a path in no root, one that does not exist or is not a
+directory, one reached through a symbolic link, the home or anything
+holding it, anything in a hidden directory of the home or `~/Library`, and
+caboose's own state. It warns about what looks like credentials, and asks
+the user to type the root's name. Nothing changes in this sandbox: the
+directory is writable only after `caboose@@CABOOSE_ENV_FLAG@@ restart`,
+which ends every session. Ask for the narrowest directory the task needs.
+
 ### Everywhere
 
 Plain text only: no control characters (escape sequences) and no invisible
@@ -218,7 +239,7 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |
-| what of a root the sandbox may write | `writable` in its `[roots]` entry, or `caboose setup roots`; a restart |
+| what of a root the sandbox may write | `writable` in its `[roots]` entry, `caboose setup roots`, or a proposal as above; a restart |
 | tmux, time zone, hostname | `tmux`, `tz`, `hostname` in `[session]` (`tmux`, `tz`: the next session; `hostname`: a restart) |
 
 @@IF isolation=vm@@

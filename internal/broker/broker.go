@@ -219,6 +219,13 @@ type Options struct {
 	// Log is for what the host's operator should see (unusable files,
 	// dropped dialog answers); nil discards it.
 	Log *log.Logger
+	// RequiredHosts are the hosts a hostile sandbox cannot start without
+	// (Claude Code's own), which a launch refuses unless egress_allow
+	// names them: under any trust but fallible, EditEgress refuses an
+	// edit that would leave one of them unallowed or denied. Nil refuses
+	// every removal from egress_allow and every addition to egress_deny
+	// there, since what they would cut off cannot be told.
+	RequiredHosts []string
 }
 
 // Broker is one environment's broker.

@@ -48,6 +48,7 @@ const (
 // Who decided a request.
 const (
 	ByCLI    = "cli"    // the caboose command
+	ByWeb    = "web"    // the daemon's web page
 	ByDialog = "dialog" // the URL dialog
 	ByExpiry = "expiry" // nobody: it expired
 )

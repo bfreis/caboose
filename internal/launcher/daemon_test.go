@@ -106,9 +106,9 @@ func TestDaemonStatusCreatesNothing(t *testing.T) {
 
 // No daemon directory is ever reachable from a sandbox: no mount
 // createContainer makes, nor any directory the vm backend shares for them,
-// is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev, the
-// broker's files, or the environment's checkpoint store,
-// EnvDir/checkpoints.
+// is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev (the
+// web page's token, web.token, in each), the broker's files, the jobs'
+// log (EnvDir/jobs.log), or the environment's checkpoint store, EnvDir/checkpoints.
 func TestDaemonDirsAreInNoMount(t *testing.T) {
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
@@ -119,10 +119,17 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				t.Fatal(err)
 			}
 			b.Cfg.Roots = []config.Root{{Name: "dev", Host: root, Container: "/work/dev"}}
+			// The web page's token, in each daemon directory.
+			var tokens []string
 			for _, d := range daemon.Dirs(b.tmp) {
 				if err := os.MkdirAll(d, 0o700); err != nil {
 					t.Fatal(err)
 				}
+				tok := filepath.Join(d, daemon.TokenFile)
+				if err := os.WriteFile(tok, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				tokens = append(tokens, tok)
 			}
 			// The request broker's files, in the environment's dir: beside
 			// the data dir the sandbox's home is mounted from (a mount of
@@ -137,12 +144,19 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			// The daemon's jobs' log, beside them.
+			jobsLog := filepath.Join(envDir, jobsLogFile)
+			if err := os.WriteFile(jobsLog, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			private = append(private, jobsLog, jobsLog+".1")
 			// The environment's checkpoint store, beside the data dir too.
 			store := checkpoint.StoreDir(envDir)
 			if err := os.MkdirAll(filepath.Join(store, "k", "20261018T120000Z"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			private = append(private, store)
+			private = append(private, tokens...)
 			if err := b.createContainer(false); err != nil {
 				t.Fatalf("createContainer: %v\n%s", err, b.errb)
 			}
@@ -163,7 +177,7 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				}
 				for _, f := range private {
 					if config.Within(src, f) || config.Within(f, src) {
-						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker or the checkpoint store keeps", src, f)
+						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker, the jobs' log, the checkpoint store or the web page's token keeps", src, f)
 					}
 				}
 			}

@@ -177,6 +177,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 			"isolation : " + tc.shown + "\n" + tc.outbound +
 			"version   : " + version.Get().Version + "\n" +
 			"daemon    : not running (" + a.daemonDir() + "); any caboose command that launches or links starts it, or run: caboose daemon restart\n" +
+			"web       : unknown (the daemon is not running or does not answer)\n" +
 			"link      : not running (the daemon is not running); run: caboose daemon restart\n" +
 			"\nnot running — start it by running caboose in a repo.\n"
 		if out.String() != want {

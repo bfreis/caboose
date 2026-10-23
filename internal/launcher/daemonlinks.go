@@ -53,6 +53,22 @@ type DaemonLinks struct {
 	cpGate  *checkpoint.Gate
 	schedWG sync.WaitGroup
 
+	// detailsFlights and doctorFlights run one env_details and one
+	// doctor per environment at a time.
+	detailsFlights flights[*daemonproto.EnvDetailsResult]
+	doctorFlights  flights[*daemonproto.DoctorResult]
+
+	// proposalMu holds, per environment, the lock its proposals are
+	// deleted and applied under; under mu.
+	proposalMu map[string]*sync.Mutex
+
+	// jobNotify is where a job's end is told (daemonjobs.go); nil tells
+	// no one. jobsLogMax caps jobs.log; 0 is maxJobsLog. jobNow is the
+	// jobs' clock; nil is time.Now.
+	jobNotify  func(env string) func(title, text string)
+	jobsLogMax int64
+	jobNow     func() time.Time
+
 	mu     sync.Mutex
 	log    *log.Logger
 	envs   map[string]*envLink
@@ -76,6 +92,9 @@ type DaemonLinksOptions struct {
 	// Checkpoints, when set, runs each environment's checkpoint schedule
 	// while this daemon serves it; nil runs none.
 	Checkpoints *CheckpointOptions
+	// JobNotify, when set, is where the end of an environment's job is
+	// told. nil tells no one.
+	JobNotify func(env string) func(title, text string)
 }
 
 // envLink is one environment's link, as the daemon knows it.
@@ -89,6 +108,8 @@ type envLink struct {
 	state   string        // daemonproto's Link*; "" before any operation
 	since   time.Time
 	lastErr string
+	job     *envJob          // the latest job, nil before any
+	now     func() time.Time // the jobs' clock; nil is time.Now
 	// cpLimits bound the checkpoints its sandbox asks for, across its
 	// links' restarts; made at the first link that offers them.
 	cpLimits *hostlink.CheckpointLimits
@@ -112,7 +133,7 @@ var _ daemon.Links = (*DaemonLinks)(nil)
 func NewDaemonLinks(o DaemonLinksOptions) *DaemonLinks {
 	l := &DaemonLinks{dir: filepath.Clean(o.Dir), dev: o.Dev, home: o.CabooseHome, newApp: o.NewApp, decide: o.Decide,
 		gate: hostlink.NewExecGate(), dialogs: newDialogQueue(), log: log.New(io.Discard, "", 0), envs: map[string]*envLink{},
-		cp: o.Checkpoints, cpGate: checkpoint.NewGate(), scheds: map[string]*schedRun{}}
+		cp: o.Checkpoints, cpGate: checkpoint.NewGate(), scheds: map[string]*schedRun{}, jobNotify: o.JobNotify}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	return l
 }
@@ -167,7 +188,7 @@ func (l *DaemonLinks) env(name string) *envLink {
 	}
 	e := l.envs[name]
 	if e == nil {
-		e = &envLink{name: name}
+		e = &envLink{name: name, now: l.jobClock()}
 		l.envs[name] = e
 	}
 	return e
@@ -427,9 +448,15 @@ func (e *envLink) status() daemonproto.EnvStatus {
 	if e.cur != nil && e.cur.runner.broker != nil {
 		st.Pending = e.cur.runner.broker.Pending()
 	}
+	if e.cur != nil {
+		if m, ok := e.cur.runner.lastMods(); ok {
+			st.ModsMissing = max(0, m.Sessions-m.WithMod)
+		}
+	}
 	if st.Link == "" {
 		st.Link = daemonproto.LinkStopped
 	}
+	st.Job = e.job.shown(e.clock())
 	return st
 }
 
@@ -461,11 +488,12 @@ func (l *DaemonLinks) Envs() []daemonproto.EnvStatus {
 	out := []daemonproto.EnvStatus{}
 	for _, e := range envs {
 		e.mu.Lock()
-		known := e.state != ""
+		known := e.state != "" || e.job != nil
 		e.mu.Unlock()
 		if known {
 			st := e.status()
 			st.Checkpoints = checkpointStatus(l.schedStatus(e.name), time.Now())
+			l.fillStatus(e, &st)
 			out = append(out, st)
 		}
 	}
@@ -473,8 +501,38 @@ func (l *DaemonLinks) Envs() []daemonproto.EnvStatus {
 	return out
 }
 
+// fillStatus adds to st what the environment's config.toml and its link
+// record say: the trust level, the checkpoints line status shows, and
+// which other daemon serves its link. Whatever cannot be had is left out.
+func (l *DaemonLinks) fillStatus(e *envLink, st *daemonproto.EnvStatus) {
+	if l.newApp == nil {
+		return
+	}
+	app, err := l.newApp(e.name)
+	if err != nil {
+		return
+	}
+	st.Trust = app.Cfg.Trust
+	st.CheckpointsLine = app.checkpointLine(linkView{Env: st}, st.Sandbox == daemonproto.SandboxRunning, defaultCkSeams())
+	e.mu.Lock()
+	mine := e.cur != nil
+	e.mu.Unlock()
+	if mine {
+		return
+	}
+	// link.json names the daemon that last started the link; a daemon of
+	// another directory is the other of the release's and the checkout's.
+	// It is the recorded owner, not proof that it still runs.
+	if ls, ok := readLinkState(app.Cfg.DataDir); ok && !ls.Stopped && ls.Daemon != "" && filepath.Clean(ls.Daemon) != l.dir {
+		st.Owner = daemonproto.OwnerRelease
+		if filepath.Base(filepath.Clean(ls.Daemon)) == daemon.DevDirName {
+			st.Owner = daemonproto.OwnerDev
+		}
+	}
+}
+
 // Busy reports whether a link runs (one runs only while its sandbox
-// does), or a checkpoint is being taken.
+// does), a checkpoint is being taken, or a job runs.
 func (l *DaemonLinks) Busy() bool {
 	if l.checkpointing() {
 		return true
@@ -487,7 +545,7 @@ func (l *DaemonLinks) Busy() bool {
 	l.mu.Unlock()
 	for _, e := range envs {
 		e.mu.Lock()
-		up := e.cur != nil
+		up := e.cur != nil || e.job.running()
 		e.mu.Unlock()
 		if up {
 			return true
@@ -496,8 +554,40 @@ func (l *DaemonLinks) Busy() bool {
 	return false
 }
 
-// HostExecs is how many host commands run, every link's.
-func (l *DaemonLinks) HostExecs() int { return hostlink.HostExecsRunning() }
+// HostExecs is how many host commands run, every link's, counting each
+// running job as one: a replace waits for those
+// too.
+func (l *DaemonLinks) HostExecs() int {
+	cmds, jobs := l.ExecCounts()
+	return cmds + jobs
+}
+
+// ExecCounts is how many host commands run and how many jobs, read in
+// one call, for a report to use both from the same read.
+func (l *DaemonLinks) ExecCounts() (commands, jobs int) {
+	jobs = l.runningJobs()
+	commands = hostlink.HostExecsRunning()
+	return commands, jobs
+}
+
+// runningJobs is how many jobs run.
+func (l *DaemonLinks) runningJobs() int {
+	l.mu.Lock()
+	envs := make([]*envLink, 0, len(l.envs))
+	for _, e := range l.envs {
+		envs = append(envs, e)
+	}
+	l.mu.Unlock()
+	n := 0
+	for _, e := range envs {
+		e.mu.Lock()
+		if e.job.running() {
+			n++
+		}
+		e.mu.Unlock()
+	}
+	return n
+}
 
 // DrainHostExecs refuses every link's host-exec requests from now on and
 // reports true, or reports false while one is in flight, holding new ones

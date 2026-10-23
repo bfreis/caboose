@@ -46,13 +46,26 @@ func TestWritableMethod(t *testing.T) {
 	}
 
 	f := &fakeWritable{result: &daemonproto.WritableResult{Writable: []daemonproto.WritablePath{{Path: "/w", Envs: []string{"alpha"}}}}}
-	dir := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Writable: f})
+	dir, s := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Writable: f})
 	for _, kind := range []string{daemonproto.ClientCLI} {
 		r, err := dialAs(t, dir, kind, 0).Writable(t.Context())
 		if err != nil || len(r.Writable) != 1 || r.Writable[0].Path != "/w" {
 			t.Fatalf("%s: %+v, %v", kind, r, err)
 		}
 	}
+	// The host paths are the command line's restore's, not the web
+	// page's.
+	f.mu.Lock()
+	before := f.calls
+	f.mu.Unlock()
+	if _, e := s.callWeb(t.Context(), daemonproto.MethodWritable, nil); webKind(e) != daemonproto.KindNotAllowed {
+		t.Fatalf("web: %v", e)
+	}
+	f.mu.Lock()
+	if f.calls != before {
+		t.Fatal("the web page reached Writable")
+	}
+	f.mu.Unlock()
 	c := dialAs(t, dir, daemonproto.ClientCLI, 0)
 	// Each answer is the service's of the time, never an earlier one.
 	f.set(&daemonproto.WritableResult{Writable: []daemonproto.WritablePath{{Path: "/w2", Envs: []string{"beta"}}}}, nil)

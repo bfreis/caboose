@@ -70,7 +70,7 @@ is `name = "host path"`, or a table with `host` and optionally `path` and
 
 | Key | Default | |
 |---|---|---|
-| `forward_ports` | `["3000-3999", 5173, "8000-8999", "32768-60999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, while they listen (the last range is where a login's loopback callback listens): integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. See [the host link](host-link.md#ports) |
+| `forward_ports` | `["3000-3999", 5173, "8000-8999", "32768-60999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, while they listen (the last range is where a login's loopback callback listens): integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. Ports 7171 and 7172, caboose's web UI on this machine, are never forwarded: a set that holds either, alone or in a range (`"7000-7999"`), is an error. See [the host link](host-link.md#ports) |
 | `open_urls` | `"ask"` | whether the sandbox may open URLs in your browser: `"ask"`, `"allow"` or `"off"`; see [the host link](host-link.md#urls-and-notifications) |
 | `ssh_agent` | the agent `ssh` here would use; none under `trust = "hostile"` | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over, and the only way a `hostile` sandbox gets one. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead of a socket named here, but `"none"` still gives none. See [SSH agent](ssh.md) |
 | `open_urls_allow` | `[]` | origins the sandbox may open in your browser without asking when `open_urls` is `"ask"` (`"off"` still refuses every URL): `"https://host"` or `"http://host:port"`, lowercase, with nothing after the host or port (no path, not even a `/`). Ignored under `trust = "hostile"`, where every URL asks. See [Trust](#trust) |
@@ -240,15 +240,25 @@ docker would take the next argument as another flag's value. Refused:
 - a `--volume`, `--mount` or `--tmpfs` at, inside or around one of
   caboose's mounts (the roots under `/work`, the kept parts of the home,
   Claude Code's install, caboose's instructions at `/etc/claude-code`), or
-  over the agent's home itself.
+  over the agent's home itself;
+- a `--publish` onto port 7171 or 7172 of this machine, in any
+  `[IP:]HOST:CONTAINER` spelling or within a range of host ports
+  (`--publish=7000-7999:7000-7999`): those are caboose's web UI's, and a
+  sandbox may never listen on them. A `--publish` value caboose cannot
+  read is refused too; `--publish-all` is not (docker picks free ports
+  for it, outside both).
 
 A refused argument stops the launch that would create the container, and
 `caboose restart` before it removes the old one; `caboose doctor` names
 it. Everything else goes to docker as written, and is yours to choose:
 some arguments (`--privileged`, `--cap-add`, `--device`, `--volume`,
-`--network=host`, ...) give the sandbox more of the host, which `caboose
-doctor` notes. Only the host can set them: they are not in the sandbox's
-own config, and a session cannot propose them.
+...) give the sandbox more of the host, which `caboose
+doctor` notes. `--network=host` (or `--net=host`) is one `caboose doctor`
+reports as a problem: on the host's network the sandbox reaches every
+service listening on the host's loopback, and can listen on port 7171
+itself while caboose's daemon is not running, taking the web UI's place.
+Only the host can set them: they are not in the sandbox's own config, and
+a session cannot propose them.
 
 ## gVisor
 
@@ -452,9 +462,11 @@ writable = ["you/project", "you/other"]   # /work/dev/you/project, ...
   entry that is not a directory is refused, naming the entry. The
   components above the last stay in the read-only part of the root, so
   the sandbox cannot swap one for a link afterwards.
-- Writable parts are the host's setting: the sandbox cannot widen them,
-  and no proposal can. Changing them takes `caboose restart`, like any
-  change to the roots; until then a launch, and `caboose doctor`, say that
+- Writable parts are the host's setting: the sandbox cannot widen them.
+  A session can ask for one more with a `[writable]`
+  [proposal](proposals.md#what-can-be-proposed), which `caboose apply`
+  writes here only once you have seen it and typed the root's name.
+  Changing them takes `caboose restart`, like any change to the roots; until then a launch, and `caboose doctor`, say that
   the sandbox may write other parts than the configuration says. A
   sandbox created by a caboose from before read-only roots writes every
   root whole until that restart.

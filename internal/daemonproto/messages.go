@@ -19,8 +19,8 @@ const (
 	MethodStop        = "stop"
 	MethodReplace     = "replace"
 
-	// MethodSubscribe is reserved: the daemon will then send event
-	// frames. Protocol 1 answers it with
+	// MethodSubscribe is reserved for the web page: the daemon
+	// will then send event frames. Protocol 1 answers it with
 	// KindUnknownMethod.
 	MethodSubscribe = "subscribe"
 )
@@ -219,11 +219,19 @@ func (p *ReplaceParams) Validate() error {
 // commands, and how many run.
 type ReplaceResult struct {
 	Exiting   bool `json:"exiting"`
-	HostExecs int  `json:"host_execs,omitempty"`
+	HostExecs int  `json:"host_execs,omitempty"` // commands and jobs together
+	// Jobs is how many of HostExecs are jobs (a proposal's apply).
+	Jobs int `json:"jobs,omitempty"`
 	// Current is set when the daemon is already the version asked for, or
 	// a newer one: it does nothing.
 	Current bool `json:"current,omitempty"`
 }
+
+// Owners of an environment's link other than the daemon asked.
+const (
+	OwnerRelease = "release"
+	OwnerDev     = "dev"
+)
 
 // Sandbox states, as an EnvStatus reports them.
 const (
@@ -249,7 +257,10 @@ type DaemonInfo struct {
 	Started   time.Time `json:"started"`
 	Dev       bool      `json:"dev,omitempty"` // a checkout's build, with a directory of its own
 	Dir       string    `json:"dir,omitempty"`
-	HostExecs int       `json:"host_execs"` // host-exec commands running
+	HostExecs int       `json:"host_execs"` // host-exec commands running, jobs included
+	// Jobs is how many of HostExecs are jobs (a proposal's apply), which
+	// a daemon's shutdown neither ends nor waits for.
+	Jobs int `json:"jobs,omitempty"`
 	// Replacing is set while a replace waits for the host-exec commands
 	// to end before the daemon exits.
 	Replacing bool `json:"replacing,omitempty"`
@@ -257,6 +268,9 @@ type DaemonInfo struct {
 	// bringing back the links its directory ran before: an environment
 	// it does not list yet may be one of them.
 	Recovering bool `json:"recovering,omitempty"`
+	// Web is the web page's state, never its token; absent when the
+	// daemon serves no page.
+	Web *WebState `json:"web,omitempty"`
 }
 
 // EnvStatus is the state of one environment the daemon knows.
@@ -269,10 +283,30 @@ type EnvStatus struct {
 	// Pending is how many requests wait for an answer in the environment's
 	// broker; absent while none does, or no link of this daemon serves it.
 	Pending int `json:"pending,omitempty"`
+	// Trust is the environment's trust level ("fallible" or "hostile").
+	Trust string `json:"trust,omitempty"`
+	// CheckpointsLine is the text caboose status shows for the checkpoints,
+	// or empty.
+	CheckpointsLine string `json:"checkpoints_line,omitempty"`
+	// Owner is empty when this daemon serves the environment's broker;
+	// else which daemon records itself as serving the environment's link:
+	// OwnerRelease or OwnerDev (from link.json, so it is the recorded
+	// owner, not proof that it is alive).
+	Owner string `json:"owner,omitempty"`
+	// ModsMissing is how many Claude Code sessions in the sandbox run
+	// without caboose's mod, as the link's agent last counted.
+	ModsMissing int `json:"mods_missing,omitempty"`
 	// Checkpoints is the environment's checkpoint schedule; absent while
 	// the daemon runs none for it.
 	Checkpoints *CheckpointStatus `json:"checkpoints,omitempty"`
+	// Job is the environment's latest job (a proposal applied with its
+	// build): while it runs, and for JobKept after it ended; absent
+	// otherwise.
+	Job *JobInfo `json:"job,omitempty"`
 }
+
+// JobKept is how long status keeps saying how an ended job went.
+const JobKept = 10 * time.Minute
 
 // StatusResult is the result of status.
 type StatusResult struct {
@@ -321,6 +355,11 @@ func (d *DaemonInfo) validate() error {
 	if err := checkText("daemon version", d.Version, maxName); err != nil {
 		return err
 	}
+	if d.Web != nil {
+		if err := d.Web.validate(); err != nil {
+			return err
+		}
+	}
 	return checkText("daemon dir", d.Dir, 1024)
 }
 
@@ -333,11 +372,24 @@ func (e *EnvStatus) validate() error {
 			return err
 		}
 	}
-	if e.Pending < 0 {
-		return bad("negative pending count")
+	if e.Pending < 0 || e.ModsMissing < 0 {
+		return bad("negative pending or mods count")
+	}
+	for _, s := range []struct {
+		what, v string
+		max     int
+	}{{"trust", e.Trust, maxName}, {"checkpoints line", e.CheckpointsLine, maxDetailText}, {"owner", e.Owner, maxName}} {
+		if err := checkText(s.what, s.v, s.max); err != nil {
+			return err
+		}
 	}
 	if e.Checkpoints != nil {
 		if err := e.Checkpoints.validate(); err != nil {
+			return err
+		}
+	}
+	if e.Job != nil {
+		if err := e.Job.Validate(); err != nil {
 			return err
 		}
 	}

@@ -1,7 +1,7 @@
 # Proposals: changes a session asks for
 
 A session in the sandbox cannot change what the sandbox is: the image, the
-host directories it can see, the host commands it may run. Those live on the host (`config.toml`, a
+host directories it can see and write, the host commands it may run. Those live on the host (`config.toml`, a
 Dockerfile profile's directory), and they decide how much of your machine the
 sandbox reaches — which is exactly what an injected instruction, arriving
 in a README or a web page, would want to widen. (What the sandbox keeps of
@@ -40,6 +40,7 @@ What a proposal can change in the image depends on the kind of the
 | a Dockerfile section | `dockerfile` | installs something in the image | shown as a diff of the Dockerfile |
 | one root | any | mounts a host directory at `/work/NAME` | refusals and warnings below, and you type the root's name |
 | one alias, alone | any | adds an [`[alias.NAME]`](configuration.md#aliasname), a host command sessions may run | refusals and warnings below, the change to `config.toml` as a diff, and you type the alias's name |
+| one writable part, alone | any | makes a directory of a root [writable](configuration.md#read-only-roots-and-writable-parts), from the next restart | refusals and warnings below, the change to `config.toml` as a diff, and you type the root's name |
 
 Under a `ref` profile, an image of your own, nothing in the image can be
 proposed: a session that needs a tool says what to add to your image.
@@ -77,6 +78,15 @@ reads it and fixes the proposal on `error` before asking you. The check
 is the link's, and only says: `apply` checks the proposal again, and
 builds.
 
+The [web page](web-ui.md) applies a packages proposal too, alone or with
+a root, with **Build and apply**: the daemon builds the image as a job of
+the environment's (one at a time: another meanwhile is refused as busy) and the page shows its last lines as it goes. As `apply` does, it
+writes nothing unless the image builds; once it has, it plans the proposal
+again and writes it only if it still shows what you confirmed and the
+profile's packages in `config.toml` did not change while the image was
+built, then the lock. The running
+sandbox keeps its image until its next `caboose restart`.
+
 **A section** applies under a `dockerfile` profile only. It goes into the
 profile's Dockerfile, between `# caboose:section` markers like those of
 caboose's seed, replacing a section of the same name. A profile whose
@@ -103,10 +113,10 @@ outright:
 - anything overlapping a root, or a name a root already has;
 - a path that does not exist, or is not a directory.
 
-A root a proposal adds is mounted read-only: no proposal can make any part
-of a root writable, which is `writable` in `config.toml`, yours to edit
-(`caboose setup roots` asks). Applying one keeps the other roots' writable
-parts as they are.
+A root a proposal adds is mounted read-only: what of it the sandbox may
+write is `writable` in `config.toml`, yours to edit (`caboose setup roots`
+asks), or a writable part a session proposes on its own (below). Applying
+a root keeps the other roots' writable parts as they are.
 
 Otherwise `apply` warns when the directory holds what looks like
 credentials (`.env` files, `.ssh`, `*.pem`, ...), and asks you to type the
@@ -153,6 +163,35 @@ and no restart: the link reads it within seconds. The aliases you write in
 yours or proposed, is decided again at each run
 ([configuration](configuration.md#aliasname)).
 
+**A writable part** is a directory of a root that the sandbox may then
+change or delete anything in. The proposal is a `[writable]` table with
+one key, `path`: the directory as the sandbox sees it, an absolute, clean
+path under `/work`, alone in its proposal. `apply` finds it on this
+machine through the roots the sandbox mounts (those `config.toml` has,
+when there is no sandbox), never through anything the session says of
+the host. Refused before it is shown:
+
+- a path not inside a root the sandbox mounts, or inside none
+  `config.toml` has;
+- one that does not exist, is not a directory, or is reached through a
+  symbolic link at any component below the root;
+- your home, or a directory holding it; anything in a hidden directory of
+  your home or in `~/Library`;
+- anything in, at or holding caboose's own state (`~/.caboose`, the
+  environment, the data dir), by path and by identity: a second name for
+  one of them is the same directory;
+- a path writable already: the whole root is, or a writable part holding
+  it.
+
+`apply` warns when the directory holds what looks like credentials, and
+when the new part holds parts the root lists now (they are replaced by
+it). It shows the root's line in `config.toml` with its new `writable`
+list, and writes it only once you type the root's name, and only if
+`config.toml` has not changed since. Nothing moves in the running sandbox:
+the mounts are fixed when it is created, so the part is writable from the
+next `caboose restart`, which `apply` offers. Every launch checks the
+writable parts again, and refuses one that has become a symbolic link.
+
 ## The files
 
 `~/.caboose-proposals` is `<data>/proposals` on the host. A proposal is
@@ -195,6 +234,16 @@ reason = "builds run overnight"
 command = ["/usr/bin/caffeinate", "-i"]
 description = "keep the Mac awake until interrupted"
 policy = "ask"
+```
+
+A writable part, alone in its proposal:
+
+```toml
+title = "Let the build write its output"
+reason = "make writes into build/"
+
+[writable]
+path = "/work/dev/proj/build"
 ```
 
 `NAME.check` is the host link's check of `NAME.toml`, written while the

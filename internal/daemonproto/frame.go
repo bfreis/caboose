@@ -1,5 +1,6 @@
 // Package daemonproto is the protocol between caboose's host daemon and its
-// clients (the command line), and the client that speaks it.
+// clients (the command line today; a web page later), and the
+// client that speaks it.
 //
 // The transport is a Unix socket carrying newline-delimited JSON: one frame
 // per line, every line bounded by MaxLine. The peer is another process, so
@@ -53,8 +54,11 @@ const (
 	TypeEvent    = "event"
 )
 
-// ClientCLI is the client kind a hello may name.
-const ClientCLI = "cli"
+// Client kinds a hello may name.
+const (
+	ClientCLI = "cli"
+	ClientWeb = "web"
+)
 
 // Frame is one line of the protocol. Which fields are used depends on Type;
 // Decode and Encode refuse a frame that sets a field its type does not have.
@@ -171,7 +175,7 @@ func (f *Frame) Validate() error {
 			return err
 		}
 		switch f.Client {
-		case ClientCLI, ClientDaemon:
+		case ClientCLI, ClientWeb, ClientDaemon:
 		default:
 			return bad("unknown client kind")
 		}

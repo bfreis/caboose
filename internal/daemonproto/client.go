@@ -19,7 +19,7 @@ const (
 
 // Options configure Dial.
 type Options struct {
-	Client  string // ClientCLI
+	Client  string // ClientCLI or ClientWeb
 	Version string // this caboose's version
 
 	DialTimeout    time.Duration // connecting

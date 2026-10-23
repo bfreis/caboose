@@ -42,17 +42,27 @@ func (f *fakeBrokers) served() []call {
 
 func startBrokerDaemon(t *testing.T, b Brokers) string {
 	t.Helper()
+	dir, _ := startBrokerServer(t, b)
+	return dir
+}
+
+// startBrokerServer is startBrokerDaemon, with the server, to call as the
+// web page does.
+func startBrokerServer(t *testing.T, b Brokers) (string, *server) {
+	t.Helper()
 	return startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t}, Brokers: b})
 }
 
 // startServer runs a daemon in this process with opts (in a directory of
-// its own) and returns the directory.
-func startServer(t *testing.T, opts Options) string {
+// its own) and returns the directory and its server.
+func startServer(t *testing.T, opts Options) (string, *server) {
 	t.Helper()
 	h := newHarness(t)
+	got := make(chan *server, 1)
 	opts.Dir = h.dir
+	opts.onServer = func(s *server) { got <- s }
 	runInProcess(t, opts)
-	return h.dir
+	return h.dir, <-got
 }
 
 func dialAs(t *testing.T, dir, kind string, protocol int) *daemonproto.Client {
@@ -66,7 +76,7 @@ func dialAs(t *testing.T, dir, kind string, protocol int) *daemonproto.Client {
 }
 
 var brokerMethods = []string{daemonproto.MethodRequests, daemonproto.MethodRequest, daemonproto.MethodAnswer,
-	daemonproto.MethodGrants, daemonproto.MethodRevoke, daemonproto.MethodPermissions}
+	daemonproto.MethodGrants, daemonproto.MethodRevoke, daemonproto.MethodPermissions, daemonproto.MethodEditEgress}
 
 // brokerParams are valid params for each method.
 func brokerParams(method string) any {
@@ -79,6 +89,8 @@ func brokerParams(method string) any {
 		return &daemonproto.AnswerParams{Env: "alpha", ID: 1, Verdict: "deny"}
 	case daemonproto.MethodRevoke:
 		return &daemonproto.RevokeParams{Env: "alpha", Grant: "g1"}
+	case daemonproto.MethodEditEgress:
+		return &daemonproto.EditEgressParams{Env: "alpha", AddAllow: []string{"git.corp.example"}}
 	}
 	return &daemonproto.EnvParams{Env: "alpha"}
 }
@@ -97,36 +109,55 @@ func TestNoBrokersIsUnknownMethod(t *testing.T) {
 	}
 }
 
-// The command line reads and answers, and reaches the brokers as its own
-// kind.
+// Every kind of client reads and answers: the command line over the
+// socket, the page through the daemon's web path; each reaches the
+// brokers as its own kind.
 func TestWhoMayAnswer(t *testing.T) {
 	fb := &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}}
-	dir := startBrokerDaemon(t, fb)
-	c := dialAs(t, dir, daemonproto.ClientCLI, 0)
-	for _, m := range brokerMethods {
-		before := len(fb.served())
-		if err := c.Call(context.Background(), m, brokerParams(m), nil); err != nil || len(fb.served()) != before+1 {
-			t.Errorf("%s: %v", m, err)
-			continue
+	dir, s := startBrokerServer(t, fb)
+	for _, kind := range []string{daemonproto.ClientCLI, daemonproto.ClientWeb} {
+		call := func(m string) error {
+			if kind == daemonproto.ClientWeb {
+				raw, _ := json.Marshal(brokerParams(m))
+				_, e := s.callWeb(context.Background(), m, raw)
+				if e != nil {
+					return e
+				}
+				return nil
+			}
+			return dialAs(t, dir, kind, 0).Call(context.Background(), m, brokerParams(m), nil)
 		}
-		if last := fb.served()[len(fb.served())-1]; last.who != daemonproto.ClientCLI {
-			t.Errorf("%s reached the broker as %q", m, last.who)
+		for _, m := range brokerMethods {
+			before := len(fb.served())
+			if err := call(m); err != nil || len(fb.served()) != before+1 {
+				t.Errorf("%s %s: %v", kind, m, err)
+				continue
+			}
+			if last := fb.served()[len(fb.served())-1]; last.who != kind {
+				t.Errorf("%s %s reached the broker as %q", kind, m, last.who)
+			}
 		}
 	}
 }
 
 // Who answers is the caller's kind and nothing the client writes: a field
-// naming another is not read.
+// naming one is not read, and the web page saying it is the command line
+// is still the web page.
 func TestWhoAnswersComesFromTheConnection(t *testing.T) {
 	fb := &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}}
-	dir := startBrokerDaemon(t, fb)
-	liar := map[string]any{"env": "alpha", "id": 1, "verdict": "deny", "by": "dialog", "decided_by": "dialog", "client": "daemon", "who": "daemon", "kind": "daemon"}
+	dir, s := startBrokerServer(t, fb)
+	liar := map[string]any{"env": "alpha", "id": 1, "verdict": "deny", "by": "cli", "decided_by": "cli", "client": "cli", "who": "cli", "kind": "cli"}
+	raw, _ := json.Marshal(liar)
+	if _, e := s.callWeb(context.Background(), daemonproto.MethodAnswer, raw); e != nil {
+		t.Fatal(e)
+	}
 	cli := dialAs(t, dir, daemonproto.ClientCLI, 0)
+	liar["by"], liar["decided_by"] = "web", "web"
 	if err := cli.Call(context.Background(), daemonproto.MethodAnswer, liar, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := fb.served()
-	if len(got) != 1 || got[0].who != daemonproto.ClientCLI || got[0].env != "alpha" {
+	if len(got) != 2 || got[0].who != daemonproto.ClientWeb || got[1].who != daemonproto.ClientCLI || got[0].env != "alpha" {
 		t.Errorf("served %+v", got)
 	}
 }

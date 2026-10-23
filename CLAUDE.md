@@ -134,9 +134,14 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
 | `internal/policy` | the pure decision: `Decide(policy, request, now)` for an alias, an outbound connection, a URL, host exec, a checkpoint asked for now (`checkpoint_requests` alone, either trust, never asks), deny rules first; `GrantKey`, `Effect`; the outbound proxy's address rules (`Denied`, `Allow`, `ParseAllow`), which `hostlink` aliases; no I/O, no clock |
 | `internal/broker` | one environment's policy at work: builds the `policy.Policy` from `config.toml` and the grants, decides crossings, files what asks as requests (deduped, bounded, expiring), turns answers into grants or `config.toml` edits; `grants.json`, `requests.json`, `decisions.log` and `broker.lock` in the env dir, through `nofollow`; serves only while its `Owner` holds link.lock (`LockOwner`). The link opens it as it starts (`internal/launcher/linkbroker.go`, with the URL dialog) and hands `hostlink` its `Link()` |
+| `internal/uiport` | the host's web UI's fixed address, `127.0.0.1:7171` (a checkout's build: 7172), and `Is`, which every refusal that keeps a sandbox off those ports asks; imports nothing of caboose's |
+| `internal/webui` | the web page as HTTP: the loopback-only listener (`Listen`, `CheckAddr`; at most 64 connections), the server's limits, the checks every request passes in order (Host, `Sec-Fetch-*`, then for `/api/`: POST, Origin, `Sec-Fetch-Site: same-origin`, JSON, the token header, the daemon's web allowlist, the body, the rate limits: authenticated calls, and proofs, which need no token), the headers every response carries (CSP, no framing, no CORS), `/api/proof`, and the static files from a fixed table (`static/`, embedded, in the `Makefile`'s `EMBEDDED`); it calls the daemon's method table through `Dispatcher` and imports nothing of the daemon's |
 | `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`), the aliases `config.toml` names (`alias.go`), the checkpoints the sandbox asks for, only of `[checkpoints] paths`, through a `Checkpointer` the daemon gives (its schedule's `TakeNow`, `launcher/daemoncheckpoints.go`) within the environment's `CheckpointLimits` (`checkpoint.go`), files and lists requests for the agent and waits on their decisions (`requests.go`), its decisions through one `Decider`, the environment's `broker.Decider` (`decide.go`; nil decides by the policy `config.toml`'s link settings make, and files nothing); the daemon runs one per environment as goroutines (`DaemonLinks`, `internal/launcher/daemonlinks.go`; the CLI side is `daemonclient.go`: `startLink` asks it, starting it on demand, and `caboose link`, `status` and `doctor` ask through `App.DaemonDial`'s seam), and a command run with `CABOOSE_DATA_DIR` set keeps a detached `caboose link --background` (`internal/launcher/link.go`), either way one per environment by a lock in the data dir |
 | `internal/checkpoint`, `internal/launcher/checkpoint*.go`, `daemoncheckpoints.go`, `setup_checkpoints.go`, `doctor_checkpoints.go` | checkpoints of the sandbox's writable paths, kept on the host: the store (`EnvDir/checkpoints`, `Open`, keys and IDs, the lock, atomic publication by rename, leftovers), the walker (fd-relative, never following, linking unchanged files only from the previous checkpoint) and the macOS whole-tree clone, retention (`Retain`, `Prune`, the pins of `pins.go`), `Restore` (into a new directory, setuid bits cleared), and the `Scheduler` the daemon runs; the launcher resolves `[checkpoints] paths` to host sources (`checkpointSources`), guards the store by identity (`checkpointGuard`, `Store.CheckReach`), and has the CLI (`caboose checkpoint`), `setup checkpoints`, doctor's rows and status's line. The store is in no mount (`TestDaemonDirsAreInNoMount`) |
-| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `Options.Brokers` serves the request broker's methods, and `Checkpoints` and `Writable` theirs; `methods.go` is the one table of methods. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
+| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `Options.Brokers` serves the request broker's methods, and `Details`, `Proposals`, `Checkpoints` and `Writable` theirs. `methods.go` is the one table of methods, each with the client kinds that may call it, which the socket and the web page share. `Options.Web` turns on the web page (`web.go`, `webserve.go`): the token, `web.token` (0600, read or made at start; a `web` call with `rotate` replaces it, and starts the page when none could be had at start), served through `internal/webui` on its one address, tried again every 30 s while it cannot be had, never on another. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
+| `internal/launcher/daemonjobs.go`, `daemonjob_apply.go` | the daemon's jobs, which share `startJob` (one per environment at a time, `busy` otherwise, answered at once) and `endJob`: the environment's own App, every question failing it (`noTerminal`: askYes and openTerminal), its notes in the env dir's `jobs.log` (`internal/cappedlog`), the end a host notification, and `EnvStatus.job` for `daemonproto.JobKept` after; a job enters the links' `hostlink.ExecGate` as a host command does, so a `replace` waits for it and, once it holds or has closed the gate, starts none (`busy`). The apply job (`ProposalBuild`, `proposal_build`): a proposal with packages (`NeedsBuild`, alone or with a root) checked as `proposal_apply` checks one, under the proposal lock, before it starts; caboose apply's build (`buildPackages`, the lock deferred) before anything is written, then, under the lock, planned again on a fresh App and written in one `config.toml` edit only if its hash, the profile (`packagesChanged`) and the root's diff are as they were, the lock after; its output's last lines in `JobInfo.Lines` (`jobLines`), its notes in `JobInfo.Notes` |
+| `internal/launcher/webui_cmd.go` | `caboose ui`: the page's address and token from the daemon (started if need be), opened only when the daemon serves it, else nothing opened and why; `--print`, `--new-token`; the `web` line of status and doctor's rows for the listener and the token file |
+| `internal/launcher/daemondetails.go`, `daemonproposals.go`, `apply_plan.go` | what the daemon's `Details` and `Proposals` are on the host: `link_log`, `env_details` (status's facts as data) and `doctor` (doctor's checks, run in the daemon's environment), the last two single-flight per environment; the proposals listed, deleted and applied by the hash of what was shown; `ProposalView`, a proposal planned as `caboose apply` would and said as data, with its hash (one part, or packages with a root, which `NeedsBuild` marks for `proposal_build`'s job, `daemonjob_apply.go`), and `ApplyPlanned`, which plans it again and writes only if that view still has the hash the page confirmed (and a root or an alias, its typed name), refusing what builds |
 | `internal/launcher/brokerservice.go`, `requests.go`, `configwriter.go` | the broker on the host: `DaemonLinks` serves the daemon's `requests`, `request`, `answer`, `grants`, `revoke` and `permissions` from the running link's broker (`not_owner` when this daemon runs none for the environment), `caboose requests\|grants\|permissions` ask the daemon for them, and the config writer is the broker's `ConfigWriter` for an "always" answer: `config.EditFile` and `CheckEdit`, the diff shown, written only for the diff's hash |
 | `internal/fswatch` | the host's watcher for that relay: FSEvents through purego on a Mac (the launcher has no cgo), inotify on Linux; only paths, never what happened |
 | `internal/launcher/vm*.go` | the vm isolation in the launcher: finding `caboose-vmm`, the kernel and the builder disk (`~/.caboose/vm/<tag>/<arch>/`, else the checkout's `vm-dist/`), the VM's size, the initramfs from the embedded agent, the `VMHost`, `caboose build` through the builder, and the image store of root disks (`vm/images/`), behind the same `imageStore` as docker's |
@@ -218,8 +223,8 @@ outside the repo.
   own way; `a.Docker` is for the engine (images, builds, `docker info`, the
   isolation probe) and for `caboose logs`, which passes docker's own flags.
   What only some backends can tell is an optional interface beside it
-  (`backend.Linker`, `backend.Starter` for when the running sandbox
-  started, which the checkpoint schedule asks), asked by type assertion.
+  (`backend.Linker`, `backend.Starter` for env_details' start time, which
+  the vm backend does not keep), asked by type assertion.
 - **Container paths are fixed, not mirrored.** Each `[roots]` entry is
   mounted at `/work/<name>`, or at the `path` of its long form (a sole root
   may take `/work` itself), so a project's container path -- and the
@@ -305,15 +310,23 @@ outside the repo.
   by file.
 - **A proposal is the sandbox asking; only the host decides.** What a
   session may propose is an allowlist -- a Dockerfile section, one root,
-  one alias alone (`internal/proposal`) -- and anything more is refused
-  whole, never shown as a question. Never add a proposable part that
+  one alias alone, one writable part alone (`internal/proposal`) -- and
+  anything more is refused whole, never shown as a question. Never add a proposable part that
   widens what the sandbox reaches without a refusal list of its own, as a
   root has (`checkProposedRoot`: home, hidden dirs of it, caboose's own
   state, overlaps; judged and written as the physical path), and an alias
   has (`checkProposedAlias`, `launcher/apply_alias.go`: no shell or other
   program that runs its arguments, no command in a root, in what any
   sandbox can write, in the home's hidden dirs or caboose's state, judged
-  as written, resolved and at each symlink on the way). Everything a
+  as written, resolved and at each symlink on the way), and a writable
+  part has (`checkProposedWritable`, `launcher/apply_writable.go`: the
+  sandbox's path mapped through the roots it mounts, never its word for
+  the host; a real directory under a configured root, no symlink in any
+  component and physical as mapped; not the home or holding it, not in
+  its hidden dirs or `~/Library`; not in, at or holding caboose's state
+  by path and by identity; not writable already; confirmed by the root's
+  name, written as the root's long form, in effect at the next
+  restart). Everything a
   proposal holds is shown on the host's terminal, so its text is refused
   with any control or invisible format character, and whatever else of the
   sandbox's is said (a file's name, an error quoting one) goes through
@@ -416,11 +429,15 @@ outside the repo.
   but the seed, into a dir with no Dockerfile (`caboose setup image`, or
   the first `[section]` applied), and `caboose apply`'s sections, after
   showing the diff and asking. It is never mounted into the container.
-- **Who answered is the caller's kind.** `internal/daemon/methods.go` is
-  the one table of the daemon's methods, and a method added to it fails
-  `TestMethodTable` until it is listed there. The socket refuses a hello
-  naming `daemon` before any request. `by` is derived from the kind
-  (`broker.ByCLI`), and `AnswerParams` has no field for it: keep it so. The links' one URL
+- **Who may call a daemon method is its method table's, and who answered
+  is the caller's kind.** `internal/daemon/methods.go` is the one table
+  the socket and the web page share: each method names the client kinds
+  that may call it, and one it does not name is refused (`not_allowed`),
+  so a new method reaches the page only once `TestMethodTableAllowlist`
+  lists it. The kind `web` exists only inside the daemon (`callWeb`); the
+  socket refuses a hello naming `web` or `daemon` before any request.
+  `by` is derived from the kind (`broker.ByCLI`, `ByWeb`), and
+  `AnswerParams` has no field for it: keep it so. The links' one URL
   dialog queue (`launcher/dialogqueue.go`) shows this machine's dialogs
   one at a time, in the order filed; the dialog marks its request in
   flight in `requests.json` first (`broker.MarkInFlight`), and one in
@@ -438,7 +455,27 @@ outside the repo.
   holds the environment's `link.lock`; any other daemon, and a
   `CABOOSE_DATA_DIR` helper's environment, answers `not_owner`. The broker's
   files in the env dir (`grants.json`, `requests.json`, `decisions.log`,
-  `broker.lock`) are in no mount (`TestDaemonDirsAreInNoMount`).
+  `broker.lock`) and the jobs' `jobs.log` beside them are in no mount
+  (`TestDaemonDirsAreInNoMount`). `proposal_build`, a job
+  (`launcher/daemonjobs.go`), ends no session and does what `caboose
+  apply` does, so every kind may call it, as `proposal_apply`; the job
+  asks nothing.
+- **The web page's token is the daemon's, and its assets are inert.** The
+  token (`web.token` in the daemon directory, 0600, in no mount) leaves
+  the daemon only in `/api/redeem`'s answer to the page, for a one-time
+  code: never in a URL, a log, an error, a status, any other response or
+  the web allowlist. The socket's `web` result, which `caboose ui` asks
+  for, carries a code (`WebParams.Code`; `code_url`), never the
+  token: 60 s, once, in the daemon's memory only (`webState.codes`, at
+  most 16), all cleared by a rotation, every refusal one same answer
+  (`bad_code`), and `web` is not a method the page may call. `caboose ui`
+  opens an address only when the daemon says it serves it, since whatever
+  else holds the port would be handed the code; it warns when an
+  environment runs on the host's network. The page's files
+  (`internal/webui/static/`, in the `Makefile`'s `EMBEDDED`) take text
+  only as text nodes (no HTML sinks, no `innerHTML`), carry no inline
+  script or style and name no external URL; the CSP and the asset tests
+  hold that, so keep them in step with any new file.
 - **Setup and apply edit `config.toml`, they never rewrite it.** Changes go
   through `config.EditFile` (line by line: only the keys asked about, by
   dotted name, in their table, comments kept, a top-level key always above
@@ -586,7 +623,17 @@ outside the repo.
   proxy dials only addresses it resolved and checked, and no name
   egress_allow allows reaches loopback, link-local or this machine's own
   addresses (`policy.Decide`); a grant made at run time reaches a private
-  address only if it holds that very address. A wait for decisions holds
+  address only if it holds that very address. The host's web UI ports
+  (`internal/uiport`, 7171 and 7172) are out of the sandbox's reach on
+  every path caboose offers, each checked where it is decided and none
+  relying on another (a container or gVisor sandbox can still connect to
+  the host's loopback through the engine, where the page's token is the
+  boundary): `config.toml` refuses a `forward_ports` holding one (at
+  load and in `CheckEdit`), the link never forwards one whatever its
+  set, `CheckURL` refuses a URL to one whatever its host,
+  `policy.Decide` denies one on any local address before every allow
+  (`deny:ui_port`), and `checkRunArgs` refuses a `--publish` onto one.
+  A new way out of the sandbox asks `uiport.Is` too. A wait for decisions holds
   up nothing else: its own goroutine, at most 16 a link. The link is a
   `docker exec`, never a socket of the host's mounted in, and a launch
   has the daemon start it (`startLink`: best effort, one note on failure,

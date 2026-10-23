@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -70,6 +71,20 @@ func (r *linkRunner) setMods(m agentproto.ModsInfo) {
 	r.mu.Lock()
 	r.mods = &m
 	r.mu.Unlock()
+}
+
+// setForwards keeps the ports the host forwards now.
+func (r *linkRunner) setForwards(ports []int) {
+	r.mu.Lock()
+	r.forwards = ports
+	r.mu.Unlock()
+}
+
+// forwarded is the ports forwarded now.
+func (r *linkRunner) forwarded() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.forwards)
 }
 
 // lastMods is the agent's last count, and whether it sent one.
@@ -196,5 +211,7 @@ func (r *linkRunner) brokerOptions(lock *os.File, d *urlDialog) broker.Options {
 		Opener:   r.cfg.Actions,
 		Dialog:   d,
 		Log:      r.log,
+		// A hostile launch refuses without these: no edit cuts them off.
+		RequiredHosts: slices.Clone(claudeHosts),
 	}
 }

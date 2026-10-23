@@ -460,6 +460,7 @@ func (a *App) newLinkRunner(o linkRun) (*linkRunner, error) {
 			HostExec: hostExecOffer(lc.hostExec), Diagnose: true, Decide: o.decide, Execs: o.execs, Gate: o.gate}}
 	r.cfg.Log = r.log
 	r.cfg.Mods = r.setMods
+	r.cfg.Forwarded = r.setForwards
 	r.cfg.AliasTmp = aliasTmp(a.daemonDir())
 	r.cfg.Checkpoints, r.cfg.CheckpointLimits = o.checkpoints, o.cpLimits
 	r.cfg.CheckpointRequests = settings.CheckpointRequests
@@ -578,6 +579,7 @@ type linkRunner struct {
 	cfg      hostlink.Config
 	sess     *agentproto.Session
 	mods     *agentproto.ModsInfo // the agent's last count
+	forwards []int                // the ports forwarded now, sorted
 	reloaded bool                 // the session ended for new settings: reconnect at once
 	retired  bool                 // the isolation changed: this helper serves no more
 }

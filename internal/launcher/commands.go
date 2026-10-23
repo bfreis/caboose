@@ -119,10 +119,10 @@ type statusData struct {
 	// false when the config could not be read.
 	keeps   []string
 	keepsOK bool
-	// daemon, link and checkpoints are the host's lines;
+	// daemon, web, link and checkpoints are the host's lines;
 	// lv is the daemon's view they came from.
-	lv                           linkView
-	daemon, link, checkpointLine string
+	lv                                linkView
+	daemon, web, link, checkpointLine string
 
 	running bool
 	// The running part.
@@ -156,6 +156,8 @@ func (a *App) collectStatus() *statusData {
 	d.lv = a.linkView()
 	d.running = d.state == "running"
 	d.daemon = a.daemonLine(d.lv)
+	// From the daemon's status above: no call of its own.
+	d.web = webLine(d.lv)
 	d.link = a.linkLine(d.lv, d.running)
 	d.checkpointLine = a.checkpointLine(d.lv, d.running, defaultCkSeams())
 	if !d.running {
@@ -224,6 +226,7 @@ func (a *App) renderStatus(d *statusData) error {
 	}
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	fmt.Fprintf(out, "daemon    : %s\n", d.daemon)
+	fmt.Fprintf(out, "web       : %s\n", d.web)
 	fmt.Fprintf(out, "link      : %s\n", d.link)
 	if d.checkpointLine != "" {
 		fmt.Fprintf(out, "checkpoints: %s\n", d.checkpointLine)
@@ -453,8 +456,10 @@ func (a *App) pruneDocker() error {
 	if a.force() {
 		a.Note("CABOOSE_FORCE=1 set, continuing.")
 	} else {
-		yes, asked := a.askYes("delete it?")
+		yes, asked, err := a.askYes("delete it?")
 		switch {
+		case err != nil:
+			return err
 		case !asked:
 			return Die("refusing to delete it non-interactively (set CABOOSE_FORCE=1 to delete it)")
 		case !yes:

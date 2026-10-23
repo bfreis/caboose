@@ -22,6 +22,7 @@ import (
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/syncagent"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // doctorBudget is how long doctor's fetch (and a status nobody can answer)
@@ -331,12 +332,21 @@ func (a *App) doctorRunArgs(c *checkup) {
 	if len(cfg.RunArgs) == 0 {
 		return
 	}
+	// The host's network is a problem, not a choice to note: the sandbox
+	// reaches every service on the host's loopback and listens beside
+	// them, the web UI's port among them whenever the daemon does not
+	// hold it.
+	if h := hostNetworkArgs(cfg.RunArgs); len(h) > 0 {
+		c.problem("run args", "remove "+strings.Join(h, ", ")+" from "+runArgsOrigin(cfg),
+			"%s puts the sandbox on the host's network: a sandbox there reaches every service listening on this host's loopback, and can take the web UI's port (%d, or %d for a checkout's build) while the daemon is not running and read the page's stored token",
+			strings.Join(h, " "), uiport.Release, uiport.Dev)
+	}
 	if err := checkRunArgs(cfg.RunArgs, nil, cfg.Roots); err != nil {
 		c.problem("run args", "fix "+runArgsOrigin(cfg), "%v", err)
 		return
 	}
 	c.ok("run args", "%s (%s)", describeRunArgs(cfg.RunArgs), runArgsOrigin(cfg))
-	if w := wideningRunArgs(cfg.RunArgs); len(w) > 0 {
+	if w := slices.DeleteFunc(wideningRunArgs(cfg.RunArgs), func(a string) bool { return slices.Contains(hostNetworkArgs(cfg.RunArgs), a) }); len(w) > 0 {
 		c.note("run args", "%s widen what the sandbox reaches of this host, beyond what caboose gives it", strings.Join(w, " "))
 	}
 }
@@ -1040,6 +1050,7 @@ func (a *App) doctorDaemon(c *checkup, running bool) {
 			c.problem("daemon", runDaemonHint, "is caboose %s, this is %s: it runs the links with the older code until it restarts", d.Version, cur)
 		}
 	}
+	a.doctorWeb(c, v)
 	switch {
 	case !v.Served && v.Up:
 		c.ok("link", "running (a detached helper: CABOOSE_DATA_DIR is set)")

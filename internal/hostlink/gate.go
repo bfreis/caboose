@@ -67,3 +67,11 @@ func (g *ExecGate) InFlight() int {
 	defer g.mu.Unlock()
 	return g.n
 }
+
+// Enter admits one piece of the daemon's own work that an exit must wait
+// for as it waits for a host command (an environment's job),
+// unless the gate is closed; Leave ends it.
+func (g *ExecGate) Enter() bool { return g.enter() }
+
+// Leave ends what Enter admitted.
+func (g *ExecGate) Leave() { g.leave() }

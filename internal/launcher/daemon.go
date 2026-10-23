@@ -15,6 +15,7 @@ import (
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/hostlink"
 	"github.com/bfreis/caboose/internal/selfupdate"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // daemonDir is this caboose's daemon directory: a build from a checkout
@@ -138,6 +139,11 @@ func (a *App) Daemon(args []string) error {
 // would give it. Nil outside the tests.
 var daemonLinksSetup func(*DaemonLinks)
 
+// daemonWeb is where the daemon serves its web page: 127.0.0.1:7171, or
+// 7172 for a checkout's build. A variable for the tests, whose daemons
+// serve theirs on 127.0.0.1:0 and never on either port.
+var daemonWeb = func(dev bool) *daemon.WebOptions { return &daemon.WebOptions{Addr: uiport.Addr(dev)} }
+
 // runDaemon is the daemon itself, logging to its directory's daemon.log,
 // and running the environments' links (DaemonLinks). A signal stops it:
 // the links stop, each ending the host commands it ran, and whatever host
@@ -151,7 +157,8 @@ func (a *App) runDaemon() error {
 	dir := a.daemonDir()
 	dev := a.installed().kind == installDev
 	links := NewDaemonLinks(DaemonLinksOptions{Dir: dir, Dev: dev, CabooseHome: a.Cfg.CabooseHome,
-		NewApp: DaemonApp(DaemonGetenv(a.getenv), a.Checkout), Checkpoints: &CheckpointOptions{Notify: SystemNotify}})
+		NewApp: DaemonApp(DaemonGetenv(a.getenv), a.Checkout), Checkpoints: &CheckpointOptions{Notify: SystemNotify},
+		JobNotify: func(string) func(title, text string) { return SystemNotify }})
 	if daemonLinksSetup != nil {
 		daemonLinksSetup(links)
 	}
@@ -159,7 +166,7 @@ func (a *App) runDaemon() error {
 	links.WillRecover()
 	defer hostlink.KillHostExecs()
 	err := daemon.Run(ctx, daemon.Options{Dir: dir, Version: currentVersion(), Dev: dev, LockWait: daemon.StartWait,
-		Links: links, Brokers: links, Checkpoints: links, Writable: links, Ready: func(lg *log.Logger) {
+		Links: links, Brokers: links, Checkpoints: links, Writable: links, Details: links, Proposals: links, Web: daemonWeb(dev), Ready: func(lg *log.Logger) {
 			for _, n := range notes {
 				lg.Print(n)
 			}
@@ -244,11 +251,14 @@ func (a *App) daemonStatus(ctx context.Context) error {
 	fmt.Fprintf(a.Stdout, "caboose daemon: running (pid %d, caboose %s, %s, protocol %d)\n", d.PID, d.Version, kind, d.Protocol)
 	fmt.Fprintf(a.Stdout, "  since     : %s\n", d.Started.Local().Format(time.DateTime))
 	fmt.Fprintf(a.Stdout, "  directory : %s\n", d.Dir)
-	if d.HostExecs > 0 {
-		fmt.Fprintf(a.Stdout, "  host exec : %d running\n", d.HostExecs)
+	if cmds := max(d.HostExecs-d.Jobs, 0); cmds > 0 {
+		fmt.Fprintf(a.Stdout, "  host exec : %d running\n", cmds)
+	}
+	if d.Jobs > 0 {
+		fmt.Fprintf(a.Stdout, "  jobs      : %d running\n", d.Jobs)
 	}
 	if d.Replacing {
-		fmt.Fprintf(a.Stdout, "  replacing : waiting for %d host command(s) to end\n", d.HostExecs)
+		fmt.Fprintf(a.Stdout, "  replacing : %s\n", replaceWaitText(d.HostExecs, d.Jobs))
 	}
 	if d.Recovering {
 		fmt.Fprintf(a.Stdout, "  recovery  : bringing back the links it ran, not all listed yet\n")
@@ -271,5 +281,32 @@ func daemonEnvLine(e daemonproto.EnvStatus) string {
 	if e.Pending > 0 {
 		line += fmt.Sprintf(", %d %s pending", e.Pending, plural(e.Pending, "request", "requests"))
 	}
+	if j := e.Job; j != nil {
+		line += fmt.Sprintf(", %s job %s", j.Kind, j.State)
+		if j.Error != "" {
+			line += " (" + j.Error + ")"
+		}
+	}
 	return line
+}
+
+// replaceWaitText says what a daemon being replaced waits for: total is
+// the host commands and the jobs (stop, restart, apply) together, jobs
+// the jobs.
+func replaceWaitText(total, jobs int) string {
+	cmds := max(total-jobs, 0)
+	if jobs == 0 {
+		return fmt.Sprintf("waiting for %d host command(s) to end", cmds)
+	}
+	return fmt.Sprintf("waiting for %d host command(s) and %d job(s) to end", cmds, jobs)
+}
+
+// replaceWaitEnds is the same as a clause for a daemon that restarts
+// when they have ended.
+func replaceWaitEnds(total, jobs int) string {
+	cmds := max(total-jobs, 0)
+	if jobs == 0 {
+		return fmt.Sprintf("no host command runs (%d do now)", cmds)
+	}
+	return fmt.Sprintf("no host command or job runs (%d and %d do now)", cmds, jobs)
 }

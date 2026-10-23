@@ -161,7 +161,7 @@ func (g *gen) policy() Policy {
 		}
 	}
 	if rng.IntN(8) > 0 {
-		ports, err := config.ParsePortsOf("egress_ports", pick(rng, []string{"22", "443", "80 443", "22 443"}))
+		ports, err := config.ParsePortsOf("egress_ports", pick(rng, []string{"22", "443", "80 443", "22 443", "443 7171", "7000-7999"}))
 		if err != nil {
 			panic(err)
 		}
@@ -210,7 +210,7 @@ func (g *gen) request(p Policy) Request {
 		}
 	}
 	if r.Kind == KindEgress || rng.IntN(4) == 0 {
-		r.Port = []int{22, 443, 80, 25}[rng.IntN(4)]
+		r.Port = pick(rng, []int{22, 443, 80, 25, 7171, 7172})
 		r.Own = subset(rng, addrsOf(ownPool), 2)
 		if rng.IntN(3) == 0 {
 			a := netip.MustParseAddr(pick(rng, addrPool))
@@ -379,6 +379,60 @@ func TestPropertyDenyWins(t *testing.T) {
 		}
 		return ""
 	})
+}
+
+// The host's web UI ports are never reached on a local address (loopback,
+// unspecified, link-local, this machine's own, in any form that stands
+// for one): whatever egress_allow (127.0.0.1 and 0.0.0.0/0 among it),
+// egress_ports, a live grant holding the very addresses, or the trust
+// level say.
+func TestPropertyUIPort(t *testing.T) {
+	n := 0
+	forCases(t, "ui port", func(g *gen, p Policy, r Request) string {
+		if r.Kind != KindEgress || p.Egress == nil {
+			return ""
+		}
+		r.Port = pick(g.rng, []int{7171, 7172})
+		own := make([]netip.Addr, 0, len(r.Own))
+		for _, a := range r.Own {
+			own = append(own, a.Unmap().WithZone(""))
+		}
+		local := false
+		for _, a := range r.Addrs {
+			if _, _, ok := localRange(a, own); ok {
+				local = true
+			}
+		}
+		q := clone(p)
+		ports, err := config.ParsePortsOf("egress_ports", "1-65535")
+		if err != nil {
+			return err.Error()
+		}
+		entries := []string{"127.0.0.1", "127.0.0.0/8", "0.0.0.0/0", "::/0", "::1", "*.example", "a.example"}
+		if validName(r.Host) && !r.Literal {
+			entries = append(entries, r.Host)
+		}
+		a, err := ParseAllowList("egress_allow", entries)
+		if err != nil {
+			return err.Error()
+		}
+		q.Egress.Ports, q.Egress.Allow, q.Egress.Deny = ports, merge(q.Egress.Allow, a), Allow{}
+		q.Grants = append(q.Grants, Grant{ID: g.id(), Kind: KindEgress, Key: GrantKey(r), Addrs: r.Addrs, Expires: t0.Add(time.Hour)})
+		q.Trust = pick(g.rng, trustPool)
+		for _, pol := range []Policy{p, q} {
+			d := Decide(pol, r, t0)
+			if local && d.Verdict != VerdictDeny {
+				return fmt.Sprintf("a local address on port %d: %s by %s (%s)", r.Port, d.Verdict, d.Rule, d.Reason)
+			}
+		}
+		if local {
+			n++
+		}
+		return ""
+	})
+	if n < 100 {
+		t.Fatalf("only %d cases reached a local address on a UI port", n)
+	}
 }
 
 func merge(a, b Allow) Allow {

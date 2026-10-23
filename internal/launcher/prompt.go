@@ -297,6 +297,9 @@ func (p *prompter) checklist(question string, items []string, on []bool) ([]bool
 // is one. Setup refuses without it rather than guess answers, or read them
 // from a pipe that was meant for something else.
 func (a *App) openTerminal() (io.ReadCloser, error) {
+	if a.noTerminal != nil {
+		return nil, a.noTerminal
+	}
 	if a.Terminal != nil {
 		return a.Terminal()
 	}

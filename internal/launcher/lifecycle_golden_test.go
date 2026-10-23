@@ -13,8 +13,9 @@ import (
 )
 
 // caboose stop and caboose restart say on the terminal exactly what the
-// golden files hold: what they will kill, the question, its answers, and
-// the refusals without a terminal or a yes.
+// golden files hold, whatever the daemon's jobs do with the same
+// commands: what they will kill, the question, its answers, and the
+// refusals without a terminal or a yes.
 func TestStopRestartGolden(t *testing.T) {
 	for _, iso := range []string{isolationContainer, isolationVM} {
 		t.Run(iso, func(t *testing.T) {

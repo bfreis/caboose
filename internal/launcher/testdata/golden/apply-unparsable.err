@@ -7,10 +7,10 @@
   ────────────────────────────────────────────────────────────────────────────
 
   ✗ This is no proposal caboose can apply: unknown key nope, nope.x (a proposal
-    has title, reason, dockerfile_sha256, [section], [packages], [roots] and
+    has title, reason, dockerfile_sha256, [section], [packages], [roots],
     [alias.NAME], with command, description, timeout, cwd, policy and
-    [alias.NAME.params]; what the sandbox keeps is changed in
-    ~/.config/caboose/sandbox.toml, with no proposal)
+    [alias.NAME.params], and [writable], with path; what the sandbox keeps is
+    changed in ~/.config/caboose/sandbox.toml, with no proposal)
   ? What now?
     1  Delete it
     2  Leave it pending

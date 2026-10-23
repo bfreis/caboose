@@ -499,7 +499,7 @@ func TestAnswerAlwaysForAURL(t *testing.T) {
 func TestRequestOffers(t *testing.T) {
 	w := newBrokerWorld(t, brokerConfig)
 	id := w.file(broker.Ask{Request: egressReq("api.example.com", "10.0.0.5")})
-	r := w.offers(daemonproto.ClientCLI, id)
+	r := w.offers(daemonproto.ClientWeb, id)
 	if len(r.Offers) != 3 || len(r.Withheld) != 0 {
 		t.Fatalf("%+v", r)
 	}
@@ -556,7 +556,7 @@ func TestRequestOffersWithholdADiffShownChanged(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			w := newBrokerWorld(t, strings.Replace(brokerConfig, `egress_allow = ["*.corp.example"]`, line, 1))
 			id := w.file(broker.Ask{Request: egressReq("api.example.com", "10.0.0.5")})
-			r := w.offers(daemonproto.ClientCLI, id)
+			r := w.offers(daemonproto.ClientWeb, id)
 			if r.Offered(daemonproto.ScopeAlways) != nil || len(r.Withheld) != 1 || r.Withheld[0].Scope != "always" || !strings.Contains(r.Withheld[0].Why, "shown whole") {
 				t.Fatalf("%+v", r)
 			}
@@ -572,7 +572,7 @@ func TestRequestOffersWithholdADiffShownChanged(t *testing.T) {
 func TestRequestOffersATabbedDiff(t *testing.T) {
 	w := newBrokerWorld(t, strings.Replace(brokerConfig, `egress_allow = ["*.corp.example"]`, "egress_allow = [\"*.corp.example\"]\t# tabbed", 1))
 	id := w.file(broker.Ask{Request: egressReq("api.example.com", "10.0.0.5")})
-	r := w.offers(daemonproto.ClientCLI, id)
+	r := w.offers(daemonproto.ClientWeb, id)
 	o := r.Offered(daemonproto.ScopeAlways)
 	if o == nil || len(r.Withheld) != 0 {
 		t.Fatalf("%+v", r)
@@ -601,9 +601,12 @@ func TestShownAsWritten(t *testing.T) {
 // kind is refused here too.
 func TestAnswerIsRecordedAsTheCaller(t *testing.T) {
 	w := newBrokerWorld(t, brokerConfig)
-	for _, who := range []string{daemonproto.ClientCLI} {
+	for _, who := range []string{daemonproto.ClientCLI, daemonproto.ClientWeb} {
 		id := w.file(broker.Ask{Request: egressReq("api.example.com", "10.0.0.5"), Session: who})
-		liar := map[string]any{"env": "alpha", "id": id, "verdict": "deny", "by": "dialog", "decided_by": "dialog", "client": "daemon"}
+		liar := map[string]any{"env": "alpha", "id": id, "verdict": "deny", "by": "cli", "decided_by": "dialog", "client": "cli"}
+		if who == daemonproto.ClientCLI {
+			liar["by"], liar["decided_by"] = "web", "web"
+		}
 		res, err := w.call(who, daemonproto.MethodAnswer, liar)
 		if err != nil {
 			t.Fatalf("%s: %v", who, err)
@@ -857,4 +860,114 @@ func TestDaemonLinksFindsTheRunningLinksBroker(t *testing.T) {
 		t.Errorf("pending %d after a deny", st[0].Pending)
 	}
 	_ = time.Second
+}
+
+// edit_egress through the daemon's broker service, on a real config.toml:
+// the diff without writing, then the write with its hash, line by line,
+// comments kept, and the next connection decided by it at once.
+func TestEditEgressService(t *testing.T) {
+	w := newBrokerWorld(t, brokerConfig)
+	r := egressReq("git.vpn.example", "10.1.2.3")
+	if v := w.decide(r); v != broker.Pending {
+		t.Fatalf("before: %s", v)
+	}
+	before, _ := os.ReadFile(w.cfg)
+	p := daemonproto.EditEgressParams{Env: "alpha", AddAllow: []string{"git.vpn.example"}, AddDeny: []string{"10.9.0.0/16"}}
+	res, err := w.call(daemonproto.ClientWeb, daemonproto.MethodEditEgress, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown := res.(*daemonproto.EditEgressResult)
+	if shown.Written || shown.Validate() != nil {
+		t.Fatalf("shown %+v", shown)
+	}
+	if got, _ := os.ReadFile(w.cfg); string(got) != string(before) {
+		t.Fatal("config.toml changed without a confirmation")
+	}
+	diff := strings.Join(shown.Diff, "\n")
+	if !strings.Contains(diff, `+ egress_allow = ["*.corp.example", "git.vpn.example"]`) || !strings.Contains(diff, `+ egress_deny = ["10.9.0.0/16"]`) {
+		t.Errorf("diff:\n%s", diff)
+	}
+	if !strings.Contains(shown.Effect, "allows connections to git.vpn.example from environment alpha") {
+		t.Errorf("effect %q", shown.Effect)
+	}
+
+	// A wrong hash writes nothing.
+	p.ConfirmDiff = strings.Repeat("0", 64)
+	if _, err := w.call(daemonproto.ClientWeb, daemonproto.MethodEditEgress, p); kindOf(err) != daemonproto.KindStaleDiff {
+		t.Fatalf("wrong hash: %v", err)
+	}
+	p.ConfirmDiff = shown.Hash
+	res, err = w.call(daemonproto.ClientWeb, daemonproto.MethodEditEgress, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.(*daemonproto.EditEgressResult).Written {
+		t.Fatalf("not written: %+v", res)
+	}
+	got, _ := os.ReadFile(w.cfg)
+	for _, want := range []string{"# my caboose config -- hand edited", "cpus = 4   # a comment on a line the edit leaves alone", `egress_allow = ["*.corp.example", "git.vpn.example"]`, `egress_deny = ["10.9.0.0/16"]`} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("config.toml lacks %q:\n%s", want, got)
+		}
+	}
+	if v := w.decide(r); v != broker.Allowed {
+		t.Errorf("after: %s", v)
+	}
+	if lines := strings.Count(readOr(filepath.Join(w.envDir, "decisions.log")), `"event":"egress-edit"`); lines != 1 {
+		t.Errorf("%d egress-edit lines in decisions.log", lines)
+	}
+	// Removing what is not there is refused; outside vm, all is.
+	if _, err := w.call(daemonproto.ClientCLI, daemonproto.MethodEditEgress, daemonproto.EditEgressParams{Env: "alpha", RemoveAllow: []string{"absent.example"}}); kindOf(err) != daemonproto.KindBadRequest {
+		t.Errorf("absent removal: %v", err)
+	}
+	if _, err := w.call("daemon", daemonproto.MethodEditEgress, daemonproto.EditEgressParams{Env: "alpha", AddAllow: []string{"x.example"}}); kindOf(err) != daemonproto.KindNotAllowed {
+		t.Errorf("a daemon kind: %v", err)
+	}
+}
+
+// An egress edit whose diff would be shown otherwise than written (a
+// character made printable) is refused, shown or confirmed with the hash
+// of the diff as written, and config.toml is left alone; a tab, shown as
+// a space, is let through as for an "always" offer.
+func TestEditEgressRefusesADiffShownChanged(t *testing.T) {
+	line := "egress_allow = [\"*.corp.example\"] # a\u202eb"
+	w := newBrokerWorld(t, strings.Replace(brokerConfig, `egress_allow = ["*.corp.example"]`, line, 1))
+	before, _ := os.ReadFile(w.cfg)
+	p := daemonproto.EditEgressParams{Env: "alpha", AddAllow: []string{"git.vpn.example"}}
+	if _, err := w.call(daemonproto.ClientWeb, daemonproto.MethodEditEgress, p); kindOf(err) != daemonproto.KindBrokerUnavailable || !strings.Contains(err.Error(), "cannot be shown") {
+		t.Fatalf("shown: %v", err)
+	}
+	// A confirmation is refused before its hash is compared: a client
+	// could have hashed the diff as written itself.
+	p.ConfirmDiff = strings.Repeat("a", 64)
+	if _, err := w.call(daemonproto.ClientWeb, daemonproto.MethodEditEgress, p); kindOf(err) != daemonproto.KindBrokerUnavailable {
+		t.Fatalf("confirmed: %v", err)
+	}
+	if got, _ := os.ReadFile(w.cfg); string(got) != string(before) {
+		t.Fatalf("config.toml changed:\n%s", got)
+	}
+
+	tabbed := newBrokerWorld(t, strings.Replace(brokerConfig, `egress_allow = ["*.corp.example"]`, "egress_allow = [\"*.corp.example\"]\t# tabbed", 1))
+	res, err := tabbed.call(daemonproto.ClientWeb, daemonproto.MethodEditEgress, daemonproto.EditEgressParams{Env: "alpha", AddAllow: []string{"git.vpn.example"}})
+	if err != nil {
+		t.Fatalf("tabbed: %v", err)
+	}
+	if r := res.(*daemonproto.EditEgressResult); r.Hash == "" || !slices.ContainsFunc(r.Diff, func(l string) bool { return strings.Contains(l, "] # tabbed") }) {
+		t.Errorf("tabbed: %+v", r)
+	}
+}
+
+func TestEditEgressServiceOutsideVM(t *testing.T) {
+	w := newBrokerWorld(t, strings.Replace(brokerConfig, `isolation = "vm.default"   # the VM, for the VPN`, "isolation = \"container.default\"\n\n[container.default]", 1))
+	_, err := w.call(daemonproto.ClientCLI, daemonproto.MethodEditEgress, daemonproto.EditEgressParams{Env: "alpha", AddAllow: []string{"x.example"}})
+	if kindOf(err) != daemonproto.KindBadRequest || !strings.Contains(err.Error(), "only under vm") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// readOr is the file at path, "" when it cannot be read.
+func readOr(path string) string {
+	b, _ := os.ReadFile(path)
+	return string(b)
 }

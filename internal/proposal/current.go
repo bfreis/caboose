@@ -96,10 +96,10 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 # roots: config.toml's roots, each with its host path, its path in the
 # sandbox, and writable: the parts of it the sandbox may write, relative to
 # it ("." for all of it). The rest of each root is read-only: a write there
-# fails with "Read-only file system". Only the user changes writable, in
-# config.toml, and the sandbox takes the change at its next restart; a
-# proposal cannot. Until then, mounted_writable says what the sandbox that
-# runs now may write, when that differs.
+# fails with "Read-only file system". A [writable] proposal asks for one
+# more path to be writable; the user confirms it, and the sandbox takes the
+# change at its next restart. Until then, mounted_writable says what the
+# sandbox that runs now may write, when that differs.
 
 `
 
