@@ -176,7 +176,7 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | VM size | `cpus`, `memory` in `[vm.NAME]` |
 | VM outbound proxy | `egress`, `egress_ports`, `egress_allow` in `[vm.NAME]` (the last two apply without a restart) |
 | forwarded ports, URL opening, host commands | `forward_ports`, `open_urls`, `host_exec` in `[link]` (within seconds) |
-| which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; unused with OrbStack or Docker Desktop |
+| which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |
 | tmux, time zone, hostname | `tmux`, `tz`, `hostname` in `[session]` (`tmux`, `tz`: the next session; `hostname`: a restart) |
 

@@ -228,7 +228,7 @@ func (m *machine) Boot(spec agentproto.BootSpec) error {
 	if !warming {
 		close(resolved)
 	}
-	if err := mountShares(tags, binds); err != nil {
+	if err := mountShares(sharesDir, tags, binds, sysMounts{}); err != nil {
 		return err
 	}
 	if err := mountDisks(spec.Disks); err != nil {
@@ -476,18 +476,45 @@ func planMounts(ms []agentproto.GuestMount) (tags []string, binds []bind, err er
 	return tags, binds, nil
 }
 
-// mountShares mounts each virtio-fs share once, then binds each of its
-// directories (or files) at their targets, making a missing target as
-// docker does, as root.
-func mountShares(tags []string, binds []bind) error {
+// mounts is what mountShares asks of the kernel: sysMounts, or a test's.
+type mounts interface {
+	Mount(source, target, fstype string, flags uintptr, data string) error
+	Unmount(target string, flags int) error
+}
+
+type sysMounts struct{}
+
+func (sysMounts) Mount(source, target, fstype string, flags uintptr, data string) error {
+	return unix.Mount(source, target, fstype, flags, data)
+}
+
+func (sysMounts) Unmount(target string, flags int) error { return unix.Unmount(target, flags) }
+
+// mountShares mounts each virtio-fs share once under base (sharesDir),
+// binds each of its directories (or files) at their targets, making a
+// missing target as docker does, as root, and then detaches the shares
+// from base: the binds hold them, and nothing of a share is left at a
+// second path beside its targets, where a scan, or a process looking for
+// a way around a read-only bind, would find all of it. Nothing in the
+// guest uses base afterwards; a boot that fails detaches them too.
+func mountShares(base string, tags []string, binds []bind, m mounts) (err error) {
+	var staged []string
+	defer func() {
+		for _, dir := range staged {
+			if uerr := m.Unmount(dir, unix.MNT_DETACH); uerr != nil && err == nil {
+				err = fmt.Errorf("detaching share %s from %s: %w", filepath.Base(dir), base, uerr)
+			}
+		}
+	}()
 	for _, tag := range tags {
-		dir := filepath.Join(sharesDir, tag)
+		dir := filepath.Join(base, tag)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
-		if err := unix.Mount(tag, dir, "virtiofs", 0, ""); err != nil {
+		if err := m.Mount(tag, dir, "virtiofs", 0, ""); err != nil {
 			return fmt.Errorf("mounting share %s: %w", tag, err)
 		}
+		staged = append(staged, dir)
 	}
 	for _, b := range binds {
 		st, err := os.Stat(b.source)
@@ -504,12 +531,12 @@ func mountShares(tags []string, binds []bind) error {
 		if err != nil {
 			return fmt.Errorf("mount target %s: %w", b.target, err)
 		}
-		if err := unix.Mount(b.source, b.target, "", unix.MS_BIND, ""); err != nil {
+		if err := m.Mount(b.source, b.target, "", unix.MS_BIND, ""); err != nil {
 			return fmt.Errorf("mounting %s at %s: %w", b.source, b.target, err)
 		}
 		// A bind takes no flags of its own until it is remounted.
 		if b.readOnly {
-			if err := unix.Mount("", b.target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
+			if err := m.Mount("", b.target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
 				return fmt.Errorf("making %s read-only: %w", b.target, err)
 			}
 		}

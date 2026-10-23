@@ -53,15 +53,15 @@ func TestSyncStatusStartsTheLinkBeforeTheFetch(t *testing.T) {
 			if fetch < 0 {
 				t.Fatalf("no fetch in %+v", box.Execs)
 			}
-			linked := slices.ContainsFunc(b.spawned, func(argv []string) bool { return slices.Contains(argv, "link") })
+			linked := len(b.daemon.ensured) > 0
 			if iso != isolationVM {
 				if wait >= 0 || linked {
-					t.Errorf("under %s, waited for a proxy (%d) or started a link (%v): %+v", iso, wait, b.spawned, box.Execs)
+					t.Errorf("under %s, waited for a proxy (%d) or started a link (%v): %+v", iso, wait, b.daemon.ensured, box.Execs)
 				}
 				return
 			}
 			if !linked {
-				t.Errorf("the link was not started: spawned %v", b.spawned)
+				t.Errorf("the link was not started: asked %v", b.daemon.ensured)
 			}
 			if wait < 0 || wait > fetch {
 				t.Errorf("wait-proxy at %d, fetch at %d: %+v", wait, fetch, box.Execs)

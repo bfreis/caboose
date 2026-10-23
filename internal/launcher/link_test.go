@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,15 @@ import (
 	"github.com/bfreis/caboose/internal/hostlink"
 	"github.com/bfreis/caboose/internal/vm"
 )
+
+// dataDirEnv is the environment of a command run with CABOOSE_DATA_DIR set,
+// which the daemon does not serve: its link is a detached helper.
+func dataDirEnv(k string) string {
+	if k == "CABOOSE_DATA_DIR" {
+		return "/elsewhere"
+	}
+	return ""
+}
 
 func TestLinkLockIsExclusive(t *testing.T) {
 	dir := t.TempDir()
@@ -80,7 +90,7 @@ func TestStartLinkOnlyOnce(t *testing.T) {
 			return nil
 		},
 	}
-	a.startLink()
+	a.startDetachedLink()
 	if len(spawned) != 1 || strings.Join(spawned[0], " ") != "/bin/caboose --env default link --background" {
 		t.Fatalf("spawned %v", spawned)
 	}
@@ -89,7 +99,7 @@ func TestStartLinkOnlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unlock()
-	a.startLink()
+	a.startDetachedLink()
 	if len(spawned) != 1 {
 		t.Fatalf("spawned again while a link runs: %v", spawned)
 	}
@@ -152,7 +162,7 @@ func TestStartLinkReplacesAHelperWithOtherSettings(t *testing.T) {
 			killed := fakeHelper(t, dir, tc.running)
 			a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask", Egress: true}}
 			spawned := spawnRecorder(a)
-			a.startLink()
+			a.startDetachedLink()
 			if got := len(*spawned) == 1 && len(*killed) == 1 && (*killed)[0] == 4242; got != tc.replaced {
 				t.Fatalf("killed %v, spawned %v; want replaced %v", *killed, *spawned, tc.replaced)
 			}
@@ -164,7 +174,7 @@ func TestRestartLink(t *testing.T) {
 	dir := t.TempDir()
 	killed := fakeHelper(t, dir, settingsFor("3000", "ask"))
 	var stderr bytes.Buffer
-	a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, Container: "c", ForwardPorts: "3000", OpenURLs: "ask", Egress: true},
+	a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, Container: "c", ForwardPorts: "3000", OpenURLs: "ask", Egress: true, Getenv: dataDirEnv},
 		Docker: &docker.CLI{Path: "/nonexistent/docker"}, Stderr: &stderr}
 	spawned := spawnRecorder(a)
 	if err := a.Link([]string{"--restart"}); err != nil {
@@ -257,7 +267,7 @@ func TestReloadRetiresOnIsolationChange(t *testing.T) {
 		t.Fatalf("retired %v, settings %+v; want retired, settings as they were", r.retired, r.settings)
 	}
 	done := make(chan error, 1)
-	go func() { done <- r.run(true) }()
+	go func() { done <- r.run(context.Background()) }()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -302,7 +312,7 @@ func TestLinkDialsALinker(t *testing.T) {
 	box := linkerBox{t: t, dial: func() (io.ReadWriteCloser, error) { dialled++; return host, nil }}
 	cfg := &config.Config{Container: "box", DataDir: t.TempDir(), Getenv: func(string) string { return "" }}
 	r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0)}
-	err := r.once()
+	err := r.once(context.Background())
 	var stop *linkStop
 	if !errors.As(err, &stop) || !strings.Contains(stop.msg, "another protocol version") {
 		t.Fatalf("err = %v", err)
@@ -344,7 +354,7 @@ func TestLinkOffersEgressToALinker(t *testing.T) {
 		cfg := &config.Config{Container: "box", DataDir: t.TempDir(), Getenv: func(string) string { return "" }}
 		r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0),
 			cfg: hostlink.Config{Ports: lc.ports, Egress: lc.egress}}
-		_ = r.once()
+		_ = r.once(context.Background())
 		if got := <-offered; got != want {
 			t.Errorf("egress %v: offered %q, want %q", egress, got, want)
 		}
@@ -405,7 +415,7 @@ func TestLinkExecWithoutAgentSaysRestart(t *testing.T) {
 		}}
 		cfg := &config.Config{Container: "box", DataDir: t.TempDir(), Getenv: func(string) string { return "" }}
 		r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0)}
-		err := r.once()
+		err := r.once(context.Background())
 		if !box.Ran(AgentPath, "link") {
 			t.Fatalf("exit %d: ran %v, want %s link", code, box.Execs, AgentPath)
 		}
@@ -439,7 +449,7 @@ func TestLinkVMIsDialled(t *testing.T) {
 	box := &backend.VM{Name: "box", Dir: vm.Dir(filepath.Join(dir, "vm")), Self: self}
 	cfg := &config.Config{Container: "box", DataDir: t.TempDir(), Getenv: func(string) string { return "" }}
 	r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0)}
-	err := r.once()
+	err := r.once(context.Background())
 	var stop *linkStop
 	if err == nil || errors.As(err, &stop) || !strings.Contains(err.Error(), "vm.sock") {
 		t.Fatalf("err = %v, want a failure to dial vm.sock", err)
@@ -487,10 +497,11 @@ func TestLinkRecordsItsStop(t *testing.T) {
 	}()
 	box := linkerBox{t: t, dial: func() (io.ReadWriteCloser, error) { return host, nil }}
 	dir := t.TempDir()
-	cfg := &config.Config{Env: "default", Container: "box", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask", Getenv: func(string) string { return "" }}
+	cfg := &config.Config{Env: "default", Container: "box", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask", Getenv: dataDirEnv}
 	r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0)}
-	if err := r.run(true); err != nil {
-		t.Fatal(err)
+	var ls *linkStop
+	if err := r.run(context.Background()); !errors.As(err, &ls) {
+		t.Fatalf("run: %v, want the stop", err)
 	}
 	msg, ok := readLinkStop(dir)
 	if !ok || !strings.Contains(msg, "another protocol version") || !strings.Contains(msg, "'caboose restart'") {
@@ -499,7 +510,7 @@ func TestLinkRecordsItsStop(t *testing.T) {
 
 	a := &App{Cfg: cfg}
 	spawned := spawnRecorder(a)
-	a.startLink()
+	a.startDetachedLink()
 	if _, ok := readLinkStop(dir); ok || len(*spawned) != 1 {
 		t.Fatalf("starting a link: spawned %v, link.stop kept %v", *spawned, ok)
 	}
@@ -615,7 +626,7 @@ func TestLinkOffersHostExec(t *testing.T) {
 			Roots: []config.Root{{Host: "/configured/elsewhere", Container: "/work"}}}
 		r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0),
 			cfg: hostlink.Config{Ports: lc.ports, HostExec: hostExecOffer(lc.hostExec)}}
-		go func() { _ = r.once() }()
+		go func() { _ = r.once(context.Background()) }()
 		phys, _ := filepath.EvalSymlinks(mounted)
 		want := "not offered"
 		if on {

@@ -50,6 +50,8 @@ func newUpdateEnv(t *testing.T) *updateEnv {
 			return nil
 		},
 		Now: func() time.Time { return e.now },
+		// No release daemon answers.
+		relDaemon: &fakeReleaseDaemon{},
 	}
 	e.version("v1.0.0")
 	return e

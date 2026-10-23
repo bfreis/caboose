@@ -172,14 +172,14 @@ func TestRestartRecreates(t *testing.T) {
 				t.Error("not waited for")
 			}
 			_, probed := os.Stat(b.engine + "/probe")
-			link := slices.ContainsFunc(b.spawned, func(a []string) bool { return slices.Contains(a, "link") })
+			link := len(b.daemon.ensured) > 0
 			switch iso {
 			case isolationContainer:
-				if spec.Runtime != "" || spec.User != "" || probed == nil || link {
+				if spec.Runtime != "" || spec.User != "" || probed == nil || !link {
 					t.Errorf("docker: runtime %q, user %q, probed %v, link %v", spec.Runtime, spec.User, probed == nil, link)
 				}
 			case isolationGVisor:
-				if spec.Runtime != "runsc" || spec.User != "" || probed != nil || link {
+				if spec.Runtime != "runsc" || spec.User != "" || probed != nil || !link {
 					t.Errorf("gvisor: runtime %q, user %q, probed %v, link %v", spec.Runtime, spec.User, probed == nil, link)
 				}
 			case isolationVM:
@@ -244,8 +244,8 @@ func TestLaunchStartsAStoppedSandbox(t *testing.T) {
 			if !slices.Equal(box.Calls, []string{"start"}) || box.State() != "running" {
 				t.Errorf("calls %q, %s", box.Calls, box.State())
 			}
-			if link := len(b.spawned) > 0; link != (iso == isolationVM) {
-				t.Errorf("link started: %v (%q)", link, b.spawned)
+			if link := len(b.daemon.ensured) > 0; !link {
+				t.Errorf("link started: %v (%q)", link, b.daemon.ensured)
 			}
 
 			box.Status, box.Calls = "exited", nil
@@ -588,5 +588,48 @@ func TestInstructionsUnmounted(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A command that finds the sandbox running has its link run too, under
+// every isolation: a link that stopped itself (config.toml changed the
+// isolation) or was never started for a restart's new sandbox comes
+// back with the next caboose shell, sync or prune, not only a session.
+func TestEnsureRunningStartsTheLinkOfARunningSandbox(t *testing.T) {
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := newBoxApp(t, iso, runningBox(iso))
+			if err := b.ensureRunning(false); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			if !slices.Equal(b.daemon.ensured, []string{"default"}) {
+				t.Errorf("ensure_link asked for %q", b.daemon.ensured)
+			}
+		})
+	}
+}
+
+// A session asks for its link once, under every isolation: ensureRunning
+// already did, so a daemon that cannot be reached is said once, and
+// waited for once.
+func TestAttachAsksForTheLinkOnce(t *testing.T) {
+	for _, iso := range isolations {
+		t.Run(iso, func(t *testing.T) {
+			b := newBoxApp(t, iso, runningBox(iso))
+			b.daemon.Dial = errors.New("the daemon did not answer within 10s of being started")
+			b.mountLocal("local/linux-arm64")
+			t.Chdir(b.tmp)
+			b.replace = func(*exec.Cmd) error { return nil }
+			b.terminal = func() bool { return false }
+			if err := b.Attach(nil); err != nil {
+				t.Fatalf("%v\n%s", err, b.errb)
+			}
+			if len(b.daemon.dials) != 1 {
+				t.Errorf("dialled the daemon %d times, want 1", len(b.daemon.dials))
+			}
+			if _, errs := b.said(); strings.Count(errs, "no link to the sandbox") != 1 {
+				t.Errorf("said:\n%s", errs)
+			}
+		})
 	}
 }

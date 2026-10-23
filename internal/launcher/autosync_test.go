@@ -48,6 +48,11 @@ func newAutoEnv(t *testing.T, remote string) *autoEnv {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("no bash")
 	}
+	// The note a slow sync adds is TestAutoSyncSlowRemote's: elsewhere
+	// a loaded machine must not add it to what a launch says.
+	slow := slowSync
+	slowSync = time.Hour
+	t.Cleanup(func() { slowSync = slow })
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_COUNT", "1")
@@ -330,10 +335,10 @@ func TestAutoSyncFailuresAreNotes(t *testing.T) {
 // A remote that does not answer costs a launch the budget, not more, and
 // says it is syncing when it takes a while.
 func TestAutoSyncSlowRemote(t *testing.T) {
+	here, _ := pair(t)
 	budget, slow := syncBudget, slowSync
 	syncBudget, slowSync = 2*time.Second, 200*time.Millisecond
 	defer func() { syncBudget, slowSync = budget, slow }()
-	here, _ := pair(t)
 	here.write(filepath.Join(here.ctl, "slow"), "")
 	// While it waits on the remote, it holds the lock: a caboose sync, or
 	// another launch, waits for it.

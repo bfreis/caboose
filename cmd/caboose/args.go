@@ -33,6 +33,9 @@ type Command struct {
 	// Help is the rest of `caboose help NAME`, wrapped as it is printed.
 	Help string
 	Args argKind
+	// Hidden leaves the command out of the short help (caboose --help);
+	// the full one (caboose help) lists it.
+	Hidden bool
 }
 
 // Commands are the launcher's subcommands, in the order `caboose help`
@@ -134,12 +137,30 @@ is, and a bash given no -c reads its commands from stdin
 runs, a port something listens on in it is forwarded to
 the same port on this machine's localhost when forward_ports allows it,
 and 'caboose-agent open URL' or 'notify TEXT' in the sandbox opens an
-http(s) URL here (after asking, as open_urls says) or shows a notification.
-Every launch starts one in the background, logging to the data dir's
-link.log, and replaces one running with other settings; run in a
-terminal, it logs there instead. One runs at a time. It rereads
-config.toml by itself when that changes. --restart stops the running one
-and starts another in the background.`},
+http(s) URL here (as open_urls says) or shows a notification.
+The caboose daemon runs it, one link per environment: every launch asks the
+daemon for one (starting the daemon when none runs), and it replaces a link
+running with other settings; it rereads config.toml by itself when that
+changes, and logs to the data dir's link.log. 'caboose link' asks the
+daemon for the link now, and --restart has it replace the link whatever its
+settings. --foreground runs the link in this terminal instead, to debug it:
+it is refused while the daemon serves the environment ('caboose daemon
+stop' first). With CABOOSE_DATA_DIR set the daemon does not serve the
+command: a launch keeps a detached helper (--background) instead.`},
+	{Name: "daemon", Usage: "[ACTION]", Args: ownArgs, Hidden: true,
+		Summary: "the host daemon: how it is, or stop or restart it",
+		Help: `One daemon per CABOOSE_HOME runs in the background, for every
+environment: the first command that needs it starts it, and it exits five
+minutes after the last command talking to it and the last sandbox it serves
+are gone. Its socket, lock, state and log are in CABOOSE_HOME/daemon; a
+build from a checkout runs a daemon of its own, in CABOOSE_HOME/daemon-dev.
+It is started with a minimal environment, never the terminal's.
+
+ACTION is one of:
+  status   how it is, and the environments it serves; starts nothing
+  stop     stop it at once
+  restart  stop it, and start another
+With none, it runs in the foreground: what starting it runs.`},
 	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
 		Summary: "delete old Claude Code versions and unused packages",
 		Help: `Deletes the installed Claude Code versions beyond the newest
@@ -197,6 +218,9 @@ type Invocation struct {
 	Command string
 	// Args are what follows the command.
 	Args []string
+	// Short is set for --help (-h) with no command after it: the short
+	// help, without the hidden commands.
+	Short bool
 }
 
 // UsageError is a command line caboose does not accept: Msg says why, and
@@ -229,6 +253,7 @@ flags:
 			// `caboose --help status` asks about status, as `caboose help
 			// status` does.
 			inv.Command, inv.Args = "help", argv[1:]
+			inv.Short = len(inv.Args) == 0
 			return inv, checkHelp(inv.Args)
 		case flag == "--version":
 			if len(argv) > 1 {
@@ -388,8 +413,13 @@ func flagValue(argv []string, flag string) (string, []string, error) {
 	return argv[1], argv[2:], nil
 }
 
-// Usage is `caboose help`.
-func Usage() string {
+// Usage is `caboose help`, the full help: every command.
+func Usage() string { return usage(true) }
+
+// ShortUsage is `caboose --help`: the commands but the hidden ones.
+func ShortUsage() string { return usage(false) }
+
+func usage(all bool) string {
 	var b strings.Builder
 	b.WriteString(`caboose: Claude Code in a long-lived Docker sandbox, with its own account,
 settings and plugins.
@@ -408,13 +438,17 @@ Commands:
 		width = max(width, len(synopsis(c)))
 	}
 	for _, c := range Commands {
+		if c.Hidden && !all {
+			continue
+		}
 		fmt.Fprintf(&b, "  %-*s  %s\n", width, synopsis(c), c.Summary)
 	}
 	b.WriteString(`
 Flags, before the command:
   -e, --env NAME       the environment (default: CABOOSE_ENV, else "default")
       --session NAME   name the tmux session outright (default: CABOOSE_SESSION)
-  -h, --help           this help; 'caboose help COMMAND' for one command
+  -h, --help           this help (every command: 'caboose help';
+                       one: 'caboose help COMMAND')
       --version        the launcher's version, as 'caboose version'
 
 Anything for claude goes after 'claude': caboose claude -p "...".

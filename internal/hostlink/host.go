@@ -27,7 +27,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/linkdebug"
@@ -91,6 +90,12 @@ type Config struct {
 	// Diagnose logs the windows the hellos settled on, and any stream or
 	// write that stalls (agentproto's WatchStalls).
 	Diagnose bool
+	// Execs, when set, also tracks this link's host commands, so they can
+	// be counted and killed apart from every other link's.
+	Execs *Execs
+	// Gate, when set, admits this link's host-exec requests: once it is
+	// drained, they are refused. nil admits every one.
+	Gate *ExecGate
 }
 
 // Host serves one session.
@@ -107,6 +112,8 @@ type Host struct {
 	ssh      int        // SSH agent connections open
 	egress   egressState
 	execs    hostExecState
+	execWG   sync.WaitGroup // host commands' goroutines, which Run waits for
+	closing  bool           // Run is waiting for them: hostExec adds no more
 }
 
 // stallAfter is how long a stream waits for credit, or a write to the
@@ -139,6 +146,10 @@ func Run(sess *agentproto.Session, cfg Config) error {
 	h := &Host{sess: sess, cfg: cfg, forwards: map[int]*forward{}, refused: map[int]string{},
 		tokens: requestBurst, lastTick: time.Now()}
 	defer h.closeAll()
+	// The session is over by the time Run returns, and with it every
+	// command it ran (runHostExec): Run returns once they are gone, so a
+	// link that stops leaves none behind.
+	defer h.waitExecs()
 	hello := agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}
 	if cfg.SSHAgent != "" && cfg.SSHAuthSock != "" {
 		hello.SSHAgent = cfg.SSHAgent
@@ -200,6 +211,15 @@ func Run(sess *agentproto.Session, cfg Config) error {
 		return fmt.Errorf("%w (%v)", ErrNoHello, sess.Err())
 	}
 	return sess.Err()
+}
+
+// waitExecs stops host exec taking more commands, then waits for those it
+// took: a WaitGroup may not be added to once it is waited on.
+func (h *Host) waitExecs() {
+	h.mu.Lock()
+	h.closing = true
+	h.mu.Unlock()
+	h.execWG.Wait()
 }
 
 // watch starts watching the relay's roots, or says why it cannot: the link
@@ -326,6 +346,7 @@ func (h *Host) allow() bool {
 
 func (h *Host) answer(m agentproto.Message) {
 	var err error
+	r := agentproto.Message{Type: agentproto.TypeResponse, ID: m.ID}
 	if m.Op == agentproto.OpSSHAgent {
 		// Not the bucket's: a git command opens one or two, and it only
 		// ever reaches this machine's agent, which asks its own questions.
@@ -350,7 +371,7 @@ func (h *Host) answer(m agentproto.Message) {
 			err = fmt.Errorf("unknown request %q", clip(m.Op, 40))
 		}
 	}
-	r := agentproto.Message{Type: agentproto.TypeResponse, ID: m.ID, OK: err == nil}
+	r.OK = err == nil
 	if err != nil {
 		r.Error, r.Reason = err.Error(), egressReason(err)
 	}
@@ -461,12 +482,4 @@ func Notify(actions Actions, title, text string) error {
 }
 
 // clip cuts s to at most n bytes, on a character boundary.
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "…"
-}
+func clip(s string, n int) string { return proposal.Clip(s, n) }

@@ -249,6 +249,29 @@ func TestDownload(t *testing.T) {
 	}
 }
 
+// The versions named to keep stay, beside the new one, the one before and
+// the running one: with v1..v4 installed and the daemon on v1, installing
+// v5 from v3 keeps v1, v3, v4 and v5.
+func TestInstallKeepsNamedVersions(t *testing.T) {
+	s := releasetest.New(t)
+	for _, tag := range []string{"v1.0.0", "v2.0.0", "v3.0.0", "v4.0.0", "v5.0.0"} {
+		s.Publish(t, tag, true, plat)
+	}
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
+	for _, tag := range []string{"v1.0.0", "v2.0.0", "v3.0.0", "v4.0.0"} {
+		if err := l.Install(context.Background(), selfupdate.Source{Base: s.Base}, tag, "linux", "arm64", "", "v1.0.0"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	running := filepath.Join(l.Versions, "v3.0.0", "caboose")
+	if err := l.Install(context.Background(), selfupdate.Source{Base: s.Base}, "v5.0.0", "linux", "arm64", running, "v1.0.0", "dev", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(versions(t, l), " "); got != "v1.0.0 v3.0.0 v4.0.0 v5.0.0" {
+		t.Errorf("versions: %s", got)
+	}
+}
+
 // Pruning never follows a version entry that is a symlink out of
 // versions/: the link goes, what it points at stays.
 func TestPruneDoesNotFollowSymlinks(t *testing.T) {

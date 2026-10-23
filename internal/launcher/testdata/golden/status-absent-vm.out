@@ -1,0 +1,14 @@
+env       : default
+VM        : box (absent)
+image     : img
+base      : ref.default (base:box)
+root      : TMP -> /work
+data dir  : TMP/data
+keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in TMP/data/home)
+isolation : vm (the default: config.toml defines no profile)
+outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports "22 80 443")
+version   : VERSION
+daemon    : not running (daemon-VERSION); any caboose command that launches or links starts it, or run: caboose daemon restart
+link      : not running (the daemon is not running); run: caboose daemon restart
+
+not running — start it by running caboose in a repo.

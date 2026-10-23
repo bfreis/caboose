@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -112,14 +113,14 @@ func proposalNotice(dataDir, env string, fresh []string) (title, text string, ok
 	return title, text, true
 }
 
-// watchProposals notifies of new proposals until stop.
-func (r *linkRunner) watchProposals(stop <-chan struct{}) {
+// watchProposals notifies of new proposals until ctx ends.
+func (r *linkRunner) watchProposals(ctx context.Context) {
 	w := newProposalWatch(r.a.Cfg.DataDir, r.a.Cfg.Env)
 	t := time.NewTicker(proposalPollEvery)
 	defer t.Stop()
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-t.C:
 		}

@@ -153,6 +153,7 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 		{isolationVM, "VM       ", "vm (the default: config.toml defines no profile)",
 			"outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports \"22 80 443\")\n"},
 	} {
+		pinHost(t, false)
 		var out, errb bytes.Buffer
 		a := &App{
 			Cfg: &config.Config{Env: "default", Container: "caboose-x", Image: "img", Roots: []config.Root{{Host: "/h/dev", Container: "/work"}},
@@ -160,6 +161,8 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 				ImageProfile: config.ImageProfile{Kind: config.ImageKindApko, Name: "default", Defaults: true, Packages: []string{"jq", "postgresql-17-client"}}},
 			Backend: &backendtest.Fake{},
 			Stdout:  &out, Stderr: &errb,
+			// No daemon answers.
+			DaemonDial: (&fakeDaemon{}).dial,
 		}
 		if err := a.Status(); err != nil {
 			t.Fatal(err)
@@ -173,6 +176,8 @@ func TestStatusHeaderWhenNotRunning(t *testing.T) {
 			"keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in /h/.caboose/home)\n" +
 			"isolation : " + tc.shown + "\n" + tc.outbound +
 			"version   : " + version.Get().Version + "\n" +
+			"daemon    : not running (" + a.daemonDir() + "); any caboose command that launches or links starts it, or run: caboose daemon restart\n" +
+			"link      : not running (the daemon is not running); run: caboose daemon restart\n" +
 			"\nnot running — start it by running caboose in a repo.\n"
 		if out.String() != want {
 			t.Errorf("status =\n%s\nwant\n%s", out.String(), want)

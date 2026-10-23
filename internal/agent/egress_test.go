@@ -365,7 +365,28 @@ func TestEgressKeepAliveHostSwitch(t *testing.T) {
 			t.Fatalf("%s: %d", u, resp.StatusCode)
 		}
 	}
-	expectSeen(t, seen, "GET /1 ", "GET /2 ", "EOF", "GET /3 ", "EOF", "GET /4 ", "GET /5 ")
+	// Each stream's server is a goroutine of its own, so the old stream's
+	// EOF can be seen after the new one's first request: within a stream
+	// the order holds, between streams it need not.
+	var all []string
+	for range 7 {
+		select {
+		case s := <-seen:
+			all = append(all, s)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the server saw only %q", all)
+		}
+	}
+	reqs := slices.DeleteFunc(slices.Clone(all), func(s string) bool { return s == "EOF" })
+	if want := []string{"GET /1 ", "GET /2 ", "GET /3 ", "GET /4 ", "GET /5 "}; !slices.Equal(reqs, want) {
+		t.Fatalf("the server saw %q", all)
+	}
+	// The first stream's EOF comes after its last request, /2; the
+	// second's after /3; the last stream stays open.
+	if first := slices.Index(all, "EOF"); first < slices.Index(all, "GET /2 ") || len(all)-len(reqs) != 2 ||
+		slices.Index(all[first+1:], "EOF")+first+1 < slices.Index(all, "GET /3 ") {
+		t.Fatalf("the server saw %q: each stream before the last is to end, after its requests", all)
+	}
 	var got []string
 	for _, m := range h.requests() {
 		got = append(got, fmt.Sprint(m.Host, ":", m.Port))

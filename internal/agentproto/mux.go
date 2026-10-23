@@ -1,4 +1,4 @@
-// Package agentproto is what the host's link helper and caboose-agent, in
+// Package agentproto is what the host's link and caboose-agent, in
 // the container, speak to each other: many streams over one byte stream,
 // which is the stdin and stdout of a `docker exec -i`.
 //

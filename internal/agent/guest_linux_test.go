@@ -180,7 +180,12 @@ func TestWarmResolver(t *testing.T) {
 // The entrypoint runs with the spec's environment, in its HOME, and the
 // boot waits for its ready file -- or fails once it is gone without one.
 func TestEntrypointReady(t *testing.T) {
-	dir := t.TempDir()
+	// Physical, as pwd says it with no PWD set: the temp dir may be
+	// reached through a symlink.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	ready := filepath.Join(dir, "ready")
 	script := filepath.Join(dir, "entrypoint")
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"$FOO $(pwd) $1\" > out; sleep 0.2; touch ready; sleep 30\n"), 0o755)
@@ -377,4 +382,77 @@ func TestLinkWaitEnds(t *testing.T) {
 		time.AfterFunc(100*time.Millisecond, func() { m.doneOnce.Do(func() { close(m.done) }) })
 		closed(t, m, 5*time.Second)
 	})
+}
+
+// recordMounts records mountShares' calls, and fails the ones named.
+type recordMounts struct {
+	calls []string
+	fail  string
+}
+
+func (r *recordMounts) Mount(source, target, fstype string, flags uintptr, data string) error {
+	c := fmt.Sprintf("mount %s %s %s %#x", source, target, fstype, flags)
+	r.calls = append(r.calls, c)
+	if r.fail != "" && strings.HasPrefix(c, r.fail) {
+		return syscall.EINVAL
+	}
+	return nil
+}
+
+func (r *recordMounts) Unmount(target string, flags int) error {
+	r.calls = append(r.calls, fmt.Sprintf("umount %s %#x", target, flags))
+	return nil
+}
+
+// Each share is mounted once, its binds made, and then the share is
+// detached from the staging directory: nothing of it stays reachable at a
+// second path beside its targets. A boot that fails detaches it too.
+func TestMountSharesDetachesStaging(t *testing.T) {
+	dir := t.TempDir()
+	base, out := filepath.Join(dir, "shares"), filepath.Join(dir, "out")
+	for _, d := range []string{"work", "data/home/.claude", "data/claude-code"} {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, "data/home/.claude.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binds := []bind{
+		{base + "/work", out + "/work", false},
+		{base + "/data/home/.claude", out + "/home/agent/.claude", false},
+		{base + "/data/home/.claude.json", out + "/home/agent/.claude.json", false},
+		{base + "/data/claude-code", out + "/etc/claude-code", true},
+	}
+	r := &recordMounts{}
+	if err := mountShares(base, []string{"work", "data"}, binds, r); err != nil {
+		t.Fatal(err)
+	}
+	bindFlag, roFlag, detach := fmt.Sprintf("%#x", unix.MS_BIND), fmt.Sprintf("%#x", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY), fmt.Sprintf("%#x", unix.MNT_DETACH)
+	want := []string{
+		"mount work " + base + "/work virtiofs 0x0",
+		"mount data " + base + "/data virtiofs 0x0",
+		"mount " + base + "/work " + out + "/work  " + bindFlag,
+		"mount " + base + "/data/home/.claude " + out + "/home/agent/.claude  " + bindFlag,
+		"mount " + base + "/data/home/.claude.json " + out + "/home/agent/.claude.json  " + bindFlag,
+		"mount " + base + "/data/claude-code " + out + "/etc/claude-code  " + bindFlag,
+		"mount  " + out + "/etc/claude-code  " + roFlag,
+		"umount " + base + "/work " + detach,
+		"umount " + base + "/data " + detach,
+	}
+	if strings.Join(r.calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(r.calls, "\n"), strings.Join(want, "\n"))
+	}
+	if st, err := os.Stat(out + "/home/agent/.claude.json"); err != nil || !st.Mode().IsRegular() {
+		t.Errorf("a file's target: %v", err)
+	}
+
+	// A failed bind still detaches what was staged, and fails the boot.
+	r = &recordMounts{fail: "mount " + base + "/data/home/.claude "}
+	if err := mountShares(base, []string{"work", "data"}, binds, r); err == nil {
+		t.Fatal("a failed bind did not fail")
+	}
+	if n := len(r.calls); n < 2 || r.calls[n-2] != "umount "+base+"/work "+detach || r.calls[n-1] != "umount "+base+"/data "+detach {
+		t.Errorf("after a failed bind: %q", r.calls)
+	}
 }

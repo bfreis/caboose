@@ -197,11 +197,18 @@ func TestApplyRoot(t *testing.T) {
 	}
 	p := e.propose("other.toml", "title = \"Mount other\"\n[roots]\nother = \"~/src/other\"\n")
 
+	// The proposal is shown as the physical path, which differs from
+	// other when the temp dir is reached through a symlink (macOS's).
+	phys, err := filepath.EvalSymlinks(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// Apply; type the name wrong.
 	if err := e.apply("1\nothre\n"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("/work/other", other, "readable and writable from the sandbox", "credentials or keys: .env",
+	e.wantOut("/work/other", phys, "readable and writable from the sandbox", "credentials or keys: .env",
 		"That is not other")
 	if c := e.configFile(); c != "" {
 		t.Errorf("config.toml written on a wrong name:\n%s", c)

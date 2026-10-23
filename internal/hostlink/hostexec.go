@@ -71,18 +71,51 @@ func (h *Host) hostExec(id uint64) error {
 	if x == nil {
 		return errors.New(agentproto.HostExecOff)
 	}
+	return h.openExec(id, "host exec", func(s *agentproto.Session, req agentproto.ExecRequest, streams map[string]*agentproto.Stream) (int, string, error) {
+		return runHostExec(s, x, req, streams, h.cfg.Execs)
+	})
+}
+
+// execRunner runs the command a client asked for on the exec protocol's
+// session s, req and streams its own, and returns its exit status, a
+// word on where it ran for the log, and why it did not run at all.
+type execRunner func(s *agentproto.Session, req agentproto.ExecRequest, streams map[string]*agentproto.Stream) (code int, where string, err error)
+
+// openExec admits one more command, of the kind what names in the log,
+// and opens the stream for request id on which its client speaks the
+// exec protocol, served by run; or says why there is none.
+func (h *Host) openExec(id uint64, what string, run execRunner) error {
+	// Counted from here to the command's end: the daemon exits for a
+	// replace only once none is in, and admits none while it holds them
+	// off for the running ones to end.
+	gate := h.cfg.Gate
+	if !gate.enter() {
+		h.execLogf("%s: refused: the daemon is being replaced", what)
+		return errors.New("the host's caboose daemon is being replaced, once the host commands running end, and admits no new one meanwhile; try again in a minute")
+	}
 	h.mu.Lock()
+	if h.closing {
+		// Run is waiting for the commands it ran: no more are added.
+		h.mu.Unlock()
+		gate.leave()
+		return errors.New("the link is closing")
+	}
 	if h.execs.running >= maxHostExec {
 		h.mu.Unlock()
-		h.execLogf("host exec: refused: already %d running", maxHostExec)
+		gate.leave()
+		h.execLogf("%s: refused: already %d running", what, maxHostExec)
 		return fmt.Errorf("already %d commands running on the host; try again once one ends", maxHostExec)
 	}
 	h.execs.running++
+	// Added under h.mu, before closing is set: never once Run waits.
+	h.execWG.Add(1)
 	h.mu.Unlock()
 	done := func() {
 		h.mu.Lock()
 		h.execs.running--
 		h.mu.Unlock()
+		gate.leave()
+		h.execWG.Done()
 	}
 	hdr, _ := json.Marshal(agentproto.StreamHeader{Request: id})
 	st, err := h.sess.Open(hdr)
@@ -92,15 +125,16 @@ func (h *Host) hostExec(id uint64) error {
 	}
 	go func() {
 		defer done()
-		h.serveExec(st, x)
+		h.serveExec(st, what, run)
 	}()
 	return nil
 }
 
-// serveExec is the exec protocol's server on st, for one command. The
-// client is the sandbox's, so the session takes what an exec needs and no
-// more: its three streams, each with the least in flight.
-func (h *Host) serveExec(st *agentproto.Stream, x *HostExec) {
+// serveExec is the exec protocol's server on st, for one command, which
+// run runs. The client is the sandbox's, so the session takes what an
+// exec needs and no more: its three streams, each with the least in
+// flight.
+func (h *Host) serveExec(st *agentproto.Stream, what string, run execRunner) {
 	s := agentproto.NewSessionLimited(st, st, false,
 		agentproto.Limits{Window: agentproto.DefaultWindow, Streams: agentproto.ExecStreams})
 	defer s.Close()
@@ -122,12 +156,12 @@ func (h *Host) serveExec(st *agentproto.Stream, x *HostExec) {
 		}
 	}()
 	started := time.Now()
-	code, dir, err := runHostExec(s, x, req, streams)
-	what := clip(proposal.Printable(strings.Join(req.Argv, " ")), 200)
+	code, dir, err := run(s, req, streams)
+	argv := clip(proposal.Printable(strings.Join(req.Argv, " ")), 200)
 	if err != nil {
-		h.execLogf("host exec %s: %d: %s", what, code, clip(proposal.Printable(err.Error()), 300))
+		h.execLogf("%s %s: %d: %s", what, argv, code, clip(proposal.Printable(err.Error()), 300))
 	} else {
-		h.execLogf("host exec %s in %s: exit %d after %v", what, clip(proposal.Printable(dir), 300), code, time.Since(started).Round(time.Millisecond))
+		h.execLogf("%s %s in %s: exit %d after %v", what, argv, clip(proposal.Printable(dir), 300), code, time.Since(started).Round(time.Millisecond))
 	}
 	m := agentproto.Message{Type: agentproto.TypeExit, Code: code}
 	if err != nil {
@@ -144,6 +178,21 @@ func (h *Host) serveExec(st *agentproto.Stream, x *HostExec) {
 	}
 }
 
+// defaultLang is the LANG a command gets when the link has none.
+const defaultLang = "en_US.UTF-8"
+
+// HostExecEnv is the whole environment of a command run on the host: PATH,
+// HOME and LANG as getenv has them, and nothing else. The link's own
+// environment (an agent socket, a token, a docker setting) never reaches a
+// command the sandbox asked for; env NAME=VALUE CMD sets what one needs.
+func HostExecEnv(getenv func(string) string) []string {
+	lang := getenv("LANG")
+	if lang == "" {
+		lang = defaultLang
+	}
+	return []string{"PATH=" + getenv("PATH"), "HOME=" + getenv("HOME"), "LANG=" + lang}
+}
+
 // check is the host directory req runs in, or why it does not run at all.
 func (x *HostExec) check(req agentproto.ExecRequest) (string, error) {
 	switch {
@@ -152,7 +201,7 @@ func (x *HostExec) check(req agentproto.ExecRequest) (string, error) {
 	case req.User != "":
 		return "", errors.New("a command on the host runs as the user the link runs as, and takes no other")
 	case len(req.Env) > 0:
-		return "", errors.New("a command on the host runs in the link's own environment, and takes no variables (env NAME=VALUE CMD sets one)")
+		return "", errors.New("a command on the host gets only PATH, HOME and LANG, and takes no variables (env NAME=VALUE CMD sets one)")
 	case len(req.Argv) > maxHostExecArgs:
 		return "", fmt.Errorf("over %d arguments", maxHostExecArgs)
 	case req.Argv[0] == "":
@@ -184,7 +233,7 @@ func (x *HostExec) check(req agentproto.ExecRequest) (string, error) {
 
 // runHostExec runs req and waits for it, its output copied to its streams;
 // err is why it did not run. dir is the host directory it ran in.
-func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest, streams map[string]*agentproto.Stream) (code int, dir string, err error) {
+func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest, streams map[string]*agentproto.Stream, own *Execs) (code int, dir string, err error) {
 	closeAll := func() {
 		for _, st := range streams {
 			_ = st.CloseWrite()
@@ -196,29 +245,44 @@ func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest,
 	}
 	path := req.Argv[0]
 	if !strings.Contains(path, "/") {
-		// The link's own PATH: the user's, from the terminal that
-		// started it. One relative to Dir is resolved there by exec.Cmd.
+		// The link's own PATH: the daemon's, which it took from the
+		// user's login shell as it started (a detached helper's is the
+		// terminal's that started it). One relative to Dir is resolved
+		// there by exec.Cmd.
 		if path, err = exec.LookPath(path); err != nil {
 			closeAll()
 			return agentproto.ExitNotFound, dir, fmt.Errorf("%s: not found in the host's PATH", clip(proposal.Printable(req.Argv[0]), 100))
 		}
 	}
-	cmd := &exec.Cmd{Path: path, Args: req.Argv, Dir: dir,
+	cmd := &exec.Cmd{Path: path, Args: req.Argv, Dir: dir, Env: HostExecEnv(os.Getenv),
 		// Its own group, so a kill reaches what it started too.
 		SysProcAttr: &syscall.SysProcAttr{Setpgid: true}}
+	code, err = runCmd(s, cmd, streams, own)
+	return code, dir, err
+}
 
+// runCmd starts cmd, which must have Setpgid, and waits for it, its output
+// copied to its streams, its stdin from theirs; err is why it did not
+// start. The command and its group are killed when the session s ends.
+// cmd's Stdin, Stdout and Stderr are runCmd's to set.
+func runCmd(s *agentproto.Session, cmd *exec.Cmd, streams map[string]*agentproto.Stream, own *Execs) (int, error) {
+	closeAll := func() {
+		for _, st := range streams {
+			_ = st.CloseWrite()
+		}
+	}
 	out, errs := streams[agentproto.StreamStdout], streams[agentproto.StreamStderr]
 	outR, outW, err := os.Pipe()
 	if err != nil {
 		closeAll()
-		return agentproto.ExitCannotRun, dir, err
+		return agentproto.ExitCannotRun, err
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
 		outR.Close()
 		outW.Close()
 		closeAll()
-		return agentproto.ExitCannotRun, dir, err
+		return agentproto.ExitCannotRun, err
 	}
 	cmd.Stdout, cmd.Stderr = outW, errW
 	if in := streams[agentproto.StreamStdin]; in != nil {
@@ -231,7 +295,7 @@ func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest,
 			errR.Close()
 			errW.Close()
 			closeAll()
-			return agentproto.ExitCannotRun, dir, err
+			return agentproto.ExitCannotRun, err
 		}
 		go func() {
 			_, _ = io.Copy(stdin, in)
@@ -246,13 +310,17 @@ func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest,
 		errR.Close()
 		closeAll()
 		if errors.Is(err, os.ErrNotExist) {
-			return agentproto.ExitNotFound, dir, err
+			return agentproto.ExitNotFound, err
 		}
-		return agentproto.ExitCannotRun, dir, err
+		return agentproto.ExitCannotRun, err
 	}
 	g := &group{pid: cmd.Process.Pid, done: make(chan struct{})}
-	track(g, true)
-	defer track(g, false)
+	running.track(g, true)
+	defer running.track(g, false)
+	if own != nil {
+		own.track(g, true)
+		defer own.track(g, false)
+	}
 	go func() {
 		// The client gone, or the link: the command goes too.
 		select {
@@ -270,7 +338,7 @@ func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest,
 	copied.Wait()
 	_ = out.CloseWrite()
 	_ = errs.CloseWrite()
-	return exitStatus(cmd, werr), dir, nil
+	return exitStatus(cmd, werr), nil
 }
 
 // drain copies r to dst until r ends, or until the command has exited
@@ -360,32 +428,43 @@ func (g *group) terminate() {
 	<-g.done
 }
 
-// running are the host commands running in this process, every session's.
-var running = struct {
-	sync.Mutex
+// Execs are host commands running: one link's, or every link's in the
+// process (KillHostExecs). A link that keeps its own (Config.Execs) can
+// kill and count its commands without touching another link's.
+type Execs struct {
+	mu     sync.Mutex
 	groups map[*group]bool
-}{groups: map[*group]bool{}}
+}
 
-func track(g *group, on bool) {
-	running.Lock()
-	defer running.Unlock()
+// NewExecs is an empty set.
+func NewExecs() *Execs { return &Execs{groups: map[*group]bool{}} }
+
+func (e *Execs) track(g *group, on bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if on {
-		running.groups[g] = true
+		e.groups[g] = true
 	} else {
-		delete(running.groups, g)
+		delete(e.groups, g)
 	}
 }
 
-// KillHostExecs terminates every host command still running in this
-// process, and returns once they are gone: the link's last act, at a
-// signal, since its sessions' ends do it only while the process lives.
-func KillHostExecs() {
-	running.Lock()
-	gs := make([]*group, 0, len(running.groups))
-	for g := range running.groups {
+// Running is how many commands of the set are running.
+func (e *Execs) Running() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.groups)
+}
+
+// Kill terminates every command of the set still running, and returns once
+// they are gone.
+func (e *Execs) Kill() {
+	e.mu.Lock()
+	gs := make([]*group, 0, len(e.groups))
+	for g := range e.groups {
 		gs = append(gs, g)
 	}
-	running.Unlock()
+	e.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, g := range gs {
 		wg.Add(1)
@@ -396,6 +475,19 @@ func KillHostExecs() {
 	}
 	wg.Wait()
 }
+
+// running are the host commands running in this process, every link's.
+var running = NewExecs()
+
+// KillHostExecs terminates every host command still running in this
+// process, every link's, and returns once they are gone: the process's
+// last act, at a signal, since its sessions' ends do it only while the
+// process lives.
+func KillHostExecs() { running.Kill() }
+
+// HostExecsRunning is how many host commands run in this process, every
+// link's.
+func HostExecsRunning() int { return running.Running() }
 
 // execLogf logs a line of host exec's, at most hostExecLogMax a period.
 func (h *Host) execLogf(format string, args ...any) {

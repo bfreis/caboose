@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,10 @@ import (
 // it the checkout is found next to the executable (see
 // launcher.FindCheckout).
 var sourceDir string
+
+// daemonDial, when set, stands in for connecting to the caboose daemon
+// (launcher.App.DaemonDial): the tests'.
+var daemonDial func(ctx context.Context, start bool) (launcher.DaemonCaller, error)
 
 func main() {
 	// Docker Desktop's CLI follows a failed `docker exec -t` with an
@@ -53,12 +58,26 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		return usageError(stderr, err)
 	}
 	if inv.Command == "help" {
-		if len(inv.Args) == 1 {
+		switch {
+		case len(inv.Args) == 1:
 			fmt.Fprint(stdout, CommandUsage(inv.Args[0]))
-		} else {
+		case inv.Short:
+			fmt.Fprint(stdout, ShortUsage())
+		default:
 			fmt.Fprint(stdout, Usage())
 		}
 		return 0
+	}
+
+	if inv.Command == "daemon" {
+		// Machine-wide, and what starting the daemon runs, detached: no
+		// environment's config.toml, no update check.
+		cfg, err := config.Machine(os.Getenv)
+		if err != nil {
+			return exit(stderr, launcher.Die("%v", err))
+		}
+		app := &launcher.App{Cfg: cfg, Stdout: stdout, Stderr: stderr, Checkout: launcher.FindCheckout(sourceDir)}
+		return exit(stderr, app.Daemon(inv.Args))
 	}
 
 	cfg, err := config.Load(os.Getenv, config.OSFS{}, inv.Env)
@@ -78,6 +97,8 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		Docker: &docker.CLI{Path: "docker", Stderr: stderr},
 		Stdout: stdout,
 		Stderr: stderr,
+		// nil outside the tests.
+		DaemonDial: daemonDial,
 	}
 	// Neither needs the roots, and setup, which runs before they are
 	// resolved, can end in a launch.

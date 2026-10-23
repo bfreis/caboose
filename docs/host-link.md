@@ -6,18 +6,82 @@ a page in your browser; `caboose-agent notify TEXT` shows a notification;
 and under gVisor, a file you save here is seen by the watchers in the
 sandbox; and, where you turn it on, `caboose-agent host CMD` runs CMD on
 your machine. All of it goes through the host link: `caboose-agent` in the
-container, and `caboose link` on your machine.
+container, and a link on your machine, run by the caboose daemon.
 
 ## How it runs
 
-Every launch starts `caboose link --background` for its environment, unless
-one is already running. It runs `docker exec -i <container> caboose-agent
-link`, speaks a small multiplexed protocol over that exec's stdin and
-stdout, and reconnects if it drops. It ends by itself when the container
-stops; the next launch starts it again. It logs to the data dir's
-`link.log` (`~/.caboose/envs/default/data/link.log` for the default
-environment). `caboose link`, run in a terminal, does the same in the
-foreground, logging there.
+One daemon per `CABOOSE_HOME` runs the links of all your environments, one
+each. Every launch asks it for its environment's link (`caboose link` does
+too), and the daemon runs `docker exec -i <container> caboose-agent link`,
+speaks a small multiplexed protocol over that exec's stdin and stdout, and
+reconnects if it drops. A link ends by itself when its container stops; the
+next launch starts it again. It logs to the data dir's `link.log`
+(`~/.caboose/envs/default/data/link.log` for the default environment).
+
+`caboose status` says how the daemon and the environment's link are
+(`daemon` and `link` lines), and `caboose doctor` checks that the daemon
+answers, runs the same version as the `caboose` you typed, and holds a link
+while the sandbox runs, naming the command that fixes each problem.
+`caboose link` asks the daemon for the link now, `caboose link --restart`
+has it replace the link whatever its settings, and `caboose link
+--foreground` runs the link in the terminal instead, to debug it (it is
+refused while the daemon serves the environment: `caboose daemon stop`
+first).
+
+### The daemon
+
+It is started on demand: a launch, `caboose shell`, `caboose sync` or
+`caboose link` starts it when nothing answers its socket, and `status` and
+`doctor` only ask, never start it. Nothing is installed for it: no
+LaunchAgent, no systemd unit. It stays while a sandbox it serves runs or a
+command is connected, and exits five minutes after the last of them goes;
+the next command starts it again, and it brings back the links of every
+sandbox that runs by itself, so a daemon that crashes costs a few seconds
+without links, not a launch. `caboose daemon status` says how it is,
+`caboose daemon stop` ends it at once (its links stop, and the host
+commands they started: a command gets SIGTERM, then SIGKILL, and the
+stop waits up to 15 s for them, saying how many it is ending), and `caboose daemon restart` stops it and starts
+another, returning once that one has brought the links back. Until a
+daemon that has just started has, status and doctor wait a moment, then
+say it is still bringing them back.
+
+After `caboose update` (or the daily check) installs a new release, the
+running daemon is asked to make way for it: it exits as soon as no host
+command runs (a long one, such as a keep-awake command, makes it wait,
+`caboose daemon status` says it is "replacing", and while it waits it
+starts no new host command, so that new ones cannot hold it off), the new
+release's daemon
+starts, and the sandboxes' links come back by themselves. The version it
+ran stays installed until it has gone. A caboose whose daemon protocol is
+newer than the running daemon's replaces it at once, ending the host
+commands it ran; an older caboose does not use a newer daemon and says to
+update (`status` and `doctor` only say which is older). A newer caboose's
+daemon refuses an older caboose's commands, `caboose daemon stop` and
+`restart` included: update caboose, or end the daemon with `kill` (its pid
+is in `daemon.json`).
+
+Its files are in `CABOOSE_HOME/daemon/` (`~/.caboose/daemon/`), a directory
+only you can enter, and in no mount of any sandbox: `daemon.sock` (the
+socket, which takes connections from your user only), `daemon.lock`,
+`start.lock`, `daemon.json` (its pid, version and start time) and
+`daemon.log`. A `caboose` built from a checkout runs a daemon of its own in
+`CABOOSE_HOME/daemon-dev/`, and serves only the environments it launches.
+A Unix socket's path is limited to about a hundred bytes; with a long
+`CABOOSE_HOME`, `caboose doctor` says to shorten it.
+
+The daemon is started with a minimal environment, never your terminal's:
+it asks a login shell (`$SHELL -l`) once, when it starts, for `PATH`,
+`SSH_AUTH_SOCK`, `DOCKER_HOST`, `DOCKER_CONTEXT` and `DOCKER_CONFIG`. So it
+finds `docker` and your SSH agent the same way whichever terminal
+started it, and a variable you exported only in the terminal you launched
+from does not reach it (see [Host commands](#host-commands) for what that
+means there). The SSH agent a `vm` sandbox gets is `ssh_agent` in `[link]`
+if set, else the one ssh would use, found from that login shell.
+
+A command run with `CABOOSE_DATA_DIR` set is not the daemon's, which serves
+each environment at its default data dir only: its launches keep starting a
+detached `caboose link --background`, logging to that data dir's
+`link.log`. The daemon never takes over such a helper's link, nor stops it.
 
 Nothing on your machine listens for the container, and nothing of your
 machine is mounted into it for this: the exec is the whole channel, so it
@@ -27,8 +91,8 @@ It rereads `config.toml` by itself within a couple of seconds of a change:
 new `[link]` settings, or a `vm` profile's `egress_*`, reconnect the link with them (forwarded
 connections open at that moment are cut, and host commands running are ended), and an edit it cannot read is
 logged and leaves the running settings in place. A launch whose settings differ
-from the running helper's replaces the helper. `caboose link --restart` stops the running
-helper and starts a new one in the background, whatever changed.
+from the running link's replaces the link. `caboose link --restart` replaces it whatever
+changed.
 
 ## Ports
 
@@ -241,9 +305,14 @@ caboose-agent host -C /work/dev/site ls     # in another
 caboose-agent host sh -c 'cd .. && ls'    # shell syntax takes a shell
 ```
 
-The command runs as you, the user who ran `caboose`, with the environment
-the link has: it was started from your terminal, so `PATH`,
-`SSH_AUTH_SOCK` and the rest are yours. It runs in the host directory of
+The command runs as you, the user who ran `caboose`, with exactly three
+variables: `PATH`, `HOME` and `LANG`. Nothing else of the link's
+environment reaches it, so a variable you exported only in a terminal
+(an agent socket, a token) is not there; `env NAME=VALUE CMD` sets one.
+`PATH` is the daemon's, which a login shell gave it when it
+started (`$SHELL -l`, bounded to five seconds; if that fails the daemon
+keeps the `PATH` it has and says so in its log), so a `PATH` change in your
+shell's startup files reaches new commands after `caboose daemon restart`. It runs in the host directory of
 the sandbox's current one (or `-C DIR`'s), which must be under a root the
 sandbox mounts: `/work/dev/site` is wherever that root is here. Its stdin,
 stdout and stderr are the sandbox command's, and its exit status is

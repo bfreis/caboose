@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -117,11 +118,15 @@ func thousands(n int) string {
 	return s
 }
 
+// vnodesHost is the Mac's processes, which vnodeFinder searches; a
+// variable so that tests can play a host with none to scan.
+var vnodesHost = vnodes.Host
+
 // vnodeFinder finds this environment's VM process by what it holds under
 // the data dir, which no other environment shares, and out of its vm/,
 // which holds the builder's disks too.
 func (a *App) vnodeFinder() (*vnodes.Finder, error) {
-	sys, err := vnodes.Host()
+	sys, err := vnodesHost()
 	if err != nil {
 		return nil, err
 	}
@@ -155,10 +160,10 @@ func (a *App) vmFilesHeld() (held, maxVnodes, pid int, err error) {
 }
 
 // watchVnodes tells of the VM's open files crossing each level, until
-// stop. It serves vm alone, and on a Mac only: elsewhere there is nothing
+// ctx ends. It serves vm alone, and on a Mac only: elsewhere there is nothing
 // to count. It first counts a whole vnodePollEvery in, past the VM's boot.
 // A failure is logged, and never ends the link.
-func (r *linkRunner) watchVnodes(stop <-chan struct{}) {
+func (r *linkRunner) watchVnodes(ctx context.Context) {
 	if r.settingsNow().Isolation != isolationVM {
 		return
 	}
@@ -174,7 +179,7 @@ func (r *linkRunner) watchVnodes(stop <-chan struct{}) {
 	defer t.Stop()
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-t.C:
 		}

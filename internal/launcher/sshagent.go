@@ -1,13 +1,13 @@
 package launcher
 
 import (
-	"os"
-	"os/exec"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
@@ -34,10 +34,17 @@ const (
 // arrives as an empty directory: OrbStack and Docker Desktop pass through
 // only macOS's own launchd agent that way, which is exactly what 1Password
 // (or Secretive) is not. Both engines provide hostServicesAgent for this
-// instead, so with either of them that is what is mounted, unchecked. On
-// Linux the agent's socket is mounted directly.
+// instead, so with either of them that is what is mounted, unchecked --
+// unless no agent was asked for outright (agentDeclined): an engine's
+// forwarding cannot be pointed at another agent, but it can be left out.
+// On Linux the agent's socket is mounted directly. Under vm no engine
+// serves the sandbox (the link carries the agent), so docker is never
+// asked.
 func (a *App) sshAgentSource() string {
-	if goos == "darwin" && a.macEngine() != "" {
+	if !a.isVM() && goos == "darwin" && a.macEngine() != "" {
+		if _, none := a.agentDeclined(); none {
+			return ""
+		}
 		return hostServicesAgent
 	}
 	if s, _ := a.hostAgent(); s != "" && isSocket(s) {
@@ -62,38 +69,107 @@ func (a *App) macEngine() string {
 }
 
 // hostAgent is the host's SSH agent socket the sandbox gets, and what
-// chose it, for messages; "" when there is none.
+// chose it, for messages; "" when there is none. One command asks it
+// several times (status, doctor's rows, the mounts), and each answer can
+// run ssh -G, which a slow Match exec holds up to sshGTimeout: so it is
+// remembered for agentMemoTTL, for the same setting, origin, environment
+// and lookup only, which keeps an App that lives long (a daemon's link)
+// from answering with what config.toml or ~/.ssh/config said before.
 func (a *App) hostAgent() (sock, from string) {
-	return a.agentFrom(a.Cfg.SSHAgent, sshAgentOrigin(a.Cfg))
+	key := agentMemo{set: a.Cfg.SSHAgent, origin: sshAgentOrigin(a.Cfg), env: a.getenv("SSH_AUTH_SOCK"), ssh: a.SSH}
+	if m := a.agentSeen; m != nil && m.same(key) && time.Since(m.at) < agentMemoTTL {
+		return m.sock, m.from
+	}
+	key.sock, key.from = a.agentFrom(key.set, key.origin)
+	key.at = time.Now()
+	a.agentSeen = &key
+	return key.sock, key.from
 }
 
+// agentMemo is one answer of hostAgent's, with what it was asked under.
+type agentMemo struct {
+	set, origin, env string
+	ssh              *SSHLookup
+	at               time.Time
+	sock, from       string
+}
+
+func (m *agentMemo) same(k agentMemo) bool {
+	return m.set == k.set && m.origin == k.origin && m.env == k.env && m.ssh == k.ssh
+}
+
+// agentMemoTTL is how long hostAgent's answer holds: a command's length,
+// not a daemon's.
+const agentMemoTTL = 30 * time.Second
+
 // agentFrom is hostAgent for a setting of ssh_agent, set, and what set it:
-// that socket ("none" for none), else the one ssh on the host would use for
-// github.com -- an IdentityAgent from ~/.ssh/config (1Password's documented
+// that socket ("none" for none), else the one ssh on the host would use by
+// default -- an IdentityAgent from ~/.ssh/config (1Password's documented
 // setup), else $SSH_AUTH_SOCK, which a tool like a work login's may have
 // taken over without anything on the host noticing.
+//
+// "By default" is for agentProbeHost, which no Host block names: a block
+// for one host (github.com with IdentityAgent none, say) does not decide
+// the sandbox's agent. An IdentityAgent none that applies to every host
+// is no agent, said as such, never $SSH_AUTH_SOCK instead.
+//
+// ssh -G says which: it reads the config as ssh does. When it fails (no
+// ssh, or one that refuses the config) ~/.ssh/config is read for an
+// IdentityAgent directly, and what chose the agent says why, for link.log
+// and doctor: "$SSH_AUTH_SOCK (ssh -G ... failed: ...)".
 func (a *App) agentFrom(set, origin string) (sock, from string) {
 	env := a.getenv("SSH_AUTH_SOCK")
 	if set != "" {
 		return a.expandAgent(set, env), origin
 	}
-	const fromEnv = "$SSH_AUTH_SOCK"
-	ssh, err := exec.LookPath("ssh")
-	if err != nil {
-		return env, fromEnv
-	}
-	out, err := exec.Command(ssh, "-G", "github.com").Output()
-	if err != nil {
-		return env, fromEnv
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		k, v, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if !ok || !strings.EqualFold(k, "identityagent") {
-			continue
+	l := a.sshLookup()
+	out, gerr := l.G(agentProbeHost)
+	if gerr == nil {
+		if v, ok := sshGIdentityAgent(out); ok {
+			if v == "none" {
+				return "", agentFromNone
+			}
+			return a.expandAgent(v, env), agentFromConfig
 		}
-		return a.expandAgent(strings.Trim(strings.TrimSpace(v), `"`), env), "IdentityAgent in ~/.ssh/config"
+		return env, agentFromEnv
 	}
-	return env, fromEnv
+	v, ok, cerr := configIdentityAgent(l)
+	switch {
+	case ok && v == "none":
+		return "", fmt.Sprintf("%s, read directly: %v", agentFromNone, gerr)
+	case ok:
+		return a.expandAgent(v, env), fmt.Sprintf("%s, read directly: %v", agentFromConfig, gerr)
+	case cerr != nil:
+		return env, fmt.Sprintf("%s (%v; %v)", agentFromEnv, gerr, cerr)
+	}
+	return env, fmt.Sprintf("%s (%v)", agentFromEnv, gerr)
+}
+
+// agentFromEnv is agentFrom's "what chose it" for the environment's
+// SSH_AUTH_SOCK, which a reason may follow; agentFromConfig for an
+// IdentityAgent, agentFromNone for an IdentityAgent none.
+const (
+	agentFromEnv    = "$SSH_AUTH_SOCK"
+	agentFromConfig = "IdentityAgent in ~/.ssh/config"
+	agentFromNone   = "IdentityAgent none in ~/.ssh/config"
+)
+
+// agentDeclined is what said outright that the sandbox gets no agent, and
+// whether something did: ssh_agent = "none", or an IdentityAgent none
+// that applies to every host (agentFrom). Not an agent that is merely missing
+// -- an unset $SSH_AUTH_SOCK, or a $VAR in ssh_agent that names nothing
+// -- which on a Mac engine still leaves the engine's own forwarding.
+func (a *App) agentDeclined() (why string, none bool) {
+	if a.Cfg.SSHAgent == "none" {
+		return sshAgentOrigin(a.Cfg) + ` is "none"`, true
+	}
+	if a.Cfg.SSHAgent != "" {
+		return "", false
+	}
+	if sock, from := a.hostAgent(); sock == "" && strings.HasPrefix(from, agentFromNone) {
+		return from, true
+	}
+	return "", false
 }
 
 // sshAgentOrigin says what set ssh_agent, for messages.
@@ -111,8 +187,8 @@ func (a *App) expandAgent(v, env string) string {
 	case strings.HasPrefix(v, "$"):
 		return a.getenv(strings.Trim(v[1:], "{}"))
 	case v == "~" || strings.HasPrefix(v, "~/"):
-		home, err := os.UserHomeDir()
-		if err != nil {
+		home, err := a.sshLookup().Home()
+		if err != nil || home == "" {
 			return ""
 		}
 		return filepath.Join(home, strings.TrimPrefix(v, "~"))
@@ -123,7 +199,13 @@ func (a *App) expandAgent(v, env string) string {
 // agentStatus is what the sandbox makes of its forwarded agent, as
 // caboose status shows it; usable is false when git there cannot use it.
 func (a *App) agentStatus() (status string, usable bool) {
-	if sock, _ := a.containerEnv("SSH_AUTH_SOCK"); sock == "" {
+	sock, _ := a.containerEnv("SSH_AUTH_SOCK")
+	if why, none := a.agentDeclined(); none && (sock == "" || a.isVM()) {
+		// Under vm SSH_AUTH_SOCK is always set: the link's agent listens
+		// there, and gives no agent when none was asked for.
+		return "not forwarded (" + why + ")", false
+	}
+	if sock == "" {
 		return "not forwarded (the host had no agent when the " + a.noun() + " was created)", false
 	}
 	out, err := backend.Output(a.box(), "ssh-add", "-l")
@@ -135,6 +217,16 @@ func (a *App) agentStatus() (status string, usable bool) {
 		return "forwarded, but the agent holds no keys", false
 	case code == 2 && strings.Contains(err.Error(), "Permission denied"):
 		return "forwarded, but the sandbox's user may not use it (permission denied)", false
+	case code == 2 && a.isVM():
+		// The link carries the agent into a VM: with none running, the
+		// agent is out of reach whatever it is.
+		if v := a.linkView(); !v.Up {
+			if v.Served && v.Daemon == nil {
+				return agentUnknownNoDaemon, false
+			}
+			return "unknown (no link carries it: " + v.Why + ")", false
+		}
+		return "forwarded, but not reachable from the " + a.noun(), false
 	case code == 2:
 		return "forwarded, but not reachable from the " + a.noun(), false
 	default:
@@ -142,6 +234,10 @@ func (a *App) agentStatus() (status string, usable bool) {
 		return "forwarded (not checked: no ssh-add in the image)", true
 	}
 }
+
+// agentUnknownNoDaemon is agentStatus under vm when the daemon, whose
+// link carries the agent, does not answer: as status's other lines say it.
+const agentUnknownNoDaemon = "unknown (the daemon is not running or does not answer)"
 
 // openAgentSocket lets the sandbox's user reach hostServicesAgent where the
 // engine makes it root:root 0660, as Docker Desktop does; OrbStack's is open

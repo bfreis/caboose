@@ -15,6 +15,7 @@ import (
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/version"
 	"github.com/bfreis/caboose/internal/vm"
@@ -33,8 +34,9 @@ import (
 const vmDirName = "vm"
 
 // maxSocketPath is the longest path a Unix socket may have on a Mac:
-// sun_path's 104 bytes, the last a NUL.
-const maxSocketPath = 103
+// sun_path's 104 bytes, the last a NUL. The daemon's socket has the same
+// limit, so it is one constant.
+const maxSocketPath = daemonproto.MaxSocketPath
 
 // isVM reports whether the configuration's isolation is vm.
 func (a *App) isVM() bool { return isolationOf(a.Cfg) == isolationVM }

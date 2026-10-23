@@ -19,6 +19,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/agent"
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/saferm"
 )
 
 // unixPair is two ends of a Unix stream socket with small buffers: a
@@ -144,7 +145,17 @@ func builderLinked(t *testing.T, buf int, g *gate) string {
 		go g.copy(ar, hr)
 		go g.copy(hr, ar)
 	}
-	dir := t.TempDir()
+	// Short: t.TempDir's name carries the test's, which can leave no room
+	// for a Unix socket's path.
+	dir, err := os.MkdirTemp("", "cbh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := saferm.RemoveRoot(dir); err != nil {
+			t.Errorf("removing %s: %v", dir, err)
+		}
+	})
 	go agent.RunLink(ac, ac, agent.Config{Socket: dir + "/s", ProcRoot: "/proc", Interval: 20 * time.Millisecond})
 	sess := agentproto.NewSession(hc, hc, true)
 	t.Cleanup(func() { sess.Close() })

@@ -32,8 +32,16 @@ func TestInstalledBinary(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 
-	fakeDocker(t)
+	fakeBin := filepath.Dir(fakeDocker(t))
 	home := sandboxEnv(t)
+	// The daemon a launch starts takes PATH from a login shell, not from
+	// this test: a fake one gives it the fake docker's, or it would find
+	// this machine's real docker and link a real caboose-default.
+	loginShell := filepath.Join(t.TempDir(), "login-shell")
+	if err := os.WriteFile(loginShell, []byte("#!/bin/sh\necho 'PATH="+fakeBin+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", loginShell)
 	root, err := config.Physical(filepath.Join(home, "dev"))
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +70,17 @@ func TestInstalledBinary(t *testing.T) {
 		}
 		return code, out.String()
 	}
+
+	// A launch against a running container starts the daemon, in this
+	// test's HOME: stop it before the HOME goes (cleanups run last in, first
+	// out, so the environment is still the test's).
+	t.Cleanup(func() {
+		stop := exec.Command(bin, "daemon", "stop")
+		stop.Dir = home
+		if out, err := stop.CombinedOutput(); err != nil {
+			t.Errorf("caboose daemon stop: %v\n%s", err, out)
+		}
+	})
 
 	// An attach gets as far as installing caboose's instructions before
 	// the (fake, failing) docker stops it: as the managed CLAUDE.md, never

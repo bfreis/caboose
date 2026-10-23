@@ -7,7 +7,12 @@ import (
 
 // Version is the protocol's. The host and the agent each send it in a hello,
 // and the host refuses an agent that speaks another: an image built by an
-// older or newer launcher than the one linking to it.
+// older or newer launcher than the one linking to it. What a side adds
+// without breaking the other needs no new one: a request the host offers
+// in its hello (an older agent never asks it), a message type the other
+// side ignores, a field omitted when unset, a refusal's new Reason code
+// (an older agent shows its Error, and answers as for a refusal it does
+// not know).
 const Version = 1
 
 // Message types.
@@ -156,6 +161,7 @@ type Message struct {
 	Ports    []int     `json:"ports,omitempty"`
 	Forwards []Forward `json:"forwards,omitempty"`
 
+	// Paths are TypeChanged's paths.
 	Paths []string `json:"paths,omitempty"`
 
 	Exec *ExecRequest `json:"exec,omitempty"`

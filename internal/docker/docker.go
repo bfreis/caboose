@@ -24,6 +24,15 @@ var goos = runtime.GOOS
 // hostMnt is where Docker Desktop's VM has the Mac's filesystem.
 const hostMnt = "/host_mnt"
 
+// HostSource is a bind mount's source as docker inspect reports it, as
+// the host path it is: on a Mac, without Docker Desktop's /host_mnt.
+func HostSource(src string) string {
+	if goos == "darwin" && strings.HasPrefix(src, hostMnt+"/") {
+		return strings.TrimPrefix(src, hostMnt)
+	}
+	return src
+}
+
 // CLI runs the docker binary found at Path ("docker" resolves via $PATH).
 type CLI struct {
 	Path string
@@ -317,10 +326,7 @@ func ParseMounts(out string) []Mount {
 			continue
 		}
 		dest, src, _ := strings.Cut(line, "\t")
-		if goos == "darwin" && strings.HasPrefix(src, hostMnt+"/") {
-			src = strings.TrimPrefix(src, hostMnt)
-		}
-		ms = append(ms, Mount{Destination: dest, Source: src})
+		ms = append(ms, Mount{Destination: dest, Source: HostSource(src)})
 	}
 	return ms
 }

@@ -108,12 +108,96 @@ func (a *App) platformUsage() [][2]string {
 // also reads "local dir :", the dir the running container has mounted as
 // ~/.local, so that line's format is fixed too.
 func (a *App) Status() error {
+	return a.renderStatus(a.collectStatus())
+}
+
+// statusData is what caboose status knows, as values: the text it prints
+// is renderStatus's. Fields of the running part are set only when running.
+type statusData struct {
+	state, imageSummary string
+	// keeps are the sandbox config's kept paths, as ~/ paths; keepsOK is
+	// false when the config could not be read.
+	keeps   []string
+	keepsOK bool
+	// daemon and link are the host's lines; lv is the daemon's view
+	// they came from.
+	lv           linkView
+	daemon, link string
+
+	running bool
+	// The running part.
+	claude, hostTZ, containerTZ   string
+	dockerSock                    bool
+	platform, localDir, agent     string
+	sessions                      string
+	sessionsErr                   error
+	others                        int
+	registered                    string
+	registeredErr                 error
+	keepVersions, liveKeep, usage string
+	versions                      string
+	platforms                     [][2]string
+}
+
+// collectStatus gathers what status prints. It prints nothing and adds no
+// notes; asking the sandbox is its only side effect.
+func (a *App) collectStatus() *statusData {
+	c := a.Cfg
+	d := &statusData{state: a.state()}
+	d.imageSummary = a.imageSummary()
+	if sb, err := a.sandboxConfig(); err == nil {
+		d.keepsOK = true
+		for _, k := range sb.Keep {
+			d.keeps = append(d.keeps, "~/"+k.Rel)
+		}
+	}
+	// The daemon and the link are the host's, and worth knowing whether or
+	// not the sandbox runs. Asked, never started.
+	d.lv = a.linkView()
+	d.running = d.state == "running"
+	d.daemon = a.daemonLine(d.lv)
+	d.link = a.linkLine(d.lv, d.running)
+	if !d.running {
+		return d
+	}
+	claude, err := backend.RawOutput(a.box(), "claude", "--version")
+	if err != nil {
+		claude += "unknown\n"
+	}
+	d.claude = trimNL(claude)
+	d.hostTZ = a.hostTimezone()
+	d.containerTZ, _ = a.containerEnv("TZ")
+	d.dockerSock = backend.Quiet(a.box(), "test", "-S", "/var/run/docker.sock") == nil
+	d.localDir, d.platform, _ = a.mountedLocal()
+	d.agent, _ = a.agentStatus()
+	d.sessions, d.sessionsErr = backend.RawOutput(a.box(), "tmux", "list-sessions")
+	// Runs outside tmux are plain docker execs: nothing above lists them.
+	if l, err := a.liveWork(); err == nil {
+		d.others = l.others
+	}
+	d.registered, d.registeredErr = backend.RawOutput(a.box(), "bash", "-c", registeredSessionsScript)
+	d.keepVersions = strconv.Itoa(c.KeepVersions)
+	d.liveKeep, _ = a.containerEnv("CABOOSE_KEEP_VERSIONS")
+	d.usage, _ = du(d.localDir + "/" + datadir.PlatformShare) // best effort
+	// A glob, not ls: bash is an image requirement, ls is not.
+	d.versions, _ = backend.RawOutput(a.box(), "bash", "-c",
+		`for v in ~/.local/share/claude/versions/*; do [ -e "$v" ] && printf '  %s\n' "${v##*/}"; done; true`)
+	// Each platform keeps its own keep_versions versions, so a data
+	// dir used with more than one image holds more than one set.
+	for _, r := range a.platformUsage() {
+		d.platforms = append(d.platforms, [2]string{r[0], r[1]})
+	}
+	return d
+}
+
+// renderStatus prints d as caboose status does.
+func (a *App) renderStatus(d *statusData) error {
 	c, out := a.Cfg, a.Stdout
-	state := a.state()
+	state := d.state
 	fmt.Fprintf(out, "env       : %s\n", c.Env)
 	fmt.Fprintf(out, "%s %s (%s)\n", a.nounLabel(), c.Container, state)
 	fmt.Fprintf(out, "image     : %s\n", c.Image)
-	fmt.Fprintf(out, "base      : %s\n", a.imageSummary())
+	fmt.Fprintf(out, "base      : %s\n", d.imageSummary)
 	for _, r := range c.Roots {
 		fmt.Fprintf(out, "root      : %s -> %s\n", r.Host, r.Container)
 	}
@@ -124,12 +208,8 @@ func (a *App) Status() error {
 	case c.EnvDir != "":
 		fmt.Fprintf(out, "config    : none (%s/%s would be read)\n", c.EnvDir, config.FileName)
 	}
-	if sb, err := a.sandboxConfig(); err == nil {
-		var kept []string
-		for _, k := range sb.Keep {
-			kept = append(kept, "~/"+k.Rel)
-		}
-		fmt.Fprintf(out, "keeps     : %s (in %s/%s)\n", strings.Join(kept, ", "), c.DataDir, datadir.HomeDir)
+	if d.keepsOK {
+		fmt.Fprintf(out, "keeps     : %s (in %s/%s)\n", strings.Join(d.keeps, ", "), c.DataDir, datadir.HomeDir)
 	}
 	if len(c.RunArgs) > 0 {
 		fmt.Fprintf(out, "run args  : %s (%s)\n", describeRunArgs(c.RunArgs), runArgsOrigin(c))
@@ -142,6 +222,8 @@ func (a *App) Status() error {
 		fmt.Fprintf(out, "host exec : %s\n", h)
 	}
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
+	fmt.Fprintf(out, "daemon    : %s\n", d.daemon)
+	fmt.Fprintf(out, "link      : %s\n", d.link)
 	if state != "running" {
 		fmt.Fprintf(out, "\nnot running — start it by running caboose in a repo.\n")
 		return nil
@@ -157,81 +239,59 @@ func (a *App) Status() error {
 	a.warnIfEgressDrifted()
 	a.warnIfHostnameDrifted()
 
-	claude, err := backend.RawOutput(a.box(), "claude", "--version")
-	if err != nil {
-		claude += "unknown\n"
-	}
-	fmt.Fprintf(out, "claude    : %s\n", trimNL(claude))
-
-	hostTZ := a.hostTimezone()
-	containerTZ, _ := a.containerEnv("TZ")
-	fmt.Fprintf(out, "timezone  : %s (host: %s)\n", or(containerTZ, "UTC"), or(hostTZ, "unknown"))
+	fmt.Fprintf(out, "claude    : %s\n", d.claude)
+	fmt.Fprintf(out, "timezone  : %s (host: %s)\n", or(d.containerTZ, "UTC"), or(d.hostTZ, "unknown"))
 	// Under docker and gvisor the line is about this machine's engine: the
 	// sandbox has its CLI, and its socket only when mounted. Under vm no
 	// engine of this machine's is involved, and a dockerd in the VM is a
 	// feature of the sandbox's, so it is a line of its own name.
-	sock := backend.Quiet(a.box(), "test", "-S", "/var/run/docker.sock") == nil
 	switch {
-	case a.isVM() && sock:
+	case a.isVM() && d.dockerSock:
 		fmt.Fprintf(out, "dockerd   : in the VM, its own, not this machine's (images kept in %s)\n", a.dockerDisk())
 	case a.isVM():
 		fmt.Fprintf(out, "dockerd   : none in the VM (the image has none, as caboose check-image says, or it did not start: caboose logs)\n")
-	case sock:
+	case d.dockerSock:
 		fmt.Fprintf(out, "docker    : socket MOUNTED - root-equivalent access to this host\n")
 	default:
 		fmt.Fprintf(out, "docker    : cli only, no socket (isolated)\n")
 	}
-	localDir, platform, _ := a.mountedLocal()
-	fmt.Fprintf(out, "platform  : %s\n", or(platform, "unknown"))
-	fmt.Fprintf(out, "local dir : %s\n", or(localDir, "unknown"))
-	agent, _ := a.agentStatus()
-	fmt.Fprintf(out, "ssh agent : %s\n", agent)
-	if hostTZ != "" && containerTZ != hostTZ {
+	fmt.Fprintf(out, "platform  : %s\n", or(d.platform, "unknown"))
+	fmt.Fprintf(out, "local dir : %s\n", or(d.localDir, "unknown"))
+	fmt.Fprintf(out, "ssh agent : %s\n", d.agent)
+	if d.hostTZ != "" && d.containerTZ != d.hostTZ {
 		a.Note("%s was created with a different timezone than the host has now.", a.noun())
-		a.Note("new sessions get '%s' anyway; caboose restart realigns the %s.", hostTZ, a.noun())
+		a.Note("new sessions get '%s' anyway; caboose restart realigns the %s.", d.hostTZ, a.noun())
 	}
 
 	fmt.Fprintf(out, "\ntmux sessions:\n")
-	sessions, err := backend.RawOutput(a.box(), "tmux", "list-sessions")
-	fmt.Fprint(out, indent(sessions, "  "))
-	if err != nil {
+	fmt.Fprint(out, indent(d.sessions, "  "))
+	if d.sessionsErr != nil {
 		fmt.Fprintf(out, "  (none)\n")
 	}
-
-	// Runs outside tmux are plain docker execs: nothing above lists them.
-	if l, err := a.liveWork(); err == nil && l.others > 0 {
+	if d.others > 0 {
 		fmt.Fprintf(out, "\nClaude Code outside tmux: %d %s (tmux = false, caboose claude -p, background agents)\n",
-			l.others, plural(l.others, "process", "processes"))
+			d.others, plural(d.others, "process", "processes"))
 	}
 
 	fmt.Fprintf(out, "\nregistered Claude Code sessions:\n")
-	registered, err := backend.RawOutput(a.box(), "bash", "-c", registeredSessionsScript)
-	fmt.Fprint(out, registered)
-	if err != nil {
+	fmt.Fprint(out, d.registered)
+	if d.registeredErr != nil {
 		fmt.Fprintf(out, "  (unavailable)\n")
 	}
 
-	keep := strconv.Itoa(c.KeepVersions)
-	liveKeep, _ := a.containerEnv("CABOOSE_KEEP_VERSIONS")
-	if liveKeep != "" && liveKeep != keep {
-		a.Note("%s was created with keep_versions = %s, config.toml has %s.", a.noun(), liveKeep, keep)
-		a.Note("start-up pruning uses %s until caboose restart; caboose prune uses %s.", liveKeep, keep)
+	if d.liveKeep != "" && d.liveKeep != d.keepVersions {
+		a.Note("%s was created with keep_versions = %s, config.toml has %s.", a.noun(), d.liveKeep, d.keepVersions)
+		a.Note("start-up pruning uses %s until caboose restart; caboose prune uses %s.", d.liveKeep, d.keepVersions)
 	}
-	fmt.Fprintf(out, "\ndisk used by installed claude versions (retaining %s):\n", or(liveKeep, keep))
-	usage, _ := du(localDir + "/" + datadir.PlatformShare) // best effort
-	fmt.Fprint(out, indent(usage, "  "))
-	// A glob, not ls: bash is an image requirement, ls is not.
-	versions, _ := backend.RawOutput(a.box(), "bash", "-c",
-		`for v in ~/.local/share/claude/versions/*; do [ -e "$v" ] && printf '  %s\n' "${v##*/}"; done; true`)
-	fmt.Fprint(out, versions)
+	fmt.Fprintf(out, "\ndisk used by installed claude versions (retaining %s):\n", or(d.liveKeep, d.keepVersions))
+	fmt.Fprint(out, indent(d.usage, "  "))
+	fmt.Fprint(out, d.versions)
 
-	// Each platform keeps its own keep_versions versions, so a data
-	// dir used with more than one image holds more than one set.
-	if rows := a.platformUsage(); len(rows) > 0 {
+	if len(d.platforms) > 0 {
 		fmt.Fprintf(out, "\ndisk used per platform (%s/<platform>, each with its own versions):\n", datadir.LocalRoot)
-		for _, r := range rows {
+		for _, r := range d.platforms {
 			mark := ""
-			if r[1] == platform {
+			if r[1] == d.platform {
 				mark = "  (mounted)"
 			}
 			fmt.Fprintf(out, "  %s\t%s%s\n", r[0], r[1], mark)
@@ -548,9 +608,9 @@ func (a *App) Attach(args []string) error {
 
 	terminal := a.isTerminal()
 	a.beforeAttach(terminal)
-	// The host's end of caboose-agent's link, detached: it outlives this
-	// launch, and serves the container while it runs.
-	a.startLink()
+	// The host's end of caboose-agent's link was asked for by
+	// ensureRunning, under every isolation: asking again would say a
+	// failure twice, and wait for the daemon twice.
 
 	if !terminal {
 		// No tty to attach a tmux client to — run claude directly so piped

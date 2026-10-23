@@ -6,9 +6,9 @@
 This Claude Code runs inside caboose's sandbox for the environment
 `@@CABOOSE_ENV@@`, not on the user's machine. One sandbox holds every session
 of the environment: each terminal running `caboose` in a project attaches to a
-session of its own, all in the same sandbox, which is why the fleet roster
-sees them all. With tmux on (the default), sessions are tmux sessions, so a
-closed terminal detaches and background work goes on.
+session of its own (so the fleet roster sees them all). With tmux on (the
+default), sessions are tmux sessions: a closed terminal detaches and
+background work goes on.
 
 @@IF isolation=container@@
 ## This sandbox: a Docker container
@@ -71,9 +71,8 @@ reached through the forwarded SSH agent). Everything else under the home is
 lost. `mount` shows what is kept.
 
 You may edit the sandbox config, `start.d` (scripts run at each sandbox
-start) and `shell.d` (interactive shell config) when asked, without a
-proposal: they reach nothing outside the sandbox. Use the caboose-persist
-skill for that.
+start) and `shell.d` (interactive shell config) when asked, with no proposal
+(they reach nothing outside the sandbox): caboose-persist skill.
 
 ## Reaching the host
 
@@ -81,19 +80,16 @@ skill for that.
   `localhost` if `forward_ports` (in `[link]` of the host's `config.toml`)
   allows it; by default 3000-3999, 5173, 8000-8999 and 32768-60999 (where a
   login's loopback callback listens). Tell the user to open
-  `http://localhost:PORT`. `caboose-agent ports` lists what listens and what
-  is forwarded.
-- `caboose-agent open URL` opens an http(s) URL in the user's browser
-  (usually after a dialog), and so do `xdg-open` and `$BROWSER`, which
-  login flows use; `caboose-agent notify TEXT` shows a notification.
+  `http://localhost:PORT`; `caboose-agent ports` lists what is forwarded.
+- `caboose-agent open URL` (and `xdg-open`, `$BROWSER`) opens an http(s)
+  URL in the user's browser, usually after a dialog on the host.
+  `caboose-agent notify TEXT` notifies.
 @@IF hostexec=on@@
-- Host commands are on: `caboose-agent host CMD ARGS` runs CMD on the host,
-  as the user, in the host directory of the current one, which must be under
-  a root (`-C DIR` names another). There is no shell
-  (`caboose-agent host sh -c '...'` for shell syntax) and no terminal;
-  stdin, stdout, stderr and the exit status come back. Run what has to run
-  on the host this way instead of asking the user, but treat it as the
-  user's own machine: nothing destructive without asking.
+- Host commands are on: `caboose-agent host CMD ARGS` runs CMD on the host as
+  the user, in the host directory of the current one (under a root; `-C DIR`
+  names another), with no shell (`sh -c '...'`) and no terminal; stdio and
+  exit status come back. Use it rather than asking the user, but it is their
+  own machine: nothing destructive without asking.
 @@ELSE@@
 - Host commands are off (`host_exec` in `[link]` of `config.toml`, the
   user's call). Ask the user to run what has to run on the host.
@@ -105,8 +101,8 @@ skill for that.
   are refused unless `egress_allow` names them. Everything else, DNS lookups
   included, uses the VM's own NAT, which reaches no VPN.
 @@END@@
-- All of this needs the host link, which every launch starts. "no host is
-  linked" means it is not running: see the caboose-troubleshoot skill.
+- All of this needs the host link, from the host's caboose daemon. "no host is
+  linked" means it is not serving this environment: see caboose-troubleshoot.
 
 ## Changing the sandbox
 
@@ -160,8 +156,8 @@ and `setup` ask a person.
 @@IF source=checkout@@
 caboose's source is at `@@CABOOSE_SOURCE@@`, the checkout this launcher was
 built from. A change to caboose itself (launcher, image layer, entrypoint,
-these instructions) goes there; its own CLAUDE.md says how each takes effect,
-and most need a rebuild and a restart run on the host. Its user docs are in
+these instructions) goes there; its own CLAUDE.md says how each takes effect
+(most need a rebuild and a restart on the host). User docs:
 `@@CABOOSE_SOURCE@@/docs`.
 @@END@@
 @@IF source=clone@@

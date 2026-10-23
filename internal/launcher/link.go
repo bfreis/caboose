@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/cappedlog"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/hostlink"
 	"github.com/bfreis/caboose/internal/linkdebug"
@@ -27,8 +30,9 @@ import (
 const (
 	linkLockFile = "link.lock"
 	linkLogFile  = "link.log"
-	// linkStateFile is the running helper's PID and the settings it runs
-	// with, for a launch to compare its own with.
+	// linkStateFile is the settings the running link runs with, for a
+	// launch to compare its own with, and who runs it: a detached helper's
+	// PID, or the directory of the daemon that serves it.
 	linkStateFile = "link.json"
 	// linkStopFile is why the last helper stopped for good (a linkStop),
 	// for a launch waiting on the link (awaitProxy) to say it rather than
@@ -47,11 +51,13 @@ const (
 	// the agent's hello: the agent is starting, not failing, so the proxy
 	// should not stay down a whole linkRetryMin.
 	linkRetryEarly = 200 * time.Millisecond
-	// linkConfigEvery is how often the helper looks at config.toml.
-	linkConfigEvery = 2 * time.Second
 	// linkStopWait is how long a stop waits for the old helper to go.
 	linkStopWait = 5 * time.Second
 )
+
+// linkConfigEvery is how often a link looks at config.toml; a variable
+// for the tests.
+var linkConfigEvery = 2 * time.Second
 
 // linkSettings are the settings a helper runs with.
 type linkSettings struct {
@@ -135,7 +141,16 @@ func (s linkSettings) check() (linkConfig, error) {
 
 // linkState is link.json.
 type linkState struct {
-	PID int `json:"pid"`
+	// PID is a detached helper's (caboose link); a link the daemon runs
+	// is a goroutine, and writes none.
+	PID int `json:"pid,omitempty"`
+	// Daemon is the directory of the daemon that serves the link, or ""
+	// for a detached helper.
+	Daemon string `json:"daemon,omitempty"`
+	// Stopped is set by stop_link: the link was stopped on purpose, and a
+	// daemon starting again does not bring it back (DaemonLinks.Recover).
+	// A link that starts writes link.json afresh, without it.
+	Stopped bool `json:"stopped,omitempty"`
 	linkSettings
 }
 
@@ -195,12 +210,13 @@ func readLinkStop(dataDir string) (string, bool) {
 // linkKill signals a helper; tests replace it.
 var linkKill = syscall.Kill
 
-// startLink starts `caboose link --background` for this environment,
-// unless one is already running with the settings this launch has. One
-// running with others -- a CABOOSE_ variable set differently, or a
+// startDetachedLink starts `caboose link --background` for this
+// environment, unless one is already running with the settings this launch
+// has. One running with others -- a CABOOSE_ variable set differently, or a
 // config.toml it has not reread yet -- is replaced. Best effort: a launch
-// never fails for it.
-func (a *App) startLink() {
+// never fails for it. It is the link of a command run with CABOOSE_DATA_DIR
+// set, which the daemon does not serve (startLink).
+func (a *App) startDetachedLink() {
 	exe, err := a.executable()
 	if err != nil {
 		return
@@ -219,15 +235,26 @@ func (a *App) startLink() {
 
 // stopLink stops the running helper, if any, and waits for it to go. Its
 // PID is signalled only while the lock is held, which a PID reused since
-// the helper died cannot be holding.
+// the helper died cannot be holding: the lock is looked at again just
+// before the signal, which leaves only the moment between the two. A link
+// a daemon serves is never signalled: its link.json names the daemon and
+// no PID, and the daemon itself would be the process.
 func stopLink(dataDir string) error {
 	held, err := linkRunning(dataDir)
 	if err != nil || !held {
 		return err
 	}
 	st, ok := readLinkState(dataDir)
-	if !ok || st.PID <= 1 {
+	switch {
+	case ok && st.Daemon != "":
+		return fmt.Errorf("the link is the caboose daemon's in %s, not a process of its own", st.Daemon)
+	case !ok || st.PID <= 1:
 		return errors.New("a link is running, but its link.json does not say which process it is")
+	case st.PID == os.Getpid():
+		return errors.New("the running link's link.json names this process")
+	}
+	if held, err := linkRunning(dataDir); err != nil || !held {
+		return err
 	}
 	if err := linkKill(st.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("cannot stop the link (pid %d): %v", st.PID, err)
@@ -268,34 +295,55 @@ func lockLink(dataDir string) (func(), error) {
 	}, nil
 }
 
-// Link is `caboose link`: the host's end of the link to caboose-agent in the
-// container, for as long as the container runs. With --background (what a
-// launch starts) it logs to the data dir's link.log instead of the
-// terminal, and exits quietly when another one already runs. --restart
-// stops the running one and starts another in the background, for
-// settings a launch would not notice changed. The running one rereads
-// config.toml itself when it changes, tells of new proposals
-// (watchProposals), checks those for packages (checkProposals), and,
-// under vm, warns when the VM holds many of the Mac's vnodes (watchVnodes).
+// Link is `caboose link`. The daemon runs the environment's link, so it
+// asks the daemon to (starting it when nothing answers); --restart has the
+// daemon replace the link whatever its settings. --background is the
+// detached helper's mode, the link of a command run with CABOOSE_DATA_DIR
+// set, which the daemon does not serve: it logs to the data dir's link.log
+// instead of the terminal, and exits quietly when another one already
+// runs. --foreground runs the link in this process, for debugging, and is
+// refused while the daemon serves the environment. With CABOOSE_DATA_DIR
+// set, plain `caboose link` runs it in the foreground and --restart
+// replaces the helper, as they always did.
+//
+// A link, wherever it runs, rereads config.toml itself when it changes,
+// tells of new proposals (watchProposals), checks those for packages
+// (checkProposals), and, under vm, warns when the VM holds many of the
+// Mac's vnodes (watchVnodes).
 func (a *App) Link(args []string) error {
-	background, restart := false, false
+	const usage = "usage: caboose link [--restart | --foreground | --background]"
+	background, restart, foreground := false, false, false
 	for _, arg := range args {
 		switch arg {
 		case "--background":
 			background = true
 		case "--restart":
 			restart = true
+		case "--foreground":
+			foreground = true
 		default:
-			return Die("usage: caboose link [--background | --restart] (got %q)", arg)
+			return Die("%s (got %q)", usage, arg)
 		}
 	}
-	if background && restart {
-		return Die("usage: caboose link [--background | --restart]")
+	n := 0
+	for _, on := range []bool{background, restart, foreground} {
+		if on {
+			n++
+		}
 	}
-	settings := settingsOf(a.Cfg)
-	lc, err := settings.check()
-	if err != nil {
+	if n > 1 {
+		return Die("%s", usage)
+	}
+	if _, err := settingsOf(a.Cfg).check(); err != nil {
 		return Die("%v", err)
+	}
+	if foreground {
+		if msg := a.daemonServingLink(); msg != "" {
+			return Die("%s", msg)
+		}
+	}
+	if !background && !foreground && a.servedByDaemon() {
+		return a.linkViaDaemon(restart)
 	}
 	if restart {
 		return a.restartLink()
@@ -311,7 +359,6 @@ func (a *App) Link(args []string) error {
 		return Die("cannot lock %s: %v", filepath.Join(a.Cfg.DataDir, linkLockFile), err)
 	}
 	defer unlock()
-	clearLinkStop(a.Cfg.DataDir)
 
 	var out io.Writer = a.Stderr
 	if background {
@@ -322,19 +369,84 @@ func (a *App) Link(args []string) error {
 		defer c.Close()
 		out = c
 	}
-	r := &linkRunner{a: a, log: log.New(out, "caboose link: ", log.LstdFlags), settings: settings,
-		cfg: hostlink.Config{Ports: lc.ports, OpenURL: settings.OpenURLs, Actions: hostlink.System{}, Egress: lc.egress,
-			HostExec: hostExecOffer(lc.hostExec), Diagnose: true}}
-	r.cfg.Log = r.log
-	r.writeState()
 	stop := make(chan struct{})
 	defer close(stop)
 	go killHostExecsAtSignal(stop)
-	go r.watchConfig(stop)
-	go r.watchProposals(stop)
-	go r.checkProposals(stop)
-	go r.watchVnodes(stop)
-	return r.run(background)
+	r, err := a.newLinkRunner(linkRun{out: out})
+	if err != nil {
+		return Die("%v", err)
+	}
+	err = r.serve(context.Background())
+	var ls *linkStop
+	if errors.As(err, &ls) && !background {
+		return Die("%s", ls.msg)
+	}
+	return nil
+}
+
+// linkRun is how a link runs: as a helper of its own (caboose link), or
+// as one of the daemon's links.
+type linkRun struct {
+	// out is where it logs.
+	out io.Writer
+	// daemon is the directory of the daemon that serves it, "" for a
+	// helper of its own: link.json says which.
+	daemon string
+	// execs, when set, tracks the link's host commands apart from any
+	// other link's in the process.
+	execs *hostlink.Execs
+	// gate, when set, admits the link's host-exec requests (the daemon's,
+	// shared by its links).
+	gate *hostlink.ExecGate
+	// actions is this machine's browser and notifications; nil is
+	// hostlink.System's.
+	actions hostlink.Actions
+}
+
+// newLinkRunner is a link for this environment, as config.toml has it
+// now, not yet running. The caller holds link.lock.
+func (a *App) newLinkRunner(o linkRun) (*linkRunner, error) {
+	settings := settingsOf(a.Cfg)
+	lc, err := settings.check()
+	if err != nil {
+		return nil, err
+	}
+	r := &linkRunner{a: a, log: log.New(o.out, "caboose link: ", log.LstdFlags), settings: settings,
+		daemon: o.daemon, execs: o.execs,
+		cfg: hostlink.Config{Ports: lc.ports, OpenURL: settings.OpenURLs, Actions: hostlink.System{}, Egress: lc.egress,
+			HostExec: hostExecOffer(lc.hostExec), Diagnose: true, Execs: o.execs, Gate: o.gate}}
+	r.cfg.Log = r.log
+	if o.actions != nil {
+		r.cfg.Actions = o.actions
+	}
+	return r, nil
+}
+
+// serve runs the link until the sandbox stops, the link stops for good
+// (a *linkStop, also written to link.stop), or ctx ends; its watchers run
+// beside it. It returns once every goroutine it started has ended and
+// every host command it ran is gone, so the caller may then let go of
+// link.lock.
+func (r *linkRunner) serve(ctx context.Context) error {
+	clearLinkStop(r.a.Cfg.DataDir)
+	r.writeState()
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	watchers := []func(context.Context){r.watchConfig, r.watchProposals, r.checkProposals, r.watchVnodes}
+	for _, w := range watchers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w(ctx)
+		}()
+	}
+	err := r.run(ctx)
+	cancel()
+	wg.Wait()
+	if r.execs != nil {
+		r.execs.Kill()
+	}
+	return err
 }
 
 // killHostExecsAtSignal has the commands run on this machine for the
@@ -384,11 +496,14 @@ func (a *App) restartLink() error {
 	return nil
 }
 
-// linkRunner is a running helper: its settings, which a change to
+// linkRunner is a running link: its settings, which a change to
 // config.toml replaces, and the session it serves now.
 type linkRunner struct {
 	a   *App
 	log *log.Logger
+	// daemon and execs are linkRun's.
+	daemon string
+	execs  *hostlink.Execs
 
 	mu       sync.Mutex
 	settings linkSettings
@@ -406,17 +521,25 @@ func (r *linkRunner) settingsNow() linkSettings {
 
 func (r *linkRunner) writeState() {
 	r.mu.Lock()
-	st := linkState{PID: os.Getpid(), linkSettings: r.settings}
+	st := linkState{Daemon: r.daemon, linkSettings: r.settings}
+	if r.daemon == "" {
+		st.PID = os.Getpid()
+	}
 	r.mu.Unlock()
 	if err := writeLinkState(r.a.Cfg.DataDir, st); err != nil {
 		r.log.Printf("cannot write %s: %v", linkStateFile, err)
 	}
 }
 
-func (r *linkRunner) run(background bool) error {
+// run links to the sandbox again and again, while it runs, until ctx
+// ends. It returns nil, or the *linkStop that ended it for good.
+func (r *linkRunner) run(ctx context.Context) error {
 	a := r.a
 	wait, early := linkRetryMin, false
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 		r.mu.Lock()
 		retired := r.retired
 		r.mu.Unlock()
@@ -428,17 +551,18 @@ func (r *linkRunner) run(background bool) error {
 			return nil
 		}
 		started := time.Now()
-		err := r.once()
+		err := r.once(ctx)
+		if ctx.Err() != nil {
+			r.log.Print("stopped")
+			return nil
+		}
 		var stop *linkStop
 		if errors.As(err, &stop) {
 			r.log.Print(stop.msg)
 			if err := writeLinkStop(a.Cfg.DataDir, stop.msg); err != nil {
 				r.log.Printf("cannot write %s: %v", linkStopFile, err)
 			}
-			if background {
-				return nil
-			}
-			return Die("%s", stop.msg)
+			return stop
 		}
 		r.mu.Lock()
 		reloaded, retired := r.reloaded, r.retired
@@ -457,7 +581,14 @@ func (r *linkRunner) run(background bool) error {
 		}
 		var pause time.Duration
 		pause, wait, early = linkPause(err, wait, early)
-		time.Sleep(pause)
+		t := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			r.log.Print("stopped")
+			return nil
+		case <-t.C:
+		}
 	}
 }
 
@@ -483,8 +614,8 @@ func configFingerprint(path string) string {
 	return fmt.Sprintf("%d %d", fi.Size(), fi.ModTime().UnixNano())
 }
 
-// watchConfig rereads config.toml whenever it changes, until stop.
-func (r *linkRunner) watchConfig(stop <-chan struct{}) {
+// watchConfig rereads config.toml whenever it changes, until ctx ends.
+func (r *linkRunner) watchConfig(ctx context.Context) {
 	if r.a.Cfg.EnvDir == "" {
 		return
 	}
@@ -494,7 +625,7 @@ func (r *linkRunner) watchConfig(stop <-chan struct{}) {
 	defer t.Stop()
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
@@ -556,12 +687,39 @@ type linkStop struct{ msg string }
 
 func (e *linkStop) Error() string { return e.msg }
 
+// closeAtCancel closes sess when ctx ends, and kill, when not nil, runs
+// linkStopWait later should the session's other end still not be gone
+// (gone closed). The returned function undoes it, and returns once
+// nothing of it is left running.
+func closeAtCancel(ctx context.Context, sess *agentproto.Session, gone <-chan struct{}, kill func()) func() {
+	ran := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(ran)
+		sess.Close()
+		if kill == nil {
+			return
+		}
+		t := time.NewTimer(linkStopWait)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			kill()
+		case <-gone:
+		}
+	})
+	return func() {
+		if !stop() {
+			<-ran
+		}
+	}
+}
+
 // once runs one `docker exec -i ... caboose-agent link` and serves it, or
-// connects to a VM's link port.
-func (r *linkRunner) once() error {
+// connects to a VM's link port, until the session ends or ctx does.
+func (r *linkRunner) once(ctx context.Context) error {
 	a := r.a
 	if l, ok := a.box().(backend.Linker); ok {
-		return r.serveDialed(l)
+		return r.serveDialed(ctx, l)
 	}
 	cmd := a.box().Command(backend.ExecSpec{Argv: []string{AgentPath, "link"}, Stdin: true})
 	stdin, err := cmd.StdinPipe()
@@ -578,6 +736,10 @@ func (r *linkRunner) once() error {
 		return err
 	}
 	sess := agentproto.NewSession(stdout, stdin, true)
+	// A stop closes the agent's stdin, which ends it; one that does not
+	// end is killed (its exec, here) so the stop is never held up.
+	exited := make(chan struct{})
+	undo := closeAtCancel(ctx, sess, exited, func() { _ = cmd.Process.Kill() })
 	r.mu.Lock()
 	r.sess = sess
 	cfg := r.cfg
@@ -594,6 +756,8 @@ func (r *linkRunner) once() error {
 	r.mu.Unlock()
 	sess.Close()
 	waitErr := cmd.Wait()
+	close(exited)
+	undo()
 	said := strings.TrimSpace(stderr.String())
 	switch {
 	case errors.Is(runErr, hostlink.ErrVersion):
@@ -610,12 +774,14 @@ func (r *linkRunner) once() error {
 
 // serveDialed serves the link on a connection to the sandbox's link port,
 // where the agent is already running: there is no exec to fail.
-func (r *linkRunner) serveDialed(l backend.Linker) error {
+func (r *linkRunner) serveDialed(ctx context.Context, l backend.Linker) error {
 	conn, err := l.DialLink()
 	if err != nil {
 		return err
 	}
 	sess := agentproto.NewSession(conn, conn, true)
+	// Closing the session closes conn, which ends its reads too.
+	defer closeAtCancel(ctx, sess, nil, nil)()
 	r.mu.Lock()
 	r.sess = sess
 	cfg := r.cfg
@@ -623,8 +789,9 @@ func (r *linkRunner) serveDialed(l backend.Linker) error {
 	cfg.Relay = r.relayRoots()
 	cfg.HostExec = r.hostExec(cfg.HostExec)
 	// No socket of this machine's can reach a VM: the link carries its SSH
-	// agent, ssh_agent's or else the one ssh here would use, as the launch
-	// that started this link saw it (its SSH_AUTH_SOCK, its ~/.ssh/config).
+	// agent, ssh_agent's or else the one ssh here would use, as this
+	// process sees it (its SSH_AUTH_SOCK, ~/.ssh/config): the daemon's, from
+	// a login shell, or a detached helper's, from the command that started it.
 	st := r.settingsNow()
 	sock, from := r.a.agentFrom(st.SSHAgent, st.SSHAgentFrom)
 	cfg.SSHAgent, cfg.SSHAuthSock = containerAgent, sock
@@ -708,62 +875,22 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 // link.log.1: the sandbox decides how often some of its lines are written.
 const maxLinkLog = 10 << 20
 
-// cappedLog is link.log, appended to by every link, so a restart keeps
-// what the last one said; whenever a write would take it past max, it is
-// moved to path.1 (replacing the one before) and started again, with a
-// line saying so.
-type cappedLog struct {
-	mu   sync.Mutex
-	path string
-	f    *os.File
-	n    int64
-	max  int64
+// openCappedLog opens link.log, appended to by every link so a restart
+// keeps what the last one said, and moved aside to link.log.1, saying so,
+// rather than grow past max.
+func openCappedLog(path string, max int64) (*cappedlog.Log, error) {
+	return cappedlog.Open(path, max, "caboose link")
 }
 
-func openCappedLog(path string, max int64) (*cappedLog, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, err
+// daemonServingLink says, as a refusal, when the caboose daemon serves this
+// environment's link; "" when it does not (or cannot be asked).
+func (a *App) daemonServingLink() string {
+	if st, ok := readLinkState(a.Cfg.DataDir); ok && st.Daemon != "" && detachedLinkHeld(a.Cfg.DataDir) {
+		return fmt.Sprintf("the caboose daemon (%s) serves this environment's link, and one runs at a time: run 'caboose daemon stop' first, or 'caboose link --restart' to have the daemon replace it", st.Daemon)
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
+	v := a.linkView()
+	if v.Served && v.Env != nil && (v.Env.Link == daemonproto.LinkRunning || v.Env.Link == daemonproto.LinkStarting) {
+		return "the caboose daemon serves this environment's link, and one runs at a time: run 'caboose daemon stop' first, or 'caboose link --restart' to have the daemon replace it"
 	}
-	return &cappedLog{path: path, f: f, n: fi.Size(), max: max}, nil
-}
-
-func (c *cappedLog) Write(p []byte) (int, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.n > 0 && c.n+int64(len(p)) > c.max {
-		if err := c.rotate(); err != nil {
-			return 0, err
-		}
-	}
-	n, err := c.f.Write(p)
-	c.n += int64(n)
-	return n, err
-}
-
-// rotate moves the log to path.1 and starts a new one. Under c.mu.
-func (c *cappedLog) rotate() error {
-	if err := os.Rename(c.path, c.path+".1"); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(c.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	c.f.Close()
-	c.f, c.n = f, 0
-	m, _ := fmt.Fprintf(c.f, "%s caboose link: link.log reached %d MiB: the lines before are in %s.1\n", time.Now().Format("2006/01/02 15:04:05"), c.max>>20, filepath.Base(c.path))
-	c.n += int64(m)
-	return nil
-}
-
-func (c *cappedLog) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.f.Close()
+	return ""
 }

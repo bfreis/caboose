@@ -29,6 +29,9 @@ func TestMain(m *testing.M) {
 		os.Exit(syncagent.Serve(os.Args[2], os.Stdin, os.Stdout, os.Stderr,
 			syncagent.Paths{Home: home, Repo: os.Getenv(testSyncRepo), Exe: exe}))
 	}
+	// The launcher sees Linux with no ssh, whatever machine runs the
+	// tests: what doctor and status say must not depend on it.
+	launcher.PlayHostForTests("linux")
 	os.Exit(nodocker.Run(m))
 }
 

@@ -3,6 +3,7 @@ package launcher
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,6 +42,7 @@ type boxApp struct {
 	engine    string // the fake engine's files
 	out, errb *bytes.Buffer
 	spawned   [][]string
+	daemon    *fakeDaemon // the daemon a launch asks for the link
 }
 
 // shortTempDir is a new directory directly under the temp dir, with a
@@ -69,13 +71,28 @@ func shortTempDir(t *testing.T) string {
 	return p
 }
 
+// physicalTempDir is t.TempDir as its physical path, as the working
+// directory and every path the code resolves are: the temp dir may be
+// reached through a symlink (a Mac's /var is /private/var).
+func physicalTempDir(t *testing.T) string {
+	t.Helper()
+	p, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func newBoxApp(t *testing.T, iso string, box *backendtest.Fake) *boxApp {
 	t.Helper()
-	// Short, so that the sockets made under it (a VM's) fit a Mac's
-	// sun_path wherever the temp dir is.
+	// Status and doctor say the same on every system: Linux's, unless a
+	// test pins the Mac (pinHost).
+	pinHost(t, false)
+	// Short, so that the sockets made under it (the daemon's, a VM's)
+	// fit a Mac's sun_path wherever the temp dir is.
 	tmp := shortTempDir(t)
 	b := &boxApp{box: box, iso: iso, tmp: tmp, data: filepath.Join(tmp, "data"), engine: filepath.Join(tmp, "engine"),
-		out: &bytes.Buffer{}, errb: &bytes.Buffer{}}
+		out: &bytes.Buffer{}, errb: &bytes.Buffer{}, daemon: &fakeDaemon{}}
 	if err := os.Mkdir(b.engine, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +103,7 @@ d="` + b.engine + `"
 		script += `case "$1 $2" in
   "image inspect") [ -f "$d/labels" ] || { echo "Error: No such image: $5" >&2; exit 1; }; cat "$d/labels"; exit 0 ;;
   "inspect --type=image") [ -f "$d/id" ] || exit 1; cat "$d/id"; exit 0 ;;
-  "info --format") case "$3" in *Runtimes*) cat "$d/runtimes" ;; *) echo Linux ;; esac; exit 0 ;;
+  "info --format") case "$3" in *Runtimes*) cat "$d/runtimes" ;; *) cat "$d/os" 2>/dev/null || echo Linux ;; esac; exit 0 ;;
   "run --rm") printf '%s\n' "$@" > "$d/probe"; cat "$d/probe-answer"; exit 0 ;;
   "version "*) exit 0 ;;
 esac
@@ -110,7 +127,7 @@ exit 99
 		HostPart: func() string { return "laptop" },
 		Backend:  box,
 		Stdout:   b.out, Stderr: b.errb,
-		// Where startLink would spawn caboose link, and findVMFiles look
+		// Where findVMFiles looks
 		// beside the launcher: neither is this test binary's.
 		Executable: func() (string, error) { return filepath.Join(tmp, "caboose"), nil },
 		Spawn: func(exe string, args ...string) error {
@@ -118,6 +135,15 @@ exit 99
 			return nil
 		},
 		vmFiles: func() (vmFiles, error) { return vmFiles{Arch: runtime.GOARCH}, nil },
+		// Where startLink would ask the daemon for the link: never a real one.
+		DaemonDial: b.daemon.dial,
+		// The host's zone is the test's, never the machine's /etc/localtime
+		// or /etc/timezone: none, unless a test says otherwise.
+		tzReadlink: func(string) (string, error) { return "", fs.ErrNotExist },
+		tzReadFile: func(string) ([]byte, error) { return nil, fs.ErrNotExist },
+		// Nor this machine's global git config (the host's signing):
+		// none, unless a test says so. Its ssh is TestMain's (hostSSH).
+		hostGit: noGlobalGit,
 	}
 	b.setImage(t, boxImageID, currentLabels("linux-arm64"))
 	box.ImageFor = func(name string) (string, map[string]string) {
@@ -131,6 +157,33 @@ exit 99
 	})
 	return b
 }
+
+// pinHost has the launcher see the host facts of Linux, or of a Mac
+// with darwin, whatever the build's GOOS and this machine
+// (PlayHostForTests), restored at the test's end; no test of this
+// package runs in parallel, so none sees another's.
+func pinHost(t *testing.T, darwin bool) {
+	t.Helper()
+	os_ := "linux"
+	if darwin {
+		os_ = "darwin"
+	}
+	t.Cleanup(PlayHostForTests(os_))
+}
+
+// noGlobalGit is the host's git with no global config: the sandbox's
+// config files are read with it, never the machine's ~/.gitconfig.
+func noGlobalGit() datadir.Git {
+	g := datadir.FindGit()
+	if g == nil {
+		return nil
+	}
+	return globalless{g}
+}
+
+type globalless struct{ datadir.Git }
+
+func (globalless) GetGlobal(string) string { return "" }
 
 func (b *boxApp) write(t *testing.T, name, content string) {
 	t.Helper()

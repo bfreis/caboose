@@ -6,6 +6,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bfreis/caboose/internal/nofollow"
 )
@@ -70,6 +71,19 @@ func FormatCheck(status CheckStatus, facts []string) []byte {
 		}
 	}
 	return []byte(b.String())
+}
+
+// Clip cuts s to at most n bytes, on a character boundary, "…" marking
+// the cut: how text the sandbox wrote is kept short before a person is
+// shown it.
+func Clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // clip is s cut to max runes, "..." marking the cut.

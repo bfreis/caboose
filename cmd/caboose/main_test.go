@@ -2,16 +2,23 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/daemonproto"
+	"github.com/bfreis/caboose/internal/launcher"
+	"github.com/bfreis/caboose/internal/saferm"
+	"github.com/bfreis/caboose/internal/version"
 )
 
 // fakeDocker puts a `docker` on an otherwise empty PATH. It logs its argv
@@ -51,6 +58,25 @@ exit 1
 	return logPath
 }
 
+// shortTempDir is a new directory directly under the temp dir, with a
+// short name, removed (and only it) when the test ends: t.TempDir's
+// names carry the test's, which can leave no room for the daemon's socket
+// path under it (at most 103 bytes on a Mac, whose temp dir is already
+// about 50).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := saferm.RemoveRoot(dir); err != nil {
+			t.Errorf("removing %s: %v", dir, err)
+		}
+	})
+	return dir
+}
+
 // sandboxEnv clears every setting the launcher reads, then applies kv.
 // The image is a dockerfile profile, [dockerfile.default], whose dir holds
 // testDockerfile, unless kv says otherwise: CABOOSE_BASE_IMAGE makes it a
@@ -62,7 +88,7 @@ exit 1
 // caboose-default and caboose:default.
 func sandboxEnv(t *testing.T, kv ...string) (home string) {
 	t.Helper()
-	home = t.TempDir()
+	home = shortTempDir(t)
 	for _, e := range os.Environ() {
 		k, _, _ := strings.Cut(e, "=")
 		if strings.HasPrefix(k, "CABOOSE_") || k == "TZ" {
@@ -70,6 +96,13 @@ func sandboxEnv(t *testing.T, kv ...string) (home string) {
 		}
 	}
 	t.Setenv("HOME", home)
+	// A launch in this process must never start a daemon (it would be this
+	// test binary): a stub answers, until a test asks for another.
+	oldDial := daemonDial
+	daemonDial = func(context.Context, bool) (launcher.DaemonCaller, error) {
+		return daemonStub{link: daemonproto.LinkStopped}, nil
+	}
+	t.Cleanup(func() { daemonDial = oldDial })
 	if err := os.Mkdir(filepath.Join(home, "dev"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -271,4 +304,52 @@ func TestEmptyHomeDies(t *testing.T) {
 	if b, _ := os.ReadFile(log); len(b) != 0 {
 		t.Errorf("docker was run: %q", b)
 	}
+}
+
+// daemonStub stands in for the caboose daemon in tests that run commands
+// against a sandboxed HOME: it answers status as a healthy daemon serving
+// the default environment's link would, and nothing is started.
+type daemonStub struct {
+	launcher.DaemonCaller // the rest: not stubbed, a call panics
+	link                  string
+}
+
+func (d daemonStub) EnsureLink(_ context.Context, env string) (*daemonproto.LinkResult, error) {
+	return &daemonproto.LinkResult{Action: daemonproto.ActionUnchanged, Env: daemonproto.EnvStatus{Name: env, Link: d.link}}, nil
+}
+
+func (d daemonStub) RestartLink(ctx context.Context, env string) (*daemonproto.LinkResult, error) {
+	return d.EnsureLink(ctx, env)
+}
+
+func (d daemonStub) Status(context.Context) (*daemonproto.StatusResult, error) {
+	return &daemonproto.StatusResult{
+		Daemon: daemonproto.DaemonInfo{PID: 1, Version: version.Get().Version, Protocol: daemonproto.ProtocolVersion, Started: time.Now()},
+		Envs:   []daemonproto.EnvStatus{{Name: "default", Sandbox: daemonproto.SandboxRunning, Link: d.link, Since: time.Now()}}}, nil
+}
+
+func (daemonStub) Close() error { return nil }
+
+// healthyDaemon makes the commands see a daemon whose link for the
+// default environment runs: the stub says so, and link.lock is held, as
+// the daemon holds it.
+func healthyDaemon(t *testing.T, home string) {
+	t.Helper()
+	dial := daemonDial
+	daemonDial = func(context.Context, bool) (launcher.DaemonCaller, error) {
+		return daemonStub{link: daemonproto.LinkRunning}, nil
+	}
+	t.Cleanup(func() { daemonDial = dial })
+	data := filepath.Join(home, ".caboose", "envs", "default", "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(data, "link.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
 }

@@ -1,0 +1,33 @@
+
+  caboose apply  environment default
+  1 proposal from sessions in the sandbox. Each is shown whole, and nothing
+  changes until you say so. ^C stops; what was applied before it stays.
+
+  Mount other                                                              1/1
+  ────────────────────────────────────────────────────────────────────────────
+  its docs
+
+  other.toml, proposed 1h ago
+
+  Mount a host directory into the sandbox ([roots]):
+    /work/other  ←
+                 TMP/home/src/other
+
+  ! Everything under
+    TMP/home/src/other
+    becomes readable and writable from the sandbox.
+  ! TMP/home/src/other
+    holds what looks like credentials or keys: .env. The sandbox could read them
+    all.
+
+  ? Apply this proposal?
+    1  Apply it
+    2  Leave it pending
+    3  Delete it
+    choose 1-3 [2]:   ? To mount
+    TMP/home/src/other,
+    type the root's name, other:   ✓ Wrote the roots to
+    TMP/.caboose/envs/default/config.toml
+  ✓ Applied other
+
+  There is no container yet: the next launch creates it with all of this.

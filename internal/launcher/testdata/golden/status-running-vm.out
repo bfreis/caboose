@@ -1,0 +1,24 @@
+env       : default
+VM        : box (running)
+image     : img
+base      : ref.default (base:box)
+root      : TMP -> /work
+data dir  : TMP/data
+keeps     : ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh (in TMP/data/home)
+isolation : vm (the default: config.toml defines no profile)
+outbound  : through this machine, so its VPN routes and DNS apply (egress on; egress_ports "22 80 443")
+version   : VERSION
+daemon    : not running (daemon-VERSION); any caboose command that launches or links starts it, or run: caboose daemon restart
+link      : not running (the daemon is not running); run: caboose daemon restart
+claude    : 
+timezone  : UTC (host: unknown)
+dockerd   : in the VM, its own, not this machine's (images kept in TMP/data/vm/volumes/docker.img)
+platform  : linux-arm64
+local dir : TMP/data/local/linux-arm64
+ssh agent : not forwarded (the host had no agent when the VM was created)
+
+tmux sessions:
+
+registered Claude Code sessions:
+
+disk used by installed claude versions (retaining 2):

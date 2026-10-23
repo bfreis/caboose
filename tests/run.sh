@@ -188,7 +188,9 @@ vm_kill() {
     kill -KILL "$pid" 2>/dev/null
     return 0
 }
-# vm_pids: the pids the VMs' and the link's files name.
+# vm_pids: the pids the VMs' and the detached link helper's files name. A
+# link the daemon runs is no process of its own and has no pid in link.json:
+# vm_teardown stops the daemon instead.
 vm_pids() {
     local f
     for f in "$VM_DATA"/vm/*/vmm.pid "$VM_DATA"/link.json; do
@@ -196,12 +198,15 @@ vm_pids() {
     done
     return 0
 }
-# vm_teardown: stops the VM (bounded), then ends any vmm or link still
+# vm_teardown: stops the VM (bounded), stops the throwaway home's daemon
+# (none, with CABOOSE_DATA_DIR set: the group's links are detached helpers,
+# which vm_pids finds through link.json), then ends any vmm or link still
 # running, and removes the throwaway dir. Called at the end of the group and
 # again at exit, for a run cut short; a no-op once done.
 vm_teardown() {
     [ -n "$VM_WORK" ] && [ -d "$VM_WORK" ] || return 0
     vcc "$VM_T_CMD" CABOOSE_FORCE=1 stop >/dev/null 2>&1
+    vcc "$VM_T_CMD" daemon stop >/dev/null 2>&1
     local pid
     for pid in $(vm_pids); do vm_kill "$pid"; done
     rm -rf "$VM_WORK" 2>/dev/null \
@@ -1199,6 +1204,8 @@ mkdir -p "$probe/home/dev"
 check 'the default data dir is ~/.caboose/envs/default/data' "$probe/home/.caboose/envs/default/data" \
     "$(sed -n 's/^data dir *: //p' "$probe/out")"
 check 'and a status call creates nothing' 1 "$(exists "$probe/home/.caboose/envs")"
+check 'and starts no daemon' "1 1" "$(exists "$probe/home/.caboose/daemon") $(exists "$probe/home/.caboose/daemon-dev")"
+check 'and says the daemon is not running' 1 "$(grep -c '^daemon *: not running' "$probe/out")"
 rm -rf "$probe"
 
 group 'independent sessions per terminal'

@@ -1,0 +1,21 @@
+
+  caboose apply  environment default
+  1 proposal from sessions in the sandbox. Each is shown whole, and nothing
+  changes until you say so. ^C stops; what was applied before it stays.
+
+  Mount ssh                                                                1/1
+  ────────────────────────────────────────────────────────────────────────────
+
+  ssh.toml, proposed 1h ago
+
+  ✗ The root ~/.ssh
+    (TMP/home/.ssh)
+    is in ~/.ssh, where tools keep their settings and credentials.
+
+  Nothing in it can be applied as it is.
+  ? What now?
+    1  Delete it
+    2  Leave it pending
+    choose 1-2 [1]:   · Left pending
+
+  · Nothing was applied

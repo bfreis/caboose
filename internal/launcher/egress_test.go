@@ -41,11 +41,10 @@ func TestCreateWithEgress(t *testing.T) {
 			b := newBoxApp(t, tc.iso, box)
 			b.Cfg.Egress = tc.egress
 			linkedAt := -1
-			b.App.Spawn = func(exe string, args ...string) error {
-				if slices.Contains(args, "link") && linkedAt < 0 {
+			b.daemon.OnEnsure = func() {
+				if linkedAt < 0 {
 					linkedAt = len(box.Execs)
 				}
-				return nil
 			}
 			if err := b.Restart(); err != nil {
 				t.Fatalf("%v\n%s", err, b.errb)
@@ -169,9 +168,6 @@ func TestBuilderActions(t *testing.T) {
 	if acts.OpenURL("https://example.com") == nil || acts.Notify("t", "x") == nil {
 		t.Error("the builder link acted")
 	}
-	if ok, err := acts.Confirm("?"); ok || err == nil {
-		t.Error("the builder link confirmed")
-	}
 }
 
 // A launch that runs something in the sandbox waits for the VM's outbound
@@ -240,7 +236,7 @@ func TestLaunchWaitsForTheProxy(t *testing.T) {
 			case "before":
 				stop()
 			case "spawn":
-				b.Spawn = func(string, ...string) error { stop(); return nil }
+				b.daemon.OnEnsure = stop
 			}
 			t.Chdir(b.tmp)
 			b.replace = func(*exec.Cmd) error { return nil }

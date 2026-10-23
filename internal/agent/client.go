@@ -26,7 +26,8 @@ import (
 )
 
 // ErrNoLink is a command run while no host is linked.
-var ErrNoLink = errors.New("no host is linked to this sandbox right now (the host's caboose link helper is not running)")
+var ErrNoLink = errors.New("no host is linked to this sandbox right now: the host's caboose daemon is not running or is not serving this environment. " +
+	"On the host, 'caboose status' (with -e NAME for a named environment) says which; any caboose command for this environment brings it back")
 
 // linkSocket is the socket the in-container commands (Main) dial. It is a
 // variable so that tests of this package never reach a real link: TestMain
@@ -124,7 +125,8 @@ func Ports(socket string, w io.Writer) error {
 }
 
 // ErrNoProxy is a connect while nothing serves the outbound proxy.
-var ErrNoProxy = errors.New("caboose's outbound proxy is off: no host is linked to this sandbox right now, " +
+var ErrNoProxy = errors.New("caboose's outbound proxy is off: no host is linked to this sandbox right now " +
+	"(the host's caboose daemon is not running or is not serving this environment; 'caboose status' on the host says which), " +
 	"or egress is off in the vm profile (config.toml on the host), or the sandbox is not under isolation vm")
 
 // connectTimeout bounds the proxy's answer to a CONNECT: above its own

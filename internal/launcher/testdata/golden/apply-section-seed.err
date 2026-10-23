@@ -1,0 +1,39 @@
+
+  caboose apply  environment work
+  1 proposal from sessions in the sandbox. Each is shown whole, and nothing
+  changes until you say so. ^C stops; what was applied before it stays.
+
+  Install foo                                                              1/1
+  ────────────────────────────────────────────────────────────────────────────
+  for the docs
+
+  foo.toml, proposed 1h ago
+
+  The image: a section in the Dockerfile.
+    --- caboose's Dockerfile
+    +++ with the proposal
+      # caboose:end
+      
+    + # caboose:section foo foo 2.3
+    + ARG FOO_VERSION=2.3.0
+    + RUN curl -fsSL https://example.invalid/foo.tgz | tar -xz -C /usr/local/bin foo
+    + # caboose:end
+
+  ! TMP/.caboose/envs/work/dockerfile/default
+    has no Dockerfile yet: applying this writes caboose's Dockerfile, with this
+    section, as
+    TMP/.caboose/envs/work/dockerfile/default/Dockerfile,
+    which is yours from then on.
+
+  ? Apply this proposal?
+    1  Apply it
+    2  Leave it pending
+    3  Delete it
+    choose 1-3 [1]:   ✓ Wrote
+    TMP/.caboose/envs/work/dockerfile/default/Dockerfile;
+    it is yours to edit from here on
+  ✓ Applied foo
+
+  ? Build the image now? It takes a few minutes. [Y/n]   · Not built: caboose -e work build builds it, and so does the restart that
+    moves the container onto it
+  There is no container yet: the next launch creates it with all of this.

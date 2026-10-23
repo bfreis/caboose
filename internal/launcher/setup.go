@@ -204,18 +204,9 @@ func (a *App) ensureEnvDir(p *prompter) (created bool, err error) {
 // plain replace by rename.
 func (a *App) writeConfig(e config.Edit) (changed bool, err error) {
 	c := a.Cfg
-	path := filepath.Join(c.EnvDir, config.FileName)
-	data, err := os.ReadFile(path)
-	mode := os.FileMode(0o644)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		data = []byte(config.Template)
-	case err != nil:
-		return false, Die("reading %s: %v", path, err)
-	default:
-		if fi, err := os.Stat(path); err == nil {
-			mode = fi.Mode().Perm()
-		}
+	path, data, mode, err := readConfigToEdit(c.EnvDir)
+	if err != nil {
+		return false, Die("%v", err)
 	}
 	edited := config.EditFile(data, e)
 	if string(edited) == string(data) {
@@ -225,12 +216,41 @@ func (a *App) writeConfig(e config.Edit) (changed bool, err error) {
 		return false, Die("cannot edit %s safely (%v);\n"+
 			"       nothing was written to it. Make this change by hand:\n%s", path, err, indent(e.Snippet(), "         "))
 	}
-	if err := os.MkdirAll(c.EnvDir, 0o700); err != nil {
+	if err := replaceConfig(c.EnvDir, path, edited, mode); err != nil {
 		return false, Die("%v", err)
 	}
-	f, err := os.CreateTemp(c.EnvDir, "."+config.FileName+"-*")
+	return true, nil
+}
+
+// readConfigToEdit reads the config.toml of the environment whose dir is
+// envDir: its path, contents and mode, or the template (mode 0644) when
+// there is none yet.
+func readConfigToEdit(envDir string) (path string, data []byte, mode os.FileMode, err error) {
+	path = filepath.Join(envDir, config.FileName)
+	data, err = os.ReadFile(path)
+	mode = 0o644
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		data = []byte(config.Template)
+	case err != nil:
+		return path, nil, 0, fmt.Errorf("reading %s: %v", path, err)
+	default:
+		if fi, err := os.Stat(path); err == nil {
+			mode = fi.Mode().Perm()
+		}
+	}
+	return path, data, mode, nil
+}
+
+// replaceConfig writes edited as config.toml, at path in envDir, by a
+// temp file and a rename, with mode.
+func replaceConfig(envDir, path string, edited []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(envDir, "."+config.FileName+"-*")
 	if err != nil {
-		return false, Die("%v", err)
+		return err
 	}
 	defer os.Remove(f.Name())
 	_, err = f.Write(edited)
@@ -244,9 +264,9 @@ func (a *App) writeConfig(e config.Edit) (changed bool, err error) {
 		err = os.Rename(f.Name(), path)
 	}
 	if err != nil {
-		return false, Die("writing %s: %v", path, err)
+		return fmt.Errorf("writing %s: %v", path, err)
 	}
-	return true, nil
+	return nil
 }
 
 // writeConfigTemplate writes the environment's config.toml, every setting
@@ -281,7 +301,7 @@ func (a *App) writeConfigTemplate(p *prompter) error {
 // own values; the host's are offered only where the sandbox has none.
 func (a *App) setupGit(p *prompter) error {
 	c := a.Cfg
-	git := datadir.FindGit()
+	git := a.findGit()
 	if git == nil {
 		return Die("setting the sandbox's git identity needs git on the host, to edit its config with")
 	}

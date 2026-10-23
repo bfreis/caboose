@@ -329,20 +329,14 @@ func (c *proposalChecker) baselineOf(ctx context.Context, spec apkobuild.Spec, o
 	return r, err
 }
 
-// checkProposals checks proposals as they arrive, until stop.
-func (r *linkRunner) checkProposals(stop <-chan struct{}) {
+// checkProposals checks proposals as they arrive, until ctx ends.
+func (r *linkRunner) checkProposals(ctx context.Context) {
 	c := r.a.newProposalChecker(r.log.Printf)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		<-stop
-		cancel()
-	}()
 	t := time.NewTicker(proposalPollEvery)
 	defer t.Stop()
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-t.C:
 		}

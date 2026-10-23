@@ -61,6 +61,7 @@
 package launcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -165,6 +166,13 @@ type App struct {
 	// HostPart, when set, stands in for the machine's name as hostname.go
 	// finds it: the tests'.
 	HostPart func() string
+	// SSH, when set, stands in for this machine's ssh and ~/.ssh, where
+	// the SSH agent ssh would use is looked up (agentFrom): the tests'.
+	SSH *SSHLookup
+	// agentSeen is hostAgent's last answer (agentMemo). Unguarded: no
+	// goroutine an App runs in parallel (envDetails' parts) asks for the
+	// agent; one that does needs a lock here first.
+	agentSeen *agentMemo
 
 	// install is what the container being brought up installs before it is
 	// ready (noteInstall), for waitUntilReady to say.
@@ -175,7 +183,8 @@ type App struct {
 		labels map[string]string
 	}
 	// Terminal, when set, stands in for the terminal caboose setup asks its
-	// questions on (openTerminal): the tests' scripted answers.
+	// questions on (openTerminal), and stop and restart ask theirs on
+	// (askYes): the tests' scripted answers.
 	Terminal func() (io.ReadCloser, error)
 	// inSetup is set while caboose setup runs: a launch's "not set up"
 	// line would only interrupt it.
@@ -194,6 +203,12 @@ type App struct {
 	Executable func() (string, error)
 	Spawn      func(exe string, args ...string) error
 	Now        func() time.Time
+	// DaemonDial, when set, stands in for connecting to the daemon
+	// (dialDaemon), starting it when start is set: the tests' fake.
+	DaemonDial func(ctx context.Context, start bool) (DaemonCaller, error)
+	// relDaemon, when set, stands in for the release's daemon an update
+	// asks (releaseDaemon): the tests' fake.
+	relDaemon releaseDaemonAsker
 	// checkGuest, when set, stands in for booting the builder guest for
 	// caboose check-image under vm: the tests' fake.
 	checkGuest func() (imageGuest, error)
@@ -222,6 +237,23 @@ type App struct {
 	// a command (exec): the tests' way to run what ends in one.
 	terminal func() bool
 	replace  func(*exec.Cmd) error
+	// Where hostTimezone reads /etc/localtime's link and /etc/timezone:
+	// os.Readlink and os.ReadFile when nil. A test sets them so the zone
+	// it sees is its own, not the machine's.
+	tzReadlink func(string) (string, error)
+	tzReadFile func(string) ([]byte, error)
+	// hostGit, when set, stands in for the host's git (findGit): a test's,
+	// so that what it sees is never the machine's global git config.
+	hostGit func() datadir.Git
+}
+
+// findGit is the host's git (datadir.FindGit, or hostGit when set), nil
+// when there is none.
+func (a *App) findGit() datadir.Git {
+	if a.hostGit != nil {
+		return a.hostGit()
+	}
+	return datadir.FindGit()
 }
 
 // Note prints "caboose: ..." to stderr.
@@ -290,7 +322,14 @@ func HostTimezone(cabooseTZ, tz string, readlink func(string) (string, error), r
 }
 
 func (a *App) hostTimezone() string {
-	return HostTimezone(a.Cfg.TZ, a.getenv("TZ"), os.Readlink, os.ReadFile)
+	readlink, readFile := a.tzReadlink, a.tzReadFile
+	if readlink == nil {
+		readlink = os.Readlink
+	}
+	if readFile == nil {
+		readFile = os.ReadFile
+	}
+	return HostTimezone(a.Cfg.TZ, a.getenv("TZ"), readlink, readFile)
 }
 
 // DockerSockPath is the host socket engine_socket asks to mount, or ""

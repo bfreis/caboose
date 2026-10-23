@@ -43,26 +43,27 @@ func (a *App) beforeAttach(terminal bool) {
 		a.autoSync()
 		return
 	}
-	if unlock, ok := a.lockSync(); ok {
+	if unlock, _, ok := a.lockSync(); ok {
 		unlock()
 	}
 }
 
 // lockSync takes the sync lock, waiting up to syncBudget for a sync that
-// holds it. ok is false when it could not be had; waited is said once.
-func (a *App) lockSync() (unlock func(), ok bool) {
+// holds it. ok is false when it could not be had; waited, that another
+// sync held it first, which is said once.
+func (a *App) lockSync() (unlock func(), waited, ok bool) {
 	deadline := time.Now().Add(syncBudget)
 	said := false
 	for {
 		unlock, err := statesync.Lock(a.Cfg.DataDir)
 		switch {
 		case err == nil:
-			return unlock, true
+			return unlock, said, true
 		case !errors.Is(err, statesync.ErrLocked):
-			return nil, false // no lock file to be had: nobody syncs here either
+			return nil, said, false // no lock file to be had: nobody syncs here either
 		case time.Now().After(deadline):
 			a.Note("a sync is still running; starting anyway")
-			return nil, false
+			return nil, said, false
 		case !said:
 			a.Note("waiting for a sync to finish")
 			said = true
@@ -83,13 +84,12 @@ func (a *App) autoSync() {
 	}
 	// The lock first: a sync that was running when this launch came up
 	// has just done this one's work.
-	start := time.Now()
-	unlock, ok := a.lockSync()
+	unlock, waited, ok := a.lockSync()
 	if !ok {
 		return
 	}
 	defer unlock()
-	if time.Since(start) >= lockPoll {
+	if waited {
 		return
 	}
 	if l, err := a.liveWork(); err != nil {

@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/bfreis/caboose/internal/saferm"
 )
 
 func TestParse(t *testing.T) {
@@ -32,8 +35,8 @@ func TestParse(t *testing.T) {
 		{[]string{"status"}, Invocation{Command: "status"}, ""},
 		// Help, in every spelling.
 		{[]string{"help"}, Invocation{Command: "help"}, ""},
-		{[]string{"-h"}, Invocation{Command: "help"}, ""},
-		{[]string{"--help"}, Invocation{Command: "help"}, ""},
+		{[]string{"-h"}, Invocation{Command: "help", Short: true}, ""},
+		{[]string{"--help"}, Invocation{Command: "help", Short: true}, ""},
 		{[]string{"help", "sync"}, Invocation{Command: "help", Args: []string{"sync"}}, ""},
 		{[]string{"--help", "sync"}, Invocation{Command: "help", Args: []string{"sync"}}, ""},
 		{[]string{"sync", "--help"}, Invocation{Command: "help", Args: []string{"sync"}}, ""},
@@ -149,5 +152,67 @@ func TestCommandUsage(t *testing.T) {
 				t.Errorf("wider than 80 columns: %q", l)
 			}
 		}
+	}
+}
+
+// The short help leaves the hidden commands out; the full one lists them,
+// and each has its own help.
+func TestHiddenCommands(t *testing.T) {
+	var hidden []string
+	for _, c := range Commands {
+		if c.Hidden {
+			hidden = append(hidden, c.Name)
+		}
+	}
+	if !slices.Contains(hidden, "daemon") {
+		t.Fatalf("hidden commands %v", hidden)
+	}
+	_, short, _ := runIt("--help")
+	_, full, _ := runIt("help")
+	for _, name := range hidden {
+		if strings.Contains(short, "\n  "+name+" ") {
+			t.Errorf("--help lists %s:\n%s", name, short)
+		}
+		if !strings.Contains(full, "\n  "+name+" ") {
+			t.Errorf("help lacks %s:\n%s", name, full)
+		}
+	}
+	if short != ShortUsage() || full != Usage() {
+		t.Error("help output")
+	}
+}
+
+// caboose daemon is machine-wide: an environment's config.toml that cannot
+// be read stands not in its way, and its status starts and creates nothing.
+func TestDaemonSkipsTheEnvironment(t *testing.T) {
+	sandboxEnv(t)
+	ch, err := os.MkdirTemp("", "cbd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := saferm.RemoveRoot(ch); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Setenv("CABOOSE_HOME", ch)
+	dir := filepath.Join(ch, "envs", "default")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("nope = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := runIt("daemon", "status")
+	if code != 0 || errs != "" || !strings.Contains(out, "not running") {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+	for _, d := range []string{"daemon", "daemon-dev"} {
+		if _, err := os.Lstat(filepath.Join(ch, d)); err == nil {
+			t.Errorf("status created %s", d)
+		}
+	}
+	if code, _, errs := runIt("daemon", "nope"); code == 0 || !strings.Contains(errs, "usage") {
+		t.Errorf("daemon nope: exit %d, %q", code, errs)
 	}
 }

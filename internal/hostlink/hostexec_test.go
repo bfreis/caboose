@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -420,5 +421,84 @@ func TestHelloNamesRelayRoots(t *testing.T) {
 	}
 	if a := startExecHost(t, Config{}); a.hello.Roots != nil {
 		t.Errorf("no relay, hello roots %q", a.hello.Roots)
+	}
+}
+
+func TestHostExecEnvIsExactlyPathHomeLang(t *testing.T) {
+	_, cfg := execRoot(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LANG", "C.UTF-8")
+	t.Setenv("PATH", os.Getenv("PATH"))
+	// What the link's process has must not reach the command.
+	t.Setenv("SSH_AUTH_SOCK", filepath.Join(home, "agent.sock"))
+	t.Setenv("DOCKER_HOST", "unix://"+filepath.Join(home, "docker.sock"))
+	t.Setenv("CABOOSE_DEBUG_LINK", "sockbuf=0")
+	t.Setenv("GITHUB_TOKEN", "not-a-token")
+	t.Setenv("LC_ALL", "C")
+	a := startExecHost(t, cfg)
+	r := a.run(agentproto.ExecRequest{Argv: []string{"env"}, Dir: "/work"}, "")
+	if r.code != 0 {
+		t.Fatalf("env: %+v", r)
+	}
+	var names []string
+	got := map[string]string{}
+	for _, l := range strings.Split(strings.TrimSpace(r.stdout), "\n") {
+		k, v, _ := strings.Cut(l, "=")
+		names = append(names, k)
+		got[k] = v
+	}
+	sort.Strings(names)
+	if strings.Join(names, " ") != "HOME LANG PATH" {
+		t.Fatalf("the command's environment is %v, want HOME LANG PATH only:\n%s", names, r.stdout)
+	}
+	if got["HOME"] != home || got["LANG"] != "C.UTF-8" || got["PATH"] != os.Getenv("PATH") {
+		t.Errorf("values: %v", got)
+	}
+}
+
+func TestHostExecEnvDefaultLang(t *testing.T) {
+	env := HostExecEnv(func(k string) string { return map[string]string{"PATH": "/a", "HOME": "/h"}[k] })
+	if strings.Join(env, " ") != "PATH=/a HOME=/h LANG="+defaultLang {
+		t.Errorf("got %v", env)
+	}
+}
+
+// Each link's commands are its own: killing one set leaves another's.
+func TestExecsArePerLink(t *testing.T) {
+	_, cfg := execRoot(t)
+	one, two := NewExecs(), NewExecs()
+	c1, c2 := cfg, cfg
+	c1.Execs, c2.Execs = one, two
+	p1, _, _ := startSleepers(t, startExecHost(t, c1))
+	p2, _, _ := startSleepers(t, startExecHost(t, c2))
+	if one.Running() != 1 || two.Running() != 1 || HostExecsRunning() < 2 {
+		t.Fatalf("running %d, %d, %d in all", one.Running(), two.Running(), HostExecsRunning())
+	}
+	one.Kill()
+	gone(t, p1)
+	for _, pid := range p2 {
+		if !processAlive(pid) {
+			t.Fatalf("killing one link's commands killed another's (%d)", pid)
+		}
+	}
+	two.Kill()
+	gone(t, p2)
+}
+
+// processAlive reports whether pid runs, and is no zombie.
+func processAlive(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	st := strings.TrimSpace(string(out))
+	return err == nil && st != "" && !strings.HasPrefix(st, "Z")
+}
+
+// Once Run waits for its commands, host exec takes no more: adding to a
+// WaitGroup being waited on is not allowed.
+func TestHostExecRefusedOnceClosing(t *testing.T) {
+	h := &Host{cfg: Config{HostExec: &HostExec{}}}
+	h.waitExecs()
+	if err := h.hostExec(1); err == nil || !strings.Contains(err.Error(), "closing") {
+		t.Fatalf("host exec while closing: %v", err)
 	}
 }

@@ -6,9 +6,9 @@
 package backendtest
 
 import (
-	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os/exec"
 	"slices"
@@ -21,7 +21,7 @@ import (
 
 // ErrAbsent is what a call about the sandbox returns while there is none,
 // as an inspect of a missing container fails.
-var ErrAbsent = errors.New("no such sandbox")
+var ErrAbsent = fmt.Errorf("no such sandbox: %w", fs.ErrNotExist)
 
 // Fake is a sandbox in memory. Its zero value is absent; set Status (and
 // SandboxLabels, SandboxMounts, ImageID) for one that exists already. The

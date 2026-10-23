@@ -15,7 +15,8 @@
 | `caboose restart` | recreate the sandbox, to pick up a rebuilt image or new mounts |
 | `caboose stop` | stop the sandbox |
 | `caboose detach` | detach this project's session, leaving it running |
-| `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; every launch starts one in the background, and `--restart` replaces it; see [The host link](host-link.md) |
+| `caboose link [--restart]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; the caboose daemon runs it, every launch asks it for one, `caboose link` asks now and `--restart` replaces it; see [The host link](host-link.md) |
+| `caboose daemon [status\|stop\|restart]` | the host daemon that runs the links: how it is, stop it, or restart it; it starts on demand and exits when idle; see [The host link](host-link.md#the-daemon) |
 | `caboose prune` | delete old Claude Code versions now, and cached packages no environment's lock names |
 | `caboose prune --docker` | under a `vm` profile, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `CABOOSE_FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
@@ -87,7 +88,8 @@ configuration and roots, the data dir, the [sandbox config](sandbox-config.md)
 the roots it expects), the Docker engine, the image against this launcher
 and its base, the container against the image, the roots and what it keeps,
 the Claude login, Claude Code in it, live sessions, the SSH
-agent, the sandbox's git identity and commit signing, and the sync. Each
+agent, the daemon and the link,
+the sandbox's git identity and commit signing, and the sync. Each
 row starts with a mark: `✓` when all is well, `!` for a note (worth
 knowing; it clears up by itself, or is a choice), `✗` for a problem
 (broken, or about to be, until you act), or `–` for not checked (and

@@ -1,0 +1,133 @@
+== stop, not running
+-- stdout
+-- stderr
+caboose: VM is not running
+-- error
+<nil>
+-- calls
+
+== stop, no sessions
+-- stdout
+-- stderr
+caboose: VM stopped
+-- error
+<nil>
+-- calls
+stop
+== stop, no terminal
+-- stdout
+-- stderr
+caboose: stop will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+-- error
+refusing to stop non-interactively with live sessions (set CABOOSE_FORCE=1 to override)
+-- calls
+
+== stop, no
+-- stdout
+-- stderr
+caboose: stop will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+caboose: continue? [y/N] -- error
+aborted; nothing was changed
+-- calls
+
+== stop, yes
+-- stdout
+-- stderr
+caboose: stop will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+caboose: continue? [y/N] caboose: VM stopped
+-- error
+<nil>
+-- calls
+stop
+== stop, forced
+-- stdout
+-- stderr
+caboose: stop will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+caboose: CABOOSE_FORCE=1 set, continuing.
+caboose: VM stopped
+-- error
+<nil>
+-- calls
+stop
+== restart, no sessions
+-- stdout
+-- stderr
+caboose: VM removed
+caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
+caboose: starting the sandbox's VM
+caboose: VM recreated
+-- error
+<nil>
+-- calls
+remove create
+== restart, no terminal
+-- stdout
+-- stderr
+caboose: restart will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+-- error
+refusing to restart non-interactively with live sessions (set CABOOSE_FORCE=1 to override)
+-- calls
+
+== restart, no
+-- stdout
+-- stderr
+caboose: restart will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+caboose: continue? [y/N] -- error
+aborted; nothing was changed
+-- calls
+
+== restart, yes
+-- stdout
+-- stderr
+caboose: restart will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+caboose: continue? [y/N] caboose: VM removed
+caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
+caboose: starting the sandbox's VM
+caboose: VM recreated
+-- error
+<nil>
+-- calls
+remove create
+== restart, forced
+-- stdout
+-- stderr
+caboose: restart will kill these live session(s):
+  proj-abc123
+  proj-abc123-2
+caboose: CABOOSE_FORCE=1 set, continuing.
+caboose: VM removed
+caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
+caboose: starting the sandbox's VM
+caboose: VM recreated
+-- error
+<nil>
+-- calls
+remove create
+== restart, absent
+-- stdout
+-- stderr
+caboose: the sandbox has no git identity (user.name, user.email), so commits in it fail: run 'caboose setup git'
+caboose: installed caboose's instructions and skills into TMP/data/claude-code (/etc/claude-code in the VM, read-only)
+caboose: starting the sandbox's VM
+caboose: VM recreated
+-- error
+<nil>
+-- calls
+create

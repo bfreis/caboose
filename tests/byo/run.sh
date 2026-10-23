@@ -124,6 +124,8 @@ remove_ours() {
 }
 cleanup() {
     remove_ours
+    # None runs with CABOOSE_DATA_DIR set; a no-op that creates nothing.
+    [ -n "${CABOOSE_HOME:-}" ] && "$CC" daemon stop >/dev/null 2>&1 </dev/null
     local id
     for id in ${built_ids[@]+"${built_ids[@]}"}; do docker image rm -f "$id" >/dev/null 2>&1; done
     docker image rm -f "$DEB_BASE" "$ALP_BASE" "$DIR_BASE" >/dev/null 2>&1

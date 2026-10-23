@@ -10,7 +10,10 @@ sandbox signs with is one the agent holds.
 On a Mac, Docker runs in a VM, and a Mac socket bind-mounted into it does
 not arrive as a socket. OrbStack and Docker Desktop provide their own
 forwarded socket, `/run/host-services/ssh-auth.sock`, and with either one
-that is what caboose mounts. It is the only way a third-party agent such as
+that is what caboose mounts, unless you said outright that the sandbox
+gets no agent (`ssh_agent = "none"`, or an `IdentityAgent none` that
+applies to every host, both below): then it mounts nothing and sets no
+`SSH_AUTH_SOCK`. It is the only way a third-party agent such as
 **1Password**'s reaches a container. The engine forwards the agent it was
 started with, so 1Password's has to be the `SSH_AUTH_SOCK` of apps started
 outside a terminal: 1Password documents that as ["Configure SSH_AUTH_SOCK
@@ -26,10 +29,29 @@ change to any of this needs `caboose restart`.
 Under a `vm` profile nothing of the Mac's can be mounted into the
 VM, so the [host link](host-link.md) carries the agent instead: the agent
 in the sandbox listens at the same path, and each client there reaches the
-agent `ssh` on the Mac would use, as the launch that started the link saw
-it: an `IdentityAgent` in `~/.ssh/config`, else the terminal's
-`$SSH_AUTH_SOCK`. The link starts with a session; `caboose link
---restart` starts one without.
+agent `ssh` on the Mac would use, as the caboose daemon sees it: an
+`IdentityAgent` in `~/.ssh/config`, else the `$SSH_AUTH_SOCK` a login shell
+gives the daemon when it starts, never the terminal a command runs in. The
+link starts with any command that brings the sandbox up or uses it (a
+session, `caboose shell`, `caboose restart`); `caboose link` starts one
+alone, and
+`caboose daemon restart` makes the daemon ask the login shell again.
+
+caboose finds that `IdentityAgent` by asking `ssh -G
+caboose-default-agent.invalid`, a reserved name no `Host` block of yours
+names, with the `ssh` the PATH finds (the daemon's is the login shell's).
+So only `Host *` and the lines before any `Host` decide: a block for one
+host, such as `Host github.com` with `IdentityAgent none`, is that host's,
+not the sandbox's. An `IdentityAgent none` that applies to every host
+gives the sandbox no agent, and `caboose doctor` says so. When `ssh -G`
+fails -- no `ssh`, or one that refuses the config -- caboose reads
+`~/.ssh/config`, and the files it `Include`s, for the `IdentityAgent`
+that applies to that name: the first one under a `Host` that matches it
+(or before any `Host`). It gives up at a `Match` line before one, which
+only `ssh` can decide, and takes `$SSH_AUTH_SOCK` instead. Either way
+`link.log` and `caboose doctor` say what chose the agent and why, such as
+`$SSH_AUTH_SOCK (ssh -G caboose-default-agent.invalid failed: ...)`, and
+setting `ssh_agent` (below) settles it.
 
 **`ssh_agent`** in `[link]` of `config.toml` names the
 agent outright, whatever the terminal says, or `none` for none. It is for
@@ -43,9 +65,11 @@ nothing on the Mac shows the agent is not yours:
 
 The link rereads `config.toml`, so it takes effect without a restart. It
 applies under `vm` and, on Linux, to the socket mounted under `container` and
-`gvisor`; with OrbStack or Docker Desktop the engine forwards its own, and
-`caboose doctor` says the setting is not used. `caboose doctor` names the
-agent the sandbox gets and what chose it.
+`gvisor`. With OrbStack or Docker Desktop the engine forwards its own, so a
+socket named there is not used, and `caboose doctor` says so; `none` is
+honored there too, as no agent. `caboose doctor` names the agent the
+sandbox gets and what chose it, and says when a sandbox created before a
+`none` still has one (`caboose restart` drops it).
 
 **Commit signing** with an SSH key is set up by `caboose setup git`, which
 offers the host's key when the host signs with SSH (`gpg.format = ssh`),

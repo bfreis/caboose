@@ -1,0 +1,2 @@
+caboose: the VM does not keep ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/gh, ~/.config/git, ~/.config/jj, ~/.ssh, which the sandbox config now does.
+caboose: run 'caboose restart' to remount (this kills running sessions).

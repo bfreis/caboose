@@ -16,6 +16,9 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// No test runs this machine's ssh or reads its ~/.ssh: one that looks
+	// for an agent sets App.SSH.
+	hostSSH = noSSH
 	if len(os.Args) > 1 && os.Args[1] == "askpass" && os.Getenv(syncagent.AskpassEnv) != "" {
 		os.Exit(syncagent.Askpass(os.Args[2:], os.Stdout, os.Stderr))
 	}
@@ -23,6 +26,9 @@ func TestMain(m *testing.M) {
 		exe, _ := os.Executable()
 		os.Exit(syncagent.Serve(os.Args[2], os.Stdin, os.Stdout, os.Stderr,
 			syncagent.Paths{Home: home, Repo: os.Getenv(testSyncRepo), Exe: exe}))
+	}
+	if dir := os.Getenv(heldLockEnv); dir != "" {
+		holdLinkLock(dir)
 	}
 	os.Exit(nodocker.Run(m))
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/bfreis/caboose/internal/apkobuild"
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/launcher"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 )
@@ -57,6 +58,7 @@ func doctorEnv(t *testing.T, over ...string) (home, log string) {
 	t.Helper()
 	home = sandboxEnv(t, "TZ", "Etc/UTC", "SSH_AUTH_SOCK", "")
 	log = scriptedDocker(t, doctorBox(t, home, over...))
+	healthyDaemon(t, home)
 	return home, log
 }
 
@@ -382,6 +384,15 @@ func TestDoctorAgent(t *testing.T) {
 			t.Fatalf("exit %d:\n%s", code, out)
 		}
 	})
+	t.Run("empty on a Mac", func(t *testing.T) {
+		t.Cleanup(launcher.PlayHostForTests("darwin"))
+		doctorEnv(t, `[ "$*" = "exec caboose-default ssh-add -l" ] && { echo "The agent has no identities." >&2; exit 1; }`)
+		code, out, _ := runIt("doctor", "--offline")
+		if code != 1 || row(out, "ssh agent", "problem: forwarded, but the agent holds no keys") == "" ||
+			!fixFor(out, "ssh agent", "make SSH_AUTH_SOCK point at your agent for apps started outside a terminal") {
+			t.Fatalf("exit %d:\n%s", code, out)
+		}
+	})
 	notForwarded := `[ "$*" = "exec caboose-default bash -c printf '%s' \"\${SSH_AUTH_SOCK-}\"" ] && exit 0`
 	t.Run("the host has none", func(t *testing.T) {
 		doctorEnv(t, notForwarded)
@@ -477,6 +488,7 @@ func TestDoctorSync(t *testing.T) {
 	})
 	t.Setenv("SSH_AUTH_SOCK", "")
 	t.Setenv("TZ", "Etc/UTC")
+	healthyDaemon(t, filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(data)))))
 	if code, _, errOut := runIt("sync", "--remote", remote); code != 0 {
 		t.Fatalf("sync: exit %d: %s", code, errOut)
 	}

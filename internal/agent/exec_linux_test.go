@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -67,9 +68,15 @@ func runExec(t *testing.T, e *ExecServer, req agentproto.ExecRequest, stdin stri
 
 func TestExecStreams(t *testing.T) {
 	e := &ExecServer{Env: []string{"PATH=" + os.Getenv("PATH"), "FOO=base"}, Dir: "/"}
+	// Physical, as pwd says it with no PWD set: the temp dir may be
+	// reached through a symlink.
+	tmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := runExec(t, e, agentproto.ExecRequest{Argv: []string{"sh", "-c", `echo "out $FOO $(pwd)"; echo err >&2; exit 3`},
-		Env: []string{"FOO=over"}, Dir: os.TempDir()}, "", nil)
-	if r.code != 3 || r.out != "out over "+os.TempDir()+"\n" || r.errOut != "err\n" {
+		Env: []string{"FOO=over"}, Dir: tmp}, "", nil)
+	if r.code != 3 || r.out != "out over "+tmp+"\n" || r.errOut != "err\n" {
 		t.Errorf("%+v", r)
 	}
 	r = runExec(t, e, agentproto.ExecRequest{Argv: []string{"sh", "-c", "pwd"}}, "", nil)

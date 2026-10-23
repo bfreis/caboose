@@ -63,6 +63,11 @@ func TestCheckRunArgs(t *testing.T) {
 		"--volume=/x:/etc/claude-code:ro":                         "overlaps /etc/claude-code",
 		"--mount=type=bind,src=/x,dst=/etc/claude-code/CLAUDE.md": "overlaps /etc/claude-code",
 		"--tmpfs=/etc":                                            "overlaps /etc/claude-code",
+		// docker's CLI reads a --mount as CSV, with keys in any case.
+		"--mount=type=bind,src=/x,Target=/run/agent.sock":   "overlaps /run/agent.sock",
+		"--mount=type=bind,src=/x,DST=/etc/claude-code":     "overlaps /etc/claude-code",
+		`--mount=type=bind,src=/x,"target=/run/agent.sock"`: "overlaps /run/agent.sock",
+		`--mount=type=bind,"src=/x,target=/y`:               "not one CSV record",
 	} {
 		err := checkRunArgs([]string{"--dns=1.1.1.1", arg}, testOwnArgs, roots)
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasPrefix(err.Error(), "'"+arg+"'") {

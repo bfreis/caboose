@@ -32,10 +32,16 @@ type setupEnv struct {
 
 func newSetupEnv(t *testing.T, env, hostGit string, running bool, agentKeys ...string) *setupEnv {
 	t.Helper()
+	return newSetupEnvIn(t, physicalTempDir(t), env, hostGit, running, agentKeys...)
+}
+
+// newSetupEnvIn is newSetupEnv with everything under tmp, a directory of
+// the test's own.
+func newSetupEnvIn(t *testing.T, tmp, env, hostGit string, running bool, agentKeys ...string) *setupEnv {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	tmp := t.TempDir()
 	g := filepath.Join(tmp, "host.gitconfig")
 	if err := os.WriteFile(g, []byte(hostGit), 0o644); err != nil {
 		t.Fatal(err)
@@ -43,7 +49,7 @@ func newSetupEnv(t *testing.T, env, hostGit string, running bool, agentKeys ...s
 	t.Setenv("GIT_CONFIG_GLOBAL", g)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
-	state := "exit 1"
+	state := "echo 'Error: No such object: caboose' >&2; exit 1"
 	if running {
 		state = "echo running; exit 0"
 	}

@@ -1,0 +1,26 @@
+
+  caboose doctor  environment default
+
+  ✓ caboose       VERSION, a VERSIONelopment build; it does not update itself
+  ✓ env           default
+  ✓ roots         TMP at /work
+  ✓ data dir      TMP/data
+  ! instructions  caboose's instructions are not written yet; the next launch writes them to TMP/data/claude-code/CLAUDE.md (/etc/claude-code/CLAUDE.md in the VM, read-only)
+  ! login         not logged in to Claude yet; the first session asks (run caboose in a project)
+  ✓ keep          ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh; 8 sync rules
+  ✓ docker        not needed: isolation is vm
+  ✓ isolation     vm: 4 CPUs, 6144 MiB; , kernel , builder 
+  ✓ egress        through this machine, so its VPN routes and DNS apply (egress on; egress_ports "22 80 443")
+  ✓ file limit    kern.maxvnodes is 1048576
+  ✓ image         img, matching this launcher (built by v1)
+  ! VM            box does not exist; a launch creates it
+  – daemon        not checked: neither CABOOSE_HOME nor HOME is set
+  – claude        not checked: the VM is not running
+  – sessions      not checked: the VM is not running
+  – ssh agent     not checked: the VM is not running
+  ✗ git           no git identity in the sandbox (user.name and user.email unset): commits in it fail
+  ✓ signing       not set up; commits in the sandbox are not signed
+  ✓ sync          not set up ('caboose sync --remote URL' starts it)
+
+  ✗ 1 problem. To fix:
+    git           caboose setup git

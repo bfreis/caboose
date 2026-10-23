@@ -211,6 +211,21 @@ func mergeEnv(base, over []string) []string {
 	return out
 }
 
+// SharePaths are the host directories a VM created with mounts ms shares
+// with its guest: each mount's source, or a file's directory. Everything
+// under them is the guest's to reach.
+func SharePaths(ms []Mount) ([]string, error) {
+	shares, _, err := planShares(ms)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, len(shares))
+	for i, s := range shares {
+		paths[i] = s.Path
+	}
+	return paths, nil
+}
+
 // planShares makes the mounts directories of the VM's one share. A
 // virtio-fs share is a directory, so a file is mounted from its own
 // directory, shared whole (a kept file entry's is the data dir's home/,

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/daemon"
+	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/selfupdate"
 	"github.com/bfreis/caboose/internal/version"
 )
@@ -201,10 +203,12 @@ func (a *App) updateInBackground() {
 	default:
 		st.Latest = tag
 		if selfupdate.Compare(tag, cur) > 0 {
-			if err := a.layout().Install(ctx, a.releases(), tag, runtime.GOOS, runtime.GOARCH, in.exe); err != nil {
+			rd := a.releaseDaemon()
+			if err := a.layout().Install(ctx, a.releases(), tag, runtime.GOOS, runtime.GOARCH, in.exe, rd.Versions(ctx)...); err != nil {
 				st.Error = err.Error()
 			} else {
 				st.From, st.To, st.Announced = cur, tag, false
+				a.replaceDaemon(ctx, rd, tag)
 			}
 		}
 	}
@@ -278,7 +282,8 @@ func (a *App) updateNow() error {
 		return nil
 	}
 	say(fmt.Sprintf("downloading caboose %s", tag))
-	if err := a.layout().Install(ctx, a.releases(), tag, runtime.GOOS, runtime.GOARCH, in.exe); err != nil {
+	rd := a.releaseDaemon()
+	if err := a.layout().Install(ctx, a.releases(), tag, runtime.GOOS, runtime.GOARCH, in.exe, rd.Versions(ctx)...); err != nil {
 		stop()
 		st.Error = err.Error()
 		_ = selfupdate.WriteState(home, st)
@@ -289,7 +294,71 @@ func (a *App) updateNow() error {
 	_ = selfupdate.WriteState(home, st)
 	u.ok("Updated caboose: %s → %s", cur, tag)
 	u.note("The next caboose you run is %s. When it builds the sandbox's image differently, the next 'caboose restart' rebuilds it.", tag)
+	if r := a.replaceDaemon(ctx, rd, tag); r != nil {
+		switch {
+		case r.Current:
+		case r.Exiting:
+			u.note("The caboose daemon restarts as %s now; the sandboxes' links come back by themselves.", tag)
+		default:
+			u.note("The caboose daemon restarts as %s once no host command runs (%d do now); the sandboxes' links come back by themselves.", tag, r.HostExecs)
+		}
+	}
 	return nil
+}
+
+// releaseDaemonAsker is what an update asks the release's daemon: which
+// versions it runs, so that pruning keeps their binaries, and to make way
+// for the version installed. A seam for the tests.
+type releaseDaemonAsker interface {
+	Versions(ctx context.Context) []string
+	Replace(ctx context.Context, tag string) (*daemonproto.ReplaceResult, error)
+}
+
+// replaceBudget bounds an update's replace of the daemon.
+const replaceBudget = 3 * time.Second
+
+// releaseDaemon is the release's daemon, as an update asks it.
+func (a *App) releaseDaemon() releaseDaemonAsker {
+	if a.relDaemon != nil {
+		return a.relDaemon
+	}
+	return realReleaseDaemon{cfg: daemon.Config{Dir: daemon.Dir(a.Cfg.CabooseHome, false), Version: currentVersion(),
+		DialTimeout: replaceBudget, HelloTimeout: replaceBudget, RequestTimeout: replaceBudget}}
+}
+
+// realReleaseDaemon asks the daemon itself, starting nothing and creating
+// nothing.
+type realReleaseDaemon struct{ cfg daemon.Config }
+
+func (r realReleaseDaemon) Versions(ctx context.Context) []string {
+	ctx, cancel := context.WithTimeout(ctx, replaceBudget)
+	defer cancel()
+	return daemon.RunningVersions(ctx, r.cfg)
+}
+
+func (r realReleaseDaemon) Replace(ctx context.Context, tag string) (*daemonproto.ReplaceResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, replaceBudget)
+	defer cancel()
+	c, err := daemon.Connect(ctx, r.cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.Replace(ctx, tag, false)
+}
+
+// replaceDaemon asks the release's daemon, if one answers, to make way for
+// tag once no host command runs: best effort, never failing the update. It
+// returns the daemon's answer, nil when none came.
+func (a *App) replaceDaemon(ctx context.Context, rd releaseDaemonAsker, tag string) *daemonproto.ReplaceResult {
+	if a.Cfg.CabooseHome == "" {
+		return nil
+	}
+	r, err := rd.Replace(ctx, tag)
+	if err != nil {
+		return nil
+	}
+	return r
 }
 
 // updateSummary says how this caboose updates, for version and doctor:

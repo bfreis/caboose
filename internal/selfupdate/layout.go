@@ -91,10 +91,11 @@ func (l Layout) Current() string {
 // Install downloads tag's archive for goos/goarch from src, checks it
 // against the release's checksums, and makes it the current version: its
 // binary in VERSIONS/TAG, Link pointed at it. Versions beyond Keep go,
-// except the one Link pointed at before and running, the executable doing
-// this (which may be neither). Nothing is changed until the download is
+// except the one Link pointed at before, running, the executable doing
+// this (which may be neither), and the tags in keep (the version the
+// caboose daemon runs, say). Nothing is changed until the download is
 // whole and checked.
-func (l Layout) Install(ctx context.Context, src Source, tag, goos, goarch, running string) error {
+func (l Layout) Install(ctx context.Context, src Source, tag, goos, goarch, running string, keep ...string) error {
 	name := AssetName(tag, goos, goarch)
 	var sums, archive bytes.Buffer
 	if err := src.fetch(ctx, tag, ChecksumsFile, &sums, 1<<20); err != nil {
@@ -110,12 +111,12 @@ func (l Layout) Install(ctx context.Context, src Source, tag, goos, goarch, runn
 	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
-	return l.place(tag, bins, running)
+	return l.place(tag, bins, running, keep...)
 }
 
 // place installs bins, by name, as tag's executables and switches Link to
 // its Binary.
-func (l Layout) place(tag string, bins map[string][]byte, running string) error {
+func (l Layout) place(tag string, bins map[string][]byte, running string, also ...string) error {
 	if err := os.MkdirAll(l.Versions, 0o755); err != nil {
 		return err
 	}
@@ -148,6 +149,11 @@ func (l Layout) place(tag string, bins map[string][]byte, running string) error 
 	keep := map[string]bool{tag: true, before: true}
 	if t, ok := l.Managed(running); ok {
 		keep[t] = true
+	}
+	for _, t := range also {
+		if Valid(t) {
+			keep[t] = true
+		}
 	}
 	l.prune(keep)
 	return nil

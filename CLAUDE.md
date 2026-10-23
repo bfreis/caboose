@@ -131,7 +131,8 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `internal/syncagent` | the sync's run in the sandbox (`caboose-agent sync run\|status`: git's environment, the budget, askpass relaying git's and ssh's prompts, a lock of its own in the repo's `.git`, and stopping when the host's stdin closes) and its protocol with the host, newline-delimited JSON on the exec's stdin and stdout, every line bounded (`Run` is the host's end, which `internal/launcher/sync.go` drives); tested with the test binary as the agent |
 | `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify`, `ports` and `host` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, connects the host's streams to them, touches the paths the host says changed (`touch.go`), runs `caboose sync` in the sandbox (`sync`, `askpass`: `internal/syncagent`), and under vm serves the outbound proxy the host's hello offers, an HTTP proxy whose every connection the host dials (`egress.go`; `caboose-agent connect` for ssh, which a vm guest's agent points ssh at as it boots: `sshegress_linux.go`) |
 | `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
-| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`); `caboose link` (`internal/launcher/link.go`) runs it detached, one per environment by a lock in the data dir |
+| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`); the daemon runs one per environment as goroutines (`DaemonLinks`, `internal/launcher/daemonlinks.go`; the CLI side is `daemonclient.go`: `startLink` asks it, starting it on demand, and `caboose link`, `status` and `doctor` ask through `App.DaemonDial`'s seam), and a command run with `CABOOSE_DATA_DIR` set keeps a detached `caboose link --background` (`internal/launcher/link.go`), either way one per environment by a lock in the data dir |
+| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `methods.go` is the one table of methods. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
 | `internal/fswatch` | the host's watcher for that relay: FSEvents through purego on a Mac (the launcher has no cgo), inotify on Linux; only paths, never what happened |
 | `internal/launcher/vm*.go` | the vm isolation in the launcher: finding `caboose-vmm`, the kernel and the builder disk (`~/.caboose/vm/<tag>/<arch>/`, else the checkout's `vm-dist/`), the VM's size, the initramfs from the embedded agent, the `VMHost`, `caboose build` through the builder, and the image store of root disks (`vm/images/`), behind the same `imageStore` as docker's |
 | `internal/backend`'s `VM`, `internal/vm` | the vm isolation as the launcher sees it: a VM's dir (`vm/<name>/`: `vm.sock`, `state.json`, the launcher's record, never shared; `machine.json`, what vmm boots), the control port's client, the clock keeper (a guest's clock stops while the Mac sleeps), the exec helper `Command` runs (the launcher as a hidden `__vm-exec`), the initramfs and the scratch disk's clone; tested against a fake vmm |
@@ -198,6 +199,8 @@ outside the repo.
   decides goes in the one `backend.Spec`, which each backend realises its
   own way; `a.Docker` is for the engine (images, builds, `docker info`, the
   isolation probe) and for `caboose logs`, which passes docker's own flags.
+  What only some backends can tell is an optional interface beside it
+  (`backend.Linker`), asked by type assertion.
 - **Container paths are fixed, not mirrored.** Each `[roots]` entry is
   mounted at `/work/<name>`, or at the `path` of its long form (a sole root
   may take `/work` itself), so a project's container path -- and the
@@ -368,6 +371,10 @@ outside the repo.
   but the seed, into a dir with no Dockerfile (`caboose setup image`, or
   the first `[section]` applied), and `caboose apply`'s sections, after
   showing the diff and asking. It is never mounted into the container.
+- **The daemon's methods are one table.** `internal/daemon/methods.go` is
+  the one table of the daemon's methods, and a method added to it fails
+  `TestMethodTable` until it is listed there. The socket refuses a hello
+  naming `daemon` before any request.
 - **Setup and apply edit `config.toml`, they never rewrite it.** Changes go
   through `config.EditFile` (line by line: only the keys asked about, by
   dotted name, in their table, comments kept, a top-level key always above
@@ -482,9 +489,19 @@ outside the repo.
   egress_allow allows reaches loopback, link-local or this machine's own
   addresses (`Egress.denied`). The link is a
   `docker exec`, never a socket of the host's mounted in, and a launch
-  starts it detached (`startLink`) because the attach `exec`s docker and
-  leaves no process to hold it. The agent's protocol has a `Version`: an
-  image from another launcher is refused, not half-served.
+  has the daemon start it (`startLink`: best effort, one note on failure,
+  never a silent fall back to a helper) because the attach `exec`s docker
+  and leaves no process to hold it. `status` and `doctor` only ask the
+  daemon (`Connect`, never `Ensure`) and create nothing. The daemon's
+  `replace` is frozen across protocols: an update asks the release daemon
+  to exit once no host command runs (`ExecGate`, drained atomically, so
+  none is admitted in between), and it starts the new version itself when
+  a link ran; only a client of a newer protocol may force it (`Ensure`). The agent's protocol has a `Version`: an
+  image from another launcher is refused, not half-served. An addition
+  an older peer can ignore (a request offered in the hello, a message
+  type, a field omitted when unset, a refusal's new `Reason`) keeps it;
+  anything else raises it, and with it `assets.Compat`, since every
+  running sandbox's link would be refused.
 - **Host exec is the host's to offer, and runs only what it was asked.**
   `host_exec` is `config.toml`'s, never the sandbox config's: the host's
   hello offers it, and a host that does not refuses the request whatever
@@ -494,8 +511,17 @@ outside the repo.
   (`config.HostPath`, with `mountedRoots`); the session that carries it
   takes three streams and the least window (`agentproto.Limits`), since
   the sandbox opens them. A command outlives neither its client nor the
-  link: its process group is killed when the stream ends, and at the
-  link's signal (`KillHostExecs`).
+  link: its process group is killed when the stream ends, when its link
+  stops (each link tracks its own, `hostlink.Execs`, so stopping one of
+  the daemon's links leaves another's commands be), and at the process's
+  signal (`KillHostExecs`, every link's). It runs with exactly `PATH`,
+  `HOME` and `LANG` (`hostlink.HostExecEnv`), never the rest of the host
+  process's environment: the daemon spawns with a minimal environment and
+  takes `PATH`, the SSH agent and docker's variables once from the user's
+  login shell (`launcher/loginenv.go`), so a link behaves the same
+  whichever terminal started the daemon. The daemon's links share one
+  `hostlink.ExecGate`: a `replace` closes it at once and exits when the
+  commands it found have ended, so new ones cannot hold an update off.
 - **The file-change relay must not change what it touches.** Under
   gVisor the link relays the host's changes under the roots
   (`hostlink/relay.go`), and the agent raises an event for each by setting

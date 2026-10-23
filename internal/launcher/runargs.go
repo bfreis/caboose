@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -135,6 +136,11 @@ func checkRunArg(arg string, targets, env []string) error {
 			return fmt.Errorf("caboose's labels are its own")
 		}
 	case "volume", "mount", "tmpfs":
+		if name == "mount" {
+			if _, err := mountFields(value); err != nil {
+				return err
+			}
+		}
 		t := mountTarget(name, value)
 		if t == "" {
 			return nil
@@ -165,17 +171,42 @@ func mountTarget(flag, value string) string {
 	case "tmpfs":
 		t, _, _ = strings.Cut(value, ":")
 	case "mount":
-		for _, f := range strings.Split(value, ",") {
-			k, v, _ := strings.Cut(f, "=")
-			if k == "target" || k == "dst" || k == "destination" {
-				t = v
-			}
+		f, err := mountFields(value)
+		if err != nil {
+			return ""
 		}
+		t = f.target
 	}
 	if !path.IsAbs(t) {
 		return ""
 	}
 	return path.Clean(t)
+}
+
+// mountSpec is what a --mount value names, read as docker's CLI reads it:
+// one CSV record (so a field may be quoted), each key lower-cased, the last
+// of a key winning. Keys it does not need are left to docker.
+type mountSpec struct {
+	source, target string
+}
+
+func mountFields(value string) (mountSpec, error) {
+	var m mountSpec
+	r := csv.NewReader(strings.NewReader(strings.TrimSpace(value)))
+	fields, err := r.Read()
+	if err != nil {
+		return m, fmt.Errorf("--mount=%s: not one CSV record, as docker reads it: %v", value, err)
+	}
+	for _, f := range fields {
+		k, v, _ := strings.Cut(f, "=")
+		switch strings.ToLower(k) {
+		case "source", "src":
+			m.source = v
+		case "target", "dst", "destination":
+			m.target = v
+		}
+	}
+	return m, nil
 }
 
 // wideningFlags are the docker run flags that give a container more of the

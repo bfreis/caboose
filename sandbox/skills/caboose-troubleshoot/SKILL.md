@@ -14,18 +14,29 @@ fixes it. `caboose@@CABOOSE_ENV_FLAG@@ status` shows the sandbox's state
 ## The host link
 
 Ports, `caboose-agent open|notify|host` and proposal checks go through the
-link: `caboose-agent` in here, `caboose@@CABOOSE_ENV_FLAG@@ link` on the host.
+link: `caboose-agent` in here, and on the host the link that the host's
+caboose daemon runs for this environment.
 @@IF isolation=gvisor@@
 So does the relay of host edits to file watchers.
 @@END@@
 @@IF isolation=vm@@
 So do the relay of host edits, outbound connections and the SSH agent.
 @@END@@
-Every launch starts it, and it reconnects by itself.
-"no host is linked to this sandbox right now" means it is not running: any
-`caboose@@CABOOSE_ENV_FLAG@@` launch starts it, or
-`caboose@@CABOOSE_ENV_FLAG@@ link --restart` without a session. Its log is
-`link.log` in the environment's data dir on the host.
+Every launch asks the daemon for it, and it reconnects by itself.
+"no host is linked to this sandbox right now" means the host's caboose
+daemon is not running or is not serving this environment (the daemon exits
+a few minutes after the last sandbox and command that used it are gone, and
+a crash is the same). On the host, `caboose@@CABOOSE_ENV_FLAG@@ status`
+says which (its `daemon` and `link` lines), and any caboose command for
+this environment brings it back: a launch, or `caboose@@CABOOSE_ENV_FLAG@@ link`
+without a session. If the daemon is there but the link is not,
+`caboose@@CABOOSE_ENV_FLAG@@ link --restart` replaces it, and `caboose daemon
+restart` restarts a daemon that does not answer. The link's log is
+`link.log` in the environment's data dir on the host, the daemon's
+`daemon.log` in the `daemon` directory of `CABOOSE_HOME` (`~/.caboose`).
+The daemon takes `PATH` and the SSH agent from a login shell when it
+starts, not from the terminal a command runs in, so a variable exported only
+in that terminal does not reach host commands.
 
 A port not reaching the host: `caboose-agent ports` says, for each listening
 port, whether it is forwarded, not in `forward_ports` (`[link]` of
@@ -121,7 +132,7 @@ with, not the terminal's; a change takes restarting the engine, then
 `ssh_agent` in `[link]` of `config.toml` names the agent outright: under vm
 it applies within seconds; on Linux under container or gvisor it is a mount,
 so it takes `caboose@@CABOOSE_ENV_FLAG@@ restart`; OrbStack and Docker Desktop
-ignore it. Commit
+ignore a socket it names, but honor `"none"` (after that restart). Commit
 signing is set up by `caboose@@CABOOSE_ENV_FLAG@@ setup git`.
 
 ## Docker in the sandbox

@@ -1,0 +1,18 @@
+
+  caboose apply  environment default
+  1 proposal from sessions in the sandbox. Each is shown whole, and nothing
+  changes until you say so. ^C stops; what was applied before it stays.
+
+  junk                                                                     1/1
+  ────────────────────────────────────────────────────────────────────────────
+
+  ✗ This is no proposal caboose can apply: unknown key nope, nope.x (a proposal
+    has title, reason, dockerfile_sha256, [section], [packages] and [roots];
+    what the sandbox keeps is changed in ~/.config/caboose/sandbox.toml, with no
+    proposal)
+  ? What now?
+    1  Delete it
+    2  Leave it pending
+    choose 1-2 [1]:   · Left pending
+
+  · Nothing was applied

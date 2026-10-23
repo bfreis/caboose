@@ -260,3 +260,23 @@ func TestLinkEndsWithTheHost(t *testing.T) {
 		t.Fatal("the link outlived its host")
 	}
 }
+
+// The messages for a missing host stand alone: they say what is not there
+// and what the person at the host does, without naming anything of the
+// sandbox's.
+func TestNoLinkMessagesStandAlone(t *testing.T) {
+	for name, err := range map[string]error{"no link": ErrNoLink, "no proxy": ErrNoProxy} {
+		msg := err.Error()
+		for _, want := range []string{"no host is linked", "caboose daemon", "caboose status"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: %q does not say %q", name, msg, want)
+			}
+		}
+		if strings.Contains(msg, "helper") {
+			t.Errorf("%s: %q names the link helper", name, msg)
+		}
+	}
+	if !strings.Contains(ErrNoLink.Error(), "brings it back") {
+		t.Errorf("ErrNoLink does not say what brings the daemon back: %q", ErrNoLink)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/daemon"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/nofollow"
 	"github.com/bfreis/caboose/internal/proposal"
@@ -213,6 +214,23 @@ func (a *App) Doctor(args []string) error {
 	if u.width > 0 {
 		c.live = startLive(u, a.Cfg.Home, doctorLabelWidth)
 	}
+	a.runCheckup(c, offline)
+	if c.live != nil {
+		c.live.end()
+		c.renderFixes(u, doctorLabelWidth, a.Cfg.Home)
+	} else {
+		c.render(u, a.Cfg.Home)
+	}
+	if c.count(levelProblem) > 0 {
+		return &ExitError{Code: doctorProblems}
+	}
+	return nil
+}
+
+// runCheckup runs every check and adds its findings to c, in the order
+// they print. It prints nothing itself: a terminal's live report is c.live,
+// if set. caboose doctor renders what it collects; the daemon returns it.
+func (a *App) runCheckup(c *checkup, offline bool) {
 	c.checking("caboose itself")
 	l, text := a.updateSummary()
 	c.add(l, "caboose", "", "%s", text)
@@ -237,6 +255,8 @@ func (a *App) Doctor(args []string) error {
 		state = a.doctorContainer(c, rootsOK)
 	}
 	running := state == "running"
+	c.checking("the daemon and the link")
+	a.doctorDaemon(c, running)
 	agentKeys, agentWhy := []string(nil), "the "+a.noun()+" is not running"
 	if running {
 		c.checking("inside the " + a.noun())
@@ -264,16 +284,6 @@ func (a *App) Doctor(args []string) error {
 	default:
 		a.doctorSync(c, "")
 	}
-	if c.live != nil {
-		c.live.end()
-		c.renderFixes(u, doctorLabelWidth, a.Cfg.Home)
-	} else {
-		c.render(u, a.Cfg.Home)
-	}
-	if c.count(levelProblem) > 0 {
-		return &ExitError{Code: doctorProblems}
-	}
-	return nil
 }
 
 // doctorConfig checks the environment's configuration, and reports
@@ -585,17 +595,31 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 	}
 
 	status, usable := a.agentStatus()
+	declined, none := a.agentDeclined()
 	switch {
+	case strings.HasPrefix(status, "not forwarded") && none:
+		c.note("ssh agent", "not forwarded: %s, so git over SSH and commit signing in the sandbox have none", declined)
+		return nil, "no agent is forwarded"
+	case none && !a.isVM():
+		// The mount is fixed at creation: this sandbox predates the
+		// "none" (under vm the link drops the agent at once).
+		c.problem("ssh agent", "caboose restart, to stop forwarding it"+endsSessions,
+			"forwarded, though %s: the %s was created before that", declined, a.noun())
+		return nil, "the agent is forwarded against the configuration"
 	case strings.HasPrefix(status, "not forwarded"):
 		if a.sshAgentSource() != "" {
 			c.problem("ssh agent", "caboose restart, to forward it"+endsSessions,
 				"not forwarded, though the host has an agent now")
 			return nil, "no agent is forwarded"
 		}
-		c.note("ssh agent", "not forwarded: the host has no agent, so git over SSH and commit signing in the sandbox have none")
+		c.note("ssh agent", "not forwarded: the host has no agent%s, so git over SSH and commit signing in the sandbox have none", a.agentSourceSaid(c))
 		return nil, "no agent is forwarded"
+	case strings.HasPrefix(status, "unknown"):
+		// Under vm with no link: the link's row says why and what to run.
+		c.unchecked("ssh agent", "%s: under vm the link carries the agent, so it is checked once one runs (caboose link starts one)", status)
+		return nil, "the agent is not checked"
 	case !usable:
-		c.problem("ssh agent", a.agentFix(status), "%s", status)
+		c.problem("ssh agent", a.agentFix(status), "%s%s", status, a.agentSourceSaid(c))
 		return nil, "the agent is not usable"
 	}
 	c.ok("ssh agent", "%s%s", status, a.agentSourceSaid(c))
@@ -606,41 +630,88 @@ func (a *App) doctorInside(c *checkup) (agentKeys []string, why string) {
 	return strings.Split(out, "\n"), ""
 }
 
-// agentSourceSaid is ", <socket> (<what chose it>)" for the ssh agent row,
+// agentSourceSaid is ", <socket> (<what chose it>)" for the ssh agent row
+// (" (<why ssh -G named none>)" when there is no socket and it failed),
 // where caboose chooses the agent (vm, and docker or gvisor on Linux); on a
-// Mac engine, which forwards its own, "" -- and a note when ssh_agent is
-// set there, since it then does nothing.
+// Mac engine, which forwards its own, "" -- and a note when ssh_agent names
+// a socket there, since it then does nothing (its "none" is honored) -- or,
+// when ssh -G failed, why, since an IdentityAgent none it would have found
+// gives no agent.
 func (a *App) agentSourceSaid(c *checkup) string {
 	if !a.isVM() && goos == "darwin" {
 		if engine := a.macEngine(); engine != "" {
-			if a.Cfg.SSHAgent != "" {
+			if a.Cfg.SSHAgent != "" && a.Cfg.SSHAgent != "none" {
 				c.note("ssh agent", "%s is not used: %s forwards the agent it was started with (its SSH_AUTH_SOCK)", sshAgentOrigin(a.Cfg), engine)
+			}
+			if a.Cfg.SSHAgent == "" {
+				return a.engineAgentSaid(engine)
 			}
 			return ""
 		}
 	}
 	sock, from := a.hostAgent()
+	if why, ok := strings.CutPrefix(from, agentFromEnv); ok && a.isVM() && a.servedByDaemon() {
+		// The daemon's link carries the agent, from the SSH_AUTH_SOCK a
+		// login shell gave the daemon: never this terminal's. Why ssh -G
+		// named none here is most likely why it named none there.
+		why = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(why), "("), ")")
+		if why != "" {
+			why = "; here " + why
+		}
+		return ", the daemon's $SSH_AUTH_SOCK (a login shell's; link.log names it" + why + ")"
+	}
 	if sock == "" {
+		// No agent: the config's IdentityAgent none, or why ssh -G named
+		// none, when it failed.
+		if strings.HasPrefix(from, agentFromNone) {
+			return " (" + from + ")"
+		}
+		if rest, ok := strings.CutPrefix(from, agentFromEnv+" ("); ok {
+			return " (" + rest
+		}
 		return ""
 	}
 	return fmt.Sprintf(", %s (%s)", sock, from)
+}
+
+// engineAgentSaid is agentSourceSaid on a Mac engine with ssh_agent unset:
+// "" when ssh -G answered, else that the engine forwards its own and why
+// ssh -G could not say -- and, when ~/.ssh/config could not be read for
+// it either (a Match before any IdentityAgent, say), that an IdentityAgent
+// none was not ruled out. An IdentityAgent none found either way is
+// agentDeclined's, said before this.
+func (a *App) engineAgentSaid(engine string) string {
+	_, from := a.hostAgent()
+	rest, ok := strings.CutPrefix(from, agentFromEnv+" (")
+	if !ok {
+		return ""
+	}
+	rest = strings.TrimSuffix(rest, ")")
+	if _, _, cerr := configIdentityAgent(a.sshLookup()); cerr != nil {
+		return fmt.Sprintf(", %s's own (%s: an IdentityAgent none could not be read, so the engine's agent is forwarded; ssh_agent = \"none\" in [link] settles it)", engine, rest)
+	}
+	return fmt.Sprintf(", %s's own (%s; ~/.ssh/config, read directly, names no IdentityAgent)", engine, rest)
 }
 
 // agentFix is what makes an unusable forwarded agent usable.
 func (a *App) agentFix(status string) string {
 	if a.isVM() {
 		// The link carries the agent into a VM: ssh_agent's, else the one
-		// ssh would use as the launch that started the link saw it.
-		sock, from := a.hostAgent()
-		if held, _ := linkRunning(a.Cfg.DataDir); !held {
-			return "caboose link --restart: under vm the link carries the agent, and none is running"
-		}
+		// the daemon (or, with CABOOSE_DATA_DIR set, the helper) finds.
 		file := config.FileName
 		if a.Cfg.EnvDir != "" {
 			file = filepath.Join(a.Cfg.EnvDir, config.FileName)
 		}
-		return fmt.Sprintf("set ssh_agent in %s to your agent's socket (the link rereads it), or caboose link --restart from a terminal whose SSH_AUTH_SOCK reaches it; this launch would give the sandbox %s (%s), and link.log says what the link gave it",
-			file, or(sock, "none"), from)
+		if v := a.linkView(); !v.Up {
+			return "caboose link: under vm the link carries the agent, and none is running (" + v.Why + ")"
+		}
+		// Without ssh_agent the link takes the IdentityAgent ssh -G finds
+		// for every host (agentProbeHost), else SSH_AUTH_SOCK.
+		set := fmt.Sprintf("set ssh_agent in [link] of %s to your agent's socket, for 1Password's the path of the IdentityAgent in ~/.ssh/config (the link rereads it)", file)
+		if !a.servedByDaemon() {
+			return set + ", or caboose link --restart from a terminal whose SSH_AUTH_SOCK reaches it; link.log says what the link gave the sandbox, and why"
+		}
+		return set + ", or make a login shell of yours export SSH_AUTH_SOCK (the daemon asks one when it starts) and run caboose daemon restart; the daemon never takes the agent from the terminal a command runs in, and link.log says what the link gave the sandbox, and why"
 	}
 	engine := or(a.macEngine(), "the Docker engine")
 	switch {
@@ -660,7 +731,7 @@ func (a *App) agentFix(status string) string {
 // unknown"), and nothing but the user fixes it, now that a launch no
 // longer copies the host's.
 func (a *App) doctorIdentity(c *checkup) {
-	git := datadir.FindGit()
+	git := a.findGit()
 	if git == nil {
 		c.unchecked("git", "no git on the host to read the sandbox's config with")
 		return
@@ -692,7 +763,7 @@ func (a *App) doctorIdentity(c *checkup) {
 // does and why that was not carried over. agentKeys are the agent's public
 // keys, nil with why when they are not known.
 func (a *App) doctorSigning(c *checkup, agentKeys []string, why string) {
-	git := datadir.FindGit()
+	git := a.findGit()
 	if git == nil {
 		c.unchecked("signing", "no git on the host to read the configurations with")
 		return
@@ -921,4 +992,52 @@ func fetchFailure(err error) (what, fix string) {
 		return fmt.Sprintf("no answer from the remote in %s", doctorBudget), "check the network (or the remote), then try again"
 	}
 	return "cannot fetch from the remote: " + strings.TrimPrefix(firstLine(msg), "git fetch -q origin: "), "'caboose sync' shows the whole error"
+}
+
+// doctorDaemon checks the daemon and, while the sandbox runs, the
+// environment's link. It only asks: nothing is started.
+func (a *App) doctorDaemon(c *checkup, running bool) {
+	if a.Cfg.CabooseHome == "" {
+		c.unchecked("daemon", "neither CABOOSE_HOME nor HOME is set")
+		return
+	}
+	dir := a.daemonDir()
+	if err := daemon.CheckSocket(dir); err != nil {
+		c.problem("daemon", "set CABOOSE_HOME to a shorter path, then caboose daemon restart", "%v", err)
+		return
+	}
+	v := a.linkView()
+	switch {
+	case v.Unavailable:
+		if running && v.Served {
+			c.problem("daemon", "caboose daemon restart (any command that launches or links starts it too)",
+				"not running (%s), and it holds the link of the running %s: nothing is forwarded, opened or served to it", dir, a.noun())
+		} else {
+			c.note("daemon", "not running (%s); the next launch, caboose shell, sync or link starts it", dir)
+		}
+	case v.Err != nil:
+		c.problem("daemon", runDaemonHint, "in %s does not answer: %s", dir, daemonErrText(v.Err))
+	default:
+		d := v.Daemon.Daemon
+		c.ok("daemon", "running (pid %d, since %s, %s)", d.PID, d.Started.Local().Format(time.DateTime), dir)
+		if cur := currentVersion(); d.Version != cur {
+			c.problem("daemon", runDaemonHint, "is caboose %s, this is %s: it runs the links with the older code until it restarts", d.Version, cur)
+		}
+	}
+	switch {
+	case !v.Served && v.Up:
+		c.ok("link", "running (a detached helper: CABOOSE_DATA_DIR is set)")
+	case !v.Served && running:
+		c.problem("link", "caboose link --restart", "no helper holds link.lock while the %s runs (CABOOSE_DATA_DIR is set)", a.noun())
+	case !v.Served:
+		c.ok("link", "none needed: the %s is not running", a.noun())
+	case v.Up:
+		c.ok("link", "running (served by the daemon)")
+	case !running:
+		c.ok("link", "none needed: the %s is not running", a.noun())
+	case v.Unavailable || v.Err != nil:
+		c.unchecked("link", "%s", v.Why)
+	default:
+		c.problem("link", "caboose link (caboose link --restart replaces one that runs wrongly)", "not running while the %s runs: %s", a.noun(), v.Why)
+	}
 }

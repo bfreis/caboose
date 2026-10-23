@@ -79,7 +79,7 @@ func (a *App) containerCompat() (compat int, ok bool) {
 	}
 	if _, has := labels[assets.LabelCompat]; !has {
 		// Every container this caboose makes carries it: one without is
-		// from an older caboose, which compat 0 refuses.
+		// compat 0, and refused.
 		return 0, labels != nil
 	}
 	return compatOf(labels)
@@ -275,7 +275,7 @@ func (a *App) noteSetup() {
 	}
 	setUp := c.File != nil || c.EnvDir == ""
 	hasID := true
-	if git := datadir.FindGit(); git != nil {
+	if git := a.findGit(); git != nil {
 		if g, err := datadir.ReadSandboxGit(c.DataDir, git); err == nil {
 			hasID = g.Complete()
 		}
@@ -441,73 +441,36 @@ func (a *App) createContainer(mayBuild bool) error {
 		spec.Env = append(spec.Env, "TZ="+tz)
 	}
 
-	// A vm profile has no engine_socket: a Unix socket does not cross
-	// virtio-fs.
-	if sock := DockerSockPath(c.EngineSocket, a.getenv("DOCKER_HOST")); sock != "" && !a.isVM() {
-		if isSocket(sock) {
-			spec.Mounts = append(spec.Mounts, backend.Mount{Source: sock, Target: "/var/run/docker.sock"})
-			// On a Linux host the socket is root:docker 0660, so the
-			// container user needs its group to reach it at all. macOS hosts
-			// expose it through the VM already reachable, where this is a
-			// no-op. Lstat: the socket itself, not what a link names.
-			var st syscall.Stat_t
-			if syscall.Lstat(sock, &st) == nil {
-				spec.Groups = append(spec.Groups, strconv.FormatUint(uint64(st.Gid), 10))
-			}
-			a.Note("WARNING: mounting %s into the container.", sock)
-			a.Note("         that is root-equivalent access to this host, and the")
-			a.Note("         sandbox boundary no longer holds. remove %s", c.ProfileKey("engine_socket"))
-			a.Note("         and caboose restart to undo it.")
-		} else {
-			a.Note("%s is set but '%s' is not a socket; not mounting it", c.ProfileKey("engine_socket"), sock)
+	socks := a.hostSockets()
+	spec.Mounts = append(spec.Mounts, socks.Mounts...)
+	if sock := socks.Engine; sock != "" {
+		// On a Linux host the socket is root:docker 0660, so the
+		// container user needs its group to reach it at all. macOS hosts
+		// expose it through the VM already reachable, where this is a
+		// no-op. Lstat: the socket itself, not what a link names.
+		var st syscall.Stat_t
+		if syscall.Lstat(sock, &st) == nil {
+			spec.Groups = append(spec.Groups, strconv.FormatUint(uint64(st.Gid), 10))
 		}
+		a.Note("WARNING: mounting %s into the container.", sock)
+		a.Note("         that is root-equivalent access to this host, and the")
+		a.Note("         sandbox boundary no longer holds. remove %s", c.ProfileKey("engine_socket"))
+		a.Note("         and caboose restart to undo it.")
+	} else if socks.NotSocket != "" {
+		a.Note("%s is set but '%s' is not a socket; not mounting it", c.ProfileKey("engine_socket"), socks.NotSocket)
+	}
+	// Under vm the link carries the SSH agent instead: the agent in the
+	// guest listens at the same path, and the host connects each client
+	// to its own agent (vmssh.go).
+	if a.isVM() || socks.Agent {
+		spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+containerAgent)
 	}
 
-	// SSH agent forwarding lets git/jj push over SSH, and git sign commits,
-	// without copying private keys into the image or the data dir.
-	// Under vm the link carries it instead: the agent in the guest
-	// listens at the same path, and the host connects each client to its
-	// own agent (vmssh.go).
-	if a.isVM() {
-		spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+containerAgent)
-	} else if src := a.sshAgentSource(); src != "" {
-		spec.Mounts = append(spec.Mounts, backend.Mount{Source: src, Target: containerAgent})
-		spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+containerAgent)
-	}
-
-	d := c.DataDir
-	// What the sandbox keeps of its home: the sandbox config's [[keep]]
-	// entries, each kept in the data dir's home/, never at a host path of
-	// the sandbox's choosing, so it reaches no more of the host than it
-	// did. Directories, but for a file entry or two: git, jj and gh save by
-	// rename, which a single-file mount refuses with EBUSY.
 	sb, err := a.sandboxConfig()
 	if err != nil {
 		return Die("%v", err)
 	}
-	spec.Mounts = append(spec.Mounts, keepMounts(d, sb)...)
-	// The Claude Code build for this image's platform (datadir's platform.go
-	// has why each piece is split, the update staging included).
-	pm := datadir.PlatformMounts(platform)
-	spec.Mounts = append(spec.Mounts,
-		backend.Mount{Source: d + "/" + pm[0], Target: "/home/agent/.local/bin"},
-		backend.Mount{Source: d + "/" + pm[1], Target: "/home/agent/.local/share/claude"},
-		backend.Mount{Source: d + "/" + pm[2], Target: "/home/agent/.cache/claude"},
-		// caboose sync's repo, which the sync in the sandbox works on (launcher/sync.go).
-		backend.Mount{Source: d + "/" + datadir.SyncDir, Target: statesync.ContainerDir},
-		// Where sessions propose what only the host can change (apply.go).
-		backend.Mount{Source: d + "/" + datadir.ProposalsDir, Target: proposal.ContainerDir},
-		// caboose's instructions, as Claude Code's managed CLAUDE.md:
-		// read-only, so they stay caboose's and ~/.claude/CLAUDE.md the
-		// user's (syncSandboxInstructions).
-		backend.Mount{Source: d + "/" + datadir.ManagedDir, Target: datadir.ManagedTarget, ReadOnly: true},
-	)
-	// Each root at a path of its own that is the same on every machine:
-	// /work/<name> (config.WorkDir), or its long form's, and labelled so
-	// that mountedRoots tells them from the other mounts.
-	for _, r := range c.Roots {
-		spec.Mounts = append(spec.Mounts, backend.Mount{Source: r.Host, Target: r.Container})
-	}
+	spec.Mounts = append(spec.Mounts, dataMounts(c.DataDir, platform, sb, c.Roots)...)
 	spec.Labels = append(spec.Labels, assets.LabelRoots+"="+rootsLabel(c.Roots))
 	// The runtime and the user it needs, probed against the image just
 	// ensured (isolation.go).
@@ -534,7 +497,7 @@ func (a *App) createContainer(mayBuild bool) error {
 		// the image has one, its storage on a disk kept across restarts
 		// (overlayfs cannot sit on virtio-fs, and the images are worth
 		// keeping, as a laptop's Docker keeps them).
-		spec.Volumes = append(spec.Volumes, backend.Volume{Name: dockerVolume, Target: "/var/lib/docker"})
+		spec.Volumes = append(spec.Volumes, a.sandboxVolumes()...)
 		spec.Env = append(spec.Env, "CABOOSE_ISOLATION="+isolationVM)
 		a.Note("starting the sandbox's VM")
 	}
@@ -542,6 +505,91 @@ func (a *App) createContainer(mayBuild bool) error {
 		return a.boxFailed(err)
 	}
 	return nil
+}
+
+// sandboxVolumes are the volumes the sandbox is created with: under vm
+// the guest's dockerd's storage, a disk kept across restarts; none
+// otherwise.
+func (a *App) sandboxVolumes() []backend.Volume {
+	if !a.isVM() {
+		return nil
+	}
+	return []backend.Volume{{Name: dockerVolume, Target: "/var/lib/docker"}}
+}
+
+// hostSocketSet are the host sockets a container is created with.
+type hostSocketSet struct {
+	// Mounts are their mounts, in order: the engine's, the SSH agent's.
+	Mounts []backend.Mount
+	// Engine is the engine's socket when it is mounted; NotSocket what
+	// engine_socket names when that is no socket, and so not mounted.
+	Engine, NotSocket string
+	// Agent is set when the SSH agent's socket is mounted.
+	Agent bool
+}
+
+// hostSockets are the host sockets createContainer mounts: the engine's
+// when engine_socket names one, which is root-equivalent access to this
+// host, and the SSH agent's, which lets git and jj push over SSH and git
+// sign without a private key in the image or the data dir. None under
+// vm: a Unix socket does not cross virtio-fs, so a vm profile has no
+// engine_socket, and the link carries the agent.
+func (a *App) hostSockets() hostSocketSet {
+	var s hostSocketSet
+	if a.isVM() {
+		return s
+	}
+	if sock := DockerSockPath(a.Cfg.EngineSocket, a.getenv("DOCKER_HOST")); sock != "" {
+		if isSocket(sock) {
+			s.Mounts = append(s.Mounts, backend.Mount{Source: sock, Target: "/var/run/docker.sock"})
+			s.Engine = sock
+		} else {
+			s.NotSocket = sock
+		}
+	}
+	if src := a.sshAgentSource(); src != "" {
+		s.Mounts = append(s.Mounts, backend.Mount{Source: src, Target: containerAgent})
+		s.Agent = true
+	}
+	return s
+}
+
+// dataMounts are the mounts a sandbox is created with from the data dir d
+// and the roots, in order: what it keeps of its home (sb), the Claude
+// Code build for platform, the sync repo, the proposals, caboose's
+// instructions and the roots. createContainer creates the sandbox with
+// them.
+func dataMounts(d, platform string, sb *datadir.Sandbox, roots []config.Root) []backend.Mount {
+	// What the sandbox keeps of its home: the sandbox config's [[keep]]
+	// entries, each kept in the data dir's home/, never at a host path of
+	// the sandbox's choosing, so it reaches no more of the host than it
+	// did. Directories, but for a file entry or two: git, jj and gh save by
+	// rename, which a single-file mount refuses with EBUSY.
+	ms := keepMounts(d, sb)
+	// The Claude Code build for this image's platform (datadir's platform.go
+	// has why each piece is split, the update staging included).
+	pm := datadir.PlatformMounts(platform)
+	ms = append(ms,
+		backend.Mount{Source: d + "/" + pm[0], Target: "/home/agent/.local/bin"},
+		backend.Mount{Source: d + "/" + pm[1], Target: "/home/agent/.local/share/claude"},
+		backend.Mount{Source: d + "/" + pm[2], Target: "/home/agent/.cache/claude"},
+		// caboose sync's repo, which the sync in the sandbox works on (launcher/sync.go).
+		backend.Mount{Source: d + "/" + datadir.SyncDir, Target: statesync.ContainerDir},
+		// Where sessions propose what only the host can change (apply.go).
+		backend.Mount{Source: d + "/" + datadir.ProposalsDir, Target: proposal.ContainerDir},
+		// caboose's instructions, as Claude Code's managed CLAUDE.md:
+		// read-only, so they stay caboose's and ~/.claude/CLAUDE.md the
+		// user's (syncSandboxInstructions).
+		backend.Mount{Source: d + "/" + datadir.ManagedDir, Target: datadir.ManagedTarget, ReadOnly: true},
+	)
+	// Each root at a path of its own that is the same on every machine:
+	// /work/<name> (config.WorkDir), or its long form's, and labelled (by
+	// createContainer) so that mountedRoots tells them from the other
+	// mounts.
+	for _, r := range roots {
+		ms = append(ms, backend.Mount{Source: r.Host, Target: r.Container})
+	}
+	return ms
 }
 
 // ensureImage makes sure the image exists before a container is created
@@ -837,16 +885,24 @@ func (a *App) ensureRunning(mayBuild bool) error {
 			return startFailed(a.noun(), a.Cfg.Container, err)
 		}
 	}
+	// Whatever brings the sandbox up, or finds it up, has its link run,
+	// not only a session: a sandbox restart recreated, or whose link
+	// stopped itself (config.toml changed the isolation), would otherwise
+	// have none until the next session, with no ports forwarded and, under
+	// gVisor, no file changes relayed. Under vm the link also carries the
+	// SSH agent and the outbound proxy, so it starts before the sandbox is
+	// ready, since the entrypoint's first install of Claude Code goes
+	// through the proxy (the agent serves the link from the entrypoint's
+	// start); elsewhere once it is ready, when the agent is there to
+	// answer.
 	if a.isVM() {
-		// Under vm the link carries the SSH agent and the outbound proxy,
-		// so whatever brings the sandbox up starts it, not only a session;
-		// and before it is ready, since the entrypoint's first install of
-		// Claude Code goes through the proxy (the agent serves the link
-		// from the entrypoint's start).
 		a.startLink()
 	}
 	if err := a.waitUntilReady(); err != nil {
 		return err
+	}
+	if !a.isVM() {
+		a.startLink()
 	}
 	a.openAgentSocket()
 	// The mount is fixed at creation, so that is when to say it is useless.
@@ -889,8 +945,18 @@ func (a *App) confirmSessionLoss(action string) error {
 }
 
 // askYes asks question on the terminal, no by default. asked is false
-// when there is no terminal to ask on.
+// when there is no terminal to ask on. App.Terminal, when set, is the
+// terminal (the tests' scripted answers; one that fails is none).
 func (a *App) askYes(question string) (yes, asked bool) {
+	if a.Terminal != nil {
+		t, err := a.Terminal()
+		if err != nil {
+			return false, false
+		}
+		defer t.Close()
+		fmt.Fprintf(a.Stderr, "caboose: %s [y/N] ", question)
+		return confirmed(t), true
+	}
 	if !tty.IsTerminal(os.Stdin.Fd()) {
 		return false, false
 	}

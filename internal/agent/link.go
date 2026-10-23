@@ -1,7 +1,8 @@
 // Package agent is caboose-agent, the sandbox's end of the link to the host.
 //
-// `caboose-agent link` is run by the host's link helper through `docker exec
-// -i`, and speaks agentproto on its stdin and stdout. While it runs it
+// `caboose-agent link` is run by the host's link (the caboose daemon's, or a
+// detached helper's) through `docker exec -i`, and speaks agentproto on its
+// stdin and stdout. While it runs it
 // serves the in-container commands (`caboose-agent open`, `notify`, `ports`,
 // `host`) on a Unix socket, reports the ports listening in the container,
 // and connects the streams the host opens to them.
@@ -33,8 +34,7 @@ const SocketPath = "/tmp/caboose-agent.sock"
 // of ports and forwards. It never reaches the host.
 const OpStatus = "status"
 
-// requestTimeout bounds a request to the host; opening a URL can wait on
-// someone answering a dialog.
+// requestTimeout bounds a request to the host.
 const requestTimeout = 2 * time.Minute
 
 // Link is the running link.

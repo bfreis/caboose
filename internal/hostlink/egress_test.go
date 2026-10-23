@@ -318,20 +318,24 @@ func TestEgressLimits(t *testing.T) {
 }
 
 // A connection nothing crosses for idle is closed; one in use is not.
+// The writes are far closer together than idle: a short sleep can overrun
+// by 70ms or more on a loaded or coarse-timed machine, which with an idle
+// of 100ms closed a connection in use.
 func TestSpliceIdle(t *testing.T) {
 	a, aPeer := net.Pipe()
 	b, bPeer := net.Pipe()
 	done := make(chan struct{})
 	go func() {
-		spliceIdle(wholeCloser{a}, wholeCloser{b}, 100*time.Millisecond)
+		spliceIdle(wholeCloser{a}, wholeCloser{b}, 750*time.Millisecond)
 		close(done)
 	}()
 	go io.Copy(io.Discard, bPeer)
-	for i := 0; i < 10; i++ {
+	// Twice idle and more, so that an idle the writes do not put off fails.
+	for i := 0; i < 32; i++ {
 		if _, err := aPeer.Write([]byte("x")); err != nil {
 			t.Fatalf("closed while in use, after %d writes: %v", i, err)
 		}
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	select {
 	case <-done:
@@ -340,7 +344,7 @@ func TestSpliceIdle(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("an idle connection stays open")
 	}
 }
