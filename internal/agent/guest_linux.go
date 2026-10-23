@@ -604,8 +604,8 @@ func muslRoot(root string) bool {
 	return len(m) > 0
 }
 
-// warmUp is the longest warmResolver asks for: vmnet's resolver took 1.3
-// to 1.8 s to answer after a boot on the Mac (slice 13).
+// warmUp is the longest warmResolver asks for: vmnet's resolver can take
+// a second or two to answer after a boot.
 const warmUp = 4 * time.Second
 
 // warmResolver asks the resolver at addr until it answers, for at most
@@ -613,7 +613,7 @@ const warmUp = 4 * time.Second
 // answered. The first query after a boot is the one vmnet loses (the
 // gateway's ARP, its resolver waking), and this sends it as early as the
 // guest can. It runs beside the boot, never before the entrypoint: waiting
-// for it cost every boot up to that 1.8 s, whereas a lookup the sandbox
+// for it cost every boot that wait, whereas a lookup the sandbox
 // makes before the resolver wakes is only retried a second later
 // (resolvConf's options, for the root's libc), and still answered well
 // within its 5 s. A boot whose spec says WaitResolver waits for it once

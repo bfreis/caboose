@@ -6,7 +6,7 @@
 ARG ALPINE=alpine:3.24
 
 FROM ${ALPINE} AS rootfs
-# dockerd and buildx for docker build -o, iptables for its bridge (spike 3),
+# dockerd and buildx for docker build -o, iptables for its bridge,
 # e2fsprogs for the root disk, GNU tar to keep owners and xattrs.
 RUN apk add --no-cache docker-engine docker-cli docker-cli-buildx \
 	iptables ip6tables e2fsprogs tar ca-certificates

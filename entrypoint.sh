@@ -117,7 +117,7 @@ stop_claude_agents() {
     log "stopping Claude Code's background agents"
     "$CLAUDE_BIN" daemon stop --any </dev/null >&2 &
     local pid=$! watchdog
-    ( sleep "$DAEMON_STOP_WAIT" </dev/null >/dev/null 2>&1; kill "$pid" 2>/dev/null ) &
+    ( sleep "$DAEMON_STOP_WAIT"; kill "$pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
     watchdog=$!
     if ! wait "$pid"; then
         log "claude daemon stop did not finish cleanly; its agents may show as failed"
@@ -278,7 +278,8 @@ run_start_scripts() {
     for f in "${files[@]}"; do
         name="${f##*/}"
         case "$name" in *~) continue ;; esac
-        [ -f "$f" ] && [ -x "$f" ] || continue
+        [ -f "$f" ] || continue
+        [ -x "$f" ] || continue
         log "start.d/$name: running"
         rc=0
         (cd "$HOME" && exec "$f") </dev/null || rc=$?

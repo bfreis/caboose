@@ -248,3 +248,34 @@ func TestDownload(t *testing.T) {
 		t.Fatal("a file checksums.txt does not list")
 	}
 }
+
+// Pruning never follows a version entry that is a symlink out of
+// versions/: the link goes, what it points at stays.
+func TestPruneDoesNotFollowSymlinks(t *testing.T) {
+	s := releasetest.New(t)
+	for _, tag := range []string{"v1.0.0", "v1.1.0"} {
+		s.Publish(t, tag, true, plat)
+	}
+	l := selfupdate.DefaultLayout(t.TempDir(), t.TempDir())
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(t, l, s, "v1.0.0", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"v0.1.0", ".v0.2.0.tmp-123"} {
+		if err := os.Symlink(outside, filepath.Join(l.Versions, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := install(t, l, s, "v1.1.0", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
+		t.Errorf("pruning reached outside versions/: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(l.Versions, ".v0.2.0.tmp-123")); err == nil {
+		t.Error("the leftover link stayed")
+	}
+}

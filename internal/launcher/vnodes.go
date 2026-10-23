@@ -12,10 +12,10 @@ import (
 
 // A Mac running vm holds one open file in its Virtualization process for
 // every file and directory the guest has cached from the shares, so a
-// guest that walks a large repo can use up kern.maxvnodes (263,168 by
-// default on a 64 GB Mac), after which every process on the Mac fails
-// with "Too many open files in system". wantMaxVnodes is what caboose
-// asks for; docs/vm.md has the numbers.
+// guest that walks a large repo can use up kern.maxvnodes (a few hundred
+// thousand by default), after which every process on the Mac fails with
+// "Too many open files in system". wantMaxVnodes is what caboose asks
+// for; docs/configuration.md ("Large repos") says more.
 const wantMaxVnodes = 1048576
 
 // maxVnodesPlist is where setup makes the setting stick across reboots,

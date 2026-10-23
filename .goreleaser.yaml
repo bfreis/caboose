@@ -123,8 +123,8 @@ changelog:
       - "^test:"
 
 release:
-  # The repository the workflow runs in, so a private mirror's run
-  # publishes there and never on the public repository.
+  # The repository the workflow runs in, so a fork's run publishes
+  # there and never on the upstream repository.
   github:
     owner: '{{ envOrDefault "RELEASE_OWNER" "bfreis" }}'
     name: '{{ envOrDefault "RELEASE_REPO" "caboose" }}'

@@ -6,7 +6,7 @@ import (
 )
 
 // A guest's clock stops while the host sleeps and never catches up, and
-// nothing in the guest can tell (spike 5). Only the host knows: its wall
+// nothing in the guest can tell. Only the host knows: its wall
 // clock moves on through a sleep while its monotonic clock stops too. So
 // the host sends its clock at every connection, whenever the two clocks
 // part by more than wakeGap since the last tick (a wake, or the host's own

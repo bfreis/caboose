@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bfreis/caboose/internal/launcher"
+	"github.com/bfreis/caboose/internal/nodocker"
 	"github.com/bfreis/caboose/internal/statesync"
 	"github.com/bfreis/caboose/internal/syncagent"
 )
@@ -28,7 +29,7 @@ func TestMain(m *testing.M) {
 		os.Exit(syncagent.Serve(os.Args[2], os.Stdin, os.Stdout, os.Stderr,
 			syncagent.Paths{Home: home, Repo: os.Getenv(testSyncRepo), Exe: exe}))
 	}
-	os.Exit(m.Run())
+	os.Exit(nodocker.Run(m))
 }
 
 // syncContainer is a running, ready container "caboose-default" with no sessions,

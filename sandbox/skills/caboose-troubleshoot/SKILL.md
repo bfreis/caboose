@@ -152,8 +152,9 @@ re-hashes the whole repo after the other wrote the index.
 Diagnose, read-only:
 
 - `caboose-agent host /usr/sbin/sysctl kern.maxvnodes kern.num_vnodes` (needs
-  `host_exec`): the limit, and how many vnodes the Mac uses now. The limit
-  defaults to 263168 on a Mac with 64 GB; a count near it is the problem.
+  `host_exec`): the limit, and how many vnodes the Mac uses now. The default
+  limit is a few hundred thousand, scaled by memory; a count near it is the
+  problem.
 - On the Mac, `lsof -p <pid> | wc -l` for the Virtualization process (the
   `com.apple.Virtualization.VirtualMachine` one) is the files the VM holds.
 - `git status` slow in here but quick on the Mac, and quick again right after

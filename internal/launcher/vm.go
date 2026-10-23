@@ -245,8 +245,8 @@ func (h *vmHost) Image(ref string) (backend.VMImage, error) {
 	}
 	return backend.VMImage{
 		ID: rec.ID, Disk: h.a.vmImages().disk(rec), Labels: rec.Labels,
-		// The sandbox runs as root in the guest (decided 2026-09-27: the
-		// shares show every file as root's), so the image's USER, a
+		// The sandbox runs as root in the guest (the shares show every
+		// file as root's), so the image's USER, a
 		// name, is not asked for.
 		User: rootUser,
 		Env:  rec.Config.Env, Entrypoint: rec.Config.Entrypoint, Cmd: rec.Config.Cmd,

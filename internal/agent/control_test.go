@@ -40,7 +40,7 @@ func (c *fakeClock) done() ([]time.Time, []time.Duration) {
 	return c.steps, c.slews
 }
 
-// The rule spike 5 called for: forward always steps, a little ahead
+// The rule: forward always steps, a little ahead
 // slews, a lot ahead steps, and a few milliseconds are left alone.
 func TestAdjustClock(t *testing.T) {
 	base := time.Unix(1_790_000_000, 0)

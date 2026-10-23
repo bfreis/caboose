@@ -312,3 +312,155 @@ func TestWalk(t *testing.T) {
 		t.Errorf("walking a missing dir: %v", err)
 	}
 }
+
+func TestRename(t *testing.T) {
+	top, outside := layout(t)
+	d := Dir(top)
+	if err := d.Rename("a/b/f", "a/b/g"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(top, "a", "b", "g")); got != "plain" {
+		t.Errorf("renamed file holds %q", got)
+	}
+	// A symlink is moved as a link: what it names stays where it is.
+	symlink(t, filepath.Join(outside, "secret"), filepath.Join(top, "a", "b", "out"))
+	if err := d.Rename("a/b/out", "a/b/out.aside"); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(filepath.Join(top, "a", "b", "out.aside")); err != nil || target != filepath.Join(outside, "secret") {
+		t.Errorf("moved link: %q, %v", target, err)
+	}
+	if read(t, filepath.Join(outside, "secret")) != "outside secret" {
+		t.Error("the outside secret was touched")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "secret.aside")); err == nil {
+		t.Error("the link's target was renamed")
+	}
+	// A symlinked directory is moved as a link too, never entered.
+	symlink(t, outside, filepath.Join(top, "a", "lo"))
+	if err := d.Rename("a/lo", "a/lo.aside"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(filepath.Join(top, "a", "lo.aside")); err != nil || fi.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("moved dir link: %v, %v", fi, err)
+	}
+	// A FIFO is moved without being opened (an open would block).
+	if err := syscall.Mkfifo(filepath.Join(top, "a", "fifo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Rename("a/fifo", "a/fifo.aside"); err != nil {
+		t.Fatal(err)
+	}
+	// An existing target is refused, and both stay.
+	if err := d.Rename("a/b/g", "a/b/out.aside"); !errors.Is(err, fs.ErrExist) {
+		t.Errorf("over an existing entry: %v", err)
+	}
+	if got := read(t, filepath.Join(top, "a", "b", "g")); got != "plain" {
+		t.Errorf("source now %q", got)
+	}
+	if err := d.Rename("a/b/missing", "a/b/x"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing source: %v", err)
+	}
+	// Different directories are refused.
+	for _, pair := range [][2]string{{"a/b/g", "a/g"}, {"a/b/g", "g"}, {"secret", "a/secret"}} {
+		if err := d.Rename(pair[0], pair[1]); !errors.Is(err, ErrRenameAcross) {
+			t.Errorf("rename %s to %s: %v, want ErrRenameAcross", pair[0], pair[1], err)
+		}
+	}
+	for _, pair := range [][2]string{{"", "x"}, {"x", "."}, {"../x", "../y"}, {"/abs", "/abs2"}, {"a/../x", "a/../y"}} {
+		if err := d.Rename(pair[0], pair[1]); err == nil {
+			t.Errorf("rename %q to %q: no error", pair[0], pair[1])
+		}
+	}
+}
+
+// A symlink in a parent component is refused, and nothing it names moves.
+func TestRenameRefusesLinkedParent(t *testing.T) {
+	top, outside := layout(t)
+	symlink(t, outside, filepath.Join(top, "a", "lo"))
+	notPlain(t, "through a symlinked dir", Dir(top).Rename("a/lo/secret", "a/lo/moved"))
+	if read(t, filepath.Join(outside, "secret")) != "outside secret" {
+		t.Error("the outside secret was moved")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "moved")); err == nil {
+		t.Error("something was renamed outside")
+	}
+}
+
+// A directory component swapped for a symlink during the walk is refused,
+// and nothing it names is renamed: one leaving the top (os.Root refuses it)
+// and one staying inside, which only the identity check catches.
+func TestRenameSwapIsCaught(t *testing.T) {
+	for _, inside := range []bool{false, true} {
+		t.Run(map[bool]string{false: "outside", true: "inside"}[inside], func(t *testing.T) {
+			top, outside := layout(t)
+			target, link := outside, outside
+			if inside {
+				// Beside b, where os.Root follows a relative link.
+				target, link = filepath.Join(top, "a", "decoy"), "decoy"
+				if err := os.Mkdir(target, 0o777); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(target, "f"), []byte("decoy f"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			testHookOpened = func(name string) {
+				if name != "a/b" {
+					return
+				}
+				p := filepath.Join(top, "a", "b")
+				if err := os.Rename(p, p+".moved"); err != nil {
+					t.Fatal(err)
+				}
+				symlink(t, link, p)
+			}
+			defer func() { testHookOpened = nil }()
+			err := Dir(top).Rename("a/b/f", "a/b/g")
+			if inside {
+				notPlain(t, "swapped a/b", err)
+			} else if err == nil {
+				t.Error("swapped a/b: no error")
+			}
+			if read(t, filepath.Join(target, "f")) != "decoy f" {
+				t.Error("the decoy was moved")
+			}
+			if _, err := os.Lstat(filepath.Join(target, "g")); err == nil {
+				t.Error("something was renamed through the link")
+			}
+			if read(t, filepath.Join(top, "a", "b.moved", "f")) != "plain" {
+				t.Error("the original file moved")
+			}
+		})
+	}
+}
+
+// The directory swapped for a symlink after it was opened, just before the
+// rename: the rename happens in the directory that was opened, never
+// through the link.
+func TestRenameLateSwap(t *testing.T) {
+	top, outside := layout(t)
+	if err := os.WriteFile(filepath.Join(outside, "f"), []byte("outside f"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testHookRename = func(string) {
+		p := filepath.Join(top, "a", "b")
+		if err := os.Rename(p, p+".moved"); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, outside, p)
+	}
+	defer func() { testHookRename = nil }()
+	if err := Dir(top).Rename("a/b/f", "a/b/g"); err != nil {
+		t.Fatal(err)
+	}
+	if read(t, filepath.Join(outside, "f")) != "outside f" {
+		t.Error("the outside file was moved")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "g")); err == nil {
+		t.Error("something was renamed outside")
+	}
+	if read(t, filepath.Join(top, "a", "b.moved", "g")) != "plain" {
+		t.Error("the file was not renamed in the directory opened")
+	}
+}

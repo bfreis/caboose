@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bfreis/caboose/internal/saferm"
 )
 
 // Binary is the executable's name, in an archive and in a version's dir.
@@ -123,7 +125,7 @@ func (l Layout) place(tag string, bins map[string][]byte, running string) error 
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer l.remove(tmp)
 	for name, bin := range bins {
 		if err := os.WriteFile(filepath.Join(tmp, name), bin, 0o755); err != nil {
 			return err
@@ -133,7 +135,7 @@ func (l Layout) place(tag string, bins map[string][]byte, running string) error 
 		return err
 	}
 	dest := filepath.Join(l.Versions, tag)
-	if err := os.RemoveAll(dest); err != nil {
+	if err := l.remove(dest); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
@@ -181,7 +183,7 @@ func (l Layout) prune(keep map[string]bool) {
 	for _, e := range entries {
 		switch name := e.Name(); {
 		case strings.HasPrefix(name, ".") && strings.Contains(name, ".tmp-"):
-			os.RemoveAll(filepath.Join(l.Versions, name))
+			_ = l.remove(filepath.Join(l.Versions, name))
 		case e.IsDir() && Valid(name):
 			tags = append(tags, name)
 		}
@@ -206,9 +208,13 @@ func (l Layout) prune(keep map[string]bool) {
 			kept++
 			continue
 		}
-		os.RemoveAll(filepath.Join(l.Versions, t))
+		_ = l.remove(filepath.Join(l.Versions, t))
 	}
 }
+
+// remove removes p and what is below it, only when it is inside Versions
+// (saferm): never through a symlink, never outside.
+func (l Layout) remove(p string) error { return saferm.RemoveAll(l.Versions, p) }
 
 // extract is the executables in a release archive (a .tar.gz with them at
 // its root, next to README.md): Binary, which it must hold, and VMM, when

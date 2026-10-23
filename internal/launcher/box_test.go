@@ -15,6 +15,7 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
 	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/saferm"
 )
 
 // isolations are what a scenario about the sandbox runs under: each has
@@ -42,9 +43,37 @@ type boxApp struct {
 	spawned   [][]string
 }
 
+// shortTempDir is a new directory directly under the temp dir, with a
+// short name, as its physical path, removed (and only it) when the test
+// ends: t.TempDir's names carry the test's, which can leave no room for a
+// Unix socket's path (at most 103 bytes on a Mac, whose temp dir is
+// already about 50).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := saferm.RemoveRoot(dir); err != nil {
+			t.Errorf("removing %s: %v", dir, err)
+		}
+	})
+	// Physical, as the working directory and every path the code
+	// resolves are: the temp dir may be reached through a symlink (a
+	// Mac's /var is /private/var).
+	p, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func newBoxApp(t *testing.T, iso string, box *backendtest.Fake) *boxApp {
 	t.Helper()
-	tmp := t.TempDir()
+	// Short, so that the sockets made under it (a VM's) fit a Mac's
+	// sun_path wherever the temp dir is.
+	tmp := shortTempDir(t)
 	b := &boxApp{box: box, iso: iso, tmp: tmp, data: filepath.Join(tmp, "data"), engine: filepath.Join(tmp, "engine"),
 		out: &bytes.Buffer{}, errb: &bytes.Buffer{}}
 	if err := os.Mkdir(b.engine, 0o755); err != nil {

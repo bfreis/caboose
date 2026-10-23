@@ -167,8 +167,7 @@ func (a *App) isolate(spec *backend.Spec) error {
 	user := ""
 	if iso == isolationVM {
 		// Root in the guest, which the VM bounds: the shares show every
-		// file as root's, so the agent user could not tell its own
-		// (spike 2).
+		// file as root's, so the agent user could not tell its own.
 		var env []string
 		user, env = runAs(false)
 		spec.User = user

@@ -6,7 +6,7 @@
 //
 // A VZVirtualMachine belongs to the dispatch queue it was made with: every
 // call to it goes through onQueue, and its handlers and delegate run on
-// that queue's threads, never the main thread (spike 1), so no run loop is
+// that queue's threads, never the main thread, so no run loop is
 // needed.
 package vz
 
@@ -86,8 +86,8 @@ func doLoad() error {
 			return fmt.Errorf("this macOS has no %s: vm needs macOS 13 or later", c)
 		}
 	}
-	// The VZVirtualMachineDelegate protocol is not found at runtime
-	// (spike 1), and the delegate works without it.
+	// The VZVirtualMachineDelegate protocol is not found at runtime,
+	// and the delegate works without it.
 	var protos []*objc.Protocol
 	if p := objc.GetProtocol("VZVirtualMachineDelegate"); p != nil {
 		protos = append(protos, p)

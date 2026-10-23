@@ -1,7 +1,7 @@
 // Package builder builds the sandbox's image under the vm isolation, where
 // the host may have no Docker engine: in a builder guest of its own, which
 // boots vm/builder's disk read-only with caboose's kernel and init and runs
-// dockerd (spike 4). The host drives it through the exec port with the
+// dockerd. The host drives it through the exec port with the
 // docker commands caboose runs today: the contexts go in as tars on stdin,
 // the image check is imagecheck.Args, and what comes out is the layer as a
 // root disk (mkfs.ext4 -d, owners kept) and the image's config, which the
@@ -35,7 +35,7 @@ const (
 )
 
 // Disk sizes: sparse files, so only what is written takes space. The
-// default root is 1.2 GB (spike 4); its cache grows with every base.
+// default root is about 1.2 GB; its cache grows with every base.
 const (
 	cacheSize = 128 << 30
 	diskSize  = 64 << 30

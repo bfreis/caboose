@@ -13,13 +13,25 @@ import (
 	"github.com/bfreis/caboose/internal/selfupdate/releasetest"
 )
 
+// fakeDocker returns a directory holding a docker whose engine answers, to
+// go first on install.sh's PATH: its check of docker never reaches the real
+// one.
+func fakeDocker(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
 // runInstall runs install.sh with plain sh (dash, where it is /bin/sh), a
-// HOME of its own and the fake release host, in a session of its own so it
-// has no terminal to run setup on, whoever runs the tests.
+// HOME of its own, the fake release host and a fake docker, in a session of
+// its own so it has no terminal to run setup on, whoever runs the tests.
 func runInstall(t *testing.T, home, base string, env ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("sh", "install.sh")
-	cmd.Env = append([]string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "CABOOSE_RELEASES_URL=" + base}, env...)
+	cmd.Env = append([]string{"HOME=" + home, "PATH=" + fakeDocker(t) + ":" + os.Getenv("PATH"), "CABOOSE_RELEASES_URL=" + base}, env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -172,7 +184,7 @@ func TestInstallScriptVMM(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("no curl")
 	}
-	bin := t.TempDir()
+	bin := fakeDocker(t)
 	uname := "#!/bin/sh\ncase \"$1\" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo Darwin ;; esac\n"
 	if err := os.WriteFile(filepath.Join(bin, "uname"), []byte(uname), 0o755); err != nil {
 		t.Fatal(err)

@@ -42,8 +42,8 @@ type ControlServer struct {
 // more, it steps forward: a sleep of the host's froze it, and a file's
 // time never goes back that way. Ahead, it slews back up to maxSlew, so it
 // never runs backwards under a build; ahead by more is a clock gone wrong,
-// and steps. (Spike 5: asleep, a guest loses exactly the time slept, and
-// awake it drifts about 1.5 ppm.)
+// and steps. (Asleep, a guest loses exactly the time slept; awake, it
+// drifts only slightly.)
 const (
 	clockTolerance = 10 * time.Millisecond
 	maxSlew        = 500 * time.Millisecond

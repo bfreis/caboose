@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2012 # ls only lists names this suite created itself
+# shellcheck disable=SC2016 # single quotes are deliberate: the script runs in the container
 # Integration tests for the caboose sandbox.
 #
 # These drive a real container and data dir: an environment's, CABOOSE_ENV,
@@ -1131,6 +1133,7 @@ group 'terminfo import'
 # TERM forever. Renaming a universally-present entry makes this deterministic:
 # it needs no particular terminal on the host, and the container genuinely
 # lacks the name.
+# shellcheck disable=SC2015 # ok and bad both return 0, so C runs only when A fails
 docker exec "$CONTAINER" infocmp caboose-probe >/dev/null 2>&1 \
     && bad 'probe entry should not exist yet' \
     || ok 'probe terminfo absent from the container to begin with'

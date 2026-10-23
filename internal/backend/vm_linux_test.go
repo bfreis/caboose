@@ -19,12 +19,14 @@ import (
 	"github.com/bfreis/caboose/internal/vm"
 )
 
-// The test binary is also the exec helper, as the launcher is.
-func TestMain(m *testing.M) {
-	if len(os.Args) == 2 && os.Args[1] == vm.ExecHelper {
-		os.Exit(vm.ExecMain(os.Stdin, os.Stdout, os.Stderr))
+// The test binary is also the exec helper, as the launcher is: TestMain
+// runs it first.
+func init() {
+	beforeTests = func() {
+		if len(os.Args) == 2 && os.Args[1] == vm.ExecHelper {
+			os.Exit(vm.ExecMain(os.Stdin, os.Stdout, os.Stderr))
+		}
 	}
-	os.Exit(m.Run())
 }
 
 // fakeVMM is a VMHost whose vmm is a goroutine: it serves vm.sock with the

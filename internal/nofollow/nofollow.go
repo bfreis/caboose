@@ -47,6 +47,10 @@ type Dir string
 // its opening -- the window a swap would have to hit.
 var testHookOpened func(name string)
 
+// testHookRename, when set, runs just before Rename's rename, once the
+// directory is open.
+var testHookRename func(oldRel string)
+
 func (d Dir) notPlain(rel string) error {
 	return &fs.PathError{Op: "open", Path: path.Join(string(d), rel), Err: ErrNotPlain}
 }
@@ -307,6 +311,60 @@ func (d Dir) Remove(rel string) error {
 	}
 	defer r.Close()
 	return r.Remove(name)
+}
+
+// ErrRenameAcross is returned by Rename for two paths in different
+// directories.
+var ErrRenameAcross = errors.New("rename across directories")
+
+// Rename renames the entry at oldRel to newRel, both in one directory, which
+// is reached through plain directories. The entry itself is moved, whatever
+// it is (a symlink stays a symlink, pointing where it did; a FIFO or a
+// directory is moved, never opened): neither last element is followed. It
+// is how something the other side planted is moved aside without touching
+// what it names.
+//
+// An existing entry at newRel is refused with fs.ErrExist rather than
+// replaced: moving aside never loses a file. That check and the rename are
+// two steps, so an entry created at newRel in between is replaced -- the
+// directory entry, never what it names, since rename(2) does not follow it.
+// Putting a file into place over another is WriteFile's job.
+func (d Dir) Rename(oldRel, newRel string) error {
+	oldEls, err := split(oldRel)
+	if err != nil {
+		return err
+	}
+	newEls, err := split(newRel)
+	if err != nil {
+		return err
+	}
+	if len(oldEls) == 0 || len(newEls) == 0 {
+		return fmt.Errorf("rename %q to %q: names no file", oldRel, newRel)
+	}
+	if !slices.Equal(oldEls[:len(oldEls)-1], newEls[:len(newEls)-1]) {
+		return &os.LinkError{Op: "rename", Old: path.Join(string(d), oldRel), New: path.Join(string(d), newRel), Err: ErrRenameAcross}
+	}
+	r, oldName, err := d.parent(oldRel, false)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	newName := newEls[len(newEls)-1]
+	if _, err := r.Lstat(oldName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return nil
+	}
+	if _, err := r.Lstat(newName); err == nil {
+		return &os.LinkError{Op: "rename", Old: path.Join(string(d), oldRel), New: path.Join(string(d), newRel), Err: fs.ErrExist}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if testHookRename != nil {
+		testHookRename(oldRel)
+	}
+	return r.Rename(oldName, newName)
 }
 
 // Walk calls fn for every entry under the directory at rel, depth first and

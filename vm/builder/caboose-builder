@@ -74,7 +74,7 @@ root)
 	rm -rf "$out"
 	mkdir -p "$out"
 	# type=tar keeps every file's owner, where type=local makes them all
-	# root's (spike 4); GNU tar keeps them on the way out.
+	# root's; GNU tar keeps them on the way out.
 	docker build --progress=plain -o type=tar,dest=- "$@" - |
 		tar --numeric-owner --xattrs -xpf - -C "$out"
 	mkfs.ext4 -q -F -L caboose-root -d "$out" /dev/vdc

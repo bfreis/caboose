@@ -28,7 +28,7 @@ jobs:
   # (vm/kernel/Dockerfile), so this is the Image a rebuild on a Mac gives,
   # and the builder disk builds natively rather than under QEMU. It reaches
   # goreleaser's job as a workflow artifact. Without an arm64 runner (a
-  # private repository may need them enabled) this job waits in the queue
+  # repository may need them enabled) this job waits in the queue
   # until GitHub gives up on it, a day later, and nothing is released:
   # timeout-minutes counts only once a runner has it.
   vm-assets:
@@ -158,14 +158,14 @@ jobs:
           path: vm-release
 
       # The kernel's source, as the GPL asks and kernel-arm64.SOURCE
-      # promises: a release kernel-VERSION in this repository (a mirror's
-      # in the mirror) holding the exact kernel.org tarball, made once per
+      # promises: a release kernel-VERSION in this repository (a fork's
+      # in the fork) holding the exact kernel.org tarball, made once per
       # kernel version, and each caboose release's resolved config beside
       # it. Idempotent: a rerun finds what is there and adds what is not.
       # Never releases/latest, which install.sh and updates read: a
       # prerelease, which GitHub never makes the latest (--latest=false
       # alone is not enough on a repository with no other full release,
-      # as a mirror's may be). The edit makes one found here a prerelease
+      # as a fork's may be). The edit makes one found here a prerelease
       # too, whatever made it.
       - name: kernel source release
         env:
@@ -208,7 +208,7 @@ jobs:
           # tagged v1.2.3-rc.1 and then v1.2.3 has both, version sort puts
           # the rc first, and the vm-assets job built for this one.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
-          # The release goes to this repository: a mirror's to the mirror.
+          # The release goes to this repository: a fork's to the fork.
           RELEASE_OWNER: ${{ github.repository_owner }}
           RELEASE_REPO: ${{ github.event.repository.name }}
 

@@ -3,8 +3,7 @@
 # `make test`.
 name: ci
 
-# Every branch, not only main: work that reaches main by another road (a
-# snapshot of a branch's tree) must have been checked on the branch.
+# Every branch, not only main.
 on:
   push:
     branches: ["**"]
@@ -48,8 +47,8 @@ jobs:
   # under QEMU (emulated, TCG: runners have no KVM to rely on) with the
   # smoke test's init. It takes minutes, so it runs only when what it
   # tests changed: vm/kernel, the initramfs writer, this file, or the
-  # Makefile's kernel lines. Without an arm64 runner (a private repository
-  # may need them enabled) it waits in the queue, and timeout-minutes
+  # Makefile's kernel lines. Without an arm64 runner (a repository may need
+  # them enabled) it waits in the queue, and timeout-minutes
   # counts only once a runner has it.
   kernel:
     runs-on: ubuntu-24.04-arm

@@ -656,7 +656,7 @@ func (r *linkRunner) serveDialed(l backend.Linker) error {
 // that turns none of the host's edits into inotify events inside (gVisor).
 // Under runc the engine passes them on itself.
 func (r *linkRunner) relayRoots() []hostlink.Root {
-	// A VM's virtio-fs raises no event for the Mac's edits either (spike 2).
+	// A VM's virtio-fs raises no event for the Mac's edits either.
 	iso, _, ok := r.a.createdIsolation()
 	if !ok || iso != isolationGVisor && iso != isolationVM {
 		return nil

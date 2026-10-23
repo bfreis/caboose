@@ -146,7 +146,7 @@ func control(r Runner) (*vm.Control, error) {
 }
 
 // bootWait is how long the guest's agent has to listen once the VM runs:
-// the kernel boots first, which takes well under a second (spike 1).
+// the kernel boots first, which takes well under a second.
 var bootWait = 30 * time.Second
 
 // controlWhenUp is control, retried while the guest is still booting.

@@ -378,7 +378,7 @@ lint:
 	  done; \
 	  command -v shellcheck >/dev/null 2>&1 || { \
 	    echo "  !!  shellcheck is not installed: https://github.com/koalaman/shellcheck#installing"; exit 1; }; \
-	  shellcheck -S warning entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
+	  shellcheck entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
 	    && echo "  ok  shellcheck"; \
 	  unformatted="$$(gofmt -l $$(go list -f '{{.Dir}}' ./...))"; \
 	  if [ -n "$$unformatted" ]; then \

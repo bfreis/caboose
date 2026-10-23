@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
@@ -26,6 +27,11 @@ import (
 
 // ErrNoLink is a command run while no host is linked.
 var ErrNoLink = errors.New("no host is linked to this sandbox right now (the host's caboose link helper is not running)")
+
+// linkSocket is the socket the in-container commands (Main) dial. It is a
+// variable so that tests of this package never reach a real link: TestMain
+// points it at a path where nothing listens.
+var linkSocket = SocketPath
 
 // ask sends one request to the link on socket and returns its answer.
 func ask(socket string, m agentproto.Message) (agentproto.Message, error) {
@@ -296,7 +302,7 @@ flags:
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, err := HostExec(ctx, SocketPath, args, filepath.Clean(dir),
+		code, err := HostExec(ctx, linkSocket, args, filepath.Clean(dir),
 			agentproto.ExecIO{Stdin: stdin, Stdout: stdout, Stderr: stderr})
 		done <- result{code, err}
 	}()
@@ -325,6 +331,12 @@ const maxProxyWait = 600
 
 // Main is caboose-agent's command line.
 func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Writer) int {
+	// A test binary never dials (or, as link, replaces) the real socket,
+	// wherever the test lives: only this package's TestMain moves it.
+	if testing.Testing() && linkSocket == SocketPath {
+		_, _ = io.WriteString(stderr, "caboose-agent: refused in a test binary: the link socket is the real one\n")
+		return 1
+	}
 	usage := func() int {
 		_, _ = io.WriteString(stderr, `usage: caboose-agent COMMAND
 
@@ -362,10 +374,10 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 			return usage()
 		}
 		if err = checkBrowserURL(rest[0]); err == nil {
-			err = Open(SocketPath, rest[0])
+			err = Open(linkSocket, rest[0])
 		}
 	case "xdg-open":
-		return xdgOpen(SocketPath, rest, stdout, stderr)
+		return xdgOpen(linkSocket, rest, stdout, stderr)
 	case "notify":
 		title := "caboose"
 		if len(rest) >= 2 && rest[0] == "-t" {
@@ -374,12 +386,12 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		if len(rest) == 0 {
 			return usage()
 		}
-		err = Notify(SocketPath, title, strings.Join(rest, " "))
+		err = Notify(linkSocket, title, strings.Join(rest, " "))
 	case "ports":
 		if len(rest) != 0 {
 			return usage()
 		}
-		err = Ports(SocketPath, stdout)
+		err = Ports(linkSocket, stdout)
 	case "connect":
 		if len(rest) != 2 {
 			return usage()
@@ -422,7 +434,7 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		if len(rest) != 0 {
 			return usage()
 		}
-		err = RunLink(stdin, stdout, Config{Socket: SocketPath, ProcRoot: "/proc", Interval: time.Second})
+		err = RunLink(stdin, stdout, Config{Socket: linkSocket, ProcRoot: "/proc", Interval: time.Second})
 	case "guest":
 		if len(rest) != 0 {
 			return usage()
