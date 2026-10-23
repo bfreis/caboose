@@ -58,10 +58,11 @@ const announce = (q: Info): string | undefined => {
 
 const run = ($: EngineInterface, args: string[]) => $.process.run([AGENT, ...args], { timeoutMs: POLL_TIMEOUT_MS })
 
-// The result is the command's JSON; when it printed none, why not.
+// The result is the command's JSON, as text: a plugin tool's result is a
+// string or content blocks, never an object. When it printed none, why not.
 const outcome = (r: { exitCode: number; stdout: string; stderr: string }) => {
   try {
-    return { result: JSON.parse(r.stdout) as unknown }
+    return { result: JSON.stringify(JSON.parse(r.stdout)) }
   } catch {
     return { result: clean(r.stderr || r.stdout || `exit ${r.exitCode}`, 600), isError: true as const }
   }
