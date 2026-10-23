@@ -37,7 +37,7 @@ before:
     # job builds, signs and notarizes them on a Mac and puts them in
     # app-release/; this only checks they are there, since nothing here
     # can make one.
-    - sh -c 'for a in arm64 amd64; do f=app-release/caboose-app_{{ .Version }}_darwin_$a.zip; [ -s "$f" ] || { echo "no $f: the app job of release.yml makes it" >&2; exit 1; }; done'
+    - sh -c 'for a in arm64 amd64; do f=app-release/caboose-app_{{ .Version }}_darwin_$a.zip; [ -s "$f" ] || { echo "no $f, which the app job of release.yml makes" >&2; exit 1; }; done'
 
 builds:
   - id: caboose
