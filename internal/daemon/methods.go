@@ -10,7 +10,8 @@ import (
 	"github.com/bfreis/caboose/internal/daemonproto"
 )
 
-// caller is who a call comes from: the kind of client its hello names.
+// caller is who a call comes from: the kind of client its hello names,
+// which is who an answer is recorded as, never anything in a request.
 type caller struct {
 	Kind string // daemonproto.ClientCLI
 
@@ -47,6 +48,12 @@ func (s *server) methods() []method {
 		{name: daemonproto.MethodEnsureLink, run: s.runLink(daemonproto.MethodEnsureLink)},
 		{name: daemonproto.MethodRestartLink, run: s.runLink(daemonproto.MethodRestartLink)},
 		{name: daemonproto.MethodStopLink, run: s.runLink(daemonproto.MethodStopLink)},
+		{name: daemonproto.MethodRequests, run: s.runBroker(daemonproto.MethodRequests)},
+		{name: daemonproto.MethodRequest, run: s.runBroker(daemonproto.MethodRequest)},
+		{name: daemonproto.MethodAnswer, run: s.runBroker(daemonproto.MethodAnswer)},
+		{name: daemonproto.MethodGrants, run: s.runBroker(daemonproto.MethodGrants)},
+		{name: daemonproto.MethodRevoke, run: s.runBroker(daemonproto.MethodRevoke)},
+		{name: daemonproto.MethodPermissions, run: s.runBroker(daemonproto.MethodPermissions)},
 	}
 }
 
@@ -134,6 +141,10 @@ func protoError(err error) *daemonproto.Error {
 	return daemonproto.NewError(daemonproto.KindInternal, "%v", err)
 }
 
+func (s *server) unserved(name string) *daemonproto.Error {
+	return daemonproto.NewError(daemonproto.KindUnknownMethod, "this daemon (caboose %s) does not serve %q", s.opts.Version, name)
+}
+
 // runReplace is replace: see daemonproto.ReplaceParams.
 func (s *server) runReplace(_ context.Context, c caller, params json.RawMessage) (any, func(), *daemonproto.Error) {
 	var p daemonproto.ReplaceParams
@@ -159,5 +170,46 @@ func (s *server) runLink(name string) func(context.Context, caller, json.RawMess
 			return nil, nil, protoError(err)
 		}
 		return r, nil, nil
+	}
+}
+
+// brokerParamsOf are the params of each broker method, checked here before
+// Brokers decodes them again: a bad request never reaches it.
+func brokerParamsOf(name string) (p interface{ Validate() error }, env func() string) {
+	switch name {
+	case daemonproto.MethodRequests:
+		v := &daemonproto.RequestsParams{}
+		return v, func() string { return v.Env }
+	case daemonproto.MethodRequest:
+		v := &daemonproto.RequestParams{}
+		return v, func() string { return v.Env }
+	case daemonproto.MethodAnswer:
+		v := &daemonproto.AnswerParams{}
+		return v, func() string { return v.Env }
+	case daemonproto.MethodRevoke:
+		v := &daemonproto.RevokeParams{}
+		return v, func() string { return v.Env }
+	}
+	v := &daemonproto.EnvParams{}
+	return v, func() string { return v.Env }
+}
+
+// runBroker is one of the request broker's methods. Brokers gets the
+// caller's kind, which is who an answer is recorded as: never anything in
+// params.
+func (s *server) runBroker(name string) func(context.Context, caller, json.RawMessage) (any, func(), *daemonproto.Error) {
+	return func(ctx context.Context, c caller, params json.RawMessage) (any, func(), *daemonproto.Error) {
+		if s.opts.Brokers == nil {
+			return nil, nil, s.unserved(name)
+		}
+		p, env := brokerParamsOf(name)
+		if e := decode(name, params, p); e != nil {
+			return nil, nil, e
+		}
+		res, err := s.opts.Brokers.Call(ctx, c.Kind, name, env(), params)
+		if err != nil {
+			return nil, nil, protoError(err)
+		}
+		return res, nil, nil
 	}
 }

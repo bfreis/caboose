@@ -28,11 +28,16 @@ import (
 // as a detached helper would. Operations on one environment run one at a
 // time; operations on different environments run side by side.
 type DaemonLinks struct {
-	dir    string // this daemon's directory, which link.json names
-	dev    bool   // a checkout's build: it says nothing of a newer release
-	home   string // CABOOSE_HOME, whose envs/ recovery looks through
-	newApp func(env string) (*App, error)
-	gate   *hostlink.ExecGate // admits every link's host-exec requests
+	dir     string // this daemon's directory, which link.json names
+	dev     bool   // a checkout's build: it says nothing of a newer release
+	home    string // CABOOSE_HOME, whose envs/ recovery looks through
+	newApp  func(env string) (*App, error)
+	decide  func(env string) hostlink.Decider
+	gate    *hostlink.ExecGate // admits every link's host-exec requests
+	dialogs *dialogQueue       // every link's URL dialogs, shown one at a time
+	// brokerHook, when set, stands in for the running links' brokers
+	// (brokerOf): the tests'.
+	brokerHook func(env string) *brokerHandle
 
 	ctx    context.Context // ends at Close, and every link with it
 	cancel context.CancelFunc
@@ -57,6 +62,9 @@ type DaemonLinksOptions struct {
 	// NewApp is the App an environment's link runs on: its config.toml
 	// loaded with the daemon's own environment (DaemonApp).
 	NewApp func(env string) (*App, error)
+	// Decide, when set, is what makes an environment's link's decisions;
+	// nil decides as its config.toml says.
+	Decide func(env string) hostlink.Decider
 }
 
 // envLink is one environment's link, as the daemon knows it.
@@ -84,8 +92,8 @@ var _ daemon.Links = (*DaemonLinks)(nil)
 
 // NewDaemonLinks is the daemon's links, none running yet.
 func NewDaemonLinks(o DaemonLinksOptions) *DaemonLinks {
-	l := &DaemonLinks{dir: filepath.Clean(o.Dir), dev: o.Dev, home: o.CabooseHome, newApp: o.NewApp,
-		gate: hostlink.NewExecGate(), log: log.New(io.Discard, "", 0), envs: map[string]*envLink{}}
+	l := &DaemonLinks{dir: filepath.Clean(o.Dir), dev: o.Dev, home: o.CabooseHome, newApp: o.NewApp, decide: o.Decide,
+		gate: hostlink.NewExecGate(), dialogs: newDialogQueue(), log: log.New(io.Discard, "", 0), envs: map[string]*envLink{}}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	return l
 }
@@ -273,7 +281,7 @@ func (l *DaemonLinks) start(e *envLink, app *App) error {
 	if _, err := settingsOf(app.Cfg).check(); err != nil {
 		return err
 	}
-	unlock, err := l.takeLock(dataDir)
+	lock, unlock, err := l.takeLock(dataDir)
 	if err != nil {
 		return err
 	}
@@ -283,7 +291,11 @@ func (l *DaemonLinks) start(e *envLink, app *App) error {
 		return err
 	}
 	in := &linkInstance{execs: hostlink.NewExecs(), done: make(chan struct{})}
-	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate})
+	var decide hostlink.Decider
+	if l.decide != nil {
+		decide = l.decide(e.name)
+	}
+	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate, decide: decide, lock: lock, dialogs: l.dialogs})
 	if err != nil {
 		out.Close()
 		unlock()
@@ -322,15 +334,15 @@ func (l *DaemonLinks) stopLink(e *envLink) {
 // takeLock takes dataDir's link.lock. Whoever else holds it -- another
 // daemon, or a detached helper (caboose link --background) -- is left
 // alone, and the lock is not taken: never a signal.
-func (l *DaemonLinks) takeLock(dataDir string) (func(), error) {
-	unlock, err := lockLink(dataDir)
+func (l *DaemonLinks) takeLock(dataDir string) (*os.File, func(), error) {
+	f, unlock, err := lockLinkFile(dataDir)
 	if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) {
-		return unlock, err
+		return f, unlock, err
 	}
 	if st, ok := readLinkState(dataDir); ok && st.Daemon != "" {
-		return nil, fmt.Errorf("the caboose daemon in %s serves this environment's link", st.Daemon)
+		return nil, nil, fmt.Errorf("the caboose daemon in %s serves this environment's link", st.Daemon)
 	}
-	return nil, fmt.Errorf("another process holds %s (a detached 'caboose link --background', one started with CABOOSE_DATA_DIR set): the daemon does not take over its link", filepath.Join(dataDir, linkLockFile))
+	return nil, nil, fmt.Errorf("another process holds %s (a detached 'caboose link --background', one started with CABOOSE_DATA_DIR set): the daemon does not take over its link", filepath.Join(dataDir, linkLockFile))
 }
 
 // ended records how in ended, if it is still e's link.
@@ -384,6 +396,9 @@ func (e *envLink) status() daemonproto.EnvStatus {
 	}
 	if st.Sandbox == "" {
 		st.Sandbox = daemonproto.SandboxUnknown
+	}
+	if e.cur != nil && e.cur.runner.broker != nil {
+		st.Pending = e.cur.runner.broker.Pending()
 	}
 	if st.Link == "" {
 		st.Link = daemonproto.LinkStopped
@@ -472,6 +487,8 @@ func (l *DaemonLinks) Close() {
 		l.stopLink(e)
 		e.op.Unlock()
 	}
+	// No link's dialog is queued or timed out after.
+	l.dialogs.close()
 }
 
 // WillRecover says that Recover is to run: until it has, Recovering

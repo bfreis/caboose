@@ -203,6 +203,24 @@ const hostAnswerWait = 30 * time.Second
 // why: the host refused it, or nothing answered. Done, ctx closes the
 // connection, which ends the command on the host.
 func HostExec(ctx context.Context, socket string, argv []string, dir string, stdio agentproto.ExecIO) (int, error) {
+	return execOnHost(ctx, socket, agentproto.Message{Op: agentproto.OpHostExec}, agentproto.ExecRequest{Argv: argv, Dir: dir, Stdin: true}, stdio)
+}
+
+// Refused is the host's refusal of a command, with its Reason code and,
+// for one pending, the request filed for it.
+type Refused struct {
+	Reason  string
+	Request uint64
+	Msg     string
+}
+
+func (r *Refused) Error() string { return r.Msg }
+
+// execOnHost asks the link on socket for m, a command on the host, and
+// once the host takes it runs req there on the exec protocol: its exit
+// status, or ExitCannotRun and why it never ran (a *Refused when the host
+// said no).
+func execOnHost(ctx context.Context, socket string, m agentproto.Message, req agentproto.ExecRequest, stdio agentproto.ExecIO) (int, error) {
 	c, err := net.DialTimeout("unix", socket, 5*time.Second)
 	if err != nil {
 		return agentproto.ExitCannotRun, ErrNoLink
@@ -210,7 +228,7 @@ func HostExec(ctx context.Context, socket string, argv []string, dir string, std
 	defer c.Close()
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
-	b, _ := json.Marshal(agentproto.Message{Op: agentproto.OpHostExec})
+	b, _ := json.Marshal(m)
 	if _, err := c.Write(append(b, '\n')); err != nil {
 		return agentproto.ExitCannotRun, err
 	}
@@ -228,9 +246,8 @@ func HostExec(ctx context.Context, socket string, argv []string, dir string, std
 		return agentproto.ExitCannotRun, err
 	}
 	if !r.OK {
-		return agentproto.ExitCannotRun, errors.New(cmp.Or(r.Error, "refused"))
+		return agentproto.ExitCannotRun, &Refused{Reason: r.Reason, Request: r.RequestID, Msg: cmp.Or(r.Error, "refused")}
 	}
-	req := agentproto.ExecRequest{Argv: argv, Dir: dir, Stdin: true}
 	code, err := agentproto.Exec(c, req, stdio)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -356,6 +373,31 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
                       one, which must be under a root); no shell and no
                       terminal: stdin, stdout, stderr and the exit status
                       pass through. Only when host_exec is on, on the host
+  run NAME [KEY=VALUE...]
+                      run the host's alias NAME there: a command its
+                      config.toml names, with the parameters it takes; no
+                      shell and no terminal: stdin, stdout, stderr and the
+                      exit status pass through. Exits 75 when it waits for
+                      a person's yes on the host (pending #N), 77 when
+                      refused, 127 for no such alias, 126 when it cannot run
+  aliases [--json]    the host's aliases: names, descriptions, parameters
+  request KIND [--alias NAME] [--arg KEY=VALUE]... [--host H --port P] [--url U]
+          [--context TEXT] [--option TEXT]... [--recommend TEXT]
+          [--meanwhile TEXT] [--session ID] [--json]
+                      ask the host ahead of time for something the sandbox
+                      needs: KIND is alias (run NAME), egress (connect to H:P)
+                      or open_url (open U in the browser). It never waits for
+                      a person: exit 0 when it is allowed, 75 when it waits
+                      (prints pending #N), 77 when denied. The session
+                      defaults to $CLAUDE_CODE_SESSION_ID
+  requests [--all] [--since N|now] [--wait SECONDS] [--session ID] [--mod] [--json]
+                      the requests the host has decided (with --all, also the
+                      ones waiting), newest first, and a cursor. --since N
+                      lists only decisions after cursor N, --since now just
+                      prints the current cursor, --wait waits up to SECONDS
+                      (at most 300) for a new decision, --mod is what
+                      caboose's Claude Code mod runs: it marks that session
+                      as having the mod
   wait-proxy [SECONDS]
                       wait until the outbound proxy serves (30 seconds at most
                       by default), under vm
@@ -406,6 +448,14 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		err = Connect(agentproto.EgressListen, rest[0], port, stdin, stdout)
 	case "host":
 		return hostCommand(rest, stdin, stdout, stderr, usage)
+	case "run":
+		return runCommand(rest, stdin, stdout, stderr, usage)
+	case "aliases":
+		return aliasesCommand(rest, stdout, stderr, usage)
+	case "request":
+		return requestCommand(rest, stdout, stderr, usage)
+	case "requests":
+		return requestsCommand(rest, stdout, stderr, usage)
 	case "wait-proxy":
 		secs := 30
 		if len(rest) > 1 {

@@ -105,7 +105,8 @@ func TestDaemonStatusCreatesNothing(t *testing.T) {
 
 // No daemon directory is ever reachable from a sandbox: no mount
 // createContainer makes, nor any directory the vm backend shares for them,
-// is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev.
+// is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev, or the
+// broker's files.
 func TestDaemonDirsAreInNoMount(t *testing.T) {
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
@@ -118,6 +119,19 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 			b.Cfg.Roots = []config.Root{{Name: "dev", Host: root, Container: "/work/dev"}}
 			for _, d := range daemon.Dirs(b.tmp) {
 				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The request broker's files, in the environment's dir: beside
+			// the data dir the sandbox's home is mounted from (a mount of
+			// the dir itself, or of anything above it, would hold them).
+			envDir := config.EnvDirFor(b.tmp, b.Cfg.Env)
+			if err := os.MkdirAll(envDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			private := brokerPrivatePaths(envDir)
+			for _, f := range private {
+				if err := os.WriteFile(f, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -139,7 +153,23 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 						t.Errorf("%s is mounted or shared, and reaches the daemon directory %s", src, d)
 					}
 				}
+				for _, f := range private {
+					if config.Within(src, f) || config.Within(f, src) {
+						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker keeps", src, f)
+					}
+				}
 			}
 		})
 	}
+}
+
+// brokerPrivatePaths are what the request broker keeps in an
+// environment's dir, none of which any sandbox may reach: its grants and
+// requests, its log and the lock.
+func brokerPrivatePaths(envDir string) []string {
+	var out []string
+	for _, n := range []string{"grants.json", "requests.json", "decisions.log", "decisions.log.1", "broker.lock"} {
+		out = append(out, filepath.Join(envDir, n))
+	}
+	return out
 }

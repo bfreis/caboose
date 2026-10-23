@@ -3,6 +3,7 @@ package agentproto
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Version is the protocol's. The host and the agent each send it in a hello,
@@ -76,7 +77,145 @@ const (
 	// protocol (exec.go) as the host does to a guest's, roles reversed.
 	// Offered in the host's hello (HostExec), so it needs no new Version.
 	OpHostExec = "host-exec"
+	// OpBrokerRequest files a request ahead of time (Ask): a crossing the
+	// sandbox expects to need, with its own words about it. The response
+	// carries the Verdict and, when pending, the RequestID. Offered in the
+	// host's hello (Broker), so it needs no new Version.
+	OpBrokerRequest = "broker-request"
+	// OpBrokerRequests lists requests (Since, Session, All), waiting up to
+	// Wait seconds for a decision newer than Since. The response carries
+	// Requests and the Cursor to wait from next. Offered in the host's
+	// hello (Broker).
+	OpBrokerRequests = "broker-requests"
+	// OpAliasRun is a client of `caboose-agent run`: an alias, one of the
+	// host's [alias.NAME], to run there. The request's Exec names it,
+	// Argv [NAME, KEY=VALUE...] and Dir the client's directory
+	// (informational): never a command, which only the host's
+	// config.toml says. Answered as OpHostExec is, with a stream on which
+	// the client speaks the exec protocol, its Argv the same; a refusal
+	// is a response alone, whose Reason is one of the Alias* codes and,
+	// when pending, whose RequestID is the request filed. Offered in the
+	// host's hello (AliasesOn), so it needs no new Version.
+	OpAliasRun = "alias-run"
+	// OpAliases lists the host's aliases: the response's Aliases, names,
+	// descriptions and parameters only. Offered in the host's hello
+	// (AliasesOn).
+	OpAliases = "aliases"
 )
+
+// The Reason of a refused OpAliasRun.
+const (
+	// AliasDenied: the host's policy refuses it.
+	AliasDenied = "denied"
+	// AliasPending: the host's policy asks a person first; RequestID is
+	// the request filed for it.
+	AliasPending = ReasonPending
+	// AliasUnknown: the host has no alias of that name.
+	AliasUnknown = "unknown"
+	// AliasUnavailable: the host cannot run it now (its command is
+	// missing there, too many run at once, the link is closing).
+	AliasUnavailable = "unavailable"
+)
+
+// MaxAliases is the most aliases an OpAliases response lists.
+const MaxAliases = 256
+
+// AliasInfo is an alias as the host lists it to the sandbox: never its
+// command or directory.
+type AliasInfo struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Params      map[string][]string `json:"params,omitempty"`
+	// Asks is set when running it asks a person on the host first.
+	Asks bool `json:"asks,omitempty"`
+}
+
+// The Verdict of a crossing or a filed request.
+const (
+	VerdictAllowed = "allowed"
+	VerdictDenied  = "denied"
+	VerdictPending = "pending"
+)
+
+// ReasonPending is the Reason of a refused OpOpen whose URL waits for a
+// person's answer on the host: the RequestID says which request.
+const ReasonPending = "pending"
+
+// TypeMods is the agent's count of the Claude Code sessions in the
+// sandbox and of those with caboose's mod loaded (Mods), sent when it
+// changes. A host that does not know it ignores it, so it needs no new
+// Version.
+const TypeMods = "mods"
+
+// The bounds of what OpBrokerRequests carries back, and of how long one
+// waits.
+const (
+	// MaxRequests is the most requests one response lists.
+	MaxRequests = 200
+	// MaxWait is the longest an OpBrokerRequests waits, in seconds.
+	MaxWait = 300
+)
+
+// The bounds of an Ask's text, in bytes, which the agent keeps to before it
+// sends one and the host checks again (the broker's limits; a test holds the
+// two to each other). MaxAskArgs is the most Args an Ask may carry.
+const (
+	MaxAskContext        = 2000
+	MaxAskOptions        = 5
+	MaxAskOption         = 200
+	MaxAskRecommendation = 500
+	MaxAskMeanwhile      = 1000
+	MaxAskSession        = 100
+	MaxAskArgs           = MaxAliasArgs
+)
+
+// Ask is a request filed ahead of time (OpBrokerRequest): which crossing,
+// and what the sandbox says of it. Everything in it is the sandbox's, and
+// the host bounds and checks it before use.
+type Ask struct {
+	// Kind is "alias", "egress" or "open_url".
+	Kind string `json:"kind"`
+	// Alias and Args, for an alias.
+	Alias string            `json:"alias,omitempty"`
+	Args  map[string]string `json:"args,omitempty"`
+	// Host and Port, for egress.
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+	// URL, for open_url.
+	URL string `json:"url,omitempty"`
+	// The sandbox's words about it.
+	Context        string   `json:"context,omitempty"`
+	Options        []string `json:"options,omitempty"`
+	Recommendation string   `json:"recommendation,omitempty"`
+	Meanwhile      string   `json:"meanwhile,omitempty"`
+	// Session is the session the sandbox says it asks for:
+	// informational, and who hears of the decision.
+	Session string `json:"session,omitempty"`
+}
+
+// RequestInfo is a request as the host lists it to the sandbox: the
+// host's own description of it (Effect), never the sandbox's words.
+type RequestInfo struct {
+	ID        uint64    `json:"id"`
+	Kind      string    `json:"kind"`
+	Effect    string    `json:"effect,omitempty"`
+	State     string    `json:"state"`
+	Scope     string    `json:"scope,omitempty"`
+	Hours     int       `json:"hours,omitempty"`
+	Expires   time.Time `json:"expires,omitzero"`
+	DecidedAt time.Time `json:"decided_at,omitzero"`
+	Reason    string    `json:"reason,omitempty"`
+	Session   string    `json:"session,omitempty"`
+	// Seq is the cursor value of its last change.
+	Seq uint64 `json:"seq,omitempty"`
+}
+
+// ModsInfo is TypeMods' count: Claude Code sessions running in the
+// sandbox, and how many of them have caboose's mod loaded.
+type ModsInfo struct {
+	Sessions int `json:"sessions"`
+	WithMod  int `json:"with_mod"`
+}
 
 // HostExecOff is the refusal of an OpHostExec on a host that offers none:
 // what turns it on, and what makes a running link see that.
@@ -101,6 +240,10 @@ const (
 	EgressResolve = "resolve"
 	// EgressDial: the host could not connect.
 	EgressDial = "dial"
+	// EgressPending: the host's policy asks a person first. The
+	// connection is refused for now; RequestID is the request filed for
+	// it, which a person may allow.
+	EgressPending = "pending"
 )
 
 // EgressListen is where the host offers the agent to serve its outbound
@@ -196,6 +339,38 @@ type Message struct {
 	Boot *BootSpec `json:"boot,omitempty"`
 	// Time is the host's wall clock, in nanoseconds since the Unix epoch.
 	Time int64 `json:"time,omitempty"`
+
+	// Broker, in the host's hello, offers OpBrokerRequest and
+	// OpBrokerRequests: the host files requests a person answers.
+	Broker bool `json:"broker,omitempty"`
+	// RequestID is the request a pending answer filed (Reason "pending"
+	// of OpOpen, EgressPending of OpConnect, Verdict "pending").
+	RequestID uint64 `json:"request_id,omitempty"`
+	// Verdict is an OpBrokerRequest's answer: VerdictAllowed,
+	// VerdictDenied or VerdictPending.
+	Verdict string `json:"verdict,omitempty"`
+	// Ask is OpBrokerRequest's request.
+	Ask *Ask `json:"ask,omitempty"`
+	// Since, Wait (seconds, 0 to MaxWait), Session and All are
+	// OpBrokerRequests' filter; Requests (at most MaxRequests, newest
+	// first) and Cursor its answer.
+	Since    uint64        `json:"since,omitempty"`
+	Wait     int           `json:"wait,omitempty"`
+	Session  string        `json:"session,omitempty"`
+	All      bool          `json:"all,omitempty"`
+	Requests []RequestInfo `json:"requests,omitempty"`
+	Cursor   uint64        `json:"cursor,omitempty"`
+	// Mods is TypeMods' count.
+	Mods *ModsInfo `json:"mods,omitempty"`
+	// ModPID is only in a request an in-container command sends the
+	// agent's link (`caboose-agent requests --mod`), never to the host: the
+	// Claude Code process the command found above it, whose mod is waiting.
+	ModPID int `json:"mod_pid,omitempty"`
+	// AliasesOn, in the host's hello, offers OpAliasRun and OpAliases:
+	// the host runs the aliases its config.toml defines.
+	AliasesOn bool `json:"aliases_on,omitempty"`
+	// Aliases are OpAliases' answer, at most MaxAliases.
+	Aliases []AliasInfo `json:"aliases,omitempty"`
 }
 
 // Forward is one port the host was asked to forward, and what came of it.
@@ -214,8 +389,8 @@ type StreamHeader struct {
 	// Name is which of an exec's streams this is (Stream*), on the exec
 	// port, where there is no Port.
 	Name string `json:"name,omitempty"`
-	// Request is the request (OpSSHAgent, OpConnect, OpHostExec) this
-	// stream answers, where there is no Port.
+	// Request is the request (OpSSHAgent, OpConnect, OpHostExec,
+	// OpAliasRun) this stream answers, where there is no Port.
 	Request uint64 `json:"request,omitempty"`
 }
 

@@ -282,13 +282,14 @@ func UnknownPlaceholders(expanded []byte) []string {
 
 // ExpandTree expands a set of files, by path relative to ManagedDir
 // ("CLAUDE.md", ".claude/skills/NAME/SKILL.md"): Markdown through Expand,
-// anything else as it is. A file that does not expand, or leaves a
+// anything else as it is, and what is under mods/ always as it is (a mod is
+// code, which no placeholder is ever filled into). A file that does not expand, or leaves a
 // placeholder this launcher cannot fill, is an error naming it.
 func ExpandTree(files map[string][]byte, f Facts) (map[string][]byte, error) {
 	f = f.Resolve()
 	out := make(map[string][]byte, len(files))
 	for _, name := range sortedKeys(files) {
-		if path.Ext(name) != ".md" {
+		if path.Ext(name) != ".md" || strings.HasPrefix(name, "mods/") {
 			out[name] = files[name]
 			continue
 		}
@@ -312,9 +313,10 @@ func sortedKeys(m map[string][]byte) []string {
 
 // InstallManaged installs files (by path relative to ManagedDir, as
 // ExpandTree returns them) into dataDir/ManagedDir, and reports whether it
-// had to change anything. Under ManagedSkills it also removes what files
-// does not have, and the directories that leaves empty, so a skill that is
-// removed or renamed goes from the sandbox too.
+// had to change anything. Under ManagedSkills and ManagedMods it also
+// removes what files does not have, and the directories that leaves empty,
+// so a skill or a mod file that is removed or renamed goes from the
+// sandbox too.
 //
 // The data dir sits outside any checkout, so what the sandbox reads is
 // tracked under sandbox/ and copied in from here. The launcher is the only
@@ -349,19 +351,21 @@ func InstallManaged(files map[string][]byte, dataDir string) (bool, error) {
 	// Prune first: what the set does not have, and what is of the other
 	// type than the set has it (a directory where a file goes, a file where
 	// a directory does, a link where either does), so a swap is no error. The sandbox cannot write
-	// here, so nothing under ManagedSkills is anyone's but caboose's.
+	// here, so nothing under ManagedSkills or ManagedMods is anyone's but caboose's.
 	var stale, dirs []string
-	err := d.Walk(ManagedSkills, func(rel string, e fs.DirEntry) error {
-		switch {
-		case e.IsDir() && (!wantDirs[rel] || want[rel]):
-			dirs = append(dirs, rel)
-		case !e.IsDir() && (!want[rel] || wantDirs[rel] || !e.Type().IsRegular()):
-			stale = append(stale, rel)
+	for _, root := range []string{ManagedSkills, ManagedMods} {
+		err := d.Walk(root, func(rel string, e fs.DirEntry) error {
+			switch {
+			case e.IsDir() && (!wantDirs[rel] || want[rel]):
+				dirs = append(dirs, rel)
+			case !e.IsDir() && (!want[rel] || wantDirs[rel] || !e.Type().IsRegular()):
+				stale = append(stale, rel)
+			}
+			return nil
+		})
+		if err != nil {
+			return false, err
 		}
-		return nil
-	})
-	if err != nil {
-		return false, err
 	}
 	// Files first, then directories deepest first (a stale directory holds
 	// only stale entries, so each is empty by its turn).

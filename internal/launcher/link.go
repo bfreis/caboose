@@ -17,12 +17,14 @@ import (
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/broker"
 	"github.com/bfreis/caboose/internal/cappedlog"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/docker"
 	"github.com/bfreis/caboose/internal/hostlink"
 	"github.com/bfreis/caboose/internal/linkdebug"
+	"github.com/bfreis/caboose/internal/policy"
 )
 
 // The link helper's files, in the data dir itself: the host's, never under
@@ -86,12 +88,19 @@ type linkSettings struct {
 	// HostExec is host_exec: whether sessions run commands on this
 	// machine through the link.
 	HostExec bool `json:"host_exec,omitempty"`
+	// Trust is trust: under "hostile" the hello offers no host exec,
+	// whatever host_exec says.
+	Trust string `json:"trust,omitempty"`
+	// EgressDeny is egress_deny, as ParseAllow reads it: what a link with
+	// no broker refuses (the broker reads it from config.toml itself).
+	EgressDeny string `json:"egress_deny,omitempty"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
 		Egress: c.Egress, EgressPorts: c.EgressPorts, EgressAllow: strings.Join(c.EgressAllow, " "),
-		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c), HostExec: c.HostExec}
+		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c), HostExec: c.HostExec,
+		Trust: c.Trust, EgressDeny: strings.Join(c.EgressDeny, " ")}
 	if c.SSHAgent != "" {
 		s.SSHAgent, s.SSHAgentFrom = c.SSHAgent, sshAgentOrigin(c)
 	}
@@ -107,7 +116,8 @@ type linkConfig struct {
 	ports hostlink.PortSet
 	// egress is nil when egress is off.
 	egress *hostlink.Egress
-	// hostExec is host_exec.
+	// hostExec is whether the hello offers host exec: host_exec, unless
+	// trust is anything but fallible.
 	hostExec bool
 }
 
@@ -132,9 +142,15 @@ func (s linkSettings) check() (linkConfig, error) {
 	if err != nil {
 		return linkConfig{}, err
 	}
-	lc := linkConfig{ports: ports, hostExec: s.HostExec}
+	deny, err := policy.ParseAllowOf("egress_deny", s.EgressDeny)
+	if err != nil {
+		return linkConfig{}, err
+	}
+	// The policy refuses host exec under any trust but fallible; the hello
+	// does not even offer it then.
+	lc := linkConfig{ports: ports, hostExec: s.HostExec && s.Trust == config.TrustFallible}
 	if s.Egress {
-		lc.egress = &hostlink.Egress{Ports: eports, Allow: allow}
+		lc.egress = &hostlink.Egress{Ports: eports, Allow: allow, Deny: deny}
 	}
 	return lc, nil
 }
@@ -281,15 +297,23 @@ func linkRunning(dataDir string) (bool, error) {
 }
 
 func lockLink(dataDir string) (func(), error) {
+	_, unlock, err := lockLinkFile(dataDir)
+	return unlock, err
+}
+
+// lockLinkFile takes dataDir's link.lock, and returns the file that holds
+// it, open until unlock: the broker tells whether this process still owns
+// the environment by it (broker.LockOwner).
+func lockLinkFile(dataDir string) (*os.File, func(), error) {
 	f, err := os.OpenFile(filepath.Join(dataDir, linkLockFile), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	return func() {
+	return f, func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 	}, nil
@@ -348,7 +372,7 @@ func (a *App) Link(args []string) error {
 	if restart {
 		return a.restartLink()
 	}
-	unlock, err := lockLink(a.Cfg.DataDir)
+	lock, unlock, err := lockLinkFile(a.Cfg.DataDir)
 	if err != nil {
 		if background {
 			return nil
@@ -372,7 +396,7 @@ func (a *App) Link(args []string) error {
 	stop := make(chan struct{})
 	defer close(stop)
 	go killHostExecsAtSignal(stop)
-	r, err := a.newLinkRunner(linkRun{out: out})
+	r, err := a.newLinkRunner(linkRun{out: out, lock: lock})
 	if err != nil {
 		return Die("%v", err)
 	}
@@ -398,9 +422,18 @@ type linkRun struct {
 	// gate, when set, admits the link's host-exec requests (the daemon's,
 	// shared by its links).
 	gate *hostlink.ExecGate
-	// actions is this machine's browser and notifications; nil is
-	// hostlink.System's.
+	// decide makes the link's decisions; nil has the link open the
+	// environment's broker (lock set) or decide as config.toml says.
+	decide hostlink.Decider
+	// lock is the link.lock the caller holds: the broker serves only
+	// while it is held.
+	lock *os.File
+	// actions is this machine's browser, notifications and dialogs; nil
+	// is hostlink.System's.
 	actions hostlink.Actions
+	// dialogs is the URL dialog queue the link shares with the process's
+	// other links (the daemon's); nil is one of its own.
+	dialogs *dialogQueue
 }
 
 // newLinkRunner is a link for this environment, as config.toml has it
@@ -412,12 +445,22 @@ func (a *App) newLinkRunner(o linkRun) (*linkRunner, error) {
 		return nil, err
 	}
 	r := &linkRunner{a: a, log: log.New(o.out, "caboose link: ", log.LstdFlags), settings: settings,
-		daemon: o.daemon, execs: o.execs,
-		cfg: hostlink.Config{Ports: lc.ports, OpenURL: settings.OpenURLs, Actions: hostlink.System{}, Egress: lc.egress,
-			HostExec: hostExecOffer(lc.hostExec), Diagnose: true, Execs: o.execs, Gate: o.gate}}
+		daemon: o.daemon, execs: o.execs, dialogs: o.dialogs,
+		cfg: hostlink.Config{Ports: lc.ports, OpenURL: settings.OpenURLs, Actions: hostlink.System{}, Egress: lc.egress, Trust: settings.Trust,
+			HostExec: hostExecOffer(lc.hostExec), Diagnose: true, Decide: o.decide, Execs: o.execs, Gate: o.gate}}
 	r.cfg.Log = r.log
+	r.cfg.Mods = r.setMods
+	r.cfg.AliasTmp = aliasTmp(a.daemonDir())
 	if o.actions != nil {
 		r.cfg.Actions = o.actions
+	}
+	if o.decide == nil && o.lock != nil {
+		b, err := r.openBroker(o.lock)
+		if err != nil {
+			return nil, fmt.Errorf("cannot open the environment's request broker: %v", err)
+		}
+		r.broker = b
+		r.cfg.Decide = b.Link()
 	}
 	return r, nil
 }
@@ -433,6 +476,10 @@ func (r *linkRunner) serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	watchers := []func(context.Context){r.watchConfig, r.watchProposals, r.checkProposals, r.watchVnodes}
+	if r.broker != nil {
+		defer r.closeBroker()
+		watchers = append(watchers, r.broker.Run)
+	}
 	for _, w := range watchers {
 		wg.Add(1)
 		go func() {
@@ -505,12 +552,22 @@ type linkRunner struct {
 	daemon string
 	execs  *hostlink.Execs
 
+	// broker is the environment's request broker, which decides what the
+	// sandbox asks; nil when the link was given a Decider instead. dialog
+	// is its URL dialog.
+	broker *broker.Broker
+	dialog *urlDialog
+	// dialogs is the process's URL dialog queue, shared by the daemon's
+	// links; nil has the link make one of its own.
+	dialogs *dialogQueue
+
 	mu       sync.Mutex
 	settings linkSettings
 	cfg      hostlink.Config
 	sess     *agentproto.Session
-	reloaded bool // the session ended for new settings: reconnect at once
-	retired  bool // the isolation changed: this helper serves no more
+	mods     *agentproto.ModsInfo // the agent's last count
+	reloaded bool                 // the session ended for new settings: reconnect at once
+	retired  bool                 // the isolation changed: this helper serves no more
 }
 
 func (r *linkRunner) settingsNow() linkSettings {
@@ -640,6 +697,12 @@ func (r *linkRunner) watchConfig(ctx context.Context) {
 // changed, ends the session so the next one runs with them. Settings that
 // do not parse leave the running ones in place.
 func (r *linkRunner) reload() {
+	if r.broker != nil {
+		// The policy is read again whatever the link's own settings do:
+		// trust, aliases, open_urls_allow and egress_deny are the broker's.
+		// A file that does not read keeps the policy in use (Reload logs it).
+		_ = r.broker.Reload()
+	}
 	c, err := config.Load(r.a.Cfg.Getenv, config.OSFS{}, r.a.Cfg.Env)
 	if err != nil {
 		r.log.Printf("config.toml changed, but cannot be read (%v): keeping the settings in use", err)
@@ -670,12 +733,13 @@ func (r *linkRunner) reload() {
 	r.settings = next
 	r.cfg.Ports, r.cfg.OpenURL, r.cfg.Egress = lc.ports, next.OpenURLs, lc.egress
 	r.cfg.HostExec = hostExecOffer(lc.hostExec)
+	r.cfg.Trust = next.Trust
 	sess := r.sess
 	r.reloaded = sess != nil
 	r.mu.Unlock()
 	r.writeState()
-	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress %s, egress_ports %q, egress_allow %q, host_exec %s; reconnecting",
-		next.ForwardPorts, next.OpenURLs, onOff(next.Egress), next.EgressPorts, next.EgressAllow, onOff(lc.hostExec))
+	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress %s, egress_ports %q, egress_allow %q, egress_deny %q, host_exec %s (trust %q); reconnecting",
+		next.ForwardPorts, next.OpenURLs, onOff(next.Egress), next.EgressPorts, next.EgressAllow, next.EgressDeny, onOff(lc.hostExec), next.Trust)
 	if sess != nil {
 		sess.Close()
 	}
@@ -789,11 +853,11 @@ func (r *linkRunner) serveDialed(ctx context.Context, l backend.Linker) error {
 	cfg.Relay = r.relayRoots()
 	cfg.HostExec = r.hostExec(cfg.HostExec)
 	// No socket of this machine's can reach a VM: the link carries its SSH
-	// agent, ssh_agent's or else the one ssh here would use, as this
+	// agent, ssh_agent's or else (never under hostile) the one ssh here would use, as this
 	// process sees it (its SSH_AUTH_SOCK, ~/.ssh/config): the daemon's, from
 	// a login shell, or a detached helper's, from the command that started it.
 	st := r.settingsNow()
-	sock, from := r.a.agentFrom(st.SSHAgent, st.SSHAgentFrom)
+	sock, from := r.a.agentFrom(st.SSHAgent, st.SSHAgentFrom, st.Trust)
 	cfg.SSHAgent, cfg.SSHAuthSock = containerAgent, sock
 	if sock == "" {
 		r.log.Printf("no SSH agent (%s): the sandbox gets none", from)

@@ -7,6 +7,12 @@ keys`), and a new container says so when the agent it got is empty or
 unreachable. `caboose doctor` checks it too, along with whether the key the
 sandbox signs with is one the agent holds.
 
+Under `trust = "hostile"` ([Trust](configuration.md#trust)) no agent is
+forwarded unless `ssh_agent` in `[link]` (below) names one: neither an
+`IdentityAgent` from `~/.ssh/config` nor `$SSH_AUTH_SOCK` is used, and
+`link.log` and `caboose doctor` say so ("trust = hostile forwards no SSH
+agent unless [link] ssh_agent names one").
+
 On a Mac, Docker runs in a VM, and a Mac socket bind-mounted into it does
 not arrive as a socket. OrbStack and Docker Desktop provide their own
 forwarded socket, `/run/host-services/ssh-auth.sock`, and with either one

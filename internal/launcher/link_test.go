@@ -156,11 +156,14 @@ func TestStartLinkReplacesAHelperWithOtherSettings(t *testing.T) {
 		// host_exec turned on in config.toml, which the helper has not read:
 		// the launch replaces it, so it stops offering it.
 		{"other host_exec", func() linkSettings { s := settingsFor("3000", "ask"); s.HostExec = true; return s }(), true},
+		// trust changed: under hostile the hello must stop offering host exec.
+		{"other trust", func() linkSettings { s := settingsFor("3000", "ask"); s.Trust = config.TrustHostile; return s }(), true},
+		{"other egress_deny", func() linkSettings { s := settingsFor("3000", "ask"); s.EgressDeny = "x.example"; return s }(), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			killed := fakeHelper(t, dir, tc.running)
-			a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask", Egress: true}}
+			a := &App{Cfg: &config.Config{Env: "default", DataDir: dir, ForwardPorts: "3000", OpenURLs: "ask", Egress: true, Trust: config.TrustFallible}}
 			spawned := spawnRecorder(a)
 			a.startDetachedLink()
 			if got := len(*spawned) == 1 && len(*killed) == 1 && (*killed)[0] == 4242; got != tc.replaced {
@@ -326,7 +329,7 @@ func TestLinkDialsALinker(t *testing.T) {
 // defaults, and the default isolation.
 func settingsFor(forwardPorts, openURLs string) linkSettings {
 	return linkSettings{ForwardPorts: forwardPorts, OpenURLs: openURLs,
-		Egress: true, EgressPorts: config.DefaultEgressPorts, Isolation: isolationContainer}
+		Egress: true, EgressPorts: config.DefaultEgressPorts, Isolation: isolationContainer, Trust: config.TrustFallible}
 }
 
 // withIsolation is s serving a sandbox of another isolation.
@@ -583,16 +586,20 @@ func (b mountsBox) Labels() (map[string]string, error) {
 	return map[string]string{assets.LabelRoots: rootsLabel(roots)}, nil
 }
 
-// With host_exec on, the hello offers host exec, and a command runs in the
-// host directory of the root the sandbox mounts, not a configured one.
+// With host_exec on and trust fallible, the hello offers host exec, and a
+// command runs in the host directory of the root the sandbox mounts, not
+// a configured one; under any other trust it offers none.
 func TestLinkOffersHostExec(t *testing.T) {
 	mounted := t.TempDir()
-	for _, on := range []bool{true, false} {
+	for _, c := range []struct {
+		hostExec bool
+		trust    string
+		on       bool
+	}{{true, config.TrustFallible, true}, {false, config.TrustFallible, false}, {true, config.TrustHostile, false}, {true, "", false}} {
+		on := c.on
 		lc, err := func() (linkConfig, error) {
 			s := settingsFor("3000", "ask")
-			if on {
-				s.HostExec = true
-			}
+			s.HostExec, s.Trust = c.hostExec, c.trust
 			return s.check()
 		}()
 		if err != nil {
@@ -625,7 +632,7 @@ func TestLinkOffersHostExec(t *testing.T) {
 		cfg := &config.Config{Container: "box", DataDir: t.TempDir(), Getenv: func(string) string { return "" },
 			Roots: []config.Root{{Host: "/configured/elsewhere", Container: "/work"}}}
 		r := &linkRunner{a: &App{Cfg: cfg, Backend: box}, log: log.New(io.Discard, "", 0),
-			cfg: hostlink.Config{Ports: lc.ports, HostExec: hostExecOffer(lc.hostExec)}}
+			cfg: hostlink.Config{Ports: lc.ports, HostExec: hostExecOffer(lc.hostExec), Trust: c.trust}}
 		go func() { _ = r.once(context.Background()) }()
 		phys, _ := filepath.EvalSymlinks(mounted)
 		want := "not offered"
@@ -635,7 +642,7 @@ func TestLinkOffersHostExec(t *testing.T) {
 		select {
 		case g := <-got:
 			if g != want {
-				t.Errorf("host_exec %v: %q, want %q", on, g, want)
+				t.Errorf("host_exec %v, trust %q: %q, want %q", c.hostExec, c.trust, g, want)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatalf("host_exec %v: nothing came of it", on)

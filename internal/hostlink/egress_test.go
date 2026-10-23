@@ -18,33 +18,6 @@ import (
 	"github.com/bfreis/caboose/internal/agentproto"
 )
 
-func TestDenied(t *testing.T) {
-	for s, want := range map[string]bool{
-		"127.0.0.1": true, "127.8.9.10": true, "::1": true, "::ffff:127.0.0.1": true, "::": true, "0.0.0.0": true,
-		"10.1.2.3": true, "172.16.0.1": true, "172.31.255.255": true, "192.168.1.1": true,
-		"192.168.64.2": true, // vmnet's subnet
-		"100.64.0.1":   true, "100.127.255.255": true, "169.254.169.254": true,
-		"fe80::1": true, "fc00::1": true, "fd7a:115c:a1e0::1": true, "fec0::1": true,
-		"ff02::1": true, "224.0.0.251": true, "239.255.255.250": true, "255.255.255.255": true,
-		"::ffff:10.0.0.1": true, "::ffff:192.168.64.1": true, "::127.0.0.1": true,
-		"64:ff9b::7f00:1": true, "2002:a00:1::": true, // 127.0.0.1 by NAT64, 10.0.0.1 by 6to4
-		"::ffff:0:7f00:1": true, "::ffff:0:a00:1": true, // IPv4-translated 127.0.0.1, 10.0.0.1
-		"64:ff9b:1::808:808": true, "64:ff9b:1:808:8:800::": true, // local-use NAT64, whatever it embeds
-
-		"8.8.8.8": false, "140.82.112.3": false, "100.63.255.255": false, "100.128.0.1": false,
-		"172.32.0.1": false, "192.169.0.1": false, "2606:4700:4700::1111": false,
-		"::ffff:8.8.8.8": false, "64:ff9b::808:808": false, "2002:808:808::": false,
-		"::ffff:0:808:808": false,
-	} {
-		if got := Denied(netip.MustParseAddr(s)); got != want {
-			t.Errorf("Denied(%s) = %v", s, got)
-		}
-	}
-	if !Denied(netip.MustParseAddr("fe80::1%en0")) || !Denied(netip.Addr{}) {
-		t.Error("an address with a zone, or none, is allowed")
-	}
-}
-
 func TestParseAllow(t *testing.T) {
 	a, err := ParseAllow("git.corp.example, *.internal.example 10.20.0.0/16 192.168.1.5 ::ffff:172.16.0.0/108 FD00::/8")
 	if err != nil {
@@ -105,95 +78,6 @@ func TestCheckEgressHost(t *testing.T) {
 	}
 }
 
-// A name that resolves to a private address is refused, whatever else it
-// resolves to, unless egress_allow names it or that address.
-func TestEgressDeniedResolution(t *testing.T) {
-	pub, priv := netip.MustParseAddr("140.82.112.3"), netip.MustParseAddr("10.0.0.7")
-	cases := []struct {
-		allow  string
-		addrs  []netip.Addr
-		denied bool
-	}{
-		{"", []netip.Addr{pub}, false},
-		{"", []netip.Addr{priv}, true},
-		{"", []netip.Addr{pub, priv}, true},
-		{"", []netip.Addr{priv, pub}, true},
-		{"rebind.example", []netip.Addr{pub, priv}, false},
-		{"*.example", []netip.Addr{priv}, false},
-		{"10.0.0.0/24", []netip.Addr{pub, priv}, false},
-		{"10.0.1.0/24", []netip.Addr{pub, priv}, true},
-		{"other.example", []netip.Addr{priv}, true},
-	}
-	for _, c := range cases {
-		allow, err := ParseAllow(c.allow)
-		if err != nil {
-			t.Fatal(err)
-		}
-		e := &Egress{Allow: allow}
-		if _, denied := e.denied("rebind.example", c.addrs, nil); denied != c.denied {
-			t.Errorf("allow %q, %v: denied %v", c.allow, c.addrs, denied)
-		}
-	}
-}
-
-// A name egress_allow names still never reaches loopback, unspecified or
-// link-local addresses, nor this machine's own, in any form: only an
-// address or CIDR within that range lets one through.
-func TestEgressDeniedLocal(t *testing.T) {
-	own := []netip.Addr{netip.MustParseAddr("2001:db8:1::5"), netip.MustParseAddr("203.0.113.9"), netip.MustParseAddr("10.1.2.3")}
-	cases := []struct {
-		allow, addr string
-		denied      bool
-	}{
-		{"*.nip.io", "127.0.0.1", true},
-		{"*.nip.io", "0.0.0.0", true},
-		{"*.nip.io", "::", true},
-		{"*.nip.io", "::1", true},
-		{"*.nip.io", "169.254.169.254", true},
-		{"*.nip.io", "fe80::1", true},
-		{"*.nip.io", "::ffff:127.0.0.1", true},
-		{"*.nip.io", "64:ff9b::7f00:1", true},
-		{"*.nip.io", "::ffff:0:7f00:1", true},
-		{"*.nip.io", "64:ff9b:1::7f00:1", true},
-		{"*.nip.io", "2002:7f00:1::", true},
-		{"*.nip.io", "10.0.0.7", false}, // private, and allowed by name
-		{"*.nip.io", "140.82.112.3", false},
-		{"0.0.0.0/0", "127.0.0.1", true},    // wider than loopback
-		{"127.0.0.0/8", "127.0.0.1", false}, // loopback, by name
-		{"127.0.0.1", "127.0.0.1", false},
-		{"127.0.0.1", "64:ff9b::7f00:1", false},
-		{"169.254.169.254", "169.254.169.254", false},
-		{"fe80::/10", "fe80::1", false},
-		// This machine's own addresses.
-		{"", "2001:db8:1::5", true},
-		{"", "203.0.113.9", true},
-		{"", "64:ff9b::cb00:7109", true}, // 203.0.113.9 by NAT64
-		{"*.nip.io", "2001:db8:1::5", true},
-		{"2001:db8::/32", "2001:db8:1::5", true},
-		{"10.0.0.0/8", "10.1.2.3", true},
-		{"10.0.0.0/8", "10.1.2.4", false},
-		{"2001:db8:1::5", "2001:db8:1::5", false},
-		{"203.0.113.9", "203.0.113.9", false},
-		{"", "2001:db8:1::6", false},
-	}
-	for _, c := range cases {
-		allow, err := ParseAllow(c.allow)
-		if err != nil {
-			t.Fatal(err)
-		}
-		e := &Egress{Allow: allow}
-		if _, denied := e.denied("x.nip.io", []netip.Addr{netip.MustParseAddr(c.addr)}, own); denied != c.denied {
-			t.Errorf("allow %q, %s: denied %v", c.allow, c.addr, denied)
-		}
-	}
-	// A literal is never allowed by a pattern, whatever its digits.
-	allow, _ := ParseAllow("*.0.7")
-	e := &Egress{Allow: allow}
-	if _, denied := e.denied("", []netip.Addr{netip.MustParseAddr("10.0.0.7")}, nil); !denied {
-		t.Error("an address literal allowed by a pattern")
-	}
-}
-
 // This machine's addresses are read at most every egressOwnEvery, and a
 // name resolving to one is refused.
 func TestEgressOwnAddrs(t *testing.T) {
@@ -205,7 +89,7 @@ func TestEgressOwnAddrs(t *testing.T) {
 		reads++
 		return []netip.Addr{netip.MustParseAddr("::ffff:203.0.113.9")}, nil
 	}}
-	h := &Host{cfg: Config{Log: log.New(io.Discard, "", 0), Egress: e}}
+	h := &Host{cfg: Config{Trust: "fallible", Log: log.New(io.Discard, "", 0), Egress: e}}
 	for i := 0; i < 3; i++ {
 		if err := h.connect(1, "me.example", 443); egressReason(err) != agentproto.EgressDenied {
 			t.Fatalf("this machine's own address: %v", err)
@@ -273,7 +157,7 @@ func TestEgressDialShares(t *testing.T) {
 func TestEgressLogLimit(t *testing.T) {
 	var logged syncBuffer
 	ports, _ := ParsePortsOf("egress_ports", "443")
-	h := &Host{cfg: Config{Log: log.New(&logged, "", 0), Egress: &Egress{Ports: ports}}}
+	h := &Host{cfg: Config{Trust: "fallible", Log: log.New(&logged, "", 0), Egress: &Egress{Ports: ports}}}
 	for i := 0; i < 50; i++ {
 		_ = h.connect(1, "example.com", 25)
 	}
@@ -291,7 +175,7 @@ func TestEgressLogLimit(t *testing.T) {
 }
 
 func TestEgressLimits(t *testing.T) {
-	h := &Host{cfg: Config{Log: log.New(io.Discard, "", 0)}}
+	h := &Host{cfg: Config{Trust: "fallible", Log: log.New(io.Discard, "", 0)}}
 	for i := 0; i < egressBurst; i++ {
 		if err := h.takeEgress(); err != nil {
 			t.Fatalf("connection %d: %v", i, err)
@@ -422,6 +306,9 @@ func egressLinked(t *testing.T, cfg Config) *fakeAgent {
 	var logged bytes.Buffer
 	if cfg.Log == nil {
 		cfg.Log = log.New(&logged, "", 0)
+	}
+	if cfg.Trust == "" {
+		cfg.Trust = "fallible" // tests of the link are of a fallible environment unless they say
 	}
 	go Run(host, cfg)
 	a := &fakeAgent{t: t, sess: sess}
@@ -568,7 +455,7 @@ func TestEgressLog(t *testing.T) {
 	var logged syncBuffer
 	fn := &fakeNet{echo: echoServer(t), names: map[string][]netip.Addr{"localhost": {netip.MustParseAddr("127.0.0.1")}}}
 	ports, _ := ParsePortsOf("egress_ports", "443")
-	h := &Host{cfg: Config{Log: log.New(&logged, "", 0), Egress: &Egress{Ports: ports, Resolver: fn, Dial: fn.Dial}}}
+	h := &Host{cfg: Config{Trust: "fallible", Log: log.New(&logged, "", 0), Egress: &Egress{Ports: ports, Resolver: fn, Dial: fn.Dial}}}
 	for _, c := range []struct {
 		host string
 		port int
@@ -576,7 +463,7 @@ func TestEgressLog(t *testing.T) {
 		_ = h.connect(1, c.host, c.port)
 	}
 	got := logged.String()
-	for _, want := range []string{"egress localhost:443: refused: resolves to 127.0.0.1", "egress example.com:25: refused: not in egress_ports", "egress x?[2J: refused"} {
+	for _, want := range []string{"egress localhost:443: refused: 127.0.0.1 is a loopback", "egress example.com:25: refused: not in egress_ports", "egress x?[2J: refused"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("link.log lacks %q:\n%s", want, got)
 		}

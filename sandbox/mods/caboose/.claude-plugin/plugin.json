@@ -1,0 +1,5 @@
+{
+  "name": "caboose",
+  "version": "1.0.0",
+  "description": "Lets Claude Code in a caboose sandbox ask the host for what it needs, and tells it what the host decided. It informs only: the host enforces every decision."
+}

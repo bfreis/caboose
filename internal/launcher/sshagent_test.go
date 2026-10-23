@@ -37,7 +37,7 @@ func agentApp(t *testing.T, os_, body, sshG string, env map[string]string) (*App
 	t.Setenv("PATH", bin)
 	var errb bytes.Buffer
 	a := &App{
-		Cfg:    &config.Config{Container: "box", Getenv: func(k string) string { return env[k] }},
+		Cfg:    &config.Config{Container: "box", Trust: config.TrustFallible, Getenv: func(k string) string { return env[k] }},
 		Docker: &docker.CLI{Path: filepath.Join(bin, "docker")},
 		Stdout: &bytes.Buffer{}, Stderr: &errb,
 	}
@@ -772,6 +772,87 @@ func TestDoctorVMAgentNone(t *testing.T) {
 	_ = b.Doctor([]string{"--offline"})
 	out, _ := b.said()
 	if !strings.Contains(out, "not forwarded: "+why) || strings.Contains(out, "not reachable") || strings.Contains(out, "set ssh_agent") {
+		t.Errorf("doctor:\n%s", out)
+	}
+}
+
+// Under trust = "hostile" the sandbox gets no agent unless ssh_agent names
+// one: neither ~/.ssh/config's IdentityAgent nor $SSH_AUTH_SOCK, said as
+// such; a socket ssh_agent names is forwarded as under fallible.
+func TestHostileForwardsNoDefaultAgent(t *testing.T) {
+	home := shortTempDir(t)
+	op := listen(t, filepath.Join(home, ".1password", "agent.sock"))
+	env := listen(t, filepath.Join(shortTempDir(t), "env.sock"))
+	set := listen(t, filepath.Join(shortTempDir(t), "set.sock"))
+	for _, tc := range []struct {
+		name, sshG, setting, trust string
+		want, from                 string
+	}{
+		{"IdentityAgent", "identityagent " + op, "", config.TrustHostile, "", agentFromHostile},
+		{"$SSH_AUTH_SOCK", "user me", "", config.TrustHostile, "", agentFromHostile},
+		{"an unknown trust is hostile", "user me", "", "paranoid", "", agentFromHostile},
+		{"an empty trust is hostile", "user me", "", "", "", agentFromHostile},
+		{"ssh_agent names one", "user me", set, config.TrustHostile, set, "ssh_agent in [link] of /e/config.toml"},
+		{"fallible keeps the default", "user me", "", config.TrustFallible, env, agentFromEnv},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := agentApp(t, "linux", "", tc.sshG, map[string]string{"SSH_AUTH_SOCK": env, "HOME": home})
+			a.Cfg.SSHAgent, a.Cfg.Trust = tc.setting, tc.trust
+			if tc.setting != "" {
+				a.Cfg.File = &config.File{Path: "/e/config.toml", Vals: map[string]any{"link.ssh_agent": tc.setting}}
+			}
+			if sock, from := a.hostAgent(); sock != tc.want || from != tc.from {
+				t.Errorf("hostAgent %q (%s), want %q (%s)", sock, from, tc.want, tc.from)
+			}
+			if got := a.sshAgentSource(); got != tc.want {
+				t.Errorf("mounts %q, want %q", got, tc.want)
+			}
+			why, none := a.agentDeclined()
+			if none != (tc.want == "") || (none && why != agentFromHostile) {
+				t.Errorf("declined %q, %v", why, none)
+			}
+		})
+	}
+	// A memo made under fallible is not the answer under hostile.
+	a, _ := agentApp(t, "linux", "", "user me", map[string]string{"SSH_AUTH_SOCK": env, "HOME": home})
+	a.Cfg.Trust = config.TrustFallible
+	if sock, _ := a.hostAgent(); sock != env {
+		t.Fatalf("fallible: %q", sock)
+	}
+	a.Cfg.Trust = config.TrustHostile
+	if sock, from := a.hostAgent(); sock != "" || from != agentFromHostile {
+		t.Errorf("hostile after fallible: %q (%s)", sock, from)
+	}
+}
+
+// Doctor says why a hostile VM has no agent, and asks for nothing.
+func TestDoctorHostileAgentNone(t *testing.T) {
+	box := runningBox(isolationVM)
+	box.Exec = func(s backend.ExecSpec) *exec.Cmd {
+		switch {
+		case len(s.Argv) == 3 && s.Argv[0] == "bash" && strings.Contains(s.Argv[2], "SSH_AUTH_SOCK"):
+			return exec.Command("printf", "%s", containerAgent)
+		case slices.Equal(s.Argv, []string{"ssh-add", "-l"}):
+			return exec.Command("sh", "-c", "echo 'Error connecting to agent: Connection refused' >&2; exit 2")
+		}
+		return nil
+	}
+	b := newBoxApp(t, isolationVM, box)
+	b.mountLocal("local/linux-arm64")
+	b.Cfg.Trust = config.TrustHostile
+	b.Cfg.Getenv = func(k string) string {
+		if k == "SSH_AUTH_SOCK" {
+			return "/host/agent.sock"
+		}
+		return ""
+	}
+	b.SSH = noSSH
+	if status, usable := b.agentStatus(); status != "not forwarded ("+agentFromHostile+")" || usable {
+		t.Errorf("agentStatus %q, %v", status, usable)
+	}
+	_ = b.Doctor([]string{"--offline"})
+	out, _ := b.said()
+	if !strings.Contains(out, "not forwarded: "+agentFromHostile) || strings.Contains(out, "/host/agent.sock") {
 		t.Errorf("doctor:\n%s", out)
 	}
 }

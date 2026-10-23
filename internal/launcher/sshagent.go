@@ -76,11 +76,11 @@ func (a *App) macEngine() string {
 // and lookup only, which keeps an App that lives long (a daemon's link)
 // from answering with what config.toml or ~/.ssh/config said before.
 func (a *App) hostAgent() (sock, from string) {
-	key := agentMemo{set: a.Cfg.SSHAgent, origin: sshAgentOrigin(a.Cfg), env: a.getenv("SSH_AUTH_SOCK"), ssh: a.SSH}
+	key := agentMemo{set: a.Cfg.SSHAgent, origin: sshAgentOrigin(a.Cfg), trust: a.Cfg.Trust, env: a.getenv("SSH_AUTH_SOCK"), ssh: a.SSH}
 	if m := a.agentSeen; m != nil && m.same(key) && time.Since(m.at) < agentMemoTTL {
 		return m.sock, m.from
 	}
-	key.sock, key.from = a.agentFrom(key.set, key.origin)
+	key.sock, key.from = a.agentFrom(key.set, key.origin, key.trust)
 	key.at = time.Now()
 	a.agentSeen = &key
 	return key.sock, key.from
@@ -88,22 +88,25 @@ func (a *App) hostAgent() (sock, from string) {
 
 // agentMemo is one answer of hostAgent's, with what it was asked under.
 type agentMemo struct {
-	set, origin, env string
-	ssh              *SSHLookup
-	at               time.Time
-	sock, from       string
+	set, origin, trust, env string
+	ssh                     *SSHLookup
+	at                      time.Time
+	sock, from              string
 }
 
 func (m *agentMemo) same(k agentMemo) bool {
-	return m.set == k.set && m.origin == k.origin && m.env == k.env && m.ssh == k.ssh
+	return m.set == k.set && m.origin == k.origin && m.trust == k.trust && m.env == k.env && m.ssh == k.ssh
 }
 
 // agentMemoTTL is how long hostAgent's answer holds: a command's length,
 // not a daemon's.
 const agentMemoTTL = 30 * time.Second
 
-// agentFrom is hostAgent for a setting of ssh_agent, set, and what set it:
-// that socket ("none" for none), else the one ssh on the host would use by
+// agentFrom is hostAgent for a setting of ssh_agent, set, what set it, and
+// trust: that socket ("none" for none); else, under trust = "hostile", no
+// agent at all (agentFromHostile), so a sandbox the host does not trust
+// gets the keys only when ssh_agent names an agent outright; else the one
+// ssh on the host would use by
 // default -- an IdentityAgent from ~/.ssh/config (1Password's documented
 // setup), else $SSH_AUTH_SOCK, which a tool like a work login's may have
 // taken over without anything on the host noticing.
@@ -117,10 +120,14 @@ const agentMemoTTL = 30 * time.Second
 // ssh, or one that refuses the config) ~/.ssh/config is read for an
 // IdentityAgent directly, and what chose the agent says why, for link.log
 // and doctor: "$SSH_AUTH_SOCK (ssh -G ... failed: ...)".
-func (a *App) agentFrom(set, origin string) (sock, from string) {
+func (a *App) agentFrom(set, origin, trust string) (sock, from string) {
 	env := a.getenv("SSH_AUTH_SOCK")
 	if set != "" {
 		return a.expandAgent(set, env), origin
+	}
+	if trust != config.TrustFallible {
+		// Anything but exactly fallible is decided as hostile.
+		return "", agentFromHostile
 	}
 	l := a.sshLookup()
 	out, gerr := l.G(agentProbeHost)
@@ -152,11 +159,15 @@ const (
 	agentFromEnv    = "$SSH_AUTH_SOCK"
 	agentFromConfig = "IdentityAgent in ~/.ssh/config"
 	agentFromNone   = "IdentityAgent none in ~/.ssh/config"
+	// agentFromHostile is agentFrom's "what chose it" under hostile with
+	// ssh_agent unset.
+	agentFromHostile = `trust = "hostile" forwards no SSH agent unless [link] ssh_agent names one`
 )
 
 // agentDeclined is what said outright that the sandbox gets no agent, and
-// whether something did: ssh_agent = "none", or an IdentityAgent none
-// that applies to every host (agentFrom). Not an agent that is merely missing
+// whether something did: ssh_agent = "none", trust = "hostile" with
+// ssh_agent unset, or an IdentityAgent none that applies to every host
+// (agentFrom). Not an agent that is merely missing
 // -- an unset $SSH_AUTH_SOCK, or a $VAR in ssh_agent that names nothing
 // -- which on a Mac engine still leaves the engine's own forwarding.
 func (a *App) agentDeclined() (why string, none bool) {
@@ -166,7 +177,7 @@ func (a *App) agentDeclined() (why string, none bool) {
 	if a.Cfg.SSHAgent != "" {
 		return "", false
 	}
-	if sock, from := a.hostAgent(); sock == "" && strings.HasPrefix(from, agentFromNone) {
+	if sock, from := a.hostAgent(); sock == "" && (from == agentFromHostile || strings.HasPrefix(from, agentFromNone)) {
 		return from, true
 	}
 	return "", false

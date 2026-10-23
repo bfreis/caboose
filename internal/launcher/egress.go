@@ -30,7 +30,9 @@ import (
 // egressOn reports whether the sandbox's outbound connections go through
 // this machine: under vm, with the profile's egress on.
 func (a *App) egressOn() (bool, error) {
-	return a.isVM() && a.Cfg.Egress, nil
+	// Hostile has no network but the proxy: on, whatever egress says
+	// (config.toml refuses an explicit false).
+	return a.isVM() && (a.Cfg.Egress || a.hostile()), nil
 }
 
 // egressLabel is assets.LabelEgress's value.

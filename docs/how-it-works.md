@@ -90,17 +90,20 @@ what is kept lives in the data dir, never at the host's own `~/.aws`.
 
 The launcher also writes caboose's instructions, a `CLAUDE.md` telling every
 session in the sandbox what it is running in, and a few skills (how to propose
-a change, keep a tool's settings, troubleshoot), into `<data>/claude-code/` on
-every launch. The sandbox has that directory read-only at `/etc/claude-code`,
+a change, keep a tool's settings, ask the host for something, troubleshoot), and
+a small Claude Code mod (`mods/caboose`, which Claude Code loads through
+`CLAUDE_CODE_PLUGIN_DIRS`, [host link](host-link.md#asking-the-host-ahead-of-time)),
+into `<data>/claude-code/` on every launch. The sandbox has that directory read-only at `/etc/claude-code`,
 Claude Code's managed policy directory on Linux, so every session reads
 `/etc/claude-code/CLAUDE.md` before the user's and the project's, and offers
-the skills under `/etc/claude-code/.claude/skills`. Nothing
+the skills under `/etc/claude-code/.claude/skills` and the mod under
+`/etc/claude-code/mods/caboose`. Nothing
 inside can change the host's copy. Under docker and gVisor the mount cannot be
 changed from inside either; under vm, root in the guest can unmount or cover
 it for the running VM only, and the next boot (or launch) brings caboose's
 back. Under vm, the Mac refuses writes to the mount only when `caboose-vmm` is
 the same version as `caboose`: a VM that boots with a different one says so.
-They come from `sandbox/CLAUDE.md` and `sandbox/skills/` — the checkout's
+They come from `sandbox/CLAUDE.md`, `sandbox/skills/` and `sandbox/mods/` (the mod verbatim) — the checkout's
 copies when the launcher runs from one, else the ones embedded in the binary —
 adapted to this sandbox: the isolation, the environment, the kind of image,
 whether `host_exec` is on, where the roots are mounted and where caboose's own

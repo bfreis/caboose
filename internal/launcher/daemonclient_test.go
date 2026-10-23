@@ -41,6 +41,8 @@ type fakeDaemon struct {
 	statusCalls int
 	// OnEnsure runs at each ensure_link.
 	OnEnsure func()
+	// br is the request broker's side (requests_test.go).
+	br brokerFake
 }
 
 func (f *fakeDaemon) dial(_ context.Context, start bool) (DaemonCaller, error) {

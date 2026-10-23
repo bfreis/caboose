@@ -243,7 +243,8 @@ func TestDefaults(t *testing.T) {
 		AutoBuild: true, Tmux: true, KeepVersions: 2, ReadyTimeout: 600, Home: "/h",
 		ForwardPorts: DefaultForwardPorts, OpenURLs: "ask", Isolation: KindContainer,
 		ImageProfile: ImageProfile{Kind: ImageKindApko, Name: "default", Defaults: true},
-		Egress:       true, EgressPorts: DefaultEgressPorts}
+		Egress:       true, EgressPorts: DefaultEgressPorts,
+		Trust: TrustFallible}
 	c.Getenv = nil
 	if !reflect.DeepEqual(*c, want) {
 		t.Errorf("got %+v\nwant %+v", *c, want)

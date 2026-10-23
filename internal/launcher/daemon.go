@@ -159,7 +159,7 @@ func (a *App) runDaemon() error {
 	links.WillRecover()
 	defer hostlink.KillHostExecs()
 	err := daemon.Run(ctx, daemon.Options{Dir: dir, Version: currentVersion(), Dev: dev, LockWait: daemon.StartWait,
-		Links: links, Ready: func(lg *log.Logger) {
+		Links: links, Brokers: links, Ready: func(lg *log.Logger) {
 			for _, n := range notes {
 				lg.Print(n)
 			}
@@ -267,6 +267,9 @@ func daemonEnvLine(e daemonproto.EnvStatus) string {
 	}
 	if e.LastError != "" {
 		line += " (" + e.LastError + ")"
+	}
+	if e.Pending > 0 {
+		line += fmt.Sprintf(", %d %s pending", e.Pending, plural(e.Pending, "request", "requests"))
 	}
 	return line
 }

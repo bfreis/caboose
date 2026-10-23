@@ -137,7 +137,7 @@ is, and a bash given no -c reads its commands from stdin
 runs, a port something listens on in it is forwarded to
 the same port on this machine's localhost when forward_ports allows it,
 and 'caboose-agent open URL' or 'notify TEXT' in the sandbox opens an
-http(s) URL here (as open_urls says) or shows a notification.
+http(s) URL here (after asking, as open_urls says) or shows a notification.
 The caboose daemon runs it, one link per environment: every launch asks the
 daemon for one (starting the daemon when none runs), and it replaces a link
 running with other settings; it rereads config.toml by itself when that
@@ -147,6 +147,46 @@ settings. --foreground runs the link in this terminal instead, to debug it:
 it is refused while the daemon serves the environment ('caboose daemon
 stop' first). With CABOOSE_DATA_DIR set the daemon does not serve the
 command: a launch keeps a detached helper (--background) instead.`},
+	{Name: "requests", Usage: "[ACTION]", Args: ownArgs,
+		Summary: "what the sandbox asked for, and answers to it",
+		Help: `The sandbox asks the host for what config.toml does not allow it: to open
+a URL in your browser, to connect somewhere through the outbound proxy
+under vm, to run an alias whose policy is "ask". It is told the request
+is pending and goes on; nothing happens until you answer. Each request
+shows what allowing it would do, in caboose's words, then what the
+sandbox says of it, which is its own claim.
+
+ACTION is one of:
+  (none)           the pending requests, newest first
+  --all            the decided ones too
+  show N           request N in full
+  approve N        allow it once (a URL opens; a connection or the alias's
+                   run is allowed once, within 15 minutes)
+  approve N --for DURATION
+                   allow it for DURATION: whole hours or days, 1h to 7d,
+                   such as 8h or 2d (see 'caboose grants')
+  approve N --always
+                   allow it for good by editing config.toml. The change
+                   is shown as it would be written, and made only when
+                   you type yes on a terminal.
+  deny N           refuse it
+
+Other requests for the same thing are decided with a longer allow. The
+daemon answers while the environment's link runs (it is started if need
+be); with CABOOSE_DATA_DIR set it does not serve the environment.`},
+	{Name: "grants", Usage: "[revoke ID]", Args: ownArgs,
+		Summary: "the timed and once grants in force, and ending one",
+		Help: `Lists what 'requests approve --for' and 'requests approve' let the
+sandbox do without asking, and for how long more. 'revoke ID' ends one
+at once. What 'approve --always' wrote to config.toml is not a grant:
+edit config.toml to take it back.`},
+	{Name: "permissions", Args: noArgs,
+		Summary: "what the sandbox may do: settings and grants",
+		Help: `What this environment's sandbox may have the host do, as config.toml and
+the grants in force say: the trust level, the isolation, the roots and
+how far each can be written, the aliases (the commands on this machine
+they run), host exec, URL opening, the outbound proxy's allow and deny
+lists, and the grants with the time each has left.`},
 	{Name: "daemon", Usage: "[ACTION]", Args: ownArgs, Hidden: true,
 		Summary: "the host daemon: how it is, or stop or restart it",
 		Help: `One daemon per CABOOSE_HOME runs in the background, for every

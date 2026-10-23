@@ -104,7 +104,11 @@ func SandboxInstructions(checkout string) ([]byte, error) {
 // datadir.ManagedDir.
 func managedPath(rel string) string { return ".claude/skills/" + rel }
 
-// EmbeddedSandboxFiles is the CLAUDE.md and skills built into this
+// modPath is where a file of sandbox/mods goes, relative to
+// datadir.ManagedDir.
+func modPath(rel string) string { return "mods/" + rel }
+
+// EmbeddedSandboxFiles is the CLAUDE.md, skills and mods built into this
 // launcher, by path relative to datadir.ManagedDir.
 func EmbeddedSandboxFiles() (map[string][]byte, error) {
 	md, err := assets.SandboxInstructions()
@@ -116,62 +120,102 @@ func EmbeddedSandboxFiles() (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = fs.WalkDir(skills, ".", func(p string, e fs.DirEntry, err error) error {
+	if err := readEmbedded(skills, managedPath, files); err != nil {
+		return nil, err
+	}
+	mods, err := assets.SandboxMods()
+	if err != nil {
+		return nil, err
+	}
+	if err := readEmbedded(mods, modPath, files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// readEmbedded adds every file of fsys to files, at place(its path).
+func readEmbedded(fsys fs.FS, place func(string) string, files map[string][]byte) error {
+	return fs.WalkDir(fsys, ".", func(p string, e fs.DirEntry, err error) error {
 		if err != nil || p == "." {
 			return err
 		}
 		if e.IsDir() {
 			return nil
 		}
-		b, err := fs.ReadFile(skills, p)
-		files[managedPath(p)] = b
+		b, err := fs.ReadFile(fsys, p)
+		files[place(p)] = b
 		return err
 	})
-	return files, err
 }
 
-// SandboxFiles is the CLAUDE.md and skills to install, by path relative to
-// datadir.ManagedDir: the checkout's when there is one, else the embedded
-// ones. The checkout's CLAUDE.md that cannot be used for any reason but
-// being absent, or its skills tree (when sandbox/skills exists there) that
-// has a link, a file that is not plain, or more than the limits allow, is
-// an error: the caller's cue to install the embedded set, all of it, since
-// the two never mix.
+// checkoutLimits are what is left of the limits on what is read from a
+// checkout, shared by its skills and mods.
+type checkoutLimits struct {
+	bytes, files, entries int
+}
+
+// SandboxFiles is the CLAUDE.md, skills and mods to install, by path
+// relative to datadir.ManagedDir: the checkout's when there is one, else
+// the embedded ones. The checkout's CLAUDE.md that cannot be used for any
+// reason but being absent, or its skills or mods tree (when sandbox/skills
+// or sandbox/mods exists there) that has a link, a file that is not plain,
+// or more than the limits allow, is an error: the caller's cue to install
+// the embedded set, all of it, since the two never mix.
 func SandboxFiles(checkout string) (map[string][]byte, error) {
 	files, err := EmbeddedSandboxFiles()
 	if err != nil || checkout == "" {
 		return files, err
 	}
 	d := nofollow.Dir(checkout)
-	total := 0
+	lim := checkoutLimits{bytes: maxSkillBytes, files: maxSkillFiles, entries: maxSkillEntries}
 	b, _, err := d.ReadFileMax(assets.SandboxInstructionsPath, maxSkillBytes)
 	switch {
 	case err == nil:
 		files["CLAUDE.md"] = b
-		total = len(b)
+		lim.bytes -= len(b)
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, err
 	}
-	if _, err := d.Lstat(assets.SandboxSkillsPath); errors.Is(err, fs.ErrNotExist) {
-		return files, nil
-	} else if err != nil {
-		return nil, err
-	}
-	for k := range files {
-		if k != "CLAUDE.md" {
-			delete(files, k)
+	// What go:embed leaves out of sandbox/skills (a name that starts with
+	// . or _) the checkout's set leaves out too, so it is the embedded one.
+	// A mod is embedded with all:, a plugin folder's manifest being in
+	// .claude-plugin, so none is left out there.
+	for _, t := range []struct {
+		root, prefix string
+		place        func(string) string
+		hidden       bool
+	}{
+		{assets.SandboxSkillsPath, ".claude/skills/", managedPath, false},
+		{assets.SandboxModsPath, "mods/", modPath, true},
+	} {
+		if _, err := d.Lstat(t.root); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		for k := range files {
+			if strings.HasPrefix(k, t.prefix) {
+				delete(files, k)
+			}
+		}
+		if err := readCheckoutTree(d, t.root, t.place, t.hidden, &lim, files); err != nil {
+			return nil, err
 		}
 	}
-	entries := 0
-	err = d.Walk(assets.SandboxSkillsPath, func(rel string, e fs.DirEntry) error {
-		if entries++; entries > maxSkillEntries {
-			return fmt.Errorf("%s has more than %d entries", assets.SandboxSkillsPath, maxSkillEntries)
+	return files, nil
+}
+
+// readCheckoutTree reads the files under root of the checkout d into files
+// at place(path under root), within lim.
+func readCheckoutTree(d nofollow.Dir, root string, place func(string) string, hidden bool, lim *checkoutLimits, files map[string][]byte) error {
+	return d.Walk(root, func(rel string, e fs.DirEntry) error {
+		if lim.entries--; lim.entries < 0 {
+			return fmt.Errorf("%s has more than %d entries", root, maxSkillEntries)
 		}
-		if strings.Count(rel, "/")-strings.Count(assets.SandboxSkillsPath, "/") > maxSkillDepth {
+		if strings.Count(rel, "/")-strings.Count(root, "/") > maxSkillDepth {
 			return fmt.Errorf("%s: deeper than %d levels", rel, maxSkillDepth)
 		}
-		// What go:embed leaves out, so the checkout's set is the embedded one.
-		if n := e.Name(); strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
+		if n := e.Name(); !hidden && (strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_")) {
 			if e.IsDir() {
 				return fs.SkipDir
 			}
@@ -183,19 +227,15 @@ func SandboxFiles(checkout string) (map[string][]byte, error) {
 		if !e.Type().IsRegular() {
 			return fmt.Errorf("%s: %w", rel, nofollow.ErrNotPlain)
 		}
-		if len(files)-1 >= maxSkillFiles {
-			return fmt.Errorf("%s has more than %d files", assets.SandboxSkillsPath, maxSkillFiles)
+		if lim.files--; lim.files < 0 {
+			return fmt.Errorf("%s has more than %d files", root, maxSkillFiles)
 		}
-		b, _, err := d.ReadFileMax(rel, int64(maxSkillBytes-total))
+		b, _, err := d.ReadFileMax(rel, int64(lim.bytes))
 		if err != nil {
 			return err
 		}
-		total += len(b)
-		files[managedPath(strings.TrimPrefix(rel, assets.SandboxSkillsPath+"/"))] = b
+		lim.bytes -= len(b)
+		files[place(strings.TrimPrefix(rel, root+"/"))] = b
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return files, nil
 }

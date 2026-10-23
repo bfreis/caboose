@@ -115,6 +115,9 @@ func (a *App) compatRefusal(n int, ok bool) error {
 // warned about when it runs an older image than the tag, or the tag's image
 // is stale.
 func (a *App) checkExisting() error {
+	if err := a.checkTrustExisting(); err != nil {
+		return err
+	}
 	if err := a.compatRefusal(a.containerCompat()); err != nil {
 		return err
 	}
@@ -313,7 +316,8 @@ func (a *App) instructionFacts() datadir.Facts {
 		Version:      version.Get().Version,
 		Checkout:     a.Checkout,
 		Roots:        a.visibleRoots(),
-		HostExec:     a.Cfg.HostExec,
+		// What the link offers: never under any trust but fallible.
+		HostExec: a.Cfg.HostExec && a.Cfg.Trust == config.TrustFallible,
 	}
 	if labels, err := a.box().Labels(); err == nil {
 		if v := labels[assets.LabelIsolation]; v != "" {
@@ -393,6 +397,9 @@ func (a *App) createContainer(mayBuild bool) error {
 		return a.runArgsError(err)
 	}
 	if err := a.checkRuntime(); err != nil {
+		return err
+	}
+	if err := a.checkTrust(); err != nil {
 		return err
 	}
 	egress, err := a.egressOn()
@@ -488,6 +495,10 @@ func (a *App) createContainer(mayBuild bool) error {
 	}
 	// Under vm, its outbound connections made from this machine (egress.go).
 	withEgress(&spec, egress)
+	spec.Labels = append(spec.Labels, assets.LabelTrust+"="+trustLabel(c), assets.LabelNetwork+"="+a.networkLabel())
+	// Claude Code loads caboose's mod from the managed directory, under
+	// every isolation (plugindirs.go).
+	withPluginDirs(&spec)
 	// The user's own arguments, last, so they are checked against all of
 	// caboose's, and labelled, so a change to them shows (runargs.go).
 	if !a.isVM() {
@@ -867,6 +878,8 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		a.warnIfRunArgsDrifted()
 		a.warnIfIsolationDrifted()
 		a.warnIfEgressDrifted()
+		a.warnIfTrustDrifted()
+		a.warnIfPluginDirsDrifted()
 		a.warnIfHostnameDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {

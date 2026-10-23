@@ -1,6 +1,6 @@
 ---
 name: caboose-propose
-description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
+description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
 ---
 
 # Proposing a change to the sandbox
@@ -32,7 +32,7 @@ launch and after every `apply`. It is the authority, not these instructions:
 NAME: lowercase letters, digits, `-` and `_`, starting with a letter or
 digit, at most 32. One request, one proposal. A proposal holds a `title`
 (one line, at most 100 characters), a `reason` (a sentence or two), and the
-image's part for its kind, one root, or both.
+image's part for its kind, one root, or both; or one alias, alone.
 
 @@IF image=apko@@
 ### apko image: packages
@@ -150,6 +150,38 @@ moves that root to `/work/NAME`: every project path changes, and Claude
 Code's per-project state (memory, resumable conversations) stays under the
 old path. Tell the user before they apply it.
 
+### An alias: a host command sessions may run
+
+```toml
+title = "Keep the host awake during long builds"
+reason = "the overnight build stops when the Mac sleeps."
+
+[alias.awake]
+command = ["/usr/bin/caffeinate", "-i"]   # absolute program path, then fixed arguments
+description = "keep the host awake until interrupted"
+policy = "ask"                            # "ask" or "allow"; absent is "allow"
+# timeout = "2h"                          # a Go duration; absent or "0": none
+# cwd = "~/src/proj"                      # absent: a fresh empty directory
+
+# [alias.awake.params]                    # enum parameters: "{mode}" in command
+# mode = ["idle", "disk"]                 # is replaced by the value asked for
+```
+
+An alias is alone in its proposal. Its command is a program on the host,
+run with exactly that argv (each `{KEY}` element replaced by a listed
+value), never through a shell. The host refuses, before the user sees it:
+a command that is a shell or runs what its arguments say (`sh`, `bash`,
+`env`, `python`, `node`, `osascript`, `open`, `xargs`, `make`, `ssh`, ...),
+one that does not exist there, one in a root, in anything a sandbox can
+write, in a hidden directory of the home or in caboose's state; a `cwd` in
+caboose's state or a hidden directory of the home; and anything beyond
+these keys. So propose the program itself with its fixed flags, not a
+script in a project. `caboose-agent aliases` lists the aliases there are
+(names and parameters, never commands); `caboose-agent run NAME
+[KEY=VALUE...]` runs one once applied, no restart needed. It exits 75 with
+`pending #N` when the host asks the user first: note the number and carry
+on.
+
 ### Everywhere
 
 Plain text only: no control characters (escape sequences) and no invisible
@@ -182,7 +214,8 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | the host's Docker engine inside | `engine_socket = true` in `[container.NAME]` or `[gvisor.NAME]`: root-equivalent on the host |
 | VM size | `cpus`, `memory` in `[vm.NAME]` |
 | VM outbound proxy | `egress`, `egress_ports`, `egress_allow` in `[vm.NAME]` (the last two apply without a restart) |
-| forwarded ports, URL opening, host commands | `forward_ports`, `open_urls`, `host_exec` in `[link]` (within seconds) |
+| forwarded ports, URL opening, any host command | `forward_ports`, `open_urls`, `host_exec` in `[link]` (within seconds) |
+| a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |
 | what of a root the sandbox may write | `writable` in its `[roots]` entry, or `caboose setup roots`; a restart |

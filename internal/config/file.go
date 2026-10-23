@@ -73,7 +73,7 @@ func (t valueType) String() string {
 // tables are the keys of config.toml's plain tables, by table, "" for the
 // top level. [roots] and the isolation profiles are read apart.
 var tables = map[string]map[string]valueType{
-	"": {"format": typeInt, "isolation": typeString, "image": typeString},
+	"": {"format": typeInt, "isolation": typeString, "image": typeString, "trust": typeString},
 	"build": {
 		"auto_build": typeBool,
 	},
@@ -90,6 +90,8 @@ var tables = map[string]map[string]valueType{
 		"open_urls":     typeString,
 		"ssh_agent":     typeString,
 		"host_exec":     typeBool,
+		// Origins, scheme://host[:port], that may be opened without asking.
+		"open_urls_allow": typeStrings,
 	},
 }
 
@@ -105,6 +107,7 @@ var profileKeys = map[string]map[string]valueType{
 		"egress":       typeBool,
 		"egress_ports": typePorts,
 		"egress_allow": typeStrings,
+		"egress_deny":  typeStrings,
 	},
 }
 
@@ -146,6 +149,9 @@ type File struct {
 	ImageProfiles []string
 	// Format is the file's format key, 0 when it has none.
 	Format int
+	// Aliases are the [alias.NAME] tables, checked; Cwd is as written (a
+	// ~ is expanded when the Config is made).
+	Aliases map[string]Alias
 }
 
 // FileRoot is a [roots] entry as written: the host path, ~ and all, the
@@ -205,6 +211,12 @@ func ParseFile(path string, data []byte) (*File, error) {
 				return nil, fail("%v", err)
 			}
 			f.Roots = roots
+		case k == aliasKey:
+			aliases, err := f.readAliases(v)
+			if err != nil {
+				return nil, fail("%v", err)
+			}
+			f.Aliases = aliases
 		case slices.Contains(Kinds, k):
 			names, err := f.readProfiles(k, v)
 			if err != nil {
@@ -230,6 +242,9 @@ func ParseFile(path string, data []byte) (*File, error) {
 				return nil, fail("%v", err)
 			}
 		}
+	}
+	if err := f.checkPolicyKeys(); err != nil {
+		return nil, fail("%v", err)
 	}
 	if v, ok := f.Vals["format"]; ok {
 		if n := v.(int64); n != FileFormat {
@@ -356,7 +371,7 @@ func unknownKey(table, key string) string {
 				known = append(known, "["+k+"]")
 			}
 		}
-		known = append(known, "["+rootsKey+"]")
+		known = append(known, "["+rootsKey+"]", "["+aliasKey+".NAME]")
 		for _, k := range slices.Concat(Kinds, ImageKinds) {
 			known = append(known, "["+k+".NAME]")
 		}
@@ -365,6 +380,9 @@ func unknownKey(table, key string) string {
 		if keys == nil {
 			kind, _, _ := strings.Cut(table, ".")
 			keys = kindKeys(kind)
+			if kind == aliasKey {
+				keys = aliasKeys
+			}
 		}
 		for k := range keys {
 			known = append(known, k)
@@ -473,6 +491,16 @@ format = 1    # this file's structure
 # packages.
 #image = "apko.default"
 
+# How far the sandbox is trusted: "fallible" (an agent that may make
+# mistakes: the default) or "hostile" (assume it is steered by someone
+# else). "hostile" needs a vm isolation profile (a launch refuses any other),
+# gives the VM no network of its own, so that only the outbound proxy
+# leaves it, and cannot have egress = false. It ignores host_exec, asks for
+# every URL, and asks before any outbound connection egress_allow does not
+# name; egress_allow must name the hosts Claude Code needs (a launch says
+# which).
+#trust = "fallible"
+
 # The directories holding your projects, each mounted into the sandbox at
 # /work/<name>, or at a path of its own in the long form. By default
 # dev = "~/dev". A sole root may take path = "/work" itself. Every root is
@@ -529,6 +557,31 @@ format = 1    # this file's structure
 # anything here. For an environment whose point is a separate login and
 # tools, not containment.
 #host_exec = false
+# Origins the sandbox may open without asking when open_urls = "ask":
+# "https://host" or "http://host", with an optional ":port", lowercase,
+# nothing after it. Ignored under trust = "hostile", where every URL asks,
+# and with open_urls = "off".
+#open_urls_allow = ["https://github.com"]
+# A command on this machine that sessions can ask for by name
+# (caboose-agent aliases lists them, caboose-agent run NAME runs one):
+# argv and enum parameters only, no shell. One whose command resolves
+# within a path the sandbox can write is refused. There are none by
+# default.
+#[alias.caffeinate]
+# The program's absolute path, then its arguments; an element that is
+# exactly {KEY} for a parameter below takes the value given.
+#command = ["/usr/bin/caffeinate", "-i"]
+# What the sandbox is told of it (not the command), at most 200 bytes.
+#description = "keep the Mac awake while a turn runs"
+# A duration, "0" or absent for none.
+#timeout = "0"
+# A directory on this machine; by default a fresh empty one.
+#cwd = "~/scratch"
+# "allow" (the default), "ask" or "deny".
+#policy = "allow"
+# Enum parameters: values of letters, digits, . _ and -.
+#[alias.caffeinate.params]
+#mode = ["i", "d"]
 
 # A plain container, under docker's own runtime: it shares this machine's
 # kernel.
@@ -552,16 +605,22 @@ format = 1    # this file's structure
 #cpus = 4
 #memory = "8G"
 # Make the sandbox's outbound connections through the link's proxy from
-# this machine, so that a VPN's routes and DNS apply as they do here. The
-# VM keeps its own NAT beside it, which a program that ignores the proxy
-# settings uses, unrestricted; false uses the NAT alone.
+# this machine, so that a VPN's routes and DNS apply as they do here. Under
+# trust = "fallible" the VM keeps its own NAT beside it, which a program
+# that ignores the proxy settings uses, unrestricted; false uses the NAT
+# alone.
 #egress = true
 # The ports the sandbox may reach that way: ports and "a-b" ranges.
 #egress_ports = [22, 80, 443]
-# Private addresses it may reach anyway (loopback, private, link-local,
-# tailnet and multicast ones are refused otherwise): names, "*.suffix"
-# patterns, CIDRs or addresses.
+# What it may reach without asking, under any trust: names, "*.suffix"
+# patterns, CIDRs or addresses. Without one, private, tailnet and
+# multicast addresses ask first, and loopback and link-local addresses
+# and this machine's own are refused unless an address here, or a CIDR
+# within their range, names them (a name never reaches them).
 #egress_allow = ["git.corp.example", "*.internal.example", "10.20.0.0/16"]
+# Names, patterns and CIDRs it may never reach that way: refused whatever
+# egress_allow, trust or an answer to a request says.
+#egress_deny = ["*.ads.example"]
 
 # The base built from caboose's packages, with apko: no Dockerfile. The
 # packages are pinned in apko-<name>.lock.json next to this file, which

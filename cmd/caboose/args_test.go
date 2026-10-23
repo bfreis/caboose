@@ -155,6 +155,16 @@ func TestCommandUsage(t *testing.T) {
 	}
 }
 
+// requests' help names every kind of request the sandbox can file.
+func TestRequestsHelpNamesEveryKind(t *testing.T) {
+	u := strings.Join(strings.Fields(CommandUsage("requests")), " ")
+	for _, s := range []string{"open a URL", "outbound proxy", "run an alias"} {
+		if !strings.Contains(u, s) {
+			t.Errorf("requests' help does not say %q:\n%s", s, u)
+		}
+	}
+}
+
 // The short help leaves the hidden commands out; the full one lists them,
 // and each has its own help.
 func TestHiddenCommands(t *testing.T) {
@@ -214,5 +224,31 @@ func TestDaemonSkipsTheEnvironment(t *testing.T) {
 	}
 	if code, _, errs := runIt("daemon", "nope"); code == 0 || !strings.Contains(errs, "usage") {
 		t.Errorf("daemon nope: exit %d, %q", code, errs)
+	}
+}
+
+// The request broker's commands: their own arguments reach the launcher,
+// permissions takes none, and each has its help.
+func TestRequestCommands(t *testing.T) {
+	for _, argv := range [][]string{
+		{"requests"}, {"requests", "--all"}, {"requests", "approve", "3", "--for", "8h"}, {"requests", "approve", "3", "--always"},
+		{"-e", "x", "grants", "revoke", "g1"}, {"permissions"},
+	} {
+		inv, err := Parse(argv)
+		if err != nil || inv.Command != argv[len(argv)-len(inv.Args)-1] || len(inv.Args) != len(argv)-1-map[bool]int{true: 2, false: 0}[inv.Env != ""] {
+			t.Errorf("%q: %+v, %v", argv, inv, err)
+		}
+	}
+	if _, err := Parse([]string{"permissions", "now"}); err == nil {
+		t.Error("permissions took an argument")
+	}
+	for _, name := range []string{"requests", "grants", "permissions"} {
+		inv, err := Parse([]string{name, "--help"})
+		if err != nil || inv.Command != "help" || len(inv.Args) != 1 || inv.Args[0] != name {
+			t.Errorf("%s --help: %+v, %v", name, inv, err)
+		}
+		if u := CommandUsage(name); !strings.Contains(u, "Usage: caboose [FLAGS] "+name) {
+			t.Errorf("%s:\n%s", name, u)
+		}
 	}
 }

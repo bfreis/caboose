@@ -1,6 +1,6 @@
 ---
 name: caboose-troubleshoot
-description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac. Explains causes per isolation and what the user runs on the host.
+description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac, or caboose's Claude Code mod or its request tools (caboose_request, caboose-agent request, exit 75 or 77) not working. Explains causes per isolation and what the user runs on the host.
 ---
 
 # When the sandbox misbehaves
@@ -108,11 +108,12 @@ body:
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 403 | a port outside `egress_ports` (default 22, 80, 443), or an address that is not public (private, LAN, tailnet, loopback, link-local, the Mac's own) | the user adds the name, CIDR or port to `egress_allow` / `egress_ports` in `[vm.NAME]`; loopback, link-local and the Mac's own addresses pass only for an explicit address or CIDR |
+| 403 | a port outside `egress_ports` (default 22, 80, 443), a name `egress_deny` holds, or an address that is not public (private, LAN, tailnet, loopback, link-local, the Mac's own) | the user adds the name, CIDR or port to `egress_allow` / `egress_ports` in `[vm.NAME]`; loopback, link-local and the Mac's own addresses pass only for an explicit address or CIDR |
+| 403 with `pending #N` | the host's policy asks the user first: a private address `egress_allow` does not name, or, under `trust = "hostile"`, any host it does not name. The request is filed on the host | do not retry in a loop: note the number, carry on without the connection, and tell the user to run `caboose requests` on the host, which shows what you asked and answers it (`caboose requests approve N`, or `--for 8h`, or `deny N`); once they allow it the next try goes through. Unanswered, it expires as denied after a day |
 | 502 | the name does not resolve on the Mac, or the host does not answer | check the name; the Mac's VPN |
 | 503 | too many connections, or the link failed mid-request | retry; see the host link above |
 
-`egress_ports` and `egress_allow` apply within seconds; `egress` itself
+`egress_ports`, `egress_allow` and `egress_deny` apply within seconds; `egress` itself
 takes `caboose@@CABOOSE_ENV_FLAG@@ restart`.
 
 ssh goes through the proxy (`ProxyCommand /run/caboose/agent connect %h %p`,
@@ -211,6 +212,32 @@ What the user runs on the host:
 The link also warns by notification when the VM holds over half of
 `kern.maxvnodes`, and again over 80%; `link.log` has it.
 @@END@@
+
+## Requests and caboose's Claude Code mod
+
+`caboose-agent request` and `caboose-agent requests` (and the mod's tools
+`caboose_request` and `caboose_requests`, which run them) ask the host through
+the link. Their exit statuses: 0 allowed, 75 pending (`pending #N`: waits for
+a person on the host, `caboose@@CABOOSE_ENV_FLAG@@ requests` there), 77
+denied, 1 not asked, 2 a usage error. What they print for 1:
+
+- "no host is linked": the link is down, see above.
+- "the host files no requests for this sandbox": the host's caboose is older
+  than this sandbox's, or has no broker; `caboose@@CABOOSE_ENV_FLAG@@ doctor`
+  and `status` on the host say which.
+- "too many requests" or "too many waits": the host rations them; wait a
+  moment, and do not poll in a loop.
+
+The mod is loaded by Claude Code from `/etc/claude-code/mods/caboose`, which
+`CLAUDE_CODE_PLUGIN_DIRS` names in the sandbox's environment. With no
+`caboose_request` tool, check `echo $CLAUDE_CODE_PLUGIN_DIRS` in a shell the
+session starts: a settings file's `env` block that sets the same variable
+replaces the value and drops the mod (put the folder first in its list, or
+remove the entry), and a sandbox created without the variable needs
+`caboose@@CABOOSE_ENV_FLAG@@ restart`, which `doctor` says. `caboose
+permissions` on the host counts the sessions without the mod. The request
+tools work without the mod, through `caboose-agent`; only the announcement of
+a decision is lost, and no decision depends on it.
 
 ## Stalls
 

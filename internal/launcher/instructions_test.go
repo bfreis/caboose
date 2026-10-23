@@ -159,6 +159,25 @@ func TestInstructionSizeCheck(t *testing.T) {
 	}
 }
 
+// embeddedMods is how many files of the embedded set are mods.
+func embeddedMods(t *testing.T) int {
+	t.Helper()
+	emb, err := EmbeddedSandboxFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for k := range emb {
+		if strings.HasPrefix(k, "mods/") {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("the embedded set has no mod")
+	}
+	return n
+}
+
 func TestSandboxFilesSource(t *testing.T) {
 	emb, err := EmbeddedSandboxFiles()
 	if err != nil {
@@ -175,13 +194,14 @@ func TestSandboxFilesSource(t *testing.T) {
 		t.Errorf("checkout without skills: %d files, %q, %v", len(got), got["CLAUDE.md"], err)
 	}
 
-	// With skills: theirs, dotfiles skipped, the embedded ones not mixed in.
+	// With skills: theirs, dotfiles skipped, the embedded ones not mixed in
+	// (the mods are the embedded ones still).
 	writeFile(t, skillOf(co), "mine\n")
 	writeFile(t, filepath.Join(co, assets.SandboxSkillsPath, "one", "ref", "x.txt"), "x\n")
 	writeFile(t, filepath.Join(co, assets.SandboxSkillsPath, ".git", "y"), "y\n")
 	writeFile(t, filepath.Join(co, assets.SandboxSkillsPath, "one", ".hidden"), "z\n")
 	got, err = SandboxFiles(co)
-	if err != nil || len(got) != 3 || string(got[".claude/skills/one/SKILL.md"]) != "mine\n" || string(got[".claude/skills/one/ref/x.txt"]) != "x\n" {
+	if err != nil || len(got) != 3+embeddedMods(t) || string(got[".claude/skills/one/SKILL.md"]) != "mine\n" || string(got[".claude/skills/one/ref/x.txt"]) != "x\n" {
 		t.Errorf("checkout skills: %v, %v", got, err)
 	}
 }
@@ -306,8 +326,8 @@ func TestSyncWithoutCheckout(t *testing.T) {
 		}
 		return nil
 	})
-	if n != len(emb)-1 {
-		t.Errorf("%d skill files installed, want %d", n, len(emb)-1)
+	if want := len(emb) - 1 - embeddedMods(t); n != want {
+		t.Errorf("%d skill files installed, want %d", n, want)
 	}
 	// A second launch changes nothing.
 	var errb bytes.Buffer
@@ -325,6 +345,18 @@ func TestInstructionFacts(t *testing.T) {
 	f := a.instructionFacts()
 	if f.Env != config.DefaultEnv || f.Isolation != "gvisor" || f.Profile != "gvisor.main" || f.Image != "apko" || f.ImageProfile != "apko.default" || f.Version == "" {
 		t.Errorf("configured: %+v", f)
+	}
+	// Host commands are said to be on only where the link offers them:
+	// host_exec on, and trust fallible.
+	for _, c := range []struct {
+		on    bool
+		trust string
+		want  bool
+	}{{true, config.TrustFallible, true}, {true, config.TrustHostile, false}, {false, config.TrustFallible, false}} {
+		a.Cfg.HostExec, a.Cfg.Trust = c.on, c.trust
+		if got := a.instructionFacts().HostExec; got != c.want {
+			t.Errorf("host_exec %v, trust %s: HostExec %v", c.on, c.trust, got)
+		}
 	}
 
 	b := newBoxApp(t, isolationVM, runningBox(isolationVM))
@@ -405,7 +437,7 @@ func TestSandboxFilesLimits(t *testing.T) {
 	}
 	co := makeCheckout(t, ModulePath)
 	skills(co, maxSkillFiles)
-	if got, err := SandboxFiles(co); err != nil || len(got) != maxSkillFiles+1 {
+	if got, err := SandboxFiles(co); err != nil || len(got) != maxSkillFiles+1+embeddedMods(t) {
 		t.Errorf("exactly %d files: %d, %v", maxSkillFiles, len(got), err)
 	}
 	co = makeCheckout(t, ModulePath)
@@ -470,7 +502,7 @@ func TestSandboxFilesLimits(t *testing.T) {
 	writeFile(t, skillOf(co), "s\n")
 	writeFile(t, filepath.Join(co, assets.SandboxSkillsPath, "one", "_draft.md"), "d\n")
 	writeFile(t, filepath.Join(co, assets.SandboxSkillsPath, "_wip", "SKILL.md"), "d\n")
-	if got, err := SandboxFiles(co); err != nil || len(got) != 2 {
+	if got, err := SandboxFiles(co); err != nil || len(got) != 2+embeddedMods(t) {
 		t.Errorf("underscore names: %v, %v", got, err)
 	}
 
@@ -501,5 +533,123 @@ func TestSandboxFilesBadClaudeMD(t *testing.T) {
 	os.Remove(p)
 	if got, err := SandboxFiles(co); err != nil || len(got[".claude/skills/one/SKILL.md"]) == 0 || len(got["CLAUDE.md"]) == 0 {
 		t.Errorf("an absent CLAUDE.md: %v", err)
+	}
+}
+
+// The mod is in the embedded set, whole and verbatim: the manifest in its
+// dot directory too, and no placeholder anywhere in it.
+func TestEmbeddedModIsWholeAndPlain(t *testing.T) {
+	emb, err := EmbeddedSandboxFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"mods/caboose/.claude-plugin/plugin.json", "mods/caboose/hooks/hooks.json", "mods/caboose/hooks/register.ts"} {
+		if len(emb[want]) == 0 {
+			t.Errorf("%s is not in the embedded set", want)
+		}
+	}
+	for name, b := range emb {
+		if strings.HasPrefix(name, "mods/") && strings.Contains(string(b), "@@") {
+			t.Errorf("%s holds @@: a mod is installed verbatim", name)
+		}
+	}
+	a, _, _ := syncApp(t, "")
+	expanded, err := datadir.ExpandTree(emb, a.instructionFacts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range emb {
+		if strings.HasPrefix(name, "mods/") && !bytes.Equal(expanded[name], b) {
+			t.Errorf("%s was changed on the way", name)
+		}
+	}
+}
+
+func TestSandboxFilesReadsTheCheckoutsMods(t *testing.T) {
+	co := makeCheckout(t, ModulePath)
+	mod := filepath.Join(co, assets.SandboxModsPath, "caboose")
+	writeFile(t, filepath.Join(mod, ".claude-plugin", "plugin.json"), "mine\n")
+	writeFile(t, filepath.Join(mod, "hooks", "register.ts"), "reg\n")
+	writeFile(t, filepath.Join(mod, "hooks", ".hidden"), "h\n")
+	got, err := SandboxFiles(co)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got["mods/caboose/.claude-plugin/plugin.json"]) != "mine\n" || string(got["mods/caboose/hooks/register.ts"]) != "reg\n" ||
+		string(got["mods/caboose/hooks/.hidden"]) != "h\n" {
+		t.Errorf("the checkout's mod: %v", got)
+	}
+	if _, ok := got["mods/caboose/hooks/hooks.json"]; ok {
+		t.Error("the embedded mod was mixed into the checkout's")
+	}
+	// The embedded skills stay: no sandbox/skills in this checkout.
+	if len(got["CLAUDE.md"]) == 0 {
+		t.Error("no CLAUDE.md")
+	}
+}
+
+func TestSandboxFilesRefusesUntrustworthyMods(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "secret")
+	writeFile(t, secret, "secret\n")
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "x.ts"), "outside\n")
+	for name, plant := range map[string]func(co string){
+		"symlinked file in the dot directory": func(co string) {
+			dir := filepath.Join(co, assets.SandboxModsPath, "caboose", ".claude-plugin")
+			os.MkdirAll(dir, 0o755)
+			os.Symlink(secret, filepath.Join(dir, "plugin.json"))
+		},
+		"symlinked directory": func(co string) {
+			os.MkdirAll(filepath.Join(co, assets.SandboxModsPath, "caboose"), 0o755)
+			os.Symlink(outside, filepath.Join(co, assets.SandboxModsPath, "caboose", "hooks"))
+		},
+		"symlinked mods dir": func(co string) {
+			os.MkdirAll(filepath.Join(co, "sandbox"), 0o755)
+			os.Symlink(outside, filepath.Join(co, assets.SandboxModsPath))
+		},
+		"too deep": func(co string) {
+			writeFile(t, filepath.Join(co, assets.SandboxModsPath, "a", "b", "c", "d", "e.ts"), "x")
+		},
+		"too many files with the skills": func(co string) {
+			writeFile(t, skillOf(co), "s\n")
+			for i := 0; i < maxSkillFiles; i++ {
+				writeFile(t, filepath.Join(co, assets.SandboxModsPath, "caboose", strings.Repeat("a", i+1)+".ts"), "x")
+			}
+		},
+		"too large": func(co string) {
+			writeFile(t, filepath.Join(co, assets.SandboxModsPath, "caboose", "big.ts"), strings.Repeat("x", maxSkillBytes+1))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			co := makeCheckout(t, ModulePath)
+			plant(co)
+			if got, err := SandboxFiles(co); err == nil {
+				t.Errorf("used it: %d files", len(got))
+			}
+		})
+	}
+}
+
+// What sync installs from the checkout includes the mod, and a mod file
+// that disappeared from the checkout disappears from the data dir.
+func TestSyncInstallsAndPrunesMods(t *testing.T) {
+	co := makeCheckout(t, ModulePath)
+	mod := filepath.Join(co, assets.SandboxModsPath, "caboose")
+	writeFile(t, filepath.Join(mod, ".claude-plugin", "plugin.json"), "{}\n")
+	writeFile(t, filepath.Join(mod, "hooks", "register.ts"), "reg\n")
+	writeFile(t, filepath.Join(mod, "hooks", "gone.ts"), "gone\n")
+	a, data, _ := syncApp(t, co)
+	if err := a.syncSandboxInstructions(); err != nil {
+		t.Fatal(err)
+	}
+	if installed(t, data, "mods/caboose/hooks/gone.ts") != "gone\n" || installed(t, data, "mods/caboose/.claude-plugin/plugin.json") != "{}\n" {
+		t.Fatal("the mod was not installed")
+	}
+	os.Remove(filepath.Join(mod, "hooks", "gone.ts"))
+	if err := a.syncSandboxInstructions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(data, datadir.ManagedDir, "mods", "caboose", "hooks", "gone.ts")); err == nil {
+		t.Error("a stale mod file is still installed")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +35,8 @@ const SocketPath = "/tmp/caboose-agent.sock"
 // of ports and forwards. It never reaches the host.
 const OpStatus = "status"
 
-// requestTimeout bounds a request to the host.
+// requestTimeout bounds a request to the host; opening a URL can wait on
+// someone answering a dialog.
 const requestTimeout = 2 * time.Minute
 
 // Link is the running link.
@@ -66,6 +68,10 @@ type Link struct {
 	// hostExec is whether the host's hello offered OpHostExec, and
 	// helloed is closed once that hello came.
 	hostExec  bool
+	aliasesOn bool // the hello offered OpAliasRun and OpAliases
+	broker    bool // the hello offered OpBrokerRequest and OpBrokerRequests
+	presence  *presence
+	scanEvery time.Duration
 	helloed   chan struct{}
 	helloOnce sync.Once
 }
@@ -75,6 +81,13 @@ type Config struct {
 	Socket   string        // SocketPath, or another for tests
 	ProcRoot string        // "/proc", or a fixture
 	Interval time.Duration // between port scans
+	// Now is the clock presence keeps (time.Now when nil); ModsEvery the
+	// least time between two reports of the sessions to the host (5
+	// seconds when 0), and ScanEvery how often /proc is read for them
+	// (also 5 seconds).
+	Now       func() time.Time
+	ModsEvery time.Duration
+	ScanEvery time.Duration
 }
 
 // RunLink runs the link over in and out until the host goes away.
@@ -89,6 +102,8 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 		waiting: map[uint64]chan *agentproto.Stream{},
 		helloed: make(chan struct{}),
 	}
+	l.presence = newPresence(cfg.ProcRoot, cfg.Now, cfg.ModsEvery)
+	l.scanEvery = cmp.Or(cfg.ScanEvery, scanEvery)
 	l.sess.OnRefused(l.refused)
 	defer l.sess.Close()
 	// The socket accepts before the hello goes out, so a command run once
@@ -114,6 +129,7 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 	go l.watchPorts()
 	go l.acceptStreams()
 	go l.touchChanged()
+	go l.watchMods()
 	l.readControl()
 	if err := l.sess.Err(); err != nil && !errors.Is(err, agentproto.ErrClosed) {
 		return err
@@ -155,7 +171,7 @@ func (l *Link) readControl() {
 				l.serveEgress(m.Egress)
 			}
 			l.mu.Lock()
-			l.hostExec, l.roots = m.HostExec, m.Roots
+			l.hostExec, l.roots, l.aliasesOn, l.broker = m.HostExec, m.Roots, m.AliasesOn, m.Broker
 			l.mu.Unlock()
 			l.helloOnce.Do(func() { close(l.helloed) })
 		case agentproto.TypeResponse:
@@ -181,6 +197,12 @@ func (l *Link) readControl() {
 
 // request sends m to the host and waits for its answer.
 func (l *Link) request(m agentproto.Message) agentproto.Message {
+	return l.requestCtx(context.Background(), m, requestTimeout)
+}
+
+// requestCtx sends m to the host and waits for its answer, until ctx ends
+// (the client went away) or timeout passes.
+func (l *Link) requestCtx(ctx context.Context, m agentproto.Message, timeout time.Duration) agentproto.Message {
 	ch := make(chan agentproto.Message, 1)
 	l.mu.Lock()
 	l.nextID++
@@ -202,7 +224,9 @@ func (l *Link) request(m agentproto.Message) agentproto.Message {
 		return r
 	case <-l.sess.Done():
 		return fail("the host link went down")
-	case <-time.After(requestTimeout):
+	case <-ctx.Done():
+		return fail("the client went away")
+	case <-time.After(timeout):
 		return fail("the host did not answer")
 	}
 }
@@ -231,11 +255,15 @@ func (l *Link) serveClient(c net.Conn) {
 	var m agentproto.Message
 	var resp agentproto.Message
 	err = json.Unmarshal(line, &m)
-	if err == nil && m.Op == agentproto.OpHostExec {
+	if err == nil && (m.Op == agentproto.OpHostExec || m.Op == agentproto.OpAliasRun) {
 		// The rest of the connection is the command's: what the reader
 		// took past the line goes first.
 		pre, _ := br.Peek(br.Buffered())
-		l.hostExecClient(c, pre)
+		if m.Op == agentproto.OpAliasRun {
+			l.aliasRunClient(c, pre, m.Exec)
+		} else {
+			l.hostExecClient(c, pre)
+		}
 		return
 	}
 	if err != nil {
@@ -245,6 +273,10 @@ func (l *Link) serveClient(c net.Conn) {
 		resp = agentproto.Message{Type: agentproto.TypeResponse, OK: true,
 			Ports: slices.Clone(l.ports), Forwards: slices.Clone(l.forwards)}
 		l.mu.Unlock()
+	} else if m.Op == agentproto.OpAliases {
+		resp = l.aliasesRequest()
+	} else if m.Op == agentproto.OpBrokerRequest || m.Op == agentproto.OpBrokerRequests {
+		resp = l.brokerClient(c, m)
 	} else {
 		resp = l.request(agentproto.Message{Op: m.Op, URL: m.URL, Title: m.Title, Text: m.Text})
 	}
@@ -459,7 +491,7 @@ func (l *Link) openStream(m agentproto.Message, wait time.Duration) (*agentproto
 	}
 	if !r.OK {
 		_, f := fail(cmp.Or(r.Error, "refused"))
-		f.Reason = r.Reason
+		f.Reason, f.RequestID = r.Reason, r.RequestID
 		return nil, f
 	}
 	t.Reset(wait)
@@ -512,9 +544,18 @@ func (l *Link) hostExecClient(c net.Conn, pre []byte) {
 		_ = answer(agentproto.Message{Error: agentproto.HostExecOff})
 		return
 	}
-	st, r := l.openStream(agentproto.Message{Op: agentproto.OpHostExec}, hostExecWait)
+	l.execClient(uc, pre, agentproto.Message{Op: agentproto.OpHostExec}, answer)
+}
+
+// execClient asks the host for m, a host exec or an alias run, answers
+// the client on uc with the host's answer, and, when the host took it,
+// splices the rest of uc to the host's stream, where the client speaks
+// the exec protocol to the host. pre is what was read of uc past the
+// request line.
+func (l *Link) execClient(uc *net.UnixConn, pre []byte, m agentproto.Message, answer func(agentproto.Message) error) {
+	st, r := l.openStream(m, hostExecWait)
 	if st == nil {
-		_ = answer(agentproto.Message{Error: r.Error})
+		_ = answer(agentproto.Message{Error: r.Error, Reason: r.Reason, RequestID: r.RequestID})
 		return
 	}
 	if answer(agentproto.Message{OK: true}) != nil {
@@ -526,6 +567,63 @@ func (l *Link) hostExecClient(c net.Conn, pre []byte) {
 		conn = &prefixed{c: uc, r: io.MultiReader(bytes.NewReader(pre), uc)}
 	}
 	agentproto.Splice(st, conn)
+}
+
+// aliasesOff is what an alias run or listing gets from a host that runs
+// no aliases.
+const aliasesOff = "the host runs no aliases for this sandbox: its caboose is older than this sandbox's, " +
+	"or it has no broker to decide them (aliases are [alias.NAME] tables in config.toml, on the host)"
+
+// aliasRunClient answers a client of `caboose-agent run`, as
+// hostExecClient does: the alias x names asked of the host, and its
+// exec protocol spliced through once the host takes it.
+func (l *Link) aliasRunClient(c net.Conn, pre []byte, x *agentproto.ExecRequest) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return
+	}
+	answer := func(m agentproto.Message) error {
+		m.Type = agentproto.TypeResponse
+		b, _ := json.Marshal(m)
+		_, err := c.Write(append(b, '\n'))
+		return err
+	}
+	if !l.waitHello() {
+		_ = answer(agentproto.Message{Error: aliasesOff, Reason: agentproto.AliasUnavailable})
+		return
+	}
+	if x == nil {
+		_ = answer(agentproto.Message{Error: "the request names no alias", Reason: agentproto.AliasDenied})
+		return
+	}
+	req := agentproto.ExecRequest{Argv: x.Argv, Dir: x.Dir}
+	l.execClient(uc, pre, agentproto.Message{Op: agentproto.OpAliasRun, Exec: &req}, answer)
+}
+
+// aliasesRequest asks the host for its aliases.
+func (l *Link) aliasesRequest() agentproto.Message {
+	if !l.waitHello() {
+		return agentproto.Message{Type: agentproto.TypeResponse, Error: aliasesOff, Reason: agentproto.AliasUnavailable}
+	}
+	return l.request(agentproto.Message{Op: agentproto.OpAliases})
+}
+
+// waitHello waits, a while, for the host's hello, and reports whether it
+// offered aliases.
+func (l *Link) waitHello() bool {
+	l.waitHelloed()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.aliasesOn
+}
+
+// waitHelloed waits, a while, for the host's hello.
+func (l *Link) waitHelloed() {
+	select {
+	case <-l.helloed:
+	case <-l.sess.Done():
+	case <-time.After(helloWait):
+	}
 }
 
 // prefixed is a connection whose first bytes were already read, into pre.

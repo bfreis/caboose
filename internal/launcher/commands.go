@@ -224,6 +224,11 @@ func (a *App) renderStatus(d *statusData) error {
 	fmt.Fprintf(out, "version   : %s\n", version.Get().Version)
 	fmt.Fprintf(out, "daemon    : %s\n", d.daemon)
 	fmt.Fprintf(out, "link      : %s\n", d.link)
+	// From the status the daemon already gave: no call of its own, and the
+	// daemon is never started for it.
+	if d.lv.Env != nil && d.lv.Env.Pending > 0 {
+		fmt.Fprintf(out, "requests  : %d pending\n", d.lv.Env.Pending)
+	}
 	if state != "running" {
 		fmt.Fprintf(out, "\nnot running — start it by running caboose in a repo.\n")
 		return nil
@@ -237,6 +242,8 @@ func (a *App) renderStatus(d *statusData) error {
 	a.warnIfRunArgsDrifted()
 	a.warnIfIsolationDrifted()
 	a.warnIfEgressDrifted()
+	a.warnIfTrustDrifted()
+	a.warnIfPluginDirsDrifted()
 	a.warnIfHostnameDrifted()
 
 	fmt.Fprintf(out, "claude    : %s\n", d.claude)

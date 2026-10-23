@@ -97,7 +97,7 @@ const SyncDir = "sync"
 
 // ManagedDir is Claude Code's managed settings directory as the sandbox has
 // it (ManagedTarget), which holds caboose's instructions to every session
-// (ManagedInstructions) and skills (ManagedSkills) and nothing else. Mounted read-only, the one mount
+// (ManagedInstructions), skills (ManagedSkills) and mods (ManagedMods) and nothing else. Mounted read-only, the one mount
 // of the data dir the sandbox cannot write: the instructions are caboose's,
 // and the sandbox's ~/.claude/CLAUDE.md stays the user's own. Created here
 // for the reason SyncDir is.
@@ -112,12 +112,26 @@ const ManagedInstructions = ManagedDir + "/CLAUDE.md"
 // owns everything under it.
 const ManagedSkills = ManagedDir + "/.claude/skills"
 
+// ManagedMods is where caboose's Claude Code mods go, inside ManagedDir:
+// one directory per mod (mods/caboose), each a plugin folder. InstallManaged
+// owns everything under it, as it does under ManagedSkills.
+const ManagedMods = ManagedDir + "/mods"
+
 // ManagedTarget is where the sandbox has ManagedDir: where Claude Code on
 // Linux looks for its managed policy, whose CLAUDE.md it reads before the
 // user's and the project's, and which no setting excludes. A directory
 // mount, so that a file the image has there cannot mix with caboose's (the
 // image check refuses a base that has one at all).
 const ManagedTarget = "/etc/claude-code"
+
+// PluginDirsEnv is the variable Claude Code reads the plugin folders it
+// loads from, and PluginDirs its value in the sandbox: caboose's mod, in
+// the managed directory the sandbox has read-only. A setting that replaces
+// the variable drops the mod.
+const (
+	PluginDirsEnv = "CLAUDE_CODE_PLUGIN_DIRS"
+	PluginDirs    = ManagedTarget + "/mods/caboose"
+)
 
 // Machinery are the directories caboose mounts for itself, beside HomeDir.
 var Machinery = []string{SyncDir, ProposalsDir}

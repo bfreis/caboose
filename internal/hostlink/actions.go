@@ -56,10 +56,7 @@ func (System) Confirm(prompt string) (bool, error) {
 		}
 		return strings.TrimSpace(string(out)) == "Open", nil
 	default:
-		for _, tool := range [][]string{
-			{"zenity", "--question", "--title=caboose", "--text", prompt},
-			{"kdialog", "--title", "caboose", "--yesno", prompt},
-		} {
+		for _, tool := range dialogTools(prompt) {
 			if _, err := exec.LookPath(tool[0]); err != nil {
 				continue
 			}
@@ -75,6 +72,24 @@ func (System) Confirm(prompt string) (bool, error) {
 			}
 		}
 		return false, errors.New(`no dialog tool (zenity, kdialog) to ask with; set open_urls = "allow" or "off"`)
+	}
+}
+
+// markupEscaper escapes what kdialog's rich text reads as markup.
+var markupEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+// dialogTools are the commands that ask prompt on Linux, in the order
+// tried. Both read their text as markup, and what the sandbox wrote in
+// it (a URL holds any of < > & \) must show as it is: zenity is told
+// --no-markup (escaping is not enough there, since it first turns octal
+// escapes such as \074 back into < > &); kdialog's text is rich text
+// only when it looks like some, so it is made rich text (<qt>) and
+// escaped, its lines kept as <br>.
+func dialogTools(prompt string) [][]string {
+	rich := "<qt>" + strings.ReplaceAll(markupEscaper.Replace(prompt), "\n", "<br>") + "</qt>"
+	return [][]string{
+		{"zenity", "--question", "--title=caboose", "--no-markup", "--text", prompt},
+		{"kdialog", "--title", "caboose", "--yesno", rich},
 	}
 }
 

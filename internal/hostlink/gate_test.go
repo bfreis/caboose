@@ -89,7 +89,7 @@ func TestHostExecRefusedOnceDrained(t *testing.T) {
 	if !g.Drain(true) {
 		t.Fatal("drain")
 	}
-	h := &Host{cfg: Config{HostExec: &HostExec{}, Gate: g}}
+	h := &Host{cfg: Config{Trust: "fallible", HostExec: &HostExec{}, Gate: g}}
 	if err := h.hostExec(1); err == nil || !strings.Contains(err.Error(), "being replaced") {
 		t.Fatalf("host exec once drained: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestHostExecRefusedOnceDrained(t *testing.T) {
 	if w.enter() {
 		t.Fatal("admitted while a drain holds")
 	}
-	hw := &Host{cfg: Config{HostExec: &HostExec{}, Gate: w}}
+	hw := &Host{cfg: Config{Trust: "fallible", HostExec: &HostExec{}, Gate: w}}
 	if err := hw.hostExec(1); err == nil || !strings.Contains(err.Error(), "being replaced") {
 		t.Fatalf("host exec while a drain waits: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestHostExecRefusedOnceDrained(t *testing.T) {
 	}
 	// A refusal for another reason leaves the gate as it was.
 	g2 := NewExecGate()
-	h2 := &Host{cfg: Config{HostExec: &HostExec{}, Gate: g2}}
+	h2 := &Host{cfg: Config{Trust: "fallible", HostExec: &HostExec{}, Gate: g2}}
 	h2.waitExecs()
 	if err := h2.hostExec(1); err == nil || g2.InFlight() != 0 || !g2.Drain(true) {
 		t.Fatalf("closing link: %v, in flight %d", err, g2.InFlight())

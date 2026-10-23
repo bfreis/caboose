@@ -266,7 +266,9 @@ func (a *App) builderLink(egress *hostlink.Egress) func(vm.Dir) (io.Closer, erro
 		sess := agentproto.NewSession(conn, conn, true)
 		logger := log.New(a.Stderr, "caboose: the builder's link: ", 0)
 		cfg := hostlink.Config{Ports: hostlink.PortSet{}, OpenURL: hostlink.OpenOff, Actions: builderActions{},
-			Log: logger, Egress: egress, Diagnose: linkdebug.Get().Raw != ""}
+			// caboose's own guest, not a sandbox: it downloads packages and images.
+			Trust: config.TrustFallible,
+			Log:   logger, Egress: egress, Diagnose: linkdebug.Get().Raw != ""}
 		var closing atomic.Bool
 		done := make(chan struct{})
 		go func() {

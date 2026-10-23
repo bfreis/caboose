@@ -481,6 +481,7 @@ func TestEgressRefusals(t *testing.T) {
 		agentproto.EgressBad:     403,
 		agentproto.EgressPort:    403,
 		agentproto.EgressDenied:  403,
+		agentproto.EgressPending: 403,
 		agentproto.EgressResolve: 502,
 		agentproto.EgressDial:    502,
 		agentproto.EgressLimit:   503,

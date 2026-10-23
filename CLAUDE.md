@@ -91,9 +91,10 @@ either: it is a Mac binary beside the launcher, which only `make vmm` on
 a Mac builds and signs (the Makefile refuses anywhere else), so a change
 to it needs that, and a VM restarted with it.
 
-`sandbox/CLAUDE.md` and `sandbox/skills/` are the exception: a launcher run
+`sandbox/CLAUDE.md`, `sandbox/skills/` and `sandbox/mods/` are the exception: a launcher run
 from a checkout expands them on every start into the data dir's
-`claude-code/` (`CLAUDE.md` and `.claude/skills/`), which the sandbox has
+`claude-code/` (`CLAUDE.md`, `.claude/skills/` and `mods/`; the mods verbatim,
+never expanded), which the sandbox has
 read-only as Claude Code's managed `/etc/claude-code`, so the next session
 picks them up with no rebuild and no restart. An installed binary uses the
 copies embedded in it instead. A checkout's set that the launcher
@@ -123,16 +124,19 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `internal/shelltest` | the POSIX shells the tests run the shell scripts with: `/bin/sh` and whichever others the machine has, but never a BusyBox that runs its own applets before `PATH` (Debian's and Ubuntu's), which would bypass the tests' stub tools |
 | `internal/proposal` | what a session proposes for `caboose apply` (`internal/launcher/apply.go`): the TOML format, its checks (an allowlist of parts, no control or bidi characters), reading through `nofollow` from the data dir's `proposals/` (mounted at `~/.caboose-proposals`), and `current/`, what the host tells sessions a proposal is made against |
 | `internal/sandboxcfg` | the sandbox config, `~/.config/caboose/sandbox.toml`: `[[keep]]` entries (what of the home is kept, and mounted) and their sync rules (globs, first match wins, excludes, merge drivers), checked entry by entry; its defaults, format and line-based edits (`caboose sync add/rm`) |
-| `internal/saferm` | the one way to remove a directory or file in code that walks paths (`RemoveAll`, `Remove`, `RemoveRoot`, and `RemoveTree`, which also clears the modes that would stop it): refuses anything not under the root it is given once symlinks are resolved, an empty path, `/`, the home and top-level dirs; tests prove each refusal. A new `os.RemoveAll` of a directory goes through it |
+| `internal/saferm` | the one way to remove a directory or file in code that walks paths (`RemoveAll`, `Remove`, `RemoveRoot`, and `RemoveTree`, which also clears the modes that would stop it, as an alias's fresh directory needs): refuses anything not under the root it is given once symlinks are resolved, an empty path, `/`, the home and top-level dirs; tests prove each refusal. A new `os.RemoveAll` of a directory goes through it |
 | `internal/repocheck` | a check run by `go test ./...`: no `_test.go` names the sandbox's link socket (`/tmp/caboose-agent.sock`, `agent.SocketPath`), which in a sandbox is a live link to the host; `internal/agent`'s tests point its socket at a temp path (`TestMain`), and `agent.Main` refuses the real one in any test binary |
 | `internal/nodocker` | keeps tests off the real docker: `Run`, called from `TestMain` in every package whose tests drive docker (`repocheck.DockerPackages`, which `go test ./...` holds them to), puts a docker first on `PATH` that records each call and fails it, clears `DOCKER_HOST` and `DOCKER_CONTEXT`, and fails the run if anything called it. Such tests fake docker themselves, on a `PATH` of their own or a `docker.CLI` pointed at a stub |
 | `internal/nofollow` | file access under a directory the container can also write (the data dir's `home/`, the sync repo): never through a symlink or a hard link, in any component; tested against swaps |
 | `internal/statesync` | `caboose sync`: the sandbox config's rules applied to the sandbox's home and to what a remote sends, JSON merge by key, and the export/merge/apply cycle in the sync repo (the data dir's `sync/`, mounted at `~/.caboose-sync`), skipping keep entries the sandbox does not mount yet; it runs in the sandbox, files and git alike, and the host only holds the lock (`statesync.Lock`) and reads hints; tested against real git |
 | `internal/syncagent` | the sync's run in the sandbox (`caboose-agent sync run\|status`: git's environment, the budget, askpass relaying git's and ssh's prompts, a lock of its own in the repo's `.git`, and stopping when the host's stdin closes) and its protocol with the host, newline-delimited JSON on the exec's stdin and stdout, every line bounded (`Run` is the host's end, which `internal/launcher/sync.go` drives); tested with the test binary as the agent |
-| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify`, `ports` and `host` to the sandbox on a Unix socket, watches `/proc/net/tcp*` for listening ports, connects the host's streams to them, touches the paths the host says changed (`touch.go`), runs `caboose sync` in the sandbox (`sync`, `askpass`: `internal/syncagent`), and under vm serves the outbound proxy the host's hello offers, an HTTP proxy whose every connection the host dials (`egress.go`; `caboose-agent connect` for ssh, which a vm guest's agent points ssh at as it boots: `sshegress_linux.go`) |
+| `cmd/caboose-agent`, `internal/agent` | the sandbox's end of the host link, a static linux binary in the image: `caboose-agent link` (run by the host through `docker exec -i`) serves `open`, `notify`, `ports`, `host`, `run`, `aliases`, `request` and `requests` (long polls ended by their client going away) to the sandbox on a Unix socket, counts the Claude Code sessions and their mods (`presence.go`), watches `/proc/net/tcp*` for listening ports, connects the host's streams to them, touches the paths the host says changed (`touch.go`), runs `caboose sync` in the sandbox (`sync`, `askpass`: `internal/syncagent`), and under vm serves the outbound proxy the host's hello offers, an HTTP proxy whose every connection the host dials (`egress.go`; `caboose-agent connect` for ssh, which a vm guest's agent points ssh at as it boots: `sshegress_linux.go`) |
 | `internal/agentproto` | the link's protocol: streams multiplexed over one byte stream, with per-stream flow control, control messages on stream 0, and hard limits, since the host reads what the container writes |
-| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`); the daemon runs one per environment as goroutines (`DaemonLinks`, `internal/launcher/daemonlinks.go`; the CLI side is `daemonclient.go`: `startLink` asks it, starting it on demand, and `caboose link`, `status` and `doctor` ask through `App.DaemonDial`'s seam), and a command run with `CABOOSE_DATA_DIR` set keeps a detached `caboose link --background` (`internal/launcher/link.go`), either way one per environment by a lock in the data dir |
-| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `methods.go` is the one table of methods. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
+| `internal/policy` | the pure decision: `Decide(policy, request, now)` for an alias, an outbound connection, a URL, host exec, deny rules first; `GrantKey`, `Effect`; the outbound proxy's address rules (`Denied`, `Allow`, `ParseAllow`), which `hostlink` aliases; no I/O, no clock |
+| `internal/broker` | one environment's policy at work: builds the `policy.Policy` from `config.toml` and the grants, decides crossings, files what asks as requests (deduped, bounded, expiring), turns answers into grants or `config.toml` edits; `grants.json`, `requests.json`, `decisions.log` and `broker.lock` in the env dir, through `nofollow`; serves only while its `Owner` holds link.lock (`LockOwner`). The link opens it as it starts (`internal/launcher/linkbroker.go`, with the URL dialog) and hands `hostlink` its `Link()` |
+| `internal/hostlink` | the host's end: forwards what `forward_ports` allows to `127.0.0.1`, dials a vm guest's outbound connections as `egress_ports` and `egress_allow` say (`egress.go`), opens http(s) URLs as `open_urls` says, shows notifications, relays file changes under the roots into a gVisor container (`relay.go`), runs a session's `caboose-agent host` command here when `host_exec` says so, serving the exec port's protocol the other way round (`hostexec.go`), the aliases `config.toml` names (`alias.go`), files and lists requests for the agent and waits on their decisions (`requests.go`), its decisions through one `Decider`, the environment's `broker.Decider` (`decide.go`; nil decides by the policy `config.toml`'s link settings make, and files nothing); the daemon runs one per environment as goroutines (`DaemonLinks`, `internal/launcher/daemonlinks.go`; the CLI side is `daemonclient.go`: `startLink` asks it, starting it on demand, and `caboose link`, `status` and `doctor` ask through `App.DaemonDial`'s seam), and a command run with `CABOOSE_DATA_DIR` set keeps a detached `caboose link --background` (`internal/launcher/link.go`), either way one per environment by a lock in the data dir |
+| `internal/daemon` | the host daemon (`caboose daemon`, `internal/launcher/daemon.go`): one per daemon directory (`CABOOSE_HOME/daemon`, or `daemon-dev` for a checkout's build), its flock, a 0600 socket in a 0700 dir taking only its own user's connections (peer credentials), `daemon.json`, a capped `daemon.log` (`internal/cappedlog`, shared with `link.log`), the idle exit, and the client's start on demand under `start.lock` with a minimal environment; the protocol is `internal/daemonproto`; `Options.Brokers` serves the request broker's methods; `methods.go` is the one table of methods. Its directory is in no mount (`TestDaemonDirsAreInNoMount`) |
+| `internal/launcher/brokerservice.go`, `requests.go`, `configwriter.go` | the broker on the host: `DaemonLinks` serves the daemon's `requests`, `request`, `answer`, `grants`, `revoke` and `permissions` from the running link's broker (`not_owner` when this daemon runs none for the environment), `caboose requests\|grants\|permissions` ask the daemon for them, and the config writer is the broker's `ConfigWriter` for an "always" answer: `config.EditFile` and `CheckEdit`, the diff shown, written only for the diff's hash |
 | `internal/fswatch` | the host's watcher for that relay: FSEvents through purego on a Mac (the launcher has no cgo), inotify on Linux; only paths, never what happened |
 | `internal/launcher/vm*.go` | the vm isolation in the launcher: finding `caboose-vmm`, the kernel and the builder disk (`~/.caboose/vm/<tag>/<arch>/`, else the checkout's `vm-dist/`), the VM's size, the initramfs from the embedded agent, the `VMHost`, `caboose build` through the builder, and the image store of root disks (`vm/images/`), behind the same `imageStore` as docker's |
 | `internal/backend`'s `VM`, `internal/vm` | the vm isolation as the launcher sees it: a VM's dir (`vm/<name>/`: `vm.sock`, `state.json`, the launcher's record, never shared; `machine.json`, what vmm boots), the control port's client, the clock keeper (a guest's clock stops while the Mac sleeps), the exec helper `Command` runs (the launcher as a hidden `__vm-exec`), the initramfs and the scratch disk's clone; tested against a fake vmm |
@@ -149,7 +153,8 @@ checkout), or a placeholder or `@@IF` key the launcher does not know (rebuild
 | `install.sh` | the one-line install, POSIX sh: the latest release (or `CABOOSE_VERSION`), checked against `checksums.txt`, into the layout `internal/selfupdate` keeps, then `caboose setup`; tested by `install_test.go` against a fake release host |
 | `internal/selfupdate` | updating an install made by `install.sh`: the latest tag from the `releases/latest` redirect, download and checksum, `CABOOSE_HOME/versions/<tag>` and the `~/.local/bin/caboose` link (the only thing of an install outside `CABOOSE_HOME`), `update.json` and its lock; `releasetest` serves fake releases |
 | `.github/workflows` | `ci.yml` (gofmt, vet, test, shellcheck); `release.yml` (goreleaser on a `v*` tag) |
-| `sandbox/CLAUDE.md`, `sandbox/skills/` | caboose's instructions to every session, a template, and its managed skills (`caboose-propose`, `caboose-persist`, `caboose-troubleshoot`), expanded per launch (`internal/datadir/instructions.go`) and installed read-only under `/etc/claude-code` |
+| `sandbox/CLAUDE.md`, `sandbox/skills/` | caboose's instructions to every session, a template, and its managed skills (`caboose-propose`, `caboose-persist`, `caboose-requests`, `caboose-troubleshoot`), expanded per launch (`internal/datadir/instructions.go`) and installed read-only under `/etc/claude-code` |
+| `sandbox/mods/caboose` | caboose's Claude Code mod, a plugin folder (`.claude-plugin/plugin.json`, `hooks/hooks.json`, `hooks/register.ts`): the tools `caboose_request` and `caboose_requests` (they run `caboose-agent request` and `requests`) and the announcement of the host's decisions to the session that asked. Embedded with `all:` (the manifest sits in a dot directory, which `//go:embed` skips), read from a checkout through `nofollow` within the skills' limits, installed verbatim (no placeholders; a test refuses `@@`) into the managed dir's `mods/` and pruned from it like skills; Claude Code loads it from `/etc/claude-code/mods/caboose` through `CLAUDE_CODE_PLUGIN_DIRS`. `make go-test` never compiles `register.ts`: keep it small, and run it once under a real Claude Code after a change |
 | `README.md`, `docs/`, `CONTRIBUTING.md` | a short README (logo in `docs/assets/`, badges, links); the user docs, one file per topic; building and testing caboose |
 | `tests/run.sh` | integration suite; drives the real launcher against a real container |
 | `tests/byo/` | bring-your-own-image suite (`make test-byo`): Debian and Alpine test bases as ref profiles, one shared throwaway data dir, stock images the check must refuse, and a dockerfile profile's dir (`envs/<env>/dockerfile/default`) built from the seed with the off section (`tests/byo/seed` prints it) |
@@ -187,6 +192,18 @@ outside the repo.
   base that passes the check can still fail to build or boot. Prefer a
   builtin over a new requirement (the entrypoint sorts versions in bash
   rather than rely on `sort -V`, which BusyBox may lack).
+- **The mod is code the sandbox runs in Claude Code, and only informs.**
+  `CLAUDE_CODE_PLUGIN_DIRS` (`datadir.PluginDirs`) is one entry in
+  `backend.Spec.Env` under every isolation, labelled
+  (`assets.LabelPluginDirs`, set even when empty; a container without it is
+  told to `caboose restart`), and in `ownedEnv` of `run_args`'s refusals. A
+  settings `env` that replaces it drops the mod, so nothing may depend on the
+  mod: every decision is the host's, the mod only tells a session. Files
+  under `mods/` are never expanded or rewritten; add one to `sandbox/mods`
+  and `Makefile`'s `EMBEDDED` lists it by `find`. The link counts the
+  sandbox's `claude` processes and those with a waiting mod (`/proc`,
+  `internal/agent/presence.go`) and sends `TypeMods`; the count is the
+  sandbox's word and feeds one line of `caboose permissions`, nothing else.
 - **Some state is deliberately ephemeral.** `~/.local/state/claude` (lock
   files) and `~/.claude/daemon.lock` / `~/.claude/sessions/*` (PID-keyed, and
   meaningless once the processes are gone) must stay out of the data dir; the
@@ -218,8 +235,8 @@ outside the repo.
   unless its `writable` is `["."]`, each part a writable mount at its own
   path under the root's, parents first (the vm guest binds in the order
   given, and `planShares` refuses a mount listed before one that holds
-  it). It takes the roots and nothing else: nothing of the sandbox's may
-  reach it. `planShares` refuses a read-only share
+  it). It takes the roots and nothing else: no grant, answer or anything
+  of the sandbox's may reach it. `planShares` refuses a read-only share
   that is or is inside a writable one, and allows one that holds a
   writable one; never loosen the first. The parts are checked for links
   and missing components at `ResolveRoots` and again just before
@@ -285,12 +302,16 @@ outside the repo.
   tree: the sync repo is the data dir's `sync/`, and results are applied file
   by file.
 - **A proposal is the sandbox asking; only the host decides.** What a
-  session may propose is an allowlist -- a Dockerfile section, one root
-  (`internal/proposal`) -- and anything more is refused
+  session may propose is an allowlist -- a Dockerfile section, one root,
+  one alias alone (`internal/proposal`) -- and anything more is refused
   whole, never shown as a question. Never add a proposable part that
   widens what the sandbox reaches without a refusal list of its own, as a
   root has (`checkProposedRoot`: home, hidden dirs of it, caboose's own
-  state, overlaps; judged and written as the physical path). Everything a
+  state, overlaps; judged and written as the physical path), and an alias
+  has (`checkProposedAlias`, `launcher/apply_alias.go`: no shell or other
+  program that runs its arguments, no command in a root, in what any
+  sandbox can write, in the home's hidden dirs or caboose's state, judged
+  as written, resolved and at each symlink on the way). Everything a
   proposal holds is shown on the host's terminal, so its text is refused
   with any control or invisible format character, and whatever else of the
   sandbox's is said (a file's name, an error quoting one) goes through
@@ -393,10 +414,29 @@ outside the repo.
   but the seed, into a dir with no Dockerfile (`caboose setup image`, or
   the first `[section]` applied), and `caboose apply`'s sections, after
   showing the diff and asking. It is never mounted into the container.
-- **The daemon's methods are one table.** `internal/daemon/methods.go` is
+- **Who answered is the caller's kind.** `internal/daemon/methods.go` is
   the one table of the daemon's methods, and a method added to it fails
   `TestMethodTable` until it is listed there. The socket refuses a hello
-  naming `daemon` before any request.
+  naming `daemon` before any request. `by` is derived from the kind
+  (`broker.ByCLI`), and `AnswerParams` has no field for it: keep it so. The links' one URL
+  dialog queue (`launcher/dialogqueue.go`) shows this machine's dialogs
+  one at a time, in the order filed; the dialog marks its request in
+  flight in `requests.json` first (`broker.MarkInFlight`), and one in
+  flight when it goes away is denied, "ask again", never asked another
+  way (`broker.Open` for a mark a broker that went away left).
+  `request` carries the
+  host's `offers` (once, hours, always) with their effects; an answer whose
+  scope is not offered is refused. The "always" offer carries the literal
+  diff of `config.toml` and its hash, and an "always" answer requires that
+  hash (`ConfirmDiff`, `bad_request` without it) and writes only if the
+  file would still change exactly so (`stale_diff` otherwise); the CLI
+  shows the offer and asks a typed yes on a terminal before it answers.
+  The writer edits line by line (`configwriter.go`), never a
+  marshalled file. The daemon's broker calls are served by the link that
+  holds the environment's `link.lock`; any other daemon, and a
+  `CABOOSE_DATA_DIR` helper's environment, answers `not_owner`. The broker's
+  files in the env dir (`grants.json`, `requests.json`, `decisions.log`,
+  `broker.lock`) are in no mount (`TestDaemonDirsAreInNoMount`).
 - **Setup and apply edit `config.toml`, they never rewrite it.** Changes go
   through `config.EditFile` (line by line: only the keys asked about, by
   dotted name, in their table, comments kept, a top-level key always above
@@ -501,15 +541,21 @@ outside the repo.
   in the sandbox, so everything `internal/hostlink` reads is the
   container's: which ports forward is `forward_ports` in `[link]` of `config.toml`,
   never the agent's list; forwards listen on `127.0.0.1` only; a URL is
-  `hostlink.CheckURL`'s (http(s), no credentials, printable) and asks
-  first unless `open_urls` says otherwise; text shown goes through
+  `hostlink.CheckURL`'s (http(s), no credentials, printable), and it, an
+  outbound connection and a host command are decided by the broker's
+  policy (`Decider`), with the facts the host resolved, never the agent's;
+  an ask is never waited on (pending, with the request's number) and
+  nothing the agent sends answers one or grants anything: the `Decider`
+  has no such method, keep it so; text shown goes through
   `proposal.Printable` and is cut short; AppleScript gets it as `argv`,
   never spliced into the script. A new request type needs the same:
   decided by the host's config, bounded, rate-limited -- what it logs
   too, since the agent decides how often (`egressLogf`). The outbound
   proxy dials only addresses it resolved and checked, and no name
   egress_allow allows reaches loopback, link-local or this machine's own
-  addresses (`Egress.denied`). The link is a
+  addresses (`policy.Decide`); a grant made at run time reaches a private
+  address only if it holds that very address. A wait for decisions holds
+  up nothing else: its own goroutine, at most 16 a link. The link is a
   `docker exec`, never a socket of the host's mounted in, and a launch
   has the daemon start it (`startLink`: best effort, one note on failure,
   never a silent fall back to a helper) because the attach `exec`s docker
@@ -527,7 +573,9 @@ outside the repo.
 - **Host exec is the host's to offer, and runs only what it was asked.**
   `host_exec` is `config.toml`'s, never the sandbox config's: the host's
   hello offers it, and a host that does not refuses the request whatever
-  the agent says. What runs is the request's argv, through no shell, with
+  the agent says; every request is decided by the policy first, which
+  refuses it under `trust = "hostile"`, where the hello offers none
+  either (`linkSettings.check`). What runs is the request's argv, through no shell, with
   no terminal, user or variables of the sandbox's, in the host directory
   of a container path under a root the container mounts
   (`config.HostPath`, with `mountedRoots`); the session that carries it
@@ -544,6 +592,54 @@ outside the repo.
   whichever terminal started the daemon. The daemon's links share one
   `hostlink.ExecGate`: a `replace` closes it at once and exits when the
   commands it found have ended, so new ones cannot hold an update off.
+- **An alias runs what `config.toml` says, decided at every run.** The
+  sandbox sends a name and `KEY=VALUE` values (`agentproto.ParseAliasArgv`),
+  never a command; the host resolves `command[0]`, `cwd` and absolute
+  arguments itself, component by component (`hostlink.ResolvePath`), with
+  every symlink met and the device and inode of every path and directory
+  above it (`policy.FileID`), and `Decide` refuses a command within or
+  through what a sandbox can write by name and by identity (a Mac firmlink
+  or another normalization of a name is the same directory). What runs is
+  the resolved path decided, with the alias's argv, through host exec's
+  machinery (`openExec`, `runCmd`: the same bound, environment, kill with
+  the client), plus its timeout and the kill of what it leaves in its
+  group (`killRemains`); its fresh directory is made under the daemon
+  dir's `alias-tmp` and removed only through `saferm.RemoveTree` with that
+  as the root. The writable set is the broker's (`Options.Writable`),
+  read off every environment's sandbox mounts and labels
+  (`launcher/writable.go`, `writableOf`), never off `config.toml`, again
+  before an alias is decided once it is two seconds old; one it cannot read
+  is everything. An alias is offered in the hello (`AliasesOn`), so it needs
+  no new `agentproto.Version`.
+- **Deny wins, and nothing the sandbox sends changes policy.**
+  `policy.Decide` is the one decision for every crossing:
+  its deny lines come before every allow, and no grant, allow entry,
+  "always" answer or trust level turns one into an allow (its property
+  tests hold that: keep them). It fails closed on what it does not know:
+  a `trust` other than exactly `fallible` is decided as hostile, an
+  unknown kind, an unresolved or unclean path, an empty address list, an
+  odd `open_urls` or alias `policy` are denied. In the broker only
+  `Answer` and expiry change a request's state, add a grant or edit
+  `config.toml`; `Decide`, `File`, `List` and `Wait`, all the sandbox
+  reaches, only file and dedupe, and a test drives them with random,
+  hostile input to hold it. A writable set that cannot be read is `/`
+  (every alias refused), and a broker that cannot be reached refuses.
+  Everything the guard and the broker log, notify or show is bounded and
+  rate-limited, since the sandbox decides how often it happens.
+- **`trust` is `config.toml`'s, and `hostile` holds only in a VM with no
+  NAT.** `trust` is a top-level key of the host's file, never the sandbox
+  config's. Under `hostile` a launch refuses any isolation but `vm`, the
+  VM is created with `Network: "none"` and the outbound proxy on
+  (`vmNetwork`; an explicit `egress = false` is refused at load), and a
+  launch refuses (and doctor says so) while `egress_allow` does not name every host
+  in `claudeHosts` (`launcher/trust.go`, one list: never allow them
+  implicitly, never add a broader pattern). The container is labelled
+  `assets.LabelTrust` and `LabelNetwork`, set even when empty; an
+  existing sandbox whose labels are missing or say otherwise is refused
+  at attach with `caboose restart` (`checkTrustExisting`), never `Compat`.
+  Under `hostile` with `ssh_agent` unset no SSH agent is forwarded
+  (`agentFrom`, `agentFromHostile`): never fall back to an
+  `IdentityAgent` or `$SSH_AUTH_SOCK` there.
 - **The file-change relay must not change what it touches.** Under
   gVisor the link relays the host's changes under the roots
   (`hostlink/relay.go`), and the agent raises an event for each by setting

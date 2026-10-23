@@ -153,6 +153,12 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		// Before the roots are resolved too: a proposal may be what fixes
 		// them, and the restart it ends in resolves them itself.
 		return exit(stderr, app.Apply())
+	case "requests":
+		return exit(stderr, app.Requests(inv.Args))
+	case "grants":
+		return exit(stderr, app.Grants(inv.Args))
+	case "permissions":
+		return exit(stderr, app.Permissions())
 	}
 	if err := cfg.ResolveRoots(); err != nil {
 		return exit(stderr, launcher.Die("%v", err))

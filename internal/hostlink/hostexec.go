@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/broker"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/policy"
 	"github.com/bfreis/caboose/internal/proposal"
 )
 
@@ -21,8 +23,10 @@ import (
 // of `caboose-agent host` has a command run on this machine, as the user
 // the link runs as, in the link's own environment, in the host directory
 // of the container one it names. It is a hole in the wall on purpose,
-// and the user's to open: nothing the agent sends turns it on, and what
-// runs is the request's argv alone, never through a shell. What the host
+// and the user's to open: nothing the agent sends turns it on, the link's
+// Decider decides every request first (trust = hostile refuses them all,
+// whatever host_exec says), and what runs is the request's argv alone,
+// never through a shell. What the host
 // still decides is the rest: no terminal, no other user, no variables, a
 // directory under a root the container mounts, a bounded number at once,
 // and a command whose client is gone killed, with whatever it started.
@@ -67,6 +71,12 @@ type hostExecState struct {
 // hostExec serves OpHostExec id: a stream for the client's exec protocol,
 // or why there is none.
 func (h *Host) hostExec(id uint64) error {
+	// The policy first, whatever is offered: under trust = hostile it
+	// refuses even with host_exec on.
+	if o, _ := h.decider().Decide(policy.Request{Kind: policy.KindHostExec}); o.Verdict != broker.Allowed {
+		h.execLogf("host exec: refused: %s", clip(o.Reason, 300))
+		return errors.New(o.Reason)
+	}
 	x := h.cfg.HostExec
 	if x == nil {
 		return errors.New(agentproto.HostExecOff)
@@ -83,7 +93,8 @@ type execRunner func(s *agentproto.Session, req agentproto.ExecRequest, streams 
 
 // openExec admits one more command, of the kind what names in the log,
 // and opens the stream for request id on which its client speaks the
-// exec protocol, served by run; or says why there is none.
+// exec protocol, served by run; or says why there is none. Host exec and
+// aliases share it, and the bound on how many run at once.
 func (h *Host) openExec(id uint64, what string, run execRunner) error {
 	// Counted from here to the command's end: the daemon exits for a
 	// replace only once none is in, and admits none while it holds them
@@ -91,20 +102,20 @@ func (h *Host) openExec(id uint64, what string, run execRunner) error {
 	gate := h.cfg.Gate
 	if !gate.enter() {
 		h.execLogf("%s: refused: the daemon is being replaced", what)
-		return errors.New("the host's caboose daemon is being replaced, once the host commands running end, and admits no new one meanwhile; try again in a minute")
+		return refuse(agentproto.AliasUnavailable, "the host's caboose daemon is being replaced, once the host commands running end, and admits no new one meanwhile; try again in a minute")
 	}
 	h.mu.Lock()
 	if h.closing {
 		// Run is waiting for the commands it ran: no more are added.
 		h.mu.Unlock()
 		gate.leave()
-		return errors.New("the link is closing")
+		return refuse(agentproto.AliasUnavailable, "the link is closing")
 	}
 	if h.execs.running >= maxHostExec {
 		h.mu.Unlock()
 		gate.leave()
 		h.execLogf("%s: refused: already %d running", what, maxHostExec)
-		return fmt.Errorf("already %d commands running on the host; try again once one ends", maxHostExec)
+		return refuse(agentproto.AliasUnavailable, "already %d commands running on the host; try again once one ends", maxHostExec)
 	}
 	h.execs.running++
 	// Added under h.mu, before closing is set: never once Run waits.
@@ -257,15 +268,27 @@ func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest,
 	cmd := &exec.Cmd{Path: path, Args: req.Argv, Dir: dir, Env: HostExecEnv(os.Getenv),
 		// Its own group, so a kill reaches what it started too.
 		SysProcAttr: &syscall.SysProcAttr{Setpgid: true}}
-	code, err = runCmd(s, cmd, streams, own)
+	code, err = runCmd(s, cmd, streams, own, runLimits{})
 	return code, dir, err
+}
+
+// runLimits are what a command run by runCmd is held to beyond its
+// client's life.
+type runLimits struct {
+	// timeout kills it (its group, SIGTERM then SIGKILL) once it has run
+	// that long; 0 for no limit.
+	timeout time.Duration
+	// noRemains kills whatever is left of its group once the command
+	// itself has exited, and waits for that to be gone, so nothing it
+	// started outlives it.
+	noRemains bool
 }
 
 // runCmd starts cmd, which must have Setpgid, and waits for it, its output
 // copied to its streams, its stdin from theirs; err is why it did not
-// start. The command and its group are killed when the session s ends.
-// cmd's Stdin, Stdout and Stderr are runCmd's to set.
-func runCmd(s *agentproto.Session, cmd *exec.Cmd, streams map[string]*agentproto.Stream, own *Execs) (int, error) {
+// start. The command and its group are killed when the session s ends, and
+// as lim says. cmd's Stdin, Stdout and Stderr are runCmd's to set.
+func runCmd(s *agentproto.Session, cmd *exec.Cmd, streams map[string]*agentproto.Stream, own *Execs, lim runLimits) (int, error) {
 	closeAll := func() {
 		for _, st := range streams {
 			_ = st.CloseWrite()
@@ -321,10 +344,19 @@ func runCmd(s *agentproto.Session, cmd *exec.Cmd, streams map[string]*agentproto
 		own.track(g, true)
 		defer own.track(g, false)
 	}
+	var deadline <-chan time.Time
+	if lim.timeout > 0 {
+		t := time.NewTimer(lim.timeout)
+		defer t.Stop()
+		deadline = t.C
+	}
 	go func() {
-		// The client gone, or the link: the command goes too.
+		// The client gone, or the link, or its time up: the command goes
+		// too.
 		select {
 		case <-s.Done():
+			g.terminate()
+		case <-deadline:
 			g.terminate()
 		case <-g.done:
 		}
@@ -335,6 +367,9 @@ func runCmd(s *agentproto.Session, cmd *exec.Cmd, streams map[string]*agentproto
 	go func() { defer copied.Done(); drain(errs, errR, g.done) }()
 	werr := cmd.Wait()
 	g.exit()
+	if lim.noRemains {
+		g.killRemains()
+	}
 	copied.Wait()
 	_ = out.CloseWrite()
 	_ = errs.CloseWrite()
@@ -406,6 +441,36 @@ func (g *group) signal(sig syscall.Signal) {
 		_ = syscall.Kill(-g.pid, sig)
 	}
 }
+
+// killRemains, once the leader is reaped, ends what is left of its group:
+// SIGTERM, then SIGKILL hostExecKillWait later, and returns once no
+// process of the group is left, or a while after the SIGKILL. A group
+// whose ID is still in use cannot have it handed to another process, so
+// signalling it is safe while any member lives; with none left, the only
+// risk is a new process given this very ID as its own group's between the
+// reap and now, which takes the system's whole PID range going round.
+// A process that left the group (setsid, setpgid) is out of its reach.
+func (g *group) killRemains() {
+	alive := func() bool { return syscall.Kill(-g.pid, 0) == nil }
+	if !alive() {
+		return
+	}
+	_ = syscall.Kill(-g.pid, syscall.SIGTERM)
+	for _, wait := range []time.Duration{hostExecKillWait, remainsGoneWait} {
+		end := time.Now().Add(wait)
+		for alive() && time.Now().Before(end) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !alive() {
+			return
+		}
+		_ = syscall.Kill(-g.pid, syscall.SIGKILL)
+	}
+}
+
+// remainsGoneWait is how long killRemains waits, after the SIGKILL, for
+// the group to be gone.
+const remainsGoneWait = 2 * time.Second
 
 // exit records that the leader is reaped.
 func (g *group) exit() {

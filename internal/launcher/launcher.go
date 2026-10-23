@@ -174,6 +174,10 @@ type App struct {
 	// agent; one that does needs a lock here first.
 	agentSeen *agentMemo
 
+	// envBox, when set, stands in for sandboxBox: the tests' sandboxes of
+	// other environments.
+	envBox func(env string) (backend.Backend, bool, error)
+
 	// install is what the container being brought up installs before it is
 	// ready (noteInstall), for waitUntilReady to say.
 	install pendingInstall

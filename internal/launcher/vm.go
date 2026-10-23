@@ -268,7 +268,7 @@ func (h *vmHost) Machine() (vm.Machine, error) {
 	if err != nil {
 		return vm.Machine{}, err
 	}
-	return vm.Machine{Kernel: f.Kernel, Initramfs: initramfs, CPUs: cpus, MemoryMiB: mem, Network: "nat"}, nil
+	return vm.Machine{Kernel: f.Kernel, Initramfs: initramfs, CPUs: cpus, MemoryMiB: mem, Network: h.a.vmNetwork()}, nil
 }
 
 func (h *vmHost) NewScratch(path string) error {

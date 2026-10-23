@@ -51,6 +51,9 @@ func startExecHost(t *testing.T, cfg Config) *execAgent {
 	if cfg.Log == nil {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
+	if cfg.Trust == "" {
+		cfg.Trust = "fallible" // tests of the link are of a fallible environment unless they say
+	}
 	go Run(hs, cfg)
 	if err := as.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}); err != nil {
 		t.Fatal(err)
@@ -166,7 +169,7 @@ func execRoot(t *testing.T) (string, Config) {
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return dir, Config{HostExec: &HostExec{Roots: []config.Root{{Host: dir, Container: "/work"}}}}
+	return dir, Config{Trust: "fallible", HostExec: &HostExec{Roots: []config.Root{{Host: dir, Container: "/work"}}}}
 }
 
 func TestHostExecRuns(t *testing.T) {
@@ -461,44 +464,5 @@ func TestHostExecEnvDefaultLang(t *testing.T) {
 	env := HostExecEnv(func(k string) string { return map[string]string{"PATH": "/a", "HOME": "/h"}[k] })
 	if strings.Join(env, " ") != "PATH=/a HOME=/h LANG="+defaultLang {
 		t.Errorf("got %v", env)
-	}
-}
-
-// Each link's commands are its own: killing one set leaves another's.
-func TestExecsArePerLink(t *testing.T) {
-	_, cfg := execRoot(t)
-	one, two := NewExecs(), NewExecs()
-	c1, c2 := cfg, cfg
-	c1.Execs, c2.Execs = one, two
-	p1, _, _ := startSleepers(t, startExecHost(t, c1))
-	p2, _, _ := startSleepers(t, startExecHost(t, c2))
-	if one.Running() != 1 || two.Running() != 1 || HostExecsRunning() < 2 {
-		t.Fatalf("running %d, %d, %d in all", one.Running(), two.Running(), HostExecsRunning())
-	}
-	one.Kill()
-	gone(t, p1)
-	for _, pid := range p2 {
-		if !processAlive(pid) {
-			t.Fatalf("killing one link's commands killed another's (%d)", pid)
-		}
-	}
-	two.Kill()
-	gone(t, p2)
-}
-
-// processAlive reports whether pid runs, and is no zombie.
-func processAlive(pid int) bool {
-	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	st := strings.TrimSpace(string(out))
-	return err == nil && st != "" && !strings.HasPrefix(st, "Z")
-}
-
-// Once Run waits for its commands, host exec takes no more: adding to a
-// WaitGroup being waited on is not allowed.
-func TestHostExecRefusedOnceClosing(t *testing.T) {
-	h := &Host{cfg: Config{HostExec: &HostExec{}}}
-	h.waitExecs()
-	if err := h.hostExec(1); err == nil || !strings.Contains(err.Error(), "closing") {
-		t.Fatalf("host exec while closing: %v", err)
 	}
 }

@@ -19,9 +19,9 @@ import (
 // on it). Parents come first: a backend that mounts in the order given
 // (the vm guest does) would otherwise cover a part with its root.
 //
-// It takes the roots and nothing else: nothing of the sandbox's reaches
-// what is mounted writable, which only config.toml's writable lists
-// decide.
+// It takes the roots and nothing else: no grant or answer of the
+// sandbox's reaches what is mounted writable, which only config.toml's
+// writable lists decide.
 func rootMounts(roots []config.Root) []backend.Mount {
 	var ms []backend.Mount
 	for _, r := range roots {

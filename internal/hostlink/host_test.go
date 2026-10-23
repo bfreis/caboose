@@ -105,6 +105,9 @@ func linked(t *testing.T, cfg Config) (socket string) {
 	if cfg.Log == nil {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
+	if cfg.Trust == "" {
+		cfg.Trust = "fallible" // tests of the link are of a fallible environment unless they say
+	}
 	go Run(sess, cfg)
 	for i := 0; i < 200; i++ {
 		if _, err := os.Stat(socket); err == nil {
@@ -205,8 +208,8 @@ func TestOpen(t *testing.T) {
 		asked   bool
 		errWant string
 	}{
-		{OpenAsk, true, "https://example.com/", true, true, ""},
-		{OpenAsk, false, "https://example.com/", false, true, "declined"},
+		// No broker: nothing would answer, and the link never asks itself.
+		{OpenAsk, true, "https://example.com/", false, false, "nothing on this host files requests"},
 		{OpenAllow, false, "https://example.com/", true, false, ""},
 		{OpenOff, true, "https://example.com/", false, false, "open_urls"},
 		{OpenAllow, true, "file:///etc/passwd", false, false, "only http and https"},

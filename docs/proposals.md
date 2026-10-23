@@ -1,7 +1,7 @@
 # Proposals: changes a session asks for
 
 A session in the sandbox cannot change what the sandbox is: the image, the
-host directories it can see. Those live on the host (`config.toml`, a
+host directories it can see, the host commands it may run. Those live on the host (`config.toml`, a
 Dockerfile profile's directory), and they decide how much of your machine the
 sandbox reaches — which is exactly what an injected instruction, arriving
 in a README or a web page, would want to widen. (What the sandbox keeps of
@@ -39,6 +39,7 @@ What a proposal can change in the image depends on the kind of the
 | packages to add or remove | `apko` | changes the profile's `packages` | shown as names (`+ graphviz`, `- jq`); built before anything is written |
 | a Dockerfile section | `dockerfile` | installs something in the image | shown as a diff of the Dockerfile |
 | one root | any | mounts a host directory at `/work/NAME` | refusals and warnings below, and you type the root's name |
+| one alias, alone | any | adds an [`[alias.NAME]`](configuration.md#aliasname), a host command sessions may run | refusals and warnings below, the change to `config.toml` as a diff, and you type the alias's name |
 
 Under a `ref` profile, an image of your own, nothing in the image can be
 proposed: a session that needs a tool says what to add to your image.
@@ -113,6 +114,45 @@ root's name to confirm. Adding a second root to a single one at `/work`
 also names that one, moving its projects to `/work/NAME/...`; that is said
 and asked first, as in [`caboose setup roots`](configuration.md#setup).
 
+**An alias** is a host command that sessions may then run with
+`caboose-agent run`, so it has a refusal list of its own, judged on this
+machine as `apply` shows it. The proposal is an `[alias.NAME]` table with
+exactly `config.toml`'s keys (`command`, `description`, `timeout`, `cwd`,
+`policy`, and `[alias.NAME.params]`), alone in its proposal; `policy` is
+`"allow"`, `"ask"` or absent (`"allow"`). Refused before it is shown:
+
+- a `command[0]` that is not an absolute, clean path; an element that is
+  empty, over 1024 bytes, or holds a control, tab or invisible character;
+  more than 64 elements;
+- a command that does not exist here, or is not an executable file;
+- a command that is, or resolves to, or reaches through a symlink, a shell
+  or a program that runs what its arguments say: `sh`, `bash`, `zsh`,
+  `fish`, `dash`, `ksh`, `csh`, `tcsh`, `busybox`, `env`, `sudo`, `doas`,
+  `su`, `osascript`, `open`, `xargs`, `nohup`, `timeout`, `nice`, `script`,
+  `expect`, `python`, `perl`, `ruby`, `node`, `deno`, `bun`, `php`, `lua`,
+  `tclsh`, `awk`, `find`, `make`, `ssh`, `screen`, `tmux`, `caboose` and
+  the like, in any case and with any version (`python3.12`); a script is
+  judged by its `#!` interpreter, so a shell script is refused too;
+- a command within a root of any environment (read-only or not), within anything a sandbox of
+  any environment can write, within a hidden directory of your home, or
+  within caboose's own state (`~/.caboose`, the environment, the data
+  dir), as written, resolved, or at any symlink on the way; and, when what
+  the sandboxes can write cannot be told (the engine is down), any alias;
+- a `cwd` that does not exist, or is within caboose's own state or a hidden
+  directory of your home; under `trust = "hostile"`, one within anything a
+  sandbox can write;
+- a parameter or a value outside `config.toml`'s syntax.
+
+`apply` warns when it runs without asking you (no `policy = "ask"`), when
+its `cwd` is somewhere the sandbox can write, when it names a path on this
+machine, and when it replaces an alias of that name; it shows the exact
+change to `config.toml` and writes it only once you type the alias's name,
+and only if `config.toml` has not changed since. An alias needs no build
+and no restart: the link reads it within seconds. The aliases you write in
+`config.toml` yourself are yours, and held to none of this; every alias,
+yours or proposed, is decided again at each run
+([configuration](configuration.md#aliasname)).
+
 ## The files
 
 `~/.caboose-proposals` is `<data>/proposals` on the host. A proposal is
@@ -143,6 +183,18 @@ body = '''
 ARG FOO_VERSION=2.3.0
 RUN curl -fsSL https://example.com/foo-${FOO_VERSION}.tgz | tar -xz -C /usr/local/bin foo
 '''
+```
+
+An alias, alone in its proposal:
+
+```toml
+title = "Keep the Mac awake during long builds"
+reason = "builds run overnight"
+
+[alias.awake]
+command = ["/usr/bin/caffeinate", "-i"]
+description = "keep the Mac awake until interrupted"
+policy = "ask"
 ```
 
 `NAME.check` is the host link's check of `NAME.toml`, written while the

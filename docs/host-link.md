@@ -1,4 +1,4 @@
-# The host link: ports, URLs, notifications, file changes, outbound connections, host commands
+# The host link: ports, URLs, notifications, file changes, outbound connections, host commands, aliases
 
 A server the agent starts in the sandbox is reachable from your browser, at
 the same port on `localhost`; `caboose-agent open URL` in the sandbox opens
@@ -19,7 +19,8 @@ next launch starts it again. It logs to the data dir's `link.log`
 (`~/.caboose/envs/default/data/link.log` for the default environment).
 
 `caboose status` says how the daemon and the environment's link are
-(`daemon` and `link` lines), and `caboose doctor` checks that the daemon
+(`daemon` and `link` lines, and a `requests` line while any wait for an
+answer), and `caboose doctor` checks that the daemon
 answers, runs the same version as the `caboose` you typed, and holds a link
 while the sandbox runs, naming the command that fixes each problem.
 `caboose link` asks the daemon for the link now, `caboose link --restart`
@@ -59,6 +60,13 @@ update (`status` and `doctor` only say which is older). A newer caboose's
 daemon refuses an older caboose's commands, `caboose daemon stop` and
 `restart` included: update caboose, or end the daemon with `kill` (its pid
 is in `daemon.json`).
+
+The daemon also answers `caboose requests`, `grants` and `permissions`
+for the environments whose link it runs. A daemon older than your
+`caboose` does not know those commands and says so: `caboose daemon
+restart`. With
+`CABOOSE_DATA_DIR` set the daemon does not serve the command's
+environment, so these commands find nothing to answer for.
 
 Its files are in `CABOOSE_HOME/daemon/` (`~/.caboose/daemon/`), a directory
 only you can enter, and in no mount of any sandbox: `daemon.sock` (the
@@ -126,10 +134,24 @@ each: forwarded, not in `forward_ports`, or in use on the host.
 ## URLs and notifications
 
 `caboose-agent open URL` opens an `http` or `https` URL in your default
-browser. With `open_urls = "ask"`, the default, a dialog shows the URL and
-asks first; `"allow"` opens without asking, `"off"` refuses every URL. Any
-other scheme, a URL with a user or password in it, or one holding
-unprintable characters is refused whatever the setting.
+browser. With `open_urls = "ask"`, the default, the URL is a request a
+person answers on the host: `caboose-agent open` returns at once, refused
+for now with `pending #N`, and a dialog on this machine shows the
+environment and the URL as the host checked it (one dialog at a time,
+whichever environment asks). Open allows it, and the host opens the URL
+then; Cancel denies it. A dialog that goes away unanswered (the link or
+caboose's daemon stopped while it showed) leaves the request denied, "ask
+again": it is never asked a second time another way, and the sandbox asks
+again if it still wants the URL. A dialog that cannot be shown leaves the
+request pending; an unanswered one expires after a day, denied. `caboose requests`
+answers it too (and shows what is waiting), and `caboose requests approve N
+--always` adds the URL's origin to `open_urls_allow` in `config.toml`, after
+showing you the change. `"allow"` opens
+without asking, and so does an origin in `open_urls_allow`; `"off"`
+refuses every URL. Under `trust = "hostile"` every URL asks, whatever
+`open_urls` and `open_urls_allow` say (`"off"` still refuses). Any other
+scheme, a URL with a user or password in it, or one holding unprintable
+characters is refused whatever the setting.
 
 Programs open a browser the usual way, and it ends there. The layer puts
 an `xdg-open` in `/usr/local/bin` and sets `BROWSER` to it, so `gh`, Go's
@@ -152,8 +174,8 @@ The link also notices, itself, when a session writes a new
 apply` does, never through a symlink, and applies nothing.
 
 On a Mac these use `open` and `osascript`; on Linux `xdg-open`,
-`notify-send`, and `zenity` or `kdialog` for the dialog (with neither, set
-`open_urls` to `"allow"` or `"off"`).
+`notify-send`, and `zenity` or `kdialog` for the dialog (with neither, a
+request waits unanswered: set `open_urls` to `"allow"` or `"off"`).
 
 ## File changes
 
@@ -188,6 +210,8 @@ cannot.
 
 ## Outbound connections
 
+Under `trust = "hostile"` the VM is created without the NAT described next: the proxy is the only way out, and it is always on ([trust](configuration.md#trust)).
+
 Under a `vm` profile, the VM's traffic leaves through macOS's NAT,
 which reaches none of the routes a VPN gives your Mac: a host your Mac
 reaches over Tailscale or a company VPN times out from the VM. So, with
@@ -213,16 +237,31 @@ their IPv6 forms too (IPv4-mapped, IPv4-translated, NAT64's well-known
 and local-use prefixes, 6to4), and so are your Mac's own addresses, as
 its interfaces list them (a public IPv6 address, a VPN's, re-read every
 few seconds). A name that resolves to a public address and a refused one
-is refused whole, not dialled at the public one: that is how DNS
-rebinding works. `egress_allow` lets through a name (or every name under
-a `*.suffix`) whatever it resolves to, or an address in one of its CIDRs
--- with one exception: a loopback, unspecified (`0.0.0.0`, `::`) or
-link-local address, or one of your Mac's own, is refused even for a name
-it allows, since a pattern such as `*.nip.io` would otherwise reach your
-Mac's loopback (`127.0.0.1.nip.io`). Only an address or CIDR within that
-range lets one through (`127.0.0.1`, `169.254.169.254`), and only that
-very address for one of your Mac's own. Only the addresses checked are
+is not dialled at the public one: that is how DNS rebinding works.
+`egress_deny` refuses a name (or every name under a `*.suffix`), or an
+address in one of its CIDRs, whatever else says; it beats every allow.
+`egress_allow` lets through a name (or every name under a `*.suffix`)
+whatever it resolves to, or an address in one of its CIDRs -- with one
+exception: a loopback, unspecified (`0.0.0.0`, `::`) or link-local
+address, or one of your Mac's own, is refused even for a name it allows,
+since a pattern such as `*.nip.io` would otherwise reach your Mac's
+loopback (`127.0.0.1.nip.io`). Only an address or CIDR within that range
+lets one through (`127.0.0.1`, `169.254.169.254`), and only that very
+address for one of your Mac's own. Only the addresses checked are
 dialled; the name is never looked up again.
+
+A name that resolves to a private address `egress_allow` does not name
+is a request a person answers on the host, as is, under
+`trust = "hostile"`, every host `egress_allow` does not name: the
+connection is refused for now, with `pending #N` in the proxy's answer
+(a 403), and goes through once the request is allowed. An answer given
+for a time lets the name through as it resolved when the request was
+filed: should it later resolve to a private address the answer did not
+see, it asks again. A loopback, link-local or own address never asks:
+it is refused. `caboose requests` lists them and answers them: allow once,
+for some hours (`--for 8h`), or always, which adds the name to
+`egress_allow` of the `vm` profile in use in `config.toml` after showing
+you the change; unanswered, they expire a day later, denied.
 
 What it cannot tell: your Mac's public IPv4 address behind a router's
 NAT is on no interface of the Mac, so the router's WAN address, which
@@ -251,7 +290,8 @@ once when they are a GET, HEAD, OPTIONS or TRACE without a body, and are
 answered in order. It parses HTTP and sends the name and port on; it
 never resolves or dials anything itself. A connection the host refuses
 is answered in HTTP, with the host's reason as the body, which curl and
-git print: 403 for a port or address it does not allow, 502 for a name
+git print: 403 for a port or address it does not allow, or one that waits
+for a person's answer (`pending #N`), 502 for a name
 that does not resolve or a host that does not answer, 503 for too many
 connections or a link that is down.
 `caboose-agent connect HOST PORT` makes one connection through it, on its
@@ -296,12 +336,14 @@ What uses it, with `egress` on as the VM is created:
 
 The environment is fixed when the VM is created: a change to
 `egress` takes `caboose restart`, which a launch, `caboose status`
-and `caboose doctor` say. `egress_ports` and `egress_allow` apply as the
-link rereads them.
+and `caboose doctor` say. `egress_ports`, `egress_allow` and
+`egress_deny` apply as the link rereads them.
 
 ## Host commands
 
-Off by default. With `host_exec = true` in `[link]` of `config.toml`, a session can run a command on this machine:
+Off by default. With `host_exec = true` in `[link]` of `config.toml`, a session can run a command on this machine
+(never under `trust = "hostile"`, which refuses it whatever `host_exec`
+says, and whose link does not offer it):
 
 ```sh
 caboose-agent host make release           # in the host directory of the current one
@@ -341,6 +383,80 @@ instructions (`/etc/claude-code/CLAUDE.md`), which a launch rewrites, so a sessi
 still describes it as it was; the link itself follows `config.toml` within
 seconds, as above.
 
+## Aliases
+
+An alias is a host command `config.toml` names (`[alias.NAME]`,
+[configuration](configuration.md#aliasname)), which a session runs by name,
+whether or not `host_exec` is on:
+
+```sh
+caboose-agent aliases                 # names, descriptions, parameters
+caboose-agent run awake &             # until the job ends
+caboose-agent run test suite=unit     # a parameter, from the alias's list
+```
+
+The sandbox sends a name and `KEY=VALUE` arguments, never a command: the
+host looks the alias up, puts the values in, resolves its command, its
+directory and its absolute arguments on this disk, and decides, as it
+decides every crossing (`trust`, the alias's `policy`, a grant). A command
+within, or reached through, anything a sandbox can write is refused. What
+runs is the path that was decided, as you, with `PATH`, `HOME` and `LANG`,
+no shell and no terminal, in the alias's `cwd` or a fresh empty directory
+removed afterwards; stdin, stdout and stderr pass through, and its exit
+status is `caboose-agent run`'s (75 pending, 77 refused, 127 no such alias,
+126 not runnable here, when it never ran). It ends when `caboose-agent run`
+does, at its `timeout`, and with the link, and so does what it started.
+An alias with `policy = "ask"` is refused as `pending #N` at once, and
+runs when asked again once you allow the request (`caboose requests
+approve N`, `--for 8h`, or `--always`, which writes `policy = "allow"`).
+Each run is a line in `link.log`, by name and arguments; each decision is
+in `decisions.log`. At most 16 aliases and host commands run at once, and a
+sandbox that asks too often is told to try again shortly.
+
+## Asking the host ahead of time
+
+A crossing that asks is refused as `pending #N` at once (above), and the
+request it files carries only caboose's own description of what allowing it
+does. A session can also say why, and what it would do meanwhile, by filing
+the request itself:
+
+```sh
+caboose-agent request egress --host registry.example.com --port 443 \
+  --context "installing the project's dependencies" --recommend "allow for 8 hours" \
+  --meanwhile "writing the tests"
+caboose-agent request open_url --url https://example.com/login
+caboose-agent request alias --alias test --arg suite=unit
+caboose-agent requests --all          # what the host decided, and what waits
+```
+
+`request` never waits: it exits 0 when the host allows it, 75 and prints
+`pending #N` when it waits for a person (`caboose requests` on this
+machine), 77 when it is denied, 1 when it could not ask, 2 for a mistake in
+the command. `--session` (default `$CLAUDE_CODE_SESSION_ID`) says which
+Claude Code session asks; `--json` prints a result a program can read.
+`requests` lists the host's description of each request, with its state and
+the reason for a denial, and a cursor: `--since N` lists only decisions after
+cursor `N` (`--since now` prints the current cursor), and `--wait SECONDS`
+(at most 300) waits for a new one. At most 16 waits are open on a link at
+once, and a wait whose client has gone away (the mod's, when its session is killed) holds its slot until it times out, at most 300 seconds; a sandbox that asks too often is told to try again shortly. Both need a
+host that files requests; an older one is refused with a message saying so.
+
+Under `vm` and the other isolations alike, Claude Code loads a small mod of
+caboose's, from `/etc/claude-code/mods/caboose`, through
+`CLAUDE_CODE_PLUGIN_DIRS`, which a launch sets in the sandbox's environment
+(a change takes `caboose restart`, as every setting fixed at creation does,
+and `run_args` cannot set it). The mod gives the model two tools,
+`caboose_request` and `caboose_requests`, which run the commands above, and a
+background wait that says to the session, as a message from the plugin, what
+the host decided on its own requests. It informs only: the host enforces every
+decision whether the mod is loaded or not. A setting's `env` block that
+replaces `CLAUDE_CODE_PLUGIN_DIRS` drops the mod from that session. To
+count, the mod's wait tells the link which Claude Code process it runs under;
+the link counts the sandbox's Claude Code processes and sends the host both
+numbers when they change (at most every 5 seconds), and `caboose permissions`
+shows "N Claude Code sessions, M without caboose's mod". That count is the
+sandbox's own word, shown to you and used for nothing else.
+
 ## What the sandbox can and cannot do with it
 
 Everything the agent sends is treated as untrusted, as everything from the
@@ -354,7 +470,9 @@ sandbox is:
   sandbox. Keep `forward_ports` to the ranges you use for development,
   and the ephemeral range if you log in from the sandbox;
 - requests are rate-limited, a URL opens only as the setting says, and a
-  dialog is one at a time;
+  dialog is one at a time; a crossing that asks a person is refused at
+  once as pending, never waited on, and nothing the sandbox sends
+  answers it: only the host does;
 - the protocol is framed and bounded: a frame over 64KiB, a stream past
   its window (1MiB unread on the host, at most 256 streams), or any other
   violation ends the link;
@@ -363,11 +481,16 @@ sandbox is:
   files and directories;
 - under `vm`, an outbound connection made through the proxy reaches only
   `egress_ports`, and only public addresses as your Mac resolves them,
-  unless `egress_allow` says otherwise. A program that ignores the proxy
-  settings leaves through the VM's NAT instead, and under `container` and
+  unless `egress_allow` says otherwise (or a person allows the request it
+  filed), never what `egress_deny` names. A program that ignores the proxy
+  settings leaves through the VM's NAT instead (except under `trust = "hostile"`, where the VM has no NAT and reaches nothing that way), and under `container` and
   `gvisor` the engine's network is unrestricted;
 - a host command runs only when `host_exec`, in the host's `config.toml`,
-  says so: the agent asking is not enough. It runs the request's own
+  says so, and never under `trust = "hostile"`: the agent asking is not
+  enough. It runs the request's own
   command line, through no shell, in a directory under a mounted root,
   with no terminal, as no other user, and with no variables of the
-  sandbox's; and once it runs, it can do anything you can.
+  sandbox's; and once it runs, it can do anything you can;
+- an alias runs only what `config.toml` says, with the parameters it lists:
+  the sandbox names it and picks values, and the host resolves and decides
+  the rest at every run.

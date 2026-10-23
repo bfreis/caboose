@@ -290,6 +290,7 @@ func (a *App) runCheckup(c *checkup, offline bool) {
 // whether the roots resolved.
 func (a *App) doctorConfig(c *checkup) bool {
 	cfg := a.Cfg
+	a.doctorTrust(c)
 	switch {
 	case cfg.File != nil:
 		c.ok("env", "%s (config %s)", cfg.Env, cfg.File.Path)
@@ -548,6 +549,14 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	}
 	if d := a.egressDrift(); d != "" {
 		c.problem("egress", "caboose restart"+endsSessions, "%s", d)
+	}
+	for _, d := range []string{a.trustDrift(), a.networkDrift()} {
+		if d != "" {
+			c.problem("trust", "caboose restart"+endsSessions, "%s", d)
+		}
+	}
+	if d := a.pluginDirsDrift(); d != "" {
+		c.problem("mod", "caboose restart"+endsSessions, "%s", d)
 	}
 	a.doctorContainerIsolation(c)
 	return state

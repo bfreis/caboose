@@ -1,6 +1,7 @@
 // Package proposal is how a session in the sandbox asks for a change only
 // the host can make: packages added to or removed from an apko image, a
-// section in a dockerfile image's Dockerfile, or another root.
+// section in a dockerfile image's Dockerfile, another root, or an alias
+// (a host command a session may then run).
 // (What the sandbox keeps of its home is its own to change, in the sandbox
 // config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
@@ -12,8 +13,8 @@
 // an unknown key, a control character or a bidi override that could make
 // the terminal show other than what is there, a section that starts a
 // stage -- and what it may ask for is an allowlist: package names or a
-// Dockerfile section, and one root. Nothing else in config.toml can be
-// proposed at all.
+// Dockerfile section, and one root; or one alias, alone. Nothing else in
+// config.toml can be proposed at all.
 //
 // The host also writes what a proposal is made against into proposals/
 // current/ (WriteCurrent): the Dockerfile the next build uses, and the
@@ -99,16 +100,20 @@ type Proposal struct {
 	Packages *Packages
 	// Root is the root to add, or nil.
 	Root *Root
+	// Alias is the alias to add, or to replace one of its name with, or
+	// nil; always alone.
+	Alias *Alias
 }
 
 // file is a proposal as written.
 type file struct {
-	Title            string            `toml:"title"`
-	Reason           string            `toml:"reason"`
-	DockerfileSHA256 *string           `toml:"dockerfile_sha256"`
-	Section          *Section          `toml:"section"`
-	Packages         *Packages         `toml:"packages"`
-	Roots            map[string]string `toml:"roots"`
+	Title            string               `toml:"title"`
+	Reason           string               `toml:"reason"`
+	DockerfileSHA256 *string              `toml:"dockerfile_sha256"`
+	Section          *Section             `toml:"section"`
+	Packages         *Packages            `toml:"packages"`
+	Roots            map[string]string    `toml:"roots"`
+	Alias            map[string]aliasFile `toml:"alias"`
 }
 
 // Parse reads and checks the proposal in file name (with Ext).
@@ -133,7 +138,7 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages] and [roots]; what the sandbox keeps is changed in %s, with no proposal)",
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots] and [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params]; what the sandbox keeps is changed in %s, with no proposal)",
 			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
@@ -202,8 +207,19 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		return nil, errors.New("more than one root: a proposal adds one at most, so that each is confirmed on its own")
 	}
 
-	if p.Section == nil && p.Packages == nil && p.Root == nil {
-		return nil, errors.New("it proposes nothing: no [section], [packages] or [roots]")
+	if f.Alias != nil {
+		if p.Section != nil || p.Packages != nil || p.Root != nil {
+			return nil, errors.New("[alias] with another change: an alias runs commands on the host, and is proposed alone, so that it is confirmed on its own")
+		}
+		a, err := checkAlias(f.Alias)
+		if err != nil {
+			return nil, err
+		}
+		p.Alias = a
+	}
+
+	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil {
+		return nil, errors.New("it proposes nothing: no [section], [packages], [roots] or [alias]")
 	}
 	return p, nil
 }
@@ -237,6 +253,10 @@ func checkPackages(pk Packages) (*Packages, error) {
 	}
 	return &Packages{Add: append([]string{}, pk.Add...), Remove: append([]string{}, pk.Remove...)}, nil
 }
+
+// CheckText is checkText, for other text from the sandbox that a person
+// is shown: field names it in the error.
+func CheckText(field, s string, multi bool, max int) error { return checkText(field, s, multi, max) }
 
 // checkText refuses what could make a terminal show other than what s
 // holds -- control characters (escape sequences start with one), and the

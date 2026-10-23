@@ -114,6 +114,17 @@ type Config struct {
 	// the sandbox config's: it is the hole in the wall.
 	HostExec bool
 
+	// OpenURLsAllow is [link] open_urls_allow: origins (scheme://host[:port])
+	// the sandbox may open without asking; ignored under trust = hostile.
+	OpenURLsAllow []string
+
+	// Trust is the top-level trust key, TrustFallible (the default) or
+	// TrustHostile. The host's key, never the sandbox config's.
+	Trust string
+	// Aliases are the [alias.NAME] tables, by name: host commands a session
+	// may run, argv and enum parameters only. Cwd has its ~ expanded.
+	Aliases []Alias
+
 	// Isolation is the kind of the profile in use (KindContainer,
 	// KindGVisor, KindVM), and Profile its "<kind>.<name>", "" when no
 	// profile is defined and the default, a plain container, is used. The
@@ -140,6 +151,9 @@ type Config struct {
 	Egress      bool
 	EgressPorts string
 	EgressAllow []string
+	// EgressDeny are names, *.suffix patterns and CIDRs the sandbox may
+	// not reach, whatever EgressAllow says.
+	EgressDeny []string
 
 	// Session is CABOOSE_SESSION, the tmux session to name outright.
 	Session string
@@ -323,6 +337,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		ReadyTimeout: 600,
 		ForwardPorts: DefaultForwardPorts,
 		OpenURLs:     "ask",
+		Trust:        TrustFallible,
 		Isolation:    KindContainer,
 		ImageProfile: DefaultImageProfile(),
 		Egress:       true,
@@ -421,6 +436,22 @@ func (c *Config) readFile() error {
 	str("link.ssh_agent", &c.SSHAgent)
 	c.SSHAgent = expandTilde(c.SSHAgent, c.Home)
 	boolean("link.host_exec", &c.HostExec)
+	if v, ok := f.Vals["link.open_urls_allow"].([]any); ok {
+		for _, o := range v {
+			c.OpenURLsAllow = append(c.OpenURLsAllow, o.(string))
+		}
+	}
+	str("trust", &c.Trust)
+	for _, name := range slices.Sorted(maps.Keys(f.Aliases)) {
+		a := f.Aliases[name]
+		if a.Cwd != "" {
+			a.Cwd = expandTilde(a.Cwd, c.Home)
+			if !path.IsAbs(a.Cwd) || path.Clean(a.Cwd) != a.Cwd {
+				return fail("cwd in [alias.%s]: %q must be an absolute, clean path", name, f.Aliases[name].Cwd)
+			}
+		}
+		c.Aliases = append(c.Aliases, a)
+	}
 
 	if err := c.selectProfile(); err != nil {
 		return fail("%v", err)
@@ -444,6 +475,14 @@ func (c *Config) readFile() error {
 			for _, a := range v {
 				c.EgressAllow = append(c.EgressAllow, a.(string))
 			}
+		}
+		if v, ok := f.Vals[p+".egress_deny"].([]any); ok {
+			for _, a := range v {
+				c.EgressDeny = append(c.EgressDeny, a.(string))
+			}
+		}
+		if c.Trust == TrustHostile && c.Isolation == KindVM && f.Has(p+".egress") && !c.Egress {
+			return fail(`egress = false in [%s] with trust = "hostile": a hostile sandbox's outbound connections are decided by the host through the link, so egress cannot be off; remove egress = false, or set trust = "fallible"`, p)
 		}
 	}
 

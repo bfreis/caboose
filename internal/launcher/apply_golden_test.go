@@ -131,6 +131,12 @@ func TestApplyGolden(t *testing.T) {
 		e.propose("other.toml", "title = \"Mount other\"\n[roots]\nother = \"~/src/other\"\n")
 		goldenApply(t, e, "root-move", "1\ny\nother\n")
 	})
+	t.Run("alias", func(t *testing.T) {
+		e := newGoldenEnv(t, "default")
+		cmd := tool(t, filepath.Join(filepath.Dir(e.a.Cfg.Home), "bin", "awake"))
+		e.propose("awake.toml", strings.Replace(awakeProposal, "%s", cmd, 1))
+		goldenApply(t, e, "alias", "1\nawake\n")
+	})
 	t.Run("refused", func(t *testing.T) {
 		e := newGoldenEnv(t, "default")
 		e.mkdir(".ssh")

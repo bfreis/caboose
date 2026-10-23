@@ -132,10 +132,10 @@ func TestProfileSelection(t *testing.T) {
 
 func TestConfigFileRefuses(t *testing.T) {
 	for name, tc := range map[string]struct{ body, err string }{
-		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [apko.NAME], [build], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
+		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [alias.NAME], [apko.NAME], [build], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation, trust; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
 		"a misspelled table key": {"[session]\ntmuz = true", "unknown setting in [session] tmuz (known: auto_sync, hostname, keep_versions, ready_timeout, tmux, tz;"},
 		"another table":          {"[mounts]\ndev = \"/x\"", "unknown top-level setting mounts"},
-		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: cpus, egress, egress_allow, egress_ports, memory;"},
+		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: cpus, egress, egress_allow, egress_deny, egress_ports, memory;"},
 		"vm keys under gvisor":   {"[gvisor.a]\ncpus = 2", "unknown setting in [gvisor.a] cpus"},
 		"a table as a key":       {"session = 1", "session must be a table"},
 		"a kind not of tables":   {"[vm]\ncpus = 1", "vm must be tables of profiles, [vm.NAME]"},

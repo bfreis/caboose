@@ -38,6 +38,7 @@ packages = ["graphviz", "postgresql-17-client"]
 | Key | Default | |
 |---|---|---|
 | `format` | `1` | the file's structure, which `caboose setup` writes; a file saying any other format is refused (a newer one saying `caboose update`) |
+| `trust` | `"fallible"` | how far the sandbox is trusted: `"fallible"` (an agent that may make mistakes) or `"hostile"` (assume something else steers it); any other value is an error. Under `"hostile"` the sandbox needs a `vm` isolation profile and has no network but the proxy, `host_exec` is ignored, every URL asks and every outbound connection `egress_allow` does not name asks. See [Trust](#trust) |
 | `isolation` | the one profile defined, else `container` | the [isolation profile](#isolation-profiles) the sandbox runs under, `"<kind>.<name>"` |
 | `image` | the one profile defined, else `apko.default` | the [image profile](#image-profiles) the sandbox is built from, `"<kind>.<name>"` |
 
@@ -71,7 +72,8 @@ is `name = "host path"`, or a table with `host` and optionally `path` and
 |---|---|---|
 | `forward_ports` | `["3000-3999", 5173, "8000-8999", "32768-60999"]` | ports listening in the sandbox that are forwarded to the same port on this machine's localhost, while they listen (the last range is where a login's loopback callback listens): integers from 1 to 65535 and `"a-b"` ranges; `[]` for none. See [the host link](host-link.md#ports) |
 | `open_urls` | `"ask"` | whether the sandbox may open URLs in your browser: `"ask"`, `"allow"` or `"off"`; see [the host link](host-link.md#urls-and-notifications) |
-| `ssh_agent` | the agent `ssh` here would use | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead of a socket named here, but `"none"` still gives none. See [SSH agent](ssh.md) |
+| `ssh_agent` | the agent `ssh` here would use; none under `trust = "hostile"` | the SSH agent socket the sandbox gets (`~` expanded), or `"none"`; for when `$SSH_AUTH_SOCK` is not your agent, as when a work login takes it over, and the only way a `hostile` sandbox gets one. Under `vm`, and `container` or `gvisor` on Linux; on a Mac, OrbStack and Docker Desktop forward the agent they were started with instead of a socket named here, but `"none"` still gives none. See [SSH agent](ssh.md) |
+| `open_urls_allow` | `[]` | origins the sandbox may open in your browser without asking when `open_urls` is `"ask"` (`"off"` still refuses every URL): `"https://host"` or `"http://host:port"`, lowercase, with nothing after the host or port (no path, not even a `/`). Ignored under `trust = "hostile"`, where every URL asks. See [Trust](#trust) |
 | `host_exec` | `false` | let sessions run commands on this machine, as you, through the link (`caboose-agent host CMD`). **Sessions, and whatever steers them (a web page, a repo they work on), can then run anything on this machine as you**: meant for an environment whose point is a separate login or tools, not containment. See [the host link](host-link.md#host-commands) |
 
 ## Isolation profiles
@@ -98,9 +100,10 @@ Each kind has its own keys, and a key another kind has is an error, so
 | `container`, `gvisor` | `engine_socket` | `false` | mount this machine's engine socket (`DOCKER_HOST`'s unix socket, else `/var/run/docker.sock`): **removes the isolation**, see [caveats](caveats.md) |
 | `vm` | `cpus` | half the CPUs | the VM's CPUs; at least 1 |
 | `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` |
-| `vm` | `egress` | `true` | whether the sandbox's outbound connections through the link's proxy (HTTP(S) through the proxy settings, ssh through its `ProxyCommand`) are made from this machine, so a VPN's routes and DNS apply. The VM keeps its own NAT beside the proxy, and a program that ignores the proxy settings leaves through it, unrestricted. `false` is the VM's own NAT alone. See [the host link](host-link.md#outbound-connections) |
+| `vm` | `egress` | `true` | whether the sandbox's outbound connections through the link's proxy (HTTP(S) through the proxy settings, ssh through its `ProxyCommand`) are made from this machine, so a VPN's routes and DNS apply. At `trust = "fallible"` the VM keeps its own NAT beside the proxy, and a program that ignores the proxy settings leaves through it, unrestricted; under `"hostile"` there is no NAT. `false` is the VM's own NAT alone. See [the host link](host-link.md#outbound-connections) |
 | `vm` | `egress_ports` | `[22, 80, 443]` | the ports the sandbox may reach that way, written as `forward_ports` is; `[]` for none |
 | `vm` | `egress_allow` | `[]` | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
+| `vm` | `egress_deny` | `[]` | names, `*.suffix` patterns, CIDRs or addresses the sandbox may never reach, written as `egress_allow` is; a deny entry beats every allow entry, and every grant |
 
 A profile's name follows the rule for a root's: a lowercase label.
 Profiles do not inherit from one another; define each one in full. Which
@@ -230,7 +233,8 @@ docker would take the next argument as another flag's value. Refused:
   `--cidfile`, and `--env-file` and `--label-file`, whose contents caboose
   cannot check;
 - `--env` for a variable caboose sets (`HOME`, `PATH`, `TZ`,
-  `SSH_AUTH_SOCK`, `IS_SANDBOX`, anything `CABOOSE_` or `TINI_`), and `--label` for
+  `SSH_AUTH_SOCK`, `IS_SANDBOX`, `CLAUDE_CODE_PLUGIN_DIRS`, anything `CABOOSE_` or
+  `TINI_`), and `--label` for
   caboose's own (`dev.bfreis.caboose.*`);
 - a `--volume`, `--mount` or `--tmpfs` at, inside or around one of
   caboose's mounts (the roots under `/work`, the kept parts of the home,
@@ -488,6 +492,154 @@ sessions (it asks first); until then a launch warns that they differ.
 Everything under the roots is readable from inside the container, and
 the writable parts are writable too. That is the whole of what the sandbox
 can reach on your disk, so choose them accordingly.
+
+## Trust
+
+`trust` says what the sandbox is assumed able to do:
+
+- `"fallible"`, the default: an agent that may make mistakes.
+- `"hostile"`: assume something else steers it.
+
+It is the host's setting, in this file only. Under `"hostile"`:
+
+- **a `vm` isolation profile is required.** A launch that would create the
+  sandbox under `container` or `gvisor` refuses ("trust = hostile needs a
+  vm isolation profile: ..."), and so does a launch that finds a sandbox
+  created under one (set `isolation` to a `vm.*` profile, or `trust =
+  "fallible"`, then `caboose restart`). An existing sandbox is trusted as
+  hostile only if it records a `vm` isolation and a VM created with no
+  network; one made before that, or at `fallible`, is refused until
+  `caboose restart` recreates it;
+- **the VM has no network of its own.** It is created with its NAT off, so
+  the only way out is the outbound proxy: HTTP(S) through the proxy
+  settings and ssh through its `ProxyCommand`. A program that ignores
+  those reaches nothing, and the containers the VM's `dockerd` runs reach
+  nothing, since they do not use the proxy. Changing `trust` changes how
+  the VM is created, so it takes `caboose restart`, which a launch says;
+- **`egress` cannot be off**: `egress = false` in the `vm` profile in use
+  is an error, and the proxy is on whatever else the profile says;
+- **every outbound connection `egress_allow` does not name asks**: it is
+  refused, as pending, until a person allows it (`caboose requests`);
+- **Claude Code's own hosts must be in `egress_allow`.** They are not
+  allowed implicitly; a launch refuses, naming the ones missing and the
+  line to write, until each is named by `egress_allow` (a name, or a
+  `*.` pattern that covers it) and none by `egress_deny`. Only this file
+  counts, not a grant given at run time. `egress_ports` must allow 443,
+  which they use. The hosts: `api.anthropic.com` (the API), `claude.ai`
+  (the installer and the login), `platform.claude.com` (the login's token
+  exchange) and `downloads.claude.ai` (the release binaries). The list
+  covers starting and logging in, and may be incomplete for optional
+  features (telemetry, an MCP proxy): add what a feature needs to
+  `egress_allow`, or approve its request when it asks. For example:
+
+      [vm.default]
+      egress_allow = ["api.anthropic.com", "claude.ai", "platform.claude.com", "downloads.claude.ai"]
+
+- **`host_exec` is ignored**: the link does not offer host commands and
+  refuses a request for one, whatever `host_exec` says; `caboose doctor`
+  notes it;
+- **every URL asks**: `open_urls = "allow"` and `open_urls_allow` are
+  ignored, and `"off"` still refuses;
+- **an alias whose `cwd`, command or an absolute argument is in a writable
+  path is refused** (at `fallible`, only the command and its path are).
+
+The SSH agent: `trust = "hostile"` forwards no SSH agent unless `[link]
+ssh_agent` names one. The one `ssh` on this machine would use by default
+(an `IdentityAgent` in `~/.ssh/config`, or `$SSH_AUTH_SOCK`) is never
+carried, and `caboose doctor` says so. A socket `ssh_agent` names is
+carried into the VM as at `fallible`, and the sandbox can sign and log in
+wherever its keys reach, for as long as it runs; its ssh connections
+still go through the proxy, and so are decided by `egress_allow` and
+`egress_ports`.
+
+`caboose doctor` and `caboose permissions` show the level first.
+
+## `[alias.NAME]`
+
+An alias is a command on this machine that a session may run with
+`caboose-agent run NAME [KEY=VALUE...]`: a fixed argv plus enum
+parameters, never a shell and never free-form arguments. There are none by
+default, and only this file defines them (a session can propose one,
+which `caboose apply` shows you: [proposals](proposals.md)). `NAME` is a
+lowercase label. The link reads a change within seconds, with no restart.
+
+```toml
+[alias.caffeinate]
+command = ["/usr/bin/caffeinate", "-i"]
+description = "keep the Mac awake while a turn runs"
+
+[alias.test]
+command = ["/usr/local/bin/runner", "--suite", "{suite}"]
+timeout = "10m"
+policy = "ask"
+
+[alias.test.params]
+suite = ["unit", "all"]
+```
+
+| Key | Default | |
+|---|---|---|
+| `command` | required | the argv: `command[0]` an absolute, clean path to the program, then its arguments. An element that is exactly `{KEY}` for a key of `params` is replaced by the value given for it (the first of its values when none is); there is no other substitution |
+| `description` | `""` | what the sandbox is told of it (never the command); at most 200 bytes of printable text |
+| `timeout` | none | a Go duration (`"30s"`, `"10m"`); `"0"` is none. At its end the command is killed |
+| `cwd` | a fresh empty directory | the host directory it runs in, absolute or starting with `~/` |
+| `policy` | `"allow"` | `"allow"` runs it when asked; `"ask"` refuses it as pending until you allow the request it files (`caboose requests`); `"deny"` refuses it |
+| `params` | none | a sub-table `[alias.NAME.params]` of parameters, each an array of 1 to 32 distinct values; a parameter's name is a lowercase label and a value is 1 to 64 of letters, digits, `.`, `_` and `-` |
+
+In the sandbox, `caboose-agent aliases` lists the names, descriptions,
+parameters and whether each asks first, never a command or a directory;
+`caboose-agent run test suite=unit` runs one. A key the alias does not
+declare, or a value not in its list, is refused. Its stdin, stdout and
+stderr are the sandbox command's, and its exit status is
+`caboose-agent run`'s; when it did not run, 75 means it waits for your
+answer (`pending #N`, which `caboose requests approve N` answers), 77 that
+it was refused, 127 that there is no such alias, and 126 that it could not
+run here (its command missing, say).
+
+What runs, every time:
+
+- The command is looked up, and every symlink in its path followed, at
+  each run; it is refused when it, or any symlink on the way, is within
+  anything a sandbox of any environment can write (its writable parts, its
+  home, ...), whatever `trust` says: the sandbox could change what it
+  runs. Paths are compared by their device and inode too, so another
+  spelling of a writable directory (a Mac firmlink, another Unicode
+  normalization of a name) is the same directory. Under
+  `trust = "hostile"` an alias whose `cwd` or an absolute argument is
+  within a writable path is refused as well.
+- The program runs as you, with exactly `PATH`, `HOME` and `LANG` (as host
+  commands get them: [host link](host-link.md#host-commands)), no terminal,
+  and no shell: `*`, `|` and `$(...)` in an element are passed as they are.
+- With no `cwd`, it runs in a fresh empty directory under caboose's daemon
+  directory (`~/.caboose/daemon/alias-tmp/`, or `daemon-dev/` for a build
+  from a checkout), removed once it is done.
+- It lives only while `caboose-agent run` does: interrupting that, or
+  anything that ends it, ends the command and whatever it started (its
+  process group, `SIGTERM`, then `SIGKILL` three seconds later), as does
+  its `timeout` and the link's own end. What it leaves running when it
+  exits is ended too; a process that leaves its group (a daemon that calls
+  `setsid`) escapes that. Aliases and host commands together run at most 16
+  at once.
+
+Some examples, per host:
+
+```toml
+# macOS: keep the Mac awake while the alias runs
+[alias.awake]
+command = ["/usr/bin/caffeinate", "-i"]
+description = "keep the Mac awake until interrupted"
+
+# Linux (systemd): keep the machine from idling
+[alias.awake]
+command = ["/usr/bin/systemd-inhibit", "--what=idle", "/bin/sleep", "infinity"]
+description = "keep the machine from idling until interrupted"
+```
+
+`caboose-agent run awake &` in a session holds the machine awake until that
+job ends. A command that runs what a writable project says (`make` in a
+`cwd` the sandbox can write) gives the sandbox a way to run code on your
+machine: allowed under `fallible`, as your choice, and refused under
+`hostile`.
 
 ## Environments
 

@@ -1,0 +1,45 @@
+
+  caboose apply  environment default
+  1 proposal from sessions in the sandbox. Each is shown whole, and nothing
+  changes until you say so. ^C stops; what was applied before it stays.
+
+  Keep the host awake                                                      1/1
+  ────────────────────────────────────────────────────────────────────────────
+  long builds
+
+  awake.toml, proposed 1h ago
+
+  A host command the sandbox may run ([alias.awake]), with caboose-agent run
+  awake:
+    command  TMP/bin/awake
+             -i {mode}
+    in       a fresh empty directory
+    {mode}   idle, disk
+
+    --- TMP/.caboose/envs/default/config.toml
+    +++ with the alias
+      #[ref.default]
+      #image = "debian:13.7-slim"
+    + 
+    + [alias.awake]
+    + command = ["TMP/bin/awake", "-i", "{mode}"]
+    + description = "keep it awake"
+    + policy = "ask"
+    + 
+    + [alias.awake.params]
+    + mode = ["idle", "disk"]
+
+
+  ? Apply this proposal?
+    1  Apply it
+    2  Leave it pending
+    3  Delete it
+    choose 1-3 [2]:   ? To let the sandbox run
+    TMP/bin/awake
+    on this machine, type the alias's name, awake:   ✓ Wrote [alias.awake] to
+    TMP/.caboose/envs/default/config.toml:
+    the link reads it within seconds, with no restart
+  ✓ Applied awake
+
+  ✓ The aliases applied need no build and no restart: sessions run them with
+    caboose-agent run NAME, and caboose-agent aliases lists them

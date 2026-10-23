@@ -18,6 +18,13 @@ type DaemonCaller interface {
 	EnsureLink(ctx context.Context, env string) (*daemonproto.LinkResult, error)
 	RestartLink(ctx context.Context, env string) (*daemonproto.LinkResult, error)
 	Status(ctx context.Context) (*daemonproto.StatusResult, error)
+	// The request broker's: requests, grants and permissions.
+	Requests(ctx context.Context, env string, all bool, limit int) (*daemonproto.RequestsResult, error)
+	Request(ctx context.Context, env string, id uint64) (*daemonproto.RequestResult, error)
+	Answer(ctx context.Context, p daemonproto.AnswerParams) (*daemonproto.AnswerResult, error)
+	Grants(ctx context.Context, env string) (*daemonproto.GrantsResult, error)
+	Revoke(ctx context.Context, env, grant string) (*daemonproto.RevokeResult, error)
+	Permissions(ctx context.Context, env string) (*daemonproto.PermissionsResult, error)
 	Close() error
 }
 

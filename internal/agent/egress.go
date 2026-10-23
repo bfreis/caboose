@@ -279,7 +279,7 @@ func (l *Link) dialHost(c net.Conn, host string, port int) *agentproto.Stream {
 // egressStatus is the HTTP status that answers a refusal of reason.
 func egressStatus(reason string) int {
 	switch reason {
-	case agentproto.EgressOff, agentproto.EgressBad, agentproto.EgressPort, agentproto.EgressDenied:
+	case agentproto.EgressOff, agentproto.EgressBad, agentproto.EgressPort, agentproto.EgressDenied, agentproto.EgressPending:
 		return http.StatusForbidden
 	case agentproto.EgressResolve, agentproto.EgressDial:
 		return http.StatusBadGateway

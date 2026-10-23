@@ -2,6 +2,7 @@
   caboose doctor  environment default
 
   ✓ caboose       VERSION, a VERSIONelopment build; it does not update itself
+  ✓ trust         fallible
   ✓ env           default
   ✓ roots         TMP at /work (read-only)
   ✓ data dir      TMP/data

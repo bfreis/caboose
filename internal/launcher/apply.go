@@ -17,7 +17,7 @@ import (
 
 // `caboose apply` is the host's half of a proposal (internal/proposal): a
 // session in the sandbox writes what it would change -- packages of an
-// apko image, a Dockerfile section, a root -- and apply shows each one and makes
+// apko image, a Dockerfile section, a root, an alias -- and apply shows each one and makes
 // the change when the user says so. The sandbox never writes config.toml
 // or a dockerfile profile's dir itself: both decide what it is, and what of the host it
 // reaches, so a person at the host says yes to every change, having seen
@@ -31,7 +31,9 @@ import (
 // anything holding caboose's own state, anything overlapping a root. It is
 // checked, and written, as its physical path, so a symlink the sandbox can
 // change later does not decide what is mounted; and it is confirmed by
-// typing its name, which no habit of pressing Enter gets past.
+// typing its name, which no habit of pressing Enter gets past. An alias,
+// a command run on this machine, has its own refusal list
+// (apply_alias.go), and is confirmed the same way.
 
 // ApplyCommand is the apply command for env, as SetupCommand is setup's.
 func ApplyCommand(env string) string { return envCommand(env, "apply") }
@@ -80,6 +82,9 @@ func (a *App) Apply() error {
 // applied is what a run has changed.
 type applied struct {
 	dockerfile, config bool
+	// alias is set when an alias was written: config.toml changed, but
+	// nothing about the sandbox, so no build or restart follows.
+	alias bool
 }
 
 func (a *App) applyRun(p *prompter, entries []proposal.Entry) error {
@@ -96,6 +101,10 @@ func (a *App) applyRun(p *prompter, entries []proposal.Entry) error {
 	}
 	p.blank()
 	if !done.dockerfile && !done.config {
+		if done.alias {
+			p.ok("The aliases applied need no build and no restart: sessions run them with caboose-agent run NAME, and caboose-agent aliases lists them")
+			return nil
+		}
 		p.same("Nothing was applied")
 		return nil
 	}
@@ -113,9 +122,13 @@ type plan struct {
 	// root is the root to add, at host, its physical path.
 	root *proposal.Root
 	host string
+	// alias is the alias to write.
+	alias *aliasPlan
 }
 
-func (pl plan) empty() bool { return pl.dockerfile == nil && pl.packages == nil && pl.root == nil }
+func (pl plan) empty() bool {
+	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil
+}
 
 // applyOne shows one proposal and does what the user says with it.
 func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
@@ -149,8 +162,8 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 	}
 	p.blank()
 	def := 0
-	if pl.root != nil {
-		def = 1 // a root is not added on Enter alone
+	if pl.root != nil || pl.alias != nil {
+		def = 1 // a root or an alias is not added on Enter alone
 	}
 	i, err := p.choose("Apply this proposal?", []string{"Apply it", "Leave it pending", "Delete it"}, def)
 	if err != nil {
@@ -162,6 +175,20 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 		return nil
 	case 2:
 		return a.deleteProposal(p, e)
+	}
+
+	if pl.alias != nil {
+		ok, err := a.applyAlias(p, pl.alias)
+		if err != nil || !ok {
+			return err
+		}
+		done.alias = true
+		if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
+			p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
+			return nil
+		}
+		p.ok("Applied %s", name)
+		return nil
 	}
 
 	edit := config.Edit{}
@@ -267,6 +294,13 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		warnings = append(warnings, warn...)
 		pl.root, pl.host = r, host
 	}
+
+	if al := pr.Alias; al != nil {
+		ap, why, warn := a.planAlias(*al)
+		refusals = append(refusals, why...)
+		warnings = append(warnings, warn...)
+		pl.alias = ap
+	}
 	return pl, refusals, warnings
 }
 
@@ -284,6 +318,9 @@ func (a *App) showPlan(p *prompter, pl plan) {
 	}
 	if pl.packages != nil {
 		a.showPackages(p, pl.packages)
+	}
+	if pl.alias != nil {
+		a.showAlias(p, pl.alias)
 	}
 	if pl.root != nil {
 		p.say("Mount a host directory into the sandbox ([roots]):")

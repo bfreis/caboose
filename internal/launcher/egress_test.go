@@ -168,6 +168,9 @@ func TestBuilderActions(t *testing.T) {
 	if acts.OpenURL("https://example.com") == nil || acts.Notify("t", "x") == nil {
 		t.Error("the builder link acted")
 	}
+	if ok, err := acts.Confirm("?"); ok || err == nil {
+		t.Error("the builder link confirmed")
+	}
 }
 
 // A launch that runs something in the sandbox waits for the VM's outbound

@@ -82,8 +82,8 @@ start) and `shell.d` (interactive shell config) when asked, with no proposal
   login's loopback callback listens). Tell the user to open
   `http://localhost:PORT`; `caboose-agent ports` lists what is forwarded.
 - `caboose-agent open URL` (and `xdg-open`, `$BROWSER`) opens an http(s)
-  URL in the user's browser, usually after a dialog on the host.
-  `caboose-agent notify TEXT` notifies.
+  URL in the user's browser: usually `pending #N` at once, then it opens
+  once the user allows it on the host. `caboose-agent notify TEXT` notifies.
 @@IF hostexec=on@@
 - Host commands are on: `caboose-agent host CMD ARGS` runs CMD on the host as
   the user, in the host directory of the current one (under a root; `-C DIR`
@@ -94,6 +94,10 @@ start) and `shell.d` (interactive shell config) when asked, with no proposal
 - Host commands are off (`host_exec` in `[link]` of `config.toml`, the
   user's call). Ask the user to run what has to run on the host.
 @@END@@
+- `caboose-agent aliases` lists host commands the user named; `caboose-agent
+  run NAME [KEY=VALUE...]` runs one. After a `pending #N` (exit 75: note it,
+  go on), or to ask ahead for a host, URL or alias, use `caboose_request` or
+  `caboose-agent request`; it never blocks (the caboose-requests skill).
 @@IF isolation=vm@@
 - Outbound: by default proxy-aware clients (`HTTPS_PROXY` and the rest are
   `http://127.0.0.1:9128`) and, usually, ssh go out through the Mac, VPN
@@ -179,6 +183,6 @@ itself: for what the user's configuration cannot do, suggest an issue there.
 
 ## Skills
 
-caboose-propose, caboose-persist and caboose-troubleshoot hold the
-procedures. If one is not among your skills, read
+caboose-propose, caboose-persist, caboose-requests and caboose-troubleshoot
+hold the procedures. If one is not among your skills, read
 `/etc/claude-code/.claude/skills/<name>/SKILL.md`.

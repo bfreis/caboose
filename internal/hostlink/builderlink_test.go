@@ -169,7 +169,7 @@ func builderLinked(t *testing.T, buf int, g *gate) string {
 		},
 		Own: func() ([]netip.Addr, error) { return nil, nil },
 	}
-	cfg := Config{Ports: PortSet{}, OpenURL: OpenOff, Actions: &fakeActions{}, Log: log.New(io.Discard, "", 0), Egress: eg}
+	cfg := Config{Trust: "fallible", Ports: PortSet{}, OpenURL: OpenOff, Actions: &fakeActions{}, Log: log.New(io.Discard, "", 0), Egress: eg}
 	go Run(sess, cfg)
 	if err := agent.WaitProxy(listen, 10*time.Second); err != nil {
 		t.Fatal(err)

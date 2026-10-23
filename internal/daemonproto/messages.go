@@ -37,7 +37,15 @@ const (
 	KindUnavailable      = "unavailable"       // no daemon answers (client side)
 	KindTimeout          = "timeout"           // no answer in time (client side)
 	KindBadFrame         = "bad_frame"         // the peer sent what the protocol forbids (client side)
-	KindInternal         = "internal"
+
+	// The request broker's.
+	KindNotOwner          = "not_owner"          // this daemon runs no link of the environment, so its broker is not this daemon's to serve
+	KindNotFound          = "not_found"          // no such request or grant
+	KindAlreadyAnswered   = "already_answered"   // the request was decided already; the first answer wins
+	KindStaleDiff         = "stale_diff"         // config.toml would change differently than the diff confirmed
+	KindNotAllowed        = "not_allowed"        // this kind of client may not do that
+	KindBrokerUnavailable = "broker_unavailable" // the broker cannot serve now (its files, config.toml)
+	KindInternal          = "internal"
 )
 
 // Error is a failure, on the wire and as a Go error.
@@ -92,7 +100,8 @@ func Kind(err error) string {
 	if e, ok := err.(*Error); ok {
 		switch e.Kind {
 		case KindBadRequest, KindUnknownMethod, KindUnknownEnv, KindProtocolMismatch, KindBusy,
-			KindUnavailable, KindTimeout, KindBadFrame:
+			KindUnavailable, KindTimeout, KindBadFrame,
+			KindNotOwner, KindNotFound, KindAlreadyAnswered, KindStaleDiff, KindNotAllowed, KindBrokerUnavailable:
 			return e.Kind
 		}
 	}
@@ -257,6 +266,9 @@ type EnvStatus struct {
 	Link      string    `json:"link"`
 	Since     time.Time `json:"since,omitzero"` // when the link entered its state
 	LastError string    `json:"last_error,omitempty"`
+	// Pending is how many requests wait for an answer in the environment's
+	// broker; absent while none does, or no link of this daemon serves it.
+	Pending int `json:"pending,omitempty"`
 }
 
 // StatusResult is the result of status.
@@ -317,6 +329,9 @@ func (e *EnvStatus) validate() error {
 		if err := checkText("state", s, maxName); err != nil {
 			return err
 		}
+	}
+	if e.Pending < 0 {
+		return bad("negative pending count")
 	}
 	return checkText("last error", e.LastError, maxMessage)
 }

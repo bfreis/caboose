@@ -6,12 +6,17 @@
 //
 // Everything the agent sends is untrusted, as everything from the sandbox
 // is. The host decides: which ports forward is config.toml's forward_ports,
-// never the agent's; forwarding listens on 127.0.0.1 only; a URL opens only
-// when it is http(s) and, by default, only after a dialog says yes; and
-// every text the sandbox wrote is made printable and cut short before
-// anything shows it; the outbound proxy reaches only egress_ports, and
-// only public addresses unless egress_allow says otherwise. Commands run
-// on this machine only with host_exec on (hostexec.go).
+// never the agent's; forwarding listens on 127.0.0.1 only; every other
+// crossing -- a URL opened, an outbound connection, a host command -- is
+// decided by the link's Decider, the environment's broker, by the policy
+// config.toml and a person's grants make (internal/policy). One that asks
+// a person is refused for now as pending, never waited on, with the
+// number of the request filed for it (requests.go); a URL opens only when
+// it is http(s), and the outbound proxy dials only the addresses checked.
+// Every text the sandbox wrote is made printable and cut short before
+// anything shows it, and every request it may make is bounded and
+// rate-limited. Commands run on this machine only with host_exec on
+// (hostexec.go).
 package hostlink
 
 import (
@@ -29,7 +34,9 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/broker"
 	"github.com/bfreis/caboose/internal/linkdebug"
+	"github.com/bfreis/caboose/internal/policy"
 	"github.com/bfreis/caboose/internal/proposal"
 )
 
@@ -90,12 +97,29 @@ type Config struct {
 	// Diagnose logs the windows the hellos settled on, and any stream or
 	// write that stalls (agentproto's WatchStalls).
 	Diagnose bool
+	// Decide makes the decisions on what the sandbox asks; nil decides as
+	// these settings say.
+	Decide Decider
+	// Trust is the environment's configured trust (config.toml's trust),
+	// which the fallback decision (Decide nil) judges by. Anything but
+	// "fallible", unset included, is decided as hostile: a link that
+	// cannot tell the trust fails closed.
+	Trust string
 	// Execs, when set, also tracks this link's host commands, so they can
 	// be counted and killed apart from every other link's.
 	Execs *Execs
 	// Gate, when set, admits this link's host-exec requests: once it is
 	// drained, they are refused. nil admits every one.
 	Gate *ExecGate
+	// AliasTmp is where aliases with no cwd of their own run, each in a
+	// fresh directory made in it and removed after: CABOOSE_HOME's
+	// daemon directory's alias-tmp. "" offers no aliases (OpAliasRun,
+	// OpAliases), and so does a Config with no Decide.
+	AliasTmp string
+	// Mods, when set, is told the agent's count of Claude Code sessions
+	// and of those with caboose's mod (TypeMods), checked, whenever it
+	// changes.
+	Mods func(agentproto.ModsInfo)
 }
 
 // Host serves one session.
@@ -108,12 +132,14 @@ type Host struct {
 	refused  map[int]string // port -> why it is not forwarded
 	tokens   float64
 	lastTick time.Time
-	dialog   sync.Mutex // one dialog at a time
-	ssh      int        // SSH agent connections open
+	ssh      int // SSH agent connections open
 	egress   egressState
 	execs    hostExecState
 	execWG   sync.WaitGroup // host commands' goroutines, which Run waits for
 	closing  bool           // Run is waiting for them: hostExec adds no more
+	reqs     requestsState  // OpBrokerRequests' bucket and waits
+	alias    aliasState     // OpAliasRun's bucket
+	lastMods *agentproto.ModsInfo
 }
 
 // stallAfter is how long a stream waits for credit, or a write to the
@@ -155,6 +181,8 @@ func Run(sess *agentproto.Session, cfg Config) error {
 		hello.SSHAgent = cfg.SSHAgent
 	}
 	hello.HostExec = cfg.HostExec != nil
+	hello.Broker = cfg.Decide != nil
+	hello.AliasesOn = h.aliasesOn()
 	for _, r := range cfg.Relay {
 		hello.Roots = append(hello.Roots, r.Container)
 	}
@@ -205,6 +233,8 @@ func Run(sess *agentproto.Session, cfg Config) error {
 			h.reconcile(m.Ports)
 		case agentproto.TypeRequest:
 			go h.answer(m)
+		case agentproto.TypeMods:
+			h.mods(m.Mods)
 		}
 	}
 	if !helloed {
@@ -359,6 +389,16 @@ func (h *Host) answer(m agentproto.Message) {
 		// Bounded by how many run at once, not the bucket: a session
 		// runs one after another.
 		err = h.hostExec(m.ID)
+	} else if m.Op == agentproto.OpAliasRun {
+		// Its own bucket, and host exec's bound on how many run at once.
+		err = h.aliasRun(m.ID, m.Exec)
+	} else if m.Op == agentproto.OpAliases {
+		// The listing bucket.
+		err = h.aliases(&r)
+	} else if m.Op == agentproto.OpBrokerRequests {
+		// Its own bucket, and a bound on the waits (requests.go): a
+		// wait must hold up nothing else.
+		err = h.brokerRequests(m, &r)
 	} else if !h.allow() {
 		err = errors.New("too many requests; try again shortly")
 	} else {
@@ -367,13 +407,15 @@ func (h *Host) answer(m agentproto.Message) {
 			err = h.open(m.URL)
 		case agentproto.OpNotify:
 			err = h.notify(m.Title, m.Text)
+		case agentproto.OpBrokerRequest:
+			err = h.brokerRequest(m.Ask, &r)
 		default:
 			err = fmt.Errorf("unknown request %q", clip(m.Op, 40))
 		}
 	}
 	r.OK = err == nil
 	if err != nil {
-		r.Error, r.Reason = err.Error(), egressReason(err)
+		r.Error, r.Reason, r.RequestID = err.Error(), egressReason(err), requestOf(err)
 	}
 	_ = h.sess.Send(r)
 }
@@ -416,28 +458,41 @@ func (h *Host) sshAgent(id uint64) error {
 	return nil
 }
 
+// open serves OpOpen: the URL checked, its opening decided, and opened
+// at once when allowed. One that asks is never waited on here: it is
+// refused for now as pending, and the broker opens it once a person
+// allows it (from the host's dialog or its CLI).
 func (h *Host) open(raw string) error {
-	if h.cfg.OpenURL == OpenOff {
-		return errors.New("opening URLs is off on the host (open_urls)")
-	}
 	u, err := CheckURL(raw)
 	if err != nil {
+		// With open_urls off, that is what is said, whatever the URL.
+		if h.cfg.Decide == nil && h.cfg.OpenURL == OpenOff {
+			return errors.New("opening URLs is off on the host (open_urls)")
+		}
 		return err
 	}
-	if h.cfg.OpenURL != OpenAllow {
-		h.dialog.Lock()
-		ok, err := h.cfg.Actions.Confirm("The caboose sandbox asks to open this URL in your browser:\n\n" + u)
-		h.dialog.Unlock()
-		if err != nil {
-			return fmt.Errorf("could not ask on the host: %v", err)
-		}
-		if !ok {
-			h.cfg.Log.Printf("open %s: declined", u)
-			return errors.New("declined on the host")
-		}
+	o, _ := h.decider().Decide(policy.Request{Kind: policy.KindOpenURL, URL: u, Origin: Origin(u)})
+	switch o.Verdict {
+	case broker.Allowed:
+		h.cfg.Log.Printf("open %s", u)
+		return h.cfg.Actions.OpenURL(u)
+	case broker.Pending:
+		h.cfg.Log.Printf("open %s: pending #%d", u, o.Request)
+		return &refusal{reason: agentproto.ReasonPending, request: o.Request,
+			msg: fmt.Sprintf("pending #%d: %s; the host opens the URL once a person allows it there", o.Request, o.Reason)}
 	}
-	h.cfg.Log.Printf("open %s", u)
-	return h.cfg.Actions.OpenURL(u)
+	h.cfg.Log.Printf("open %s: refused: %s", u, clip(o.Reason, 300))
+	return errors.New(o.Reason)
+}
+
+// Origin is u's origin, scheme://host[:port] in lower case, as
+// open_urls_allow names one; u is CheckURL's.
+func Origin(u string) string {
+	p, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(p.Scheme + "://" + p.Host)
 }
 
 // CheckURL is raw if it is a URL the host may open: http or https, with a

@@ -310,7 +310,7 @@ func TestEmptyHomeDies(t *testing.T) {
 // against a sandboxed HOME: it answers status as a healthy daemon serving
 // the default environment's link would, and nothing is started.
 type daemonStub struct {
-	launcher.DaemonCaller // the rest: not stubbed, a call panics
+	launcher.DaemonCaller // the broker's calls: not stubbed, a call panics
 	link                  string
 }
 

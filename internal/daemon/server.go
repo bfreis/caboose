@@ -71,6 +71,20 @@ type Links interface {
 	Close()
 }
 
+// Brokers is what the daemon serves the request broker's methods
+// (requests, request, answer, grants, revoke, permissions) with. A daemon
+// given none answers them with daemonproto.KindUnknownMethod.
+type Brokers interface {
+	// Call handles one such request for env. who is the kind of client
+	// the connection's hello named (daemonproto.ClientCLI), which the
+	// implementation takes who answered from, never anything in params;
+	// params are the request's, already checked to be an object and to
+	// name a valid env. The result is encoded as the response's; an error
+	// that is a *daemonproto.Error goes to the client as it is, any other
+	// as KindInternal.
+	Call(ctx context.Context, who, method, env string, params json.RawMessage) (any, error)
+}
+
 type noLinks struct{}
 
 func (noLinks) Serve(context.Context, string, string) (*daemonproto.LinkResult, error) {
@@ -94,6 +108,8 @@ type Options struct {
 	Idle time.Duration
 	// Links serves the link requests; nil serves none.
 	Links Links
+	// Brokers serves the request broker's methods; nil serves none.
+	Brokers Brokers
 	// Ready, when set, runs once, in a goroutine of its own, as soon as
 	// the daemon holds its lock and serves its socket, with its log: what
 	// only the one daemon of the directory may do (start the links it ran

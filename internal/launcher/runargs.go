@@ -62,7 +62,7 @@ var shortFlags = map[byte]string{
 // ownedEnv are the variables caboose or its image sets, beyond those in its
 // own -e arguments; ownedEnvPrefixes, the prefixes of its own.
 var (
-	ownedEnv         = []string{"HOME", "PATH", "TZ", "SSH_AUTH_SOCK", "USE_BUILTIN_RIPGREP", "IS_SANDBOX"}
+	ownedEnv         = []string{"HOME", "PATH", "TZ", "SSH_AUTH_SOCK", "USE_BUILTIN_RIPGREP", "IS_SANDBOX", datadir.PluginDirsEnv}
 	ownedEnvPrefixes = []string{"CABOOSE_", "TINI_"}
 )
 

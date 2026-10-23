@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +18,8 @@ func TestMethodTable(t *testing.T) {
 	want := []string{
 		daemonproto.MethodPing, daemonproto.MethodStatus, daemonproto.MethodEnsureLink, daemonproto.MethodRestartLink,
 		daemonproto.MethodStopLink, daemonproto.MethodStop, daemonproto.MethodReplace,
+		daemonproto.MethodRequests, daemonproto.MethodRequest, daemonproto.MethodAnswer, daemonproto.MethodGrants,
+		daemonproto.MethodRevoke, daemonproto.MethodPermissions,
 	}
 	// Served to a client of a newer protocol, which is to replace the
 	// daemon: these alone.
@@ -55,7 +56,6 @@ type countingLinks struct {
 	noLinks
 	mu    sync.Mutex
 	calls []string
-	envs  []daemonproto.EnvStatus // what Envs says
 }
 
 func (l *countingLinks) Serve(_ context.Context, method, env string) (*daemonproto.LinkResult, error) {
@@ -72,18 +72,7 @@ func (l *countingLinks) served() int {
 }
 
 func (l *countingLinks) Envs() []daemonproto.EnvStatus {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.envs == nil {
-		return []daemonproto.EnvStatus{{Name: "alpha"}}
-	}
-	return l.envs
-}
-
-func (l *countingLinks) setEnvs(envs []daemonproto.EnvStatus) {
-	l.mu.Lock()
-	l.envs = envs
-	l.mu.Unlock()
+	return []daemonproto.EnvStatus{{Name: "alpha", Pending: 2}}
 }
 
 // paramsFor are valid params for each method of the table.
@@ -94,8 +83,10 @@ func paramsFor(name string) json.RawMessage {
 		p = &daemonproto.ReplaceParams{Version: "v9.9.9"}
 	case daemonproto.MethodEnsureLink, daemonproto.MethodRestartLink, daemonproto.MethodStopLink:
 		p = &daemonproto.EnvParams{Env: "alpha"}
-	default:
+	case daemonproto.MethodPing, daemonproto.MethodStatus, daemonproto.MethodStop:
 		return nil
+	default:
+		p = brokerParams(name)
 	}
 	b, _ := json.Marshal(p)
 	return b
@@ -104,17 +95,18 @@ func paramsFor(name string) json.RawMessage {
 // A daemon with every service, each counting what reaches it.
 type allServices struct {
 	links *countingLinks
+	br    *fakeBrokers
 }
 
 func (a *allServices) reached() int {
-	return a.links.served()
+	return a.links.served() + len(a.br.served())
 }
 
 func startAll(t *testing.T) (string, *allServices) {
 	t.Helper()
-	a := &allServices{links: &countingLinks{}}
+	a := &allServices{links: &countingLinks{}, br: &fakeBrokers{result: &daemonproto.RevokeResult{Revoked: "g1"}}}
 	dir := startServer(t, Options{Version: "v1.0.0", Idle: time.Minute, Log: testLog{t},
-		Links: a.links})
+		Links: a.links, Brokers: a.br})
 	return dir, a
 }
 
@@ -149,7 +141,7 @@ func TestSocketRefusesDaemonHellos(t *testing.T) {
 	dir, a := startAll(t)
 	c, err := daemonproto.Dial(t.Context(), Socket(dir), daemonproto.Options{Client: daemonproto.ClientDaemon, Version: "v9.9.9"})
 	if err == nil {
-		_ = c.Call(t.Context(), daemonproto.MethodEnsureLink, paramsFor(daemonproto.MethodEnsureLink), nil)
+		_ = c.Call(t.Context(), daemonproto.MethodAnswer, brokerParams(daemonproto.MethodAnswer), nil)
 		c.Close()
 		t.Error("a daemon hello was let through")
 	}
@@ -166,23 +158,22 @@ func TestSocketRefusesDaemonHellos(t *testing.T) {
 func TestResultsAreChecked(t *testing.T) {
 	dir, a := startAll(t)
 	c := dialAs(t, dir, daemonproto.ClientCLI, 0)
+	params := json.RawMessage(`{"env":"alpha"}`)
 	for _, bad := range []string{"\x1b[2J", "a\u202eb", "\x00"} {
-		a.links.setEnvs([]daemonproto.EnvStatus{{Name: "alpha", LastError: bad}})
+		a.br.mu.Lock()
+		a.br.result = &daemonproto.RequestsResult{Requests: []daemonproto.RequestView{{ID: 1, Kind: "egress", State: "pending", Effect: bad}}}
+		a.br.mu.Unlock()
 		var raw json.RawMessage
-		if err := c.Call(t.Context(), daemonproto.MethodStatus, nil, &raw); daemonproto.Kind(err) != daemonproto.KindInternal {
+		if err := c.Call(t.Context(), daemonproto.MethodRequests, params, &raw); daemonproto.Kind(err) != daemonproto.KindInternal {
 			t.Errorf("%q: %s %v", bad, raw, err)
 		}
 	}
-	// Each environment's error within its bound, all of them over a frame.
-	var many []daemonproto.EnvStatus
-	for i := range daemonproto.MaxLine/4000 + 1 {
-		many = append(many, daemonproto.EnvStatus{Name: fmt.Sprintf("e%d", i), LastError: strings.Repeat("x", 4000)})
-	}
-	a.links.setEnvs(many)
-	if err := c.Call(t.Context(), daemonproto.MethodStatus, nil, nil); daemonproto.Kind(err) != daemonproto.KindInternal || !strings.Contains(err.Error(), "fit") {
+	a.br.mu.Lock()
+	a.br.result = bigResult{Big: strings.Repeat("x", daemonproto.MaxLine)}
+	a.br.mu.Unlock()
+	if err := c.Call(t.Context(), daemonproto.MethodGrants, params, nil); daemonproto.Kind(err) != daemonproto.KindInternal || !strings.Contains(err.Error(), "fit") {
 		t.Errorf("oversize: %v", err)
 	}
-	a.links.setEnvs(nil)
 	if err := c.Ping(t.Context()); err != nil {
 		t.Errorf("after an oversize result: %v", err)
 	}
@@ -193,10 +184,14 @@ func TestResultsAreChecked(t *testing.T) {
 func TestParamsAreChecked(t *testing.T) {
 	dir, a := startAll(t)
 	c := dialAs(t, dir, daemonproto.ClientCLI, 0)
-	for _, p := range []string{`[]`, `"alpha"`, `1`, `true`, ` [{"env":"alpha"}]`, `{"env":"../x"}`, `{"env":1}`, `null`} {
-		if err := c.Call(t.Context(), daemonproto.MethodEnsureLink, json.RawMessage(p), nil); daemonproto.Kind(err) != daemonproto.KindBadRequest {
+	for _, p := range []string{`[]`, `"alpha"`, `1`, `true`, ` [{"env":"alpha"}]`, `{"env":"../x"}`, `{"env":1}`, `null`, `{"env":"alpha","id":0}`} {
+		if err := c.Call(t.Context(), daemonproto.MethodRequest, json.RawMessage(p), nil); daemonproto.Kind(err) != daemonproto.KindBadRequest {
 			t.Errorf("%s: %v", p, err)
 		}
+	}
+	// An always answer without the hash of the diff shown.
+	if err := c.Call(t.Context(), daemonproto.MethodAnswer, json.RawMessage(`{"env":"alpha","id":1,"verdict":"allow","scope":"always"}`), nil); daemonproto.Kind(err) != daemonproto.KindBadRequest {
+		t.Errorf("always without confirm_diff: %v", err)
 	}
 	if n := a.reached(); n != 0 {
 		t.Errorf("%d bad calls served", n)
@@ -206,22 +201,7 @@ func TestParamsAreChecked(t *testing.T) {
 	}
 }
 
-// startServer runs a daemon in this process with opts (in a directory of
-// its own) and returns the directory.
-func startServer(t *testing.T, opts Options) string {
-	t.Helper()
-	h := newHarness(t)
-	opts.Dir = h.dir
-	runInProcess(t, opts)
-	return h.dir
-}
+// bigResult is a result that checks out but is over a frame.
+type bigResult struct{ Big string }
 
-func dialAs(t *testing.T, dir, kind string, protocol int) *daemonproto.Client {
-	t.Helper()
-	c, err := daemonproto.Dial(context.Background(), Socket(dir), daemonproto.Options{Client: kind, Version: "v9.9.9", Protocol: protocol})
-	if err != nil {
-		t.Fatalf("dial as %s: %v", kind, err)
-	}
-	t.Cleanup(func() { c.Close() })
-	return c
-}
+func (bigResult) Validate() error { return nil }

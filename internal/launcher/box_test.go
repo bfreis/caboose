@@ -120,7 +120,7 @@ exit 99
 		t.Fatal(err)
 	}
 	b.App = &App{
-		Cfg: &config.Config{Env: "default", Container: "box", Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
+		Cfg: &config.Config{Env: "default", Container: "box", Trust: config.TrustFallible, Image: "img", Roots: []config.Root{{Host: tmp, Container: "/work"}},
 			DataDir: b.data, KeepVersions: 2, ReadyTimeout: 0, Egress: true, Isolation: iso, Getenv: func(string) string { return "" },
 			ImageProfile: config.ImageProfile{Kind: config.ImageKindRef, Name: "default", Ref: boxBase}},
 		Docker:   &docker.CLI{Path: fake},
@@ -252,7 +252,8 @@ func (b *boxApp) said() (out, errs string) {
 func runningBox(iso string) *backendtest.Fake {
 	return &backendtest.Fake{Status: "running", ImageID: boxImageID,
 		SandboxLabels: map[string]string{assets.LabelIsolation: iso, assets.LabelProfile: iso, assets.LabelUser: "", assets.LabelRunArgs: "", assets.LabelHostname: hostnameOf(config.DefaultEnv, "laptop"),
-			assets.LabelCompat: strconv.Itoa(assets.Compat), assets.LabelEgress: egressLabel(iso == isolationVM)}}
+			assets.LabelCompat: strconv.Itoa(assets.Compat), assets.LabelEgress: egressLabel(iso == isolationVM),
+			assets.LabelPluginDirs: datadir.PluginDirs, assets.LabelTrust: config.TrustFallible, assets.LabelNetwork: map[bool]string{true: "nat"}[iso == isolationVM]}}
 }
 
 // mountLocal gives b's sandbox local (data-dir-relative) at ~/.local/bin,

@@ -27,6 +27,9 @@ func TestMain(m *testing.M) {
 		os.Exit(syncagent.Serve(os.Args[2], os.Stdin, os.Stdout, os.Stderr,
 			syncagent.Paths{Home: home, Repo: os.Getenv(testSyncRepo), Exe: exe}))
 	}
+	if os.Getenv(brokerDaemonEnv) != "" {
+		os.Exit(brokerDaemonMain())
+	}
 	if dir := os.Getenv(heldLockEnv); dir != "" {
 		holdLinkLock(dir)
 	}

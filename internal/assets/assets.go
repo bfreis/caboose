@@ -118,6 +118,17 @@ const (
 	// otherwise. Set
 	// on every container, as LabelRunArgs is.
 	LabelEgress = "dev.bfreis.caboose.egress"
+	// LabelTrust and LabelNetwork are on the container too: config.toml's
+	// trust it was created under ("fallible" or "hostile"), and the network
+	// of a VM ("nat", or "none" under hostile), "" for a sandbox that is
+	// no VM. Set on every container, as LabelRunArgs is.
+	LabelTrust   = "dev.bfreis.caboose.trust"
+	LabelNetwork = "dev.bfreis.caboose.network"
+	// LabelPluginDirs is on the container too: the value of
+	// CLAUDE_CODE_PLUGIN_DIRS it was created with, where Claude Code loads
+	// caboose's mod from. Set on every container, as LabelRunArgs is; a
+	// container without it has no mod.
+	LabelPluginDirs = "dev.bfreis.caboose.plugin-dirs"
 	// LabelHostname is on the container too: the hostname it was created
 	// with. Set on every container, as LabelRunArgs is.
 	LabelHostname = "dev.bfreis.caboose.hostname"
@@ -173,6 +184,15 @@ const SandboxInstructionsPath = "sandbox/CLAUDE.md"
 // SandboxInstructions returns the embedded copy of sandbox/CLAUDE.md.
 func SandboxInstructions() ([]byte, error) {
 	return fs.ReadFile(caboose.Files, SandboxInstructionsPath)
+}
+
+// SandboxModsPath is where the sandbox-wide Claude Code mods sit, both in
+// the checkout and embedded: one plugin folder per mod.
+const SandboxModsPath = "sandbox/mods"
+
+// SandboxMods returns the embedded copy of sandbox/mods, rooted there.
+func SandboxMods() (fs.FS, error) {
+	return fs.Sub(caboose.Files, SandboxModsPath)
 }
 
 // SandboxSkillsPath is where the sandbox-wide skills sit, both in the

@@ -6,6 +6,9 @@
 | `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
 | `caboose setup [roots \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks); see [Setup](configuration.md#setup) |
 | `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root), and apply them; see [Proposals](proposals.md) |
+| `caboose requests [--all]` | what the sandbox asked for and waits on: URLs to open, connections through the `vm` proxy, runs of an alias whose `policy` is `"ask"`; `requests show N`, `requests approve N [--for 8h \| --always]`, `requests deny N` answer them |
+| `caboose grants [revoke ID]` | the timed and once grants in force, with the time each has left; `revoke ID` ends one |
+| `caboose permissions` | what this environment's sandbox may do now: trust, roots, aliases, host exec, URLs, outbound rules, grants, how many Claude Code sessions run in it and how many lack caboose's mod, and, when the sandbox was created with other roots, writable parts or trust than `config.toml` now gives, that those take effect at `caboose -e NAME restart` |
 | `caboose doctor [--offline]` | what, if anything, is wrong, and the command that fixes each problem; see [below](#when-something-is-wrong) |
 | `caboose status` | the sandbox, version, platform, live sessions, disk use |
 | `caboose version` | launcher version, and whether the image matches it |
