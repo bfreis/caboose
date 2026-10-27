@@ -622,6 +622,10 @@ type PermissionsResult struct {
 	HostExec  HostExecPerm `json:"host_exec"`
 	OpenURLs  OpenURLsPerm `json:"open_urls"`
 	Egress    EgressPerm   `json:"egress"`
+	// ForwardPorts is [link] forward_ports as config.toml reads it: the
+	// sandbox ports forwarded to the host's localhost without asking.
+	// Any other port asks (caboose-agent request port).
+	ForwardPorts string `json:"forward_ports,omitempty"`
 	// Grants are the timed and once grants in force.
 	Grants []GrantView `json:"grants,omitempty"`
 	// Mods is set when the agent has counted sessions.
@@ -664,7 +668,7 @@ func (r *PermissionsResult) Validate() error {
 	}{{"trust", r.Trust, maxName}, {"isolation", r.Isolation, maxName}, {"profile", r.Profile, maxName},
 		{"host exec why", r.HostExec.Why, maxViewText}, {"open_urls", r.OpenURLs.Mode, maxName}, {"open_urls why", r.OpenURLs.Why, maxViewText},
 		{"egress ports", r.Egress.Ports, 512}, {"egress default", r.Egress.Default, maxViewText},
-		{"egress network", r.Egress.Network, maxViewText}} {
+		{"egress network", r.Egress.Network, maxViewText}, {"forward_ports", r.ForwardPorts, 512}} {
 		if err := checkText(c.what, c.s, c.max); err != nil {
 			return err
 		}

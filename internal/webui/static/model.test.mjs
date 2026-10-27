@@ -242,6 +242,15 @@ test("a writable part is a part the page shows, applies and labels", () => {
   assert.equal(M.partDiffLabel("writable"), "The change to config.toml");
 });
 
+test("a settings part is a part the page shows, applies and labels", () => {
+  const w = { file: "s.toml", title: "t", reason: "r", parts: [{ kind: "settings", summary: "set session.tz", diff: ['+tz = "Europe/Lisbon"'] }], refusals: [], warnings: [], web_apply: true, confirm: { kind: "none", name: "" }, hash: H };
+  const p = M.asProposal(w);
+  assert.deepEqual(p.parts.map((x) => x.kind), ["settings"]);
+  assert.equal(p.web_apply, true);
+  assert.match(M.partLabel("settings"), /Settings in config\.toml/);
+  assert.equal(M.partDiffLabel("settings"), "The change to config.toml");
+});
+
 test("proposal_apply's params carry a hash, and the typed name only when there is one", () => {
   assert.deepEqual(M.proposalApplyParams("dev", "a.toml", H, "a"), { env: "dev", file: "a.toml", hash: H, typed: "a" });
   assert.deepEqual(M.proposalApplyParams("dev", "a.toml", H, undefined), { env: "dev", file: "a.toml", hash: H });

@@ -432,7 +432,7 @@ test("decided requests are listed with who decided and when", async () => {
 
 test("the environment page: permissions, grants with revoke, checkpoints, link log", async () => {
   const s = setup({ hash: "#/env/default" });
-  s.daemon.handlers.permissions = () => ({ body: { result: { env: "default", trust: "fallible", isolation: "container", roots: [{ name: "dev", host: "/Users/x/dev", container: "/work/dev", writable: ["."] }], aliases: [{ name: "build", command: ["make", "all"], policy: "ask" }], host_exec: { configured: true, effective: true }, open_urls: { mode: "ask" }, egress: { on: false }, mods: { sessions: 2, with_mod: 1 } } } });
+  s.daemon.handlers.permissions = () => ({ body: { result: { env: "default", trust: "fallible", isolation: "container", roots: [{ name: "dev", host: "/Users/x/dev", container: "/work/dev", writable: ["."] }], aliases: [{ name: "build", command: ["make", "all"], policy: "ask" }], host_exec: { configured: true, effective: true }, open_urls: { mode: "ask" }, egress: { on: false }, forward_ports: "3000-3999 5173", mods: { sessions: 2, with_mod: 1 } } } });
   s.daemon.handlers.grants = () => ({ body: { result: { grants: [{ id: "g3", kind: "url", key: "api.example.com", created: iso(NOW - 1000), expires: iso(NOW + 3 * 3600000), left_seconds: 10800 }] } } });
   s.daemon.handlers.checkpoints = () => ({ body: { result: { env: "default", paths: [{ path: "/Users/x/dev/a", key: "k", resolved: true, shrunk: "fewer entries than before", checkpoints: [{ id: "c1", finished: iso(NOW - 600000), reason: "schedule", method: "copy-and-link", entries: 10, bytes: 1, linked: 0, skipped: 0 }] }] } } });
   s.daemon.handlers.link_log = () => ({ body: { result: { lines: ["link up", "<b>x</b>"] } } });
@@ -440,6 +440,7 @@ test("the environment page: permissions, grants with revoke, checkpoints, link l
   const txt = texts(s.main()).join(" ");
   assert.ok(txt.indexOf("Trust level") < txt.indexOf("Isolation"), "trust first");
   assert.match(txt, /not limited by caboose under this isolation yet/);
+  assert.match(txt, /Forwarded ports.*3000-3999 5173; another port asks \(caboose-agent request port\)/);
   assert.match(txt, /\/work\/dev/);
   assert.match(txt, /2 h 59 min left/);
   assert.match(txt, /slower: walks every file/);

@@ -275,8 +275,13 @@ In effect. Everything `caboose-agent` sends is untrusted
 ([details](host-link.md#what-the-sandbox-can-and-cannot-do-with-it)):
 
 - ports forward only as `forward_ports` in the host's `config.toml` says,
-  on `127.0.0.1` only, at most 64 at once, and never 7171 or 7172, the
-  web UI's ports, whatever it says;
+  or as a grant you gave to a request for one says, on `127.0.0.1` only,
+  at most 64 at once, never 7171 or 7172, the web UI's ports, whatever it
+  says, never one below 1024 that `forward_ports` does not name, and never
+  a port a program on this machine accepts connections on, checked each
+  time the sandbox starts listening on the port and again after a forward
+  of it ends with its grant; a listen never files a request, only
+  `caboose-agent request port` does;
 - a URL opens only if it is `http` or `https`, holds no user or password
   and nothing unprintable, is not to port 7171 or 7172 (whatever its
   host), and the policy allows it: by default a person
@@ -291,8 +296,10 @@ In effect. Everything `caboose-agent` sends is untrusted
   under the roots that the host names, never through a symbolic link.
 
 It does not stop a forwarded port from squatting one of your own services'
-ports while that service is down; keep `forward_ports` to the ranges you
-use.
+ports while that service is down, or one that starts on all addresses
+(`*:PORT`) after the forward exists, or one that binds between the check
+and the forward's listener; the check sees only a service that is already
+up. Keep `forward_ports` to the ranges you use.
 
 ### The daemon
 

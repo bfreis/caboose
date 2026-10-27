@@ -44,8 +44,13 @@ host's caboose web UI, and no setting changes that.
 
 A port not reaching the host: `caboose-agent ports` says, for each listening
 port, whether it is forwarded, not in `forward_ports` (`[link]` of
-`config.toml`), the web UI's port (never forwarded), or already in use on
-the host.
+`config.toml`; the line says how to ask), the web UI's port (never
+forwarded), a program on the host already listening there ("a program on
+the host listens on this port": listen on another port in the sandbox),
+told to wait ("the host checks ports too often", retried shortly), or
+already in use on the host. A port not in `forward_ports` is forwarded
+only after `caboose-agent request port --port N` is answered (caboose-requests
+skill); ports below 1024 only when `forward_ports` names them.
 
 ## "Read-only file system" under a root
 

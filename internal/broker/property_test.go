@@ -34,7 +34,7 @@ func hostileText(r *rand.Rand, max int) string {
 func randomRequest(r *rand.Rand) policy.Request {
 	hosts := []string{"db.corp.example", "api.example.com", "localhost", "evil.example", "x"}
 	addrs := []string{"10.0.0.5", "10.0.0.6", "93.184.216.34", "127.0.0.1", "169.254.1.1", "::1", "fd00::1"}
-	switch r.IntN(6) {
+	switch r.IntN(7) {
 	case 0:
 		names := []string{"build", "free", "nope", ""}
 		req := aliasReq(names[r.IntN(len(names))])
@@ -69,6 +69,8 @@ func randomRequest(r *rand.Rand) policy.Request {
 		return req
 	case 4:
 		return policy.Request{Kind: policy.KindHostExec}
+	case 5:
+		return policy.Request{Kind: policy.KindPort, Port: []int{22, 80, 1024, 3000, 4321, 7171, 0, -1, 70000}[r.IntN(9)], HostChecked: r.IntN(2) == 0, HostListens: r.IntN(4) == 0}
 	}
 	return policy.Request{Kind: policy.Kind(hostileText(r, 20)), Alias: hostileText(r, 20), Host: hostileText(r, 20)}
 }
@@ -144,8 +146,12 @@ func TestPropertySandboxNeverWritesPolicy(t *testing.T) {
 			case 0:
 				req := randomRequest(r)
 				ops = append(ops, fmt.Sprintf("Decide %q", req.Kind))
-				if _, err := link.Decide(req); err != nil {
+				o, err := link.Decide(req)
+				if err != nil {
 					t.Fatal(err)
+				}
+				if req.Kind == policy.KindPort && o.Request != 0 {
+					t.Fatalf("a Decide of a port filed request #%d", o.Request)
 				}
 			case 1:
 				a := randomAsk(r)

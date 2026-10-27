@@ -820,6 +820,10 @@ func TestPermissionsOfHostile(t *testing.T) {
 	if p.Roots[0].ReadOnly || !p.Roots[1].ReadOnly {
 		t.Errorf("roots %+v", p.Roots)
 	}
+	c.ForwardPorts = "3000-3999 5173"
+	if got := permissionsOf(c).ForwardPorts; got != "3000-3999 5173" {
+		t.Errorf("forward_ports %q", got)
+	}
 	fall := permissionsOf(&config.Config{Env: "e", Trust: config.TrustFallible, HostExec: true})
 	if !fall.HostExec.Effective || fall.HostExec.Why != "" || fall.Isolation != "container" {
 		t.Errorf("fallible %+v", fall)

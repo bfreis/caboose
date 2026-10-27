@@ -108,6 +108,11 @@ func linked(t *testing.T, cfg Config) (socket string) {
 	if cfg.Trust == "" {
 		cfg.Trust = "fallible" // tests of the link are of a fallible environment unless they say
 	}
+	if cfg.HostListens == nil {
+		// The test's servers share this machine: nothing of the host's
+		// listens, as far as the forward is concerned.
+		cfg.HostListens = func(int) bool { return false }
+	}
 	go Run(sess, cfg)
 	for i := 0; i < 200; i++ {
 		if _, err := os.Stat(socket); err == nil {

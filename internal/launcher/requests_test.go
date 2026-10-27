@@ -344,21 +344,23 @@ func TestGrantsAndRevoke(t *testing.T) {
 func TestPermissionsOutput(t *testing.T) {
 	fd := &fakeDaemon{}
 	fd.br.Perm = &daemonproto.PermissionsResult{Env: "default", Trust: "hostile", Isolation: "vm", Profile: "vm.default",
-		Roots:    []daemonproto.RootPerm{{Name: "dev", Host: "/h/dev", Container: "/work/dev", Writable: []string{"p"}}, {Host: "/h/ro", Container: "/work/ro", ReadOnly: true}},
-		Aliases:  []daemonproto.AliasPerm{{Name: "deploy", Command: []string{"/usr/bin/true", "x"}, Policy: "ask"}},
-		HostExec: daemonproto.HostExecPerm{Configured: true, Why: "trust = hostile: the link does not offer host exec"},
-		OpenURLs: daemonproto.OpenURLsPerm{Mode: "ask", Allow: []string{"https://example.com"}},
-		Egress:   daemonproto.EgressPerm{On: true, Ports: "22 80 443", Allow: []string{"a.example"}, Default: "asks", Network: "through this machine"},
-		Grants:   []daemonproto.GrantView{{ID: "g3", Kind: "egress", Key: "k", LeftSeconds: 60}},
-		Mods:     &daemonproto.ModsPerm{Sessions: 2, WithMod: 1},
-		Drift:    []string{"the VM was created with trust fallible; the configuration says hostile", "the VM mounts /h/old at /work/old"}}
+		Roots:        []daemonproto.RootPerm{{Name: "dev", Host: "/h/dev", Container: "/work/dev", Writable: []string{"p"}}, {Host: "/h/ro", Container: "/work/ro", ReadOnly: true}},
+		Aliases:      []daemonproto.AliasPerm{{Name: "deploy", Command: []string{"/usr/bin/true", "x"}, Policy: "ask"}},
+		HostExec:     daemonproto.HostExecPerm{Configured: true, Why: "trust = hostile: the link does not offer host exec"},
+		OpenURLs:     daemonproto.OpenURLsPerm{Mode: "ask", Allow: []string{"https://example.com"}},
+		Egress:       daemonproto.EgressPerm{On: true, Ports: "22 80 443", Allow: []string{"a.example"}, Default: "asks", Network: "through this machine"},
+		Grants:       []daemonproto.GrantView{{ID: "g3", Kind: "egress", Key: "k", LeftSeconds: 60}},
+		Mods:         &daemonproto.ModsPerm{Sessions: 2, WithMod: 1},
+		ForwardPorts: "3000-3999 5173",
+		Drift:        []string{"the VM was created with trust fallible; the configuration says hostile", "the VM mounts /h/old at /work/old"}}
 	a, out, _ := newCLIApp(t, fd)
 	if err := a.Permissions(); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"drift       : the VM was created with trust fallible; the configuration says hostile\n              the VM mounts /h/old",
 		"takes effect at 'caboose -e default restart'", "hostile", "vm (profile vm.default)", "/h/dev -> /work/dev: read-only, except p", "/h/ro -> /work/ro: read-only", "deploy: /usr/bin/true x", "policy ask",
-		"host exec   : off (trust = hostile", "https://example.com", "a.example", "g3", "2 Claude Code sessions, 1 without caboose's mod"} {
+		"host exec   : off (trust = hostile", "https://example.com", "a.example", "g3", "2 Claude Code sessions, 1 without caboose's mod",
+		"forwards    : forward_ports 3000-3999 5173; another port asks (caboose-agent request port)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("permissions lacks %q:\n%s", want, out)
 		}

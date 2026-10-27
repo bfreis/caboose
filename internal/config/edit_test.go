@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -336,6 +337,63 @@ func TestEditCheckpointsTemplate(t *testing.T) {
 	for _, l := range strings.Split(Template, "\n") {
 		if strings.HasPrefix(l, "# ") && !strings.Contains(string(data), l) {
 			t.Errorf("lost %q", l)
+		}
+	}
+}
+
+// forward_ports as the broker writes it: ranges as strings, lone ports as
+// numbers, in one list, replacing the old one and reading back.
+func TestEditForwardPortsMixedList(t *testing.T) {
+	const in = "[link]\nhost_exec = true\nforward_ports = [3000, \"8000-8999\"]\nopen_urls = \"ask\"\n"
+	list, err := PortsValue("3000 8000-8999 4321")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := Edit{Set: map[string]any{"link.forward_ports": list}}
+	got := string(EditFile([]byte(in), e))
+	want := "[link]\nhost_exec = true\nforward_ports = [3000, \"8000-8999\", 4321]\nopen_urls = \"ask\"\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if err := CheckEdit("config.toml", []byte(in), []byte(got), e); err != nil {
+		t.Error(err)
+	}
+	// The same list with an int, not an int64, in it.
+	e = Edit{Set: map[string]any{"link.forward_ports": []any{"3000-3999", 5173}}}
+	got = string(EditFile([]byte("[link]\n"), e))
+	if want := "[link]\nforward_ports = [\"3000-3999\", 5173]\n"; got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if err := CheckEdit("config.toml", []byte("[link]\n"), []byte(got), e); err != nil {
+		t.Error(err)
+	}
+	// What does not read back is refused.
+	if err := CheckEdit("config.toml", []byte("[link]\n"), []byte("[link]\nforward_ports = [3000]\n"), e); err == nil {
+		t.Error("a list that reads back otherwise passed")
+	}
+	if got := e.Snippet(); got != "[link]\nforward_ports = [\"3000-3999\", 5173]\n" {
+		t.Errorf("snippet %q", got)
+	}
+}
+
+func TestPortsValue(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []any
+	}{
+		{"none", []any{}},
+		{DefaultForwardPorts, []any{"3000-3999", int64(5173), "8000-8999", "32768-60999"}},
+		{"5173", []any{int64(5173)}},
+		{" 80,443 ", []any{int64(80), int64(443)}},
+	} {
+		got, err := PortsValue(tc.in)
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("PortsValue(%q) = %#v, %v; want %#v", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{"", "nope", "0", "70000", "9-8"} {
+		if _, err := PortsValue(bad); err == nil {
+			t.Errorf("PortsValue(%q) passed", bad)
 		}
 	}
 }

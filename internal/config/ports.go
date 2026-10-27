@@ -88,3 +88,29 @@ func parsePort(s string) (int, error) {
 	}
 	return p, nil
 }
+
+// PortsValue is forward_ports, s as ParsePorts reads it, as the list
+// config.toml holds: a range as a string ("3000-3999"), a lone port as a
+// number (5173), and "none" as no entries. It is what Edit.Set takes.
+func PortsValue(s string) ([]any, error) {
+	if _, err := ParsePorts(s); err != nil {
+		return nil, err
+	}
+	s = strings.TrimSpace(s)
+	list := []any{}
+	if s == "none" {
+		return list, nil
+	}
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if strings.Contains(f, "-") {
+			list = append(list, f)
+			continue
+		}
+		p, err := strconv.Atoi(f)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, int64(p))
+	}
+	return list, nil
+}

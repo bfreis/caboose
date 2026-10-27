@@ -40,6 +40,14 @@ func (b *Broker) Reload() error {
 		Aliases:            map[string]policy.Alias{},
 		Egress:             b.egress(c),
 	}
+	if c.ForwardPorts != "" {
+		fp, err := config.ParsePorts(c.ForwardPorts)
+		if err != nil {
+			b.logf("forward_ports cannot be read, so no port is forwarded without asking: %v", err)
+		} else {
+			p.ForwardPorts = fp
+		}
+	}
 	p.Writable, p.WritableIDs = b.writable()
 	for _, a := range c.Aliases {
 		params := map[string][]string{}

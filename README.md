@@ -101,7 +101,7 @@ caboose help               # every command
 | [Isolation](docs/configuration.md#isolation-profiles) | container, gVisor or a VM of caboose's own, and what each needs |
 | [How it works](docs/how-it-works.md) | the sandbox, persistent state, tmux, terminal rendering |
 | [Start-up scripts and shell config](docs/startup.md) | `start.d` run at container start, `shell.d` read by every bash |
-| [Proposals](docs/proposals.md) | sessions asking for a tool, a root, an alias or a writable part; `caboose apply` |
+| [Proposals](docs/proposals.md) | sessions asking for a tool, a root, an alias, a writable part or a few settings; `caboose apply` |
 | [The image](docs/images.md) | what the sandbox is built from: packages, a Dockerfile, or an image of your own, and what it must contain |
 | [The sandbox config](docs/sandbox-config.md) | what the sandbox keeps of its home, and what of that syncs |
 | [Syncing between machines](docs/sync.md) | `caboose sync`: what syncs and how conflicts merge |

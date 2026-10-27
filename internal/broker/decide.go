@@ -25,6 +25,11 @@ type Outcome struct {
 	Reason string
 	// Request is the pending request's number, when Pending.
 	Request uint64
+	// Rule is the policy rule that decided.
+	Rule string
+	// Until is when the timed grant that allowed ends; zero when no
+	// timed grant allowed.
+	Until time.Time
 }
 
 func denied(reason string) Outcome { return Outcome{Verdict: Denied, Reason: reason} }
@@ -95,7 +100,7 @@ func (b *Broker) Decide(r policy.Request) (Outcome, error) {
 	if err := b.owns(); err != nil {
 		return denied(err.Error()), err
 	}
-	return b.decide(r, "", nil), nil
+	return b.decide(r, "", nil, false), nil
 }
 
 // File is a request the sandbox makes ahead of time: decided as Decide
@@ -113,34 +118,52 @@ func (b *Broker) File(a Ask) (Outcome, error) {
 	if a.Context != "" || len(a.Options) > 0 || a.Recommendation != "" || a.Meanwhile != "" {
 		text = &AskText{Context: a.Context, Options: slices.Clone(a.Options), Recommendation: a.Recommendation, Meanwhile: a.Meanwhile}
 	}
-	return b.decide(a.Request, a.Session, text), nil
+	return b.decide(a.Request, a.Session, text, true), nil
 }
 
-func (b *Broker) decide(r policy.Request, session string, text *AskText) Outcome {
+// decide decides r; filed is set for a request the sandbox made (File).
+// A port is judged by the link on every scan, so a Decide of one never
+// files and logs no ask, and a File of one never uses up a once grant:
+// the link does, when it opens the forward.
+func (b *Broker) decide(r policy.Request, session string, text *AskText, filed bool) Outcome {
 	if r.Kind == policy.KindAlias {
 		// What the sandboxes can write decides an alias: as of now.
 		b.refreshWritable(writableTTL)
 	}
+	port := r.Kind == policy.KindPort
 	now := b.now()
 	b.expireDue(now)
 	p, _ := b.snapshot(now)
 	d := policy.Decide(p, r, now)
-	if d.Verdict == policy.VerdictAllow && d.Grant != "" && onceGrant(p.Grants, d.Grant) {
+	var until time.Time
+	if d.Verdict == policy.VerdictAllow && d.Grant != "" {
+		for _, g := range p.Grants {
+			if g.ID == d.Grant && !g.Once {
+				until = g.Expires
+			}
+		}
+	}
+	if d.Verdict == policy.VerdictAllow && d.Grant != "" && onceGrant(p.Grants, d.Grant) && !(port && filed) {
 		var err error
 		if d, err = b.consume(r, now); err != nil {
 			b.dlog.decision(now, r, session, d, 0)
-			return denied(err.Error())
+			return Outcome{Verdict: Denied, Reason: err.Error(), Rule: d.Rule}
 		}
 	}
 	switch d.Verdict {
 	case policy.VerdictAllow:
 		b.dlog.decision(now, r, session, d, 0)
-		return Outcome{Verdict: Allowed, Reason: d.Reason}
+		return Outcome{Verdict: Allowed, Reason: d.Reason, Rule: d.Rule, Until: until}
 	case policy.VerdictAsk:
+		if port && !filed {
+			return Outcome{Verdict: Denied, Reason: d.Reason, Rule: d.Rule}
+		}
 		return b.file(r, d, p, session, text, now)
 	}
-	b.dlog.decision(now, r, session, d, 0)
-	return denied(d.Reason)
+	if !(port && !filed && d.Rule == policy.RulePortUnchecked) {
+		b.dlog.decision(now, r, session, d, 0)
+	}
+	return Outcome{Verdict: Denied, Reason: d.Reason, Rule: d.Rule}
 }
 
 func onceGrant(gs []policy.Grant, id string) bool {
@@ -188,7 +211,7 @@ func (b *Broker) file(r policy.Request, d policy.Decision, p policy.Policy, sess
 	if key == "" {
 		d = policy.Decision{Verdict: policy.VerdictDeny, Rule: "deny:no-key", Reason: d.Reason}
 		b.dlog.decision(now, r, session, d, 0)
-		return denied(d.Reason)
+		return Outcome{Verdict: Denied, Reason: d.Reason, Rule: d.Rule}
 	}
 	var (
 		id      uint64
@@ -238,12 +261,12 @@ func (b *Broker) file(r policy.Request, d policy.Decision, p policy.Policy, sess
 	if err != nil {
 		d = policy.Decision{Verdict: policy.VerdictDeny, Rule: "deny:unfiled", Reason: d.Reason + "; and the host cannot file the request: " + err.Error()}
 		b.dlog.decision(now, r, session, d, 0)
-		return denied(d.Reason)
+		return Outcome{Verdict: Denied, Reason: d.Reason, Rule: d.Rule}
 	}
 	if refusal != "" {
 		d = policy.Decision{Verdict: policy.VerdictDeny, Rule: "deny:request-limit", Reason: refusal}
 		b.dlog.decision(now, r, session, d, 0)
-		return denied(refusal)
+		return Outcome{Verdict: Denied, Reason: refusal, Rule: d.Rule}
 	}
 	if isNew {
 		b.dlog.decision(now, r, session, d, id)
@@ -251,7 +274,7 @@ func (b *Broker) file(r policy.Request, d policy.Decision, p policy.Policy, sess
 			b.opts.Dialog.Ask(b.opts.Env, id, r.URL)
 		}
 	}
-	return Outcome{Verdict: Pending, Reason: fmt.Sprintf("%s: request #%d waits for a person's answer", d.Reason, id), Request: id}
+	return Outcome{Verdict: Pending, Reason: fmt.Sprintf("%s: request #%d waits for a person's answer", d.Reason, id), Request: id, Rule: d.Rule}
 }
 
 // heldAttempts are a pending request's repeats not yet written, and

@@ -35,6 +35,24 @@ type State struct {
 	Apko *ApkoState
 	// Roots are config.toml's roots, by name, the host path as written.
 	Roots map[string]StateRoot
+	// Settings are the settings a [settings] proposal changes, as
+	// config.toml has them.
+	Settings StateSettings
+}
+
+// StateSettings are the settings a [settings] proposal sets, as the host
+// has them now: Isolation is the kind in use and VMProfile the [vm.NAME]
+// profile cpus and memory are set in ("" when config.toml defines none, and
+// then they cannot be proposed). CPUs is 0 and Memory "" when not set.
+type StateSettings struct {
+	Isolation string `toml:"isolation"`
+	VMProfile string `toml:"vm_profile"`
+	TZ        string `toml:"tz"`
+	Hostname  string `toml:"hostname"`
+	Tmux      bool   `toml:"tmux"`
+	AutoBuild bool   `toml:"auto_build"`
+	CPUs      int    `toml:"cpus"`
+	Memory    string `toml:"memory"`
 }
 
 // ApkoState is what an apko image profile is made of.
@@ -70,6 +88,7 @@ type stateFile struct {
 	Dockerfile       string               `toml:"dockerfile,omitempty"`
 	DockerfileSHA256 string               `toml:"dockerfile_sha256,omitempty"`
 	Roots            map[string]StateRoot `toml:"roots,omitempty"`
+	Settings         StateSettings        `toml:"settings"`
 }
 
 const stateHeader = `# Written by caboose on the host, at every launch and after 'caboose apply':
@@ -100,6 +119,13 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 # more path to be writable; the user confirms it, and the sandbox takes the
 # change at its next restart. Until then, mounted_writable says what the
 # sandbox that runs now may write, when that differs.
+#
+# settings: the values a [settings] proposal changes, as config.toml has
+# them: tz and hostname ("" for this machine's zone and the default
+# hostname), tmux, auto_build, and the cpus and memory of the VM profile in
+# use (0 and "" while unset). isolation is the kind in use, and vm_profile
+# the [vm.NAME] cpus and memory are set in: they apply under vm only, and
+# only when config.toml defines that profile.
 
 `
 
@@ -107,7 +133,7 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 // the Dockerfile when there is one (a stale one removed when not). Every
 // write goes through nofollow: the container can write the directory too.
 func WriteCurrent(dataDir string, s State) error {
-	sf := stateFile{Image: s.Image, Dockerfile: s.Source, Roots: s.Roots}
+	sf := stateFile{Image: s.Image, Dockerfile: s.Source, Roots: s.Roots, Settings: s.Settings}
 	if a := s.Apko; a != nil {
 		pkgs := append([]string{}, a.Packages...)
 		inst := append([]string{}, a.Installed...)

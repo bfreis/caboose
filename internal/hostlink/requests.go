@@ -66,6 +66,12 @@ func (h *Host) brokerRequest(a *agentproto.Ask, r *agentproto.Message) error {
 	if err := checkAsk(a); err != nil {
 		return err
 	}
+	// A port this link forwards is already as the sandbox wants: nothing
+	// to file, and nothing to check again.
+	if policy.Kind(a.Kind) == policy.KindPort && h.forwarding(a.Port) {
+		r.Verdict = agentproto.VerdictAllowed
+		return nil
+	}
 	req, err := h.askRequest(a)
 	if err != nil {
 		return err
@@ -152,6 +158,8 @@ func (h *Host) askRequest(a *agentproto.Ask) (policy.Request, error) {
 		}
 		return policy.Request{Kind: policy.KindEgress, Host: name, Literal: addr.IsValid(), Port: a.Port,
 			Addrs: addrs, Own: h.ownAddrs()}, nil
+	case policy.KindPort:
+		return h.askPort(a.Port)
 	case policy.KindAlias:
 		if !h.aliasesOn() {
 			return policy.Request{}, errNoAliases

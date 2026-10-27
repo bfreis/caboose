@@ -76,6 +76,16 @@ const (
 	// already copies on its schedule: it widens no reach, so it is decided
 	// by checkpoint_requests alone, under either trust, and never asks.
 	KindCheckpoint Kind = "checkpoint"
+	// KindPort is a port the sandbox listens on, forwarded to the host's
+	// localhost although forward_ports does not name it.
+	KindPort Kind = "port"
+)
+
+// The rules a port's decision names that its callers act on: an ask, and
+// a port that would be allowed once the host has checked it.
+const (
+	RuleAskPort       = "ask:port"
+	RulePortUnchecked = "deny:port-unchecked"
 )
 
 // Request is one thing the sandbox asks for, with the facts the caller
@@ -133,6 +143,12 @@ type Request struct {
 	// scheme://host[:port].
 	URL    string
 	Origin string
+
+	// HostChecked is set once the host has probed 127.0.0.1:Port for a
+	// program of its own accepting there (a port request), and
+	// HostListens is what it found.
+	HostChecked bool
+	HostListens bool
 }
 
 // Policy is everything Decide compares a request with: config.toml's
@@ -160,6 +176,9 @@ type Policy struct {
 	// WritableIDs are the identities of the Writable paths that exist,
 	// for the identity check (Request.CommandIDs).
 	WritableIDs []FileID
+	// ForwardPorts is [link] forward_ports: the ports forwarded without
+	// asking.
+	ForwardPorts config.PortSet
 	// Grants are the timed and once grants in force; what is always
 	// allowed is in the fields above.
 	Grants []Grant
@@ -263,8 +282,8 @@ const (
 	OpenOff   = "off"
 )
 
-// GrantKey is what a grant for r names: "alias:NAME", "egress:HOST" or
-// "open_url:ORIGIN"; "" for a request no grant can allow.
+// GrantKey is what a grant for r names: "alias:NAME", "egress:HOST",
+// "open_url:ORIGIN" or "port:N"; "" for a request no grant can allow.
 func GrantKey(r Request) string {
 	var v string
 	switch r.Kind {
@@ -274,6 +293,11 @@ func GrantKey(r Request) string {
 		v = r.Host
 	case KindOpenURL:
 		v = r.Origin
+	case KindPort:
+		if !agentproto.ValidPort(r.Port) {
+			return ""
+		}
+		v = strconv.Itoa(r.Port)
 	default:
 		return ""
 	}
@@ -316,6 +340,8 @@ func Decide(p Policy, r Request, now time.Time) Decision {
 		return decideEgress(p, r, now)
 	case KindCheckpoint:
 		return decideCheckpoint(p)
+	case KindPort:
+		return decidePort(p, r, now)
 	}
 	return deny("deny:unknown-kind", "the host does not know this kind of request")
 }
@@ -423,6 +449,42 @@ func decideCheckpoint(p Policy) Decision {
 		return allow("allow:checkpoint_requests", `checkpoint_requests = "allow" in [link] of config.toml`)
 	}
 	return deny("deny:checkpoint_requests-policy", `checkpoint_requests %q in [link] is not "allow" or "off"`, clip(printable(p.CheckpointRequests), 32))
+}
+
+// decidePort decides a port the sandbox listens on, for a forward to the
+// host's localhost. forward_ports forwards a port without asking; a grant
+// forwards one more. Either is judged only once the host has probed the
+// port (HostChecked), since a forward there would take the connections
+// of a program on the host to the sandbox. The trust does not enter
+// into it: the verdicts are the same under hostile.
+func decidePort(p Policy, r Request, now time.Time) Decision {
+	if !agentproto.ValidPort(r.Port) {
+		return deny("deny:port-bad", "%d is not a port", r.Port)
+	}
+	if uiport.Is(r.Port) {
+		return deny("deny:ui_port", "port %d is %s, which is never forwarded", r.Port, uiport.What)
+	}
+	listed := p.ForwardPorts.Has(r.Port)
+	if r.Port < 1024 && !listed {
+		return deny("deny:port-privileged", "port %d is below 1024: only forward_ports in [link] of config.toml on the host forwards one, never a request or a grant", r.Port)
+	}
+	g, hasGrant := p.grant(r, now)
+	if !r.HostChecked {
+		if listed || hasGrant {
+			return deny(RulePortUnchecked, "the host has not checked port %d for a program of its own listening there", r.Port)
+		}
+		return ask(RuleAskPort, "port %d is not in forward_ports ([link] of config.toml on the host): `caboose-agent request port --port %d` asks the host to forward it", r.Port, r.Port)
+	}
+	if r.HostListens {
+		return deny("deny:port-host-listens", "a program on the host already listens on port %d: a forward there would take its connections to localhost:%d; listen on another port in the sandbox", r.Port, r.Port)
+	}
+	if listed {
+		return allow("allow:forward_ports", "port %d is in forward_ports in [link] of config.toml", r.Port)
+	}
+	if hasGrant {
+		return granted(g, fmt.Sprintf("forwarding port %d", r.Port))
+	}
+	return ask(RuleAskPort, "port %d is not in forward_ports ([link] of config.toml on the host): `caboose-agent request port --port %d` asks the host to forward it", r.Port, r.Port)
 }
 
 func decideAlias(p Policy, r Request, now time.Time) Decision {

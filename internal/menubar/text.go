@@ -71,6 +71,8 @@ func kindWord(kind string) string {
 		return "connect"
 	case "open_url":
 		return "open"
+	case "port":
+		return "forward"
 	case "host_exec":
 		return "host command"
 	}

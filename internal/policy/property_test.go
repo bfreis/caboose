@@ -26,11 +26,13 @@ const (
 
 var (
 	trustPool      = []Trust{TrustFallible, TrustFallible, TrustFallible, TrustHostile, TrustHostile, "", "Fallible", "trusted"}
-	kindPool       = []Kind{KindAlias, KindAlias, KindEgress, KindEgress, KindEgress, KindOpenURL, KindOpenURL, KindHostExec, KindCheckpoint, "", "ALIAS", "exec"}
+	kindPool       = []Kind{KindAlias, KindAlias, KindEgress, KindEgress, KindEgress, KindOpenURL, KindOpenURL, KindHostExec, KindCheckpoint, KindPort, KindPort, KindPort, "", "ALIAS", "exec"}
 	checkpointPool = []string{CheckpointAllow, CheckpointAllow, CheckpointOff, "", "Allow", "ask"}
 	aliasNames     = []string{"foo", "foobar", "fo", "build", ""}
 	openURLsPool   = []string{OpenAsk, OpenAsk, OpenAllow, OpenOff, "", "yes"}
 	policyPool     = []string{"", AliasAllow, AliasAsk, AliasAsk, AliasDeny, "Allow"}
+	portPool       = []int{0, 22, 80, 1023, 1024, 3000, 4321, 7171, 7172, 65535, 70000}
+	forwardPool    = []string{"3000-3999", "80 4321", "1-65535", "1024-65535", "22 80 3000", "none", "7000-7999", "4321"}
 	originPool     = []string{"https://docs.example", "https://docs.example:8443", "http://docs.example", "https://evil.example"}
 	hostPool       = []string{"a.example", "b.a.example", "example", "x.nip.io", "evil.example", "A.example", "a..b"}
 	paramValues    = []string{"all", "test", "x", "/Users/me/dev/proj/run.sh", "/opt/tool"}
@@ -138,6 +140,9 @@ func grantKeyPool() []string {
 	for _, o := range originPool {
 		keys = append(keys, "open_url:"+o)
 	}
+	for _, n := range portPool {
+		keys = append(keys, fmt.Sprintf("port:%d", n))
+	}
 	return append(keys, "", "alias:", "egress:a.example.", "open_url:https://docs.example/")
 }
 
@@ -154,6 +159,9 @@ func (g *gen) policy() Policy {
 		Aliases:            map[string]Alias{},
 		Writable:           subset(rng, writablePool, 3),
 		WritableIDs:        subset(rng, idPool, 2),
+	}
+	if fp, err := config.ParsePorts(pick(rng, forwardPool)); err == nil {
+		p.ForwardPorts = fp
 	}
 	for _, n := range aliasNames {
 		if n != "" && rng.IntN(3) > 0 {
@@ -228,6 +236,12 @@ func (g *gen) request(p Policy) Request {
 		if rng.IntN(30) == 0 && len(r.Addrs) > 0 {
 			r.Addrs[0] = r.Addrs[0].WithZone("en0")
 		}
+	}
+	if r.Kind == KindPort {
+		r.Port = pick(rng, portPool)
+	}
+	if r.Kind == KindPort || rng.IntN(4) == 0 {
+		r.HostChecked, r.HostListens = rng.IntN(3) > 0, rng.IntN(3) == 0
 	}
 	if r.Kind == KindOpenURL || rng.IntN(4) == 0 {
 		r.Origin = pick(rng, originPool)
@@ -342,6 +356,11 @@ func TestPropertyDenyWins(t *testing.T) {
 		}
 		for range rng.IntN(4) {
 			q.Grants = append(q.Grants, Grant{ID: g.id(), Kind: pick(rng, kindPool), Key: pick(rng, keys), Expires: t0.Add(time.Hour)})
+		}
+		if d.Rule != "deny:port-privileged" {
+			if fp, err := config.ParsePorts("1-65535"); err == nil {
+				q.ForwardPorts = fp
+			}
 		}
 		if q.Egress != nil {
 			entries := append(subset(rng, allowNamePool, 3), "a.example", "*.example")
@@ -571,7 +590,7 @@ func TestPropertyUnknownAndDeterministic(t *testing.T) {
 			return fmt.Sprintf("two decisions: %+v and %+v", d, d2)
 		}
 		switch r.Kind {
-		case KindAlias, KindEgress, KindOpenURL, KindHostExec, KindCheckpoint:
+		case KindAlias, KindEgress, KindOpenURL, KindHostExec, KindCheckpoint, KindPort:
 		default:
 			if d.Verdict != VerdictDeny || d.Rule != "deny:unknown-kind" {
 				return fmt.Sprintf("kind %q decided %+v", r.Kind, d)
@@ -643,6 +662,51 @@ func TestPropertyCheckpoint(t *testing.T) {
 		}
 		if d.Verdict != want || d.Grant != "" {
 			return fmt.Sprintf("checkpoint_requests %q, trust %q: %+v", p.CheckpointRequests, p.Trust, d)
+		}
+		return ""
+	})
+}
+
+// A port is never allowed while a program on the host listens there, while
+// the host has not checked it, or when it is a web UI port; and a grant
+// never forwards one below 1024, which only forward_ports does.
+func TestPropertyPortRefusals(t *testing.T) {
+	forCases(t, "port refusals", func(g *gen, p Policy, r Request) string {
+		if r.Kind != KindPort {
+			return ""
+		}
+		d := Decide(p, r, t0)
+		if d.Verdict != VerdictAllow {
+			return ""
+		}
+		switch {
+		case r.HostListens:
+			return fmt.Sprintf("port %d allowed by %s although the host listens there", r.Port, d.Rule)
+		case !r.HostChecked:
+			return fmt.Sprintf("port %d allowed by %s before the host checked it", r.Port, d.Rule)
+		case r.Port == 7171 || r.Port == 7172:
+			return fmt.Sprintf("web UI port %d allowed by %s", r.Port, d.Rule)
+		case r.Port < 1 || r.Port > 65535:
+			return fmt.Sprintf("port %d allowed by %s", r.Port, d.Rule)
+		case r.Port < 1024 && strings.HasPrefix(d.Rule, "grant:"):
+			return fmt.Sprintf("port %d allowed by %s, a grant", r.Port, d.Rule)
+		}
+		return ""
+	})
+}
+
+// The trust does not enter into a port's decision.
+func TestPropertyPortTrustIrrelevant(t *testing.T) {
+	forCases(t, "port trust", func(g *gen, p Policy, r Request) string {
+		if r.Kind != KindPort {
+			return ""
+		}
+		want := Decide(p, r, t0)
+		for _, tr := range trustPool {
+			p.Trust = tr
+			if got := Decide(p, r, t0); got.Verdict != want.Verdict || got.Rule != want.Rule {
+				return fmt.Sprintf("trust %q decided %v by %s, not %v by %s", tr, got.Verdict, got.Rule, want.Verdict, want.Rule)
+			}
 		}
 		return ""
 	})

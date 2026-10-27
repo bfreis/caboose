@@ -14,8 +14,9 @@ import (
 // their order -- stays as it was.
 type Edit struct {
 	// Set are keys by their dotted names ("isolation", "session.tmux",
-	// "vm.default.cpus") and their new values: a string, a bool, an int or
-	// a []string.
+	// "vm.default.cpus") and their new values: a string, a bool, an int, a
+	// []string, or a []any of strings and whole numbers (forward_ports,
+	// as PortsValue gives it).
 	Set map[string]any
 	// Unset are keys, by their dotted names, to comment out.
 	Unset []string
@@ -362,6 +363,15 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 				list[i] = e
 			}
 			v = list
+		case []any:
+			list := make([]any, len(t))
+			for i, e := range t {
+				if n, ok := e.(int); ok {
+					e = int64(n)
+				}
+				list[i] = e
+			}
+			v = list
 		}
 		if got, ok := f.Vals[k]; !ok || !reflect.DeepEqual(got, v) {
 			return fmt.Errorf("%s reads back as %v, not %v", displayKey(k), got, v)
@@ -440,10 +450,17 @@ func findLine(lines []string, re *regexp.Regexp) int {
 	return -1
 }
 
-// tomlValue writes v, a string, a bool, a whole number or a []string, as
-// TOML: a string as a basic string, with \, " and control characters
-// escaped, and a []string as an inline array of them.
+// tomlValue writes v, a string, a bool, a whole number, a []string or a
+// []any of those, as TOML: a string as a basic string, with \, " and
+// control characters escaped, and a list as an inline array of them.
 func tomlValue(v any) string {
+	if list, ok := v.([]any); ok {
+		parts := make([]string, len(list))
+		for i, e := range list {
+			parts[i] = tomlValue(e)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
 	if list, ok := v.([]string); ok {
 		parts := make([]string, len(list))
 		for i, e := range list {

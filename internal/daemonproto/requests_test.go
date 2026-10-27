@@ -53,7 +53,7 @@ func TestBrokerMessagesRoundTrip(t *testing.T) {
 			Aliases:  []AliasPerm{{Name: "a", Command: []string{"/bin/x"}, Policy: "ask"}},
 			HostExec: HostExecPerm{Configured: true}, OpenURLs: OpenURLsPerm{Mode: "ask", Allow: []string{"https://x"}},
 			Egress: EgressPerm{On: true, Ports: "22", Allow: []string{"a"}, Deny: []string{"b"}}, Grants: []GrantView{{ID: "g1", Kind: "k", Key: "k"}},
-			Mods: &ModsPerm{Sessions: 1}, Drift: []string{"the VM was created with trust fallible; the configuration says hostile"}}),
+			Mods: &ModsPerm{Sessions: 1}, ForwardPorts: "3000-3999 5173", Drift: []string{"the VM was created with trust fallible; the configuration says hostile"}}),
 	} {
 		if err := v.Validate(); err != nil {
 			t.Errorf("%T: %v", v, err)
@@ -139,6 +139,7 @@ func TestResultsRefuseHostileText(t *testing.T) {
 			"trust":     &PermissionsResult{Env: "e", Trust: h},
 			"why":       &PermissionsResult{Env: "e", HostExec: HostExecPerm{Why: h}},
 			"drift":     &PermissionsResult{Env: "e", Drift: []string{h}},
+			"ports":     &PermissionsResult{Env: "e", ForwardPorts: h},
 		} {
 			if err := r.Validate(); err == nil {
 				t.Errorf("%s %q accepted", what, h)

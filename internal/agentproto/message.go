@@ -216,12 +216,12 @@ const (
 // and what the sandbox says of it. Everything in it is the sandbox's, and
 // the host bounds and checks it before use.
 type Ask struct {
-	// Kind is "alias", "egress" or "open_url".
+	// Kind is "alias", "egress", "open_url" or "port".
 	Kind string `json:"kind"`
 	// Alias and Args, for an alias.
 	Alias string            `json:"alias,omitempty"`
 	Args  map[string]string `json:"args,omitempty"`
-	// Host and Port, for egress.
+	// Host and Port, for egress; Port alone, for port.
 	Host string `json:"host,omitempty"`
 	Port int    `json:"port,omitempty"`
 	// URL, for open_url.

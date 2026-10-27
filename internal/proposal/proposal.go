@@ -1,8 +1,9 @@
 // Package proposal is how a session in the sandbox asks for a change only
 // the host can make: packages added to or removed from an apko image, a
 // section in a dockerfile image's Dockerfile, another root, an alias
-// (a host command a session may then run), or a part of a root made
-// writable.
+// (a host command a session may then run), a part of a root made
+// writable, or a few settings of config.toml (the session's time zone,
+// hostname and tmux, whether a missing image is built, a VM's size).
 // (What the sandbox keeps of its home is its own to change, in the sandbox
 // config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
@@ -15,12 +16,13 @@
 // the terminal show other than what is there, a section that starts a
 // stage -- and what it may ask for is an allowlist: package names or a
 // Dockerfile section, and one root; or one alias, alone; or one path of a
-// root made writable, alone. Nothing else in config.toml can be proposed
-// at all.
+// root made writable, alone; or those settings, alone. Nothing else in
+// config.toml can be proposed at all.
 //
 // The host also writes what a proposal is made against into proposals/
 // current/ (WriteCurrent): the Dockerfile the next build uses, and the
-// roots config.toml has, and an apko image's packages, which the sandbox
+// roots config.toml has, and an apko image's packages, and the settings a
+// [settings] proposal changes, which the sandbox
 // cannot otherwise see. A proposal for a section names the hash of that
 // Dockerfile, and is refused when the real one has changed since. Beside a
 // proposal for packages the host writes what checking it found (CheckExt).
@@ -34,6 +36,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -65,6 +68,11 @@ const (
 	// MaxPackages is the most package names one proposal adds and removes
 	// in all.
 	MaxPackages = 64
+	// MaxCPUs is the most cpus a [settings] proposal names.
+	MaxCPUs = 256
+	// MaxSettingText is the longest tz, hostname and memory a [settings]
+	// proposal names, in bytes.
+	MaxSettingText = 64
 	// MaxWritablePath is the longest container path a [writable] proposal
 	// names, in bytes.
 	MaxWritablePath = 1024
@@ -98,6 +106,16 @@ type Writable struct {
 	Path string `toml:"path"`
 }
 
+// Settings are the settings of config.toml a proposal sets, each nil when
+// it does not: [session] tz, hostname and tmux, [build] auto_build, and
+// the cpus and memory of the VM profile in use (the sandbox never names
+// the profile). Which of them applies, and when, is the host's to say.
+type Settings struct {
+	TZ, Hostname, Memory *string
+	Tmux, AutoBuild      *bool
+	CPUs                 *int
+}
+
 // Proposal is one proposal, checked.
 type Proposal struct {
 	// Name is the file's name without Ext.
@@ -119,6 +137,8 @@ type Proposal struct {
 	// Writable is the part of a root to make writable, or nil; always
 	// alone.
 	Writable *Writable
+	// Settings are the settings to set, or nil; always alone.
+	Settings *Settings
 }
 
 // file is a proposal as written.
@@ -131,6 +151,24 @@ type file struct {
 	Roots            map[string]string    `toml:"roots"`
 	Alias            map[string]aliasFile `toml:"alias"`
 	Writable         *Writable            `toml:"writable"`
+	Settings         *settingsFile        `toml:"settings"`
+}
+
+// settingsFile is a [settings] table as written: the keys of config.toml's
+// tables, nested (dotted keys decode the same).
+type settingsFile struct {
+	Session *struct {
+		TZ       *string `toml:"tz"`
+		Hostname *string `toml:"hostname"`
+		Tmux     *bool   `toml:"tmux"`
+	} `toml:"session"`
+	Build *struct {
+		AutoBuild *bool `toml:"auto_build"`
+	} `toml:"build"`
+	VM *struct {
+		CPUs   *int    `toml:"cpus"`
+		Memory *string `toml:"memory"`
+	} `toml:"vm"`
 }
 
 // Parse reads and checks the proposal in file name (with Ext).
@@ -154,8 +192,11 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		keys := make([]string, len(u))
 		for i, k := range u {
 			keys[i] = k.String()
+			if k[0] == "settings" {
+				return nil, fmt.Errorf("%s cannot be proposed: [settings] holds session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus and vm.memory only; every other config.toml key is the user's to change", Printable(clip(k.String(), 100)))
+			}
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], and [writable], with path; what the sandbox keeps is changed in %s, with no proposal)",
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], [writable], with path, and [settings], with session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus and vm.memory; what the sandbox keeps is changed in %s, with no proposal)",
 			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
@@ -246,10 +287,87 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		p.Writable = w
 	}
 
-	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil && p.Writable == nil {
-		return nil, errors.New("it proposes nothing: no [section], [packages], [roots], [alias] or [writable]")
+	if f.Settings != nil {
+		if p.Section != nil || p.Packages != nil || p.Root != nil || p.Alias != nil || p.Writable != nil {
+			return nil, errors.New("[settings] with another change: settings are proposed alone, so that they are confirmed on their own")
+		}
+		st, err := checkSettings(*f.Settings)
+		if err != nil {
+			return nil, err
+		}
+		p.Settings = st
+	}
+
+	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil && p.Writable == nil && p.Settings == nil {
+		return nil, errors.New("it proposes nothing: no [section], [packages], [roots], [alias], [writable] or [settings]")
 	}
 	return p, nil
+}
+
+var tzRe = regexp.MustCompile(`^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$`)
+
+// checkSettings checks a [settings] table: at least one key, each value
+// of the kind config.toml takes there. Whether this machine can take it
+// (a VM profile to set, a VM's size against the host's) is the host's to
+// judge.
+func checkSettings(f settingsFile) (*Settings, error) {
+	var st Settings
+	if s := f.Session; s != nil {
+		if s.TZ != nil {
+			v := *s.TZ
+			if err := checkText("settings.session.tz", v, false, MaxSettingText); err != nil {
+				return nil, err
+			}
+			if !tzRe.MatchString(v) {
+				return nil, fmt.Errorf("settings.session.tz, %q, is not a time zone name like \"Europe/Lisbon\" or \"UTC\"", Printable(clip(v, 100)))
+			}
+			st.TZ = &v
+		}
+		if s.Hostname != nil {
+			v := *s.Hostname
+			if err := checkText("settings.session.hostname", v, false, MaxSettingText); err != nil {
+				return nil, err
+			}
+			if v == "" {
+				return nil, errors.New("settings.session.hostname is empty: name a hostname")
+			}
+			if err := config.CheckHostname(v); err != nil {
+				return nil, fmt.Errorf("settings.session.hostname: %s", Printable(err.Error()))
+			}
+			st.Hostname = &v
+		}
+		if s.Tmux != nil {
+			v := *s.Tmux
+			st.Tmux = &v
+		}
+	}
+	if b := f.Build; b != nil && b.AutoBuild != nil {
+		v := *b.AutoBuild
+		st.AutoBuild = &v
+	}
+	if m := f.VM; m != nil {
+		if m.CPUs != nil {
+			v := *m.CPUs
+			if v < 1 || v > MaxCPUs {
+				return nil, fmt.Errorf("settings.vm.cpus is %d: a number from 1 to %d", v, MaxCPUs)
+			}
+			st.CPUs = &v
+		}
+		if m.Memory != nil {
+			v := *m.Memory
+			if err := checkText("settings.vm.memory", v, false, MaxSettingText); err != nil {
+				return nil, err
+			}
+			if _, err := config.ParseMemory(v); err != nil {
+				return nil, fmt.Errorf("settings.vm.memory: %s", Printable(err.Error()))
+			}
+			st.Memory = &v
+		}
+	}
+	if st == (Settings{}) {
+		return nil, errors.New("[settings] proposes nothing: set session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus or vm.memory")
+	}
+	return &st, nil
 }
 
 // checkWritable checks a [writable] table: a path in the sandbox, at or

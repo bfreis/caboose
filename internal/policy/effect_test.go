@@ -28,6 +28,7 @@ func TestEffect(t *testing.T) {
 		{own, "connect to me.example:443 (resolves to 203.0.113.9, 10.0.0.1; this machine; private)"},
 		{Request{Kind: KindOpenURL, URL: "https://x.example/a"}, "open https://x.example/a in the browser"},
 		{Request{Kind: KindHostExec}, "run a command on the host, through host_exec"},
+		{Request{Kind: KindPort, Port: 4321}, "forward port 4321 of the sandbox to localhost:4321 on the host"},
 		{Request{Kind: "x"}, "an unknown request, which the host refuses"},
 	} {
 		if got := Effect(p, c.r); got != c.want {
@@ -69,6 +70,7 @@ func TestAnswerEffect(t *testing.T) {
 	aa := Request{Kind: KindAlias, Alias: "deploy", Args: map[string]string{"env": "staging", "a": "x y"}}
 	eg := Request{Kind: KindEgress, Host: "api.example", Port: 443}
 	ur := Request{Kind: KindOpenURL, URL: "https://docs.example/x", Origin: "https://docs.example"}
+	pt := Request{Kind: KindPort, Port: 4321}
 	pv := Request{Kind: KindEgress, Host: "git.corp.example", Addrs: addrs("140.82.112.3", "::ffff:10.0.0.7", "10.0.0.7", "192.168.1.2")}
 	for _, c := range []struct {
 		r     Request
@@ -83,6 +85,10 @@ func TestAnswerEffect(t *testing.T) {
 		{al, ScopeHours, 8, "allows alias build with any arguments in environment work for 8 hours"},
 		{eg, ScopeHours, 1, "allows connections to api.example on any port egress_ports allows in environment work for 1 hour"},
 		{ur, ScopeHours, 2, "allows opening URLs of https://docs.example in environment work for 2 hours"},
+		{pt, ScopeOnce, 0, "forwards port 4321 of the sandbox to localhost:4321 on the host once: from when it listens there, now or within 15 minutes, until it stops listening or the link reconnects (as a change to config.toml makes it); then it asks again"},
+		{pt, ScopeHours, 1, "allows forwarding port 4321 of the sandbox to localhost:4321 whenever it listens in environment work for 1 hour"},
+		{pt, ScopeAlways, 0, "adds 4321 to forward_ports in [link] of /h/config.toml: the port forwards whenever the sandbox listens on it, without asking (the link reconnects to read it, which drops the connections forwarded at that moment)"},
+		{Request{Kind: KindPort}, ScopeOnce, 0, ""},
 		{al, ScopeHours, 0, ""},
 		{al, ScopeAlways, 0, `sets policy = "allow" in [alias.build] of /h/config.toml: every run of it, with any arguments, without asking`},
 		{eg, ScopeAlways, 0, `adds "api.example" to egress_allow in [vm.default] of /h/config.toml: connections to it on any port egress_ports allows, without asking`},

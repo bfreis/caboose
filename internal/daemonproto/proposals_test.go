@@ -62,6 +62,10 @@ func TestProposalsResult(t *testing.T) {
 	if err := (&ProposalsResult{Proposals: []ProposalInfo{w}}).Validate(); err != nil {
 		t.Errorf("a writable part refused: %v", err)
 	}
+	w.Parts[0].Kind = ProposalPartSettings
+	if err := (&ProposalsResult{Proposals: []ProposalInfo{w}}).Validate(); err != nil {
+		t.Errorf("a settings part refused: %v", err)
+	}
 	for name, mod := range map[string]func(*ProposalInfo){
 		"html is text, and fine": nil,
 		"control title":          func(p *ProposalInfo) { p.Title = "a\x1b[2J" },

@@ -31,8 +31,9 @@ func TestUIPortsNeverForwarded(t *testing.T) {
 	var logged bytes.Buffer
 	var listened []int
 	h := &Host{sess: hostSess, forwards: map[int]*forward{}, refused: map[int]string{}, cfg: Config{
-		Ports: all,
-		Log:   log.New(&logged, "", 0),
+		Ports:       all,
+		Log:         log.New(&logged, "", 0),
+		HostListens: func(int) bool { return false },
 		Listen: func(p int) (net.Listener, error) {
 			listened = append(listened, p)
 			return nil, io.ErrUnexpectedEOF // in use: nothing is bound
@@ -141,10 +142,11 @@ func TestForwardedCallback(t *testing.T) {
 	}
 	var got [][]int
 	h := &Host{sess: hostSess, forwards: map[int]*forward{}, refused: map[int]string{}, cfg: Config{
-		Ports:     allowed,
-		Log:       log.New(io.Discard, "", 0),
-		Listen:    func(int) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
-		Forwarded: func(p []int) { got = append(got, p) },
+		Ports:       allowed,
+		Log:         log.New(io.Discard, "", 0),
+		Listen:      func(int) (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") },
+		HostListens: func(int) bool { return false },
+		Forwarded:   func(p []int) { got = append(got, p) },
 	}}
 	t.Cleanup(h.closeAll)
 	go func() {

@@ -395,7 +395,8 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
           [--meanwhile TEXT] [--session ID] [--json]
                       ask the host ahead of time for something the sandbox
                       needs: KIND is alias (run NAME), egress (connect to H:P)
-                      or open_url (open U in the browser). It never waits for
+                      open_url (open U in the browser) or port (forward P of the
+                      sandbox to the host's localhost). It never waits for
                       a person: exit 0 when it is allowed, 75 when it waits
                       (prints pending #N), 77 when denied. The session
                       defaults to $CLAUDE_CODE_SESSION_ID

@@ -659,6 +659,7 @@ export function createPages(deps) {
     } else {
       rows.push(["Outbound connections", "not limited by caboose under this isolation yet"]);
     }
+    if (isStr(p.forward_ports) && p.forward_ports !== "") rows.push(["Forwarded ports", p.forward_ports + "; another port asks (caboose-agent request port)"]);
     if (isObj(p.mods)) rows.push(["Claude Code sessions", p.mods.sessions + " running, " + p.mods.with_mod + " with the mod"]);
     const roots = Array.isArray(p.roots) ? p.roots.filter(isObj) : [];
     const aliases = Array.isArray(p.aliases) ? p.aliases.filter(isObj) : [];

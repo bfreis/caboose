@@ -42,12 +42,13 @@ What a proposal can change in the image depends on the kind of the
 | one root | any | mounts a host directory at `/work/NAME` | refusals and warnings below, and you type the root's name |
 | one alias, alone | any | adds an [`[alias.NAME]`](configuration.md#aliasname), a host command sessions may run | refusals and warnings below, the change to `config.toml` as a diff, and you type the alias's name |
 | one writable part, alone | any | makes a directory of a root [writable](configuration.md#read-only-roots-and-writable-parts), from the next restart | refusals and warnings below, the change to `config.toml` as a diff, and you type the root's name |
+| settings, alone | any (the VM keys: vm only) | sets `tz`, `hostname`, `tmux` in `[session]`, `auto_build` in `[build]`, and `cpus`, `memory` of the `[vm.NAME]` in use | the change to `config.toml` as a diff, and when each key takes effect |
 
 Under a `ref` profile, an image of your own, nothing in the image can be
 proposed: a session that needs a tool says what to add to your image.
 
 Nothing else. A proposal that names anything more — the docker socket, a
-base image, the sync remote, any other setting — is refused whole, not
+base image, the sync remote, any other setting than those six — is refused whole, not
 offered for a yes. So is one with a control character (an escape sequence
 could redraw the terminal and hide part of the proposal), an invisible
 formatting character such as a bidi override, or a section holding `FROM`,
@@ -202,6 +203,35 @@ the mounts are fixed when it is created, so the part is writable from the
 next `caboose restart`, which `apply` offers. Every launch checks the
 writable parts again, and refuses one that has become a symbolic link.
 
+**Settings** are six keys of `config.toml`, alone in their proposal, as a
+`[settings]` table with the keys' own tables inside it (dotted keys decode
+the same):
+
+```toml
+[settings.session]
+tz = "Europe/Lisbon"   # also hostname, tmux
+[settings.build]
+auto_build = false
+[settings.vm]          # the [vm.NAME] profile config.toml uses
+cpus = 6
+memory = "12G"
+```
+
+The session never names the VM profile: `cpus` and `memory` are written
+into the one `isolation` selects. They are refused when the isolation is not
+`vm`, when `config.toml` defines no profile, and when they ask for more CPUs
+or memory than this machine has. A value `config.toml` already has is left
+out with a warning, and a proposal with nothing left changes nothing. Any
+other key under `[settings]` refuses the proposal whole, as does any other
+part next to it. They widen nothing the sandbox reaches, so `apply` shows
+the change to `config.toml` as a diff and asks for a yes, no typed name, and
+writes it only if `config.toml` has not changed since. Each key says when
+it takes effect: `tz` for sessions started from the next launch (what
+already runs keeps its zone until the next restart), `tmux` for sessions
+started from the next launch, `auto_build` from the next launch that
+creates the sandbox, and `hostname`, `cpus` and `memory` at the next
+restart. `apply` offers the restart only when a key needs one.
+
 ## The files
 
 `~/.caboose-proposals` is `<data>/proposals` on the host. A proposal is
@@ -268,7 +298,9 @@ checks until the hour is over.
 every `apply`: `state.toml`, with the image profile in use (`image`,
 `"<kind>.<name>"`) and what can be proposed for it, and the roots
 `config.toml` has (each a `[roots.NAME]` with its `host`, container
-`path`, and `writable`: the parts the sandbox may write). Under `apko` it lists the profile's own `packages`, `defaults`, and
+`path`, and `writable`: the parts the sandbox may write), and `[settings]`,
+the values a settings proposal changes as `config.toml` has them, with the
+isolation in use and the VM profile `cpus` and `memory` go in. Under `apko` it lists the profile's own `packages`, `defaults`, and
 every package `installed`; under `dockerfile`, where the Dockerfile comes
 from (`dockerfile`, the profile's own, or `seed`, caboose's, when the
 profile has none yet) and its hash, with the file itself as `Dockerfile`

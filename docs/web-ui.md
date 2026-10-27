@@ -95,7 +95,7 @@ opens the page once, within 60 seconds.
 ## What the page does
 
 It lists the requests the sandboxes filed (a URL to open, a connection
-through the `vm` proxy, an alias whose policy is `"ask"`) with what
+through the `vm` proxy, a port to forward, an alias whose policy is `"ask"`) with what
 allowing each would do, and answers them once, for hours or days, or
 always; the "always" answer shows the exact change to `config.toml` and
 makes it only if the file is unchanged. When that change cannot be shown

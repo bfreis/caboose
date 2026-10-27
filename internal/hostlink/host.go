@@ -20,6 +20,7 @@
 package hostlink
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +79,16 @@ type Config struct {
 	Log     *log.Logger
 	// Listen opens a forward's listener; nil is TCP on 127.0.0.1.
 	Listen func(port int) (net.Listener, error)
+	// HostListens says whether a program on this machine accepts
+	// connections on 127.0.0.1:port, which a forward there would take
+	// over; nil dials the port (portcheck.go). It is asked once for each
+	// time the sandbox starts listening on a port, for every port that
+	// would be forwarded, forward_ports' included.
+	HostListens func(port int) bool
+	// PortRecheck is how often the ports are decided again while one
+	// waits for a grant, a check or the end of a timed grant; 0 is every
+	// 5 seconds.
+	PortRecheck time.Duration
 	// Relay are the roots whose changes to relay into the container; nil
 	// relays nothing.
 	Relay []Root
@@ -144,6 +155,7 @@ type Host struct {
 	forwards map[int]*forward
 	refused  map[int]string // port -> why it is not forwarded
 	uiLogged bool           // a web UI port's refusal was logged
+	ports    portsState     // what is known of the ports the sandbox listens on
 	tokens   float64
 	lastTick time.Time
 	ssh      int // SSH agent connections open
@@ -168,6 +180,10 @@ const maxSSH = 16
 type forward struct {
 	port int
 	ln   net.Listener
+	// until is when the grant that opened it ends; zero for a port in
+	// forward_ports and for a once grant, which last as long as the
+	// sandbox listens.
+	until time.Time
 }
 
 // ErrVersion is an agent that speaks another protocol.
@@ -187,6 +203,7 @@ func Run(sess *agentproto.Session, cfg Config) error {
 	h := &Host{sess: sess, cfg: cfg, forwards: map[int]*forward{}, refused: map[int]string{},
 		tokens: requestBurst, lastTick: time.Now()}
 	defer h.closeAll()
+	go h.recheckPorts()
 	// The session is over by the time Run returns, and with it every
 	// command it ran (runHostExec): Run returns once they are gone, so a
 	// link that stops leaves none behind.
@@ -292,8 +309,11 @@ func (h *Host) watch() Watcher {
 }
 
 func (h *Host) closeAll() {
+	h.ports.evalMu.Lock()
+	defer h.ports.evalMu.Unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.ports.closed = true
 	for p, f := range h.forwards {
 		f.ln.Close()
 		delete(h.forwards, p)
@@ -301,7 +321,8 @@ func (h *Host) closeAll() {
 }
 
 // reconcile makes the forwards match what listens in the sandbox, then
-// tells the agent what came of it.
+// tells the agent what came of it. It runs inline in the control loop, so
+// what it waits for is bounded (evaluate).
 func (h *Host) reconcile(ports []int) {
 	listening := map[int]bool{}
 	for _, p := range ports {
@@ -309,7 +330,10 @@ func (h *Host) reconcile(ports []int) {
 			listening[p] = true
 		}
 	}
+	g := &h.ports
+	g.evalMu.Lock()
 	h.mu.Lock()
+	g.listening = listening
 	for p, f := range h.forwards {
 		if !listening[p] {
 			f.ln.Close()
@@ -317,53 +341,79 @@ func (h *Host) reconcile(ports []int) {
 			h.cfg.Log.Printf("port %d: no longer listening in the sandbox, forward stopped", p)
 		}
 	}
-	h.refused = map[int]string{}
-	for _, p := range slices.Sorted(maps.Keys(listening)) {
-		if _, ok := h.forwards[p]; ok {
-			continue
-		}
-		switch {
-		// The web UI's ports are never forwarded, whatever Ports says:
-		// config.toml refuses them, and this holds for a set read
-		// another way. Logged once a link, as the agent decides how
-		// often it lists them.
-		case uiport.Is(p):
-			h.refused[p] = "the host's caboose web UI port, never forwarded"
-			if !h.uiLogged {
-				h.uiLogged = true
-				h.cfg.Log.Printf("port %d: never forwarded: it is %s", p, uiport.What)
-			}
-		case !h.cfg.Ports.Has(p):
-			h.refused[p] = "not in forward_ports"
-		case len(h.forwards) >= maxForwards:
-			h.refused[p] = fmt.Sprintf("already forwarding %d ports", maxForwards)
-		default:
-			ln, err := h.cfg.Listen(p)
-			if err != nil {
-				h.refused[p] = "the port is in use on the host"
-				continue
-			}
-			f := &forward{port: p, ln: ln}
-			h.forwards[p] = f
-			go h.serve(f)
-			h.cfg.Log.Printf("port %d: forwarded to localhost:%d", p, p)
+	// A port that stops listening forgets what was learnt of it: the
+	// next listen is checked again.
+	for p := range g.state {
+		if !listening[p] {
+			delete(g.state, p)
 		}
 	}
-	msg := agentproto.Message{Type: agentproto.TypeForwards}
-	for p := range listening {
-		if _, ok := h.forwards[p]; ok {
-			msg.Forwards = append(msg.Forwards, agentproto.Forward{Port: p, HostPort: p})
-		} else {
-			msg.Forwards = append(msg.Forwards, agentproto.Forward{Port: p, Reason: h.refused[p]})
-		}
-	}
-	forwarded := slices.Sorted(maps.Keys(h.forwards))
 	h.mu.Unlock()
+	h.evaluateLocked()
+	g.evalMu.Unlock()
+	h.sendForwards(false)
+}
+
+// sendForwards tells the agent which of the ports it listens on are
+// forwarded and why not the rest, and Forwarded the ports forwarded. With
+// changedOnly, only if that differs from what the agent was last sent.
+// The message is cut to fit the protocol's bound: the forwarded ports
+// first, then the others, lowest first; a port left out is one the agent
+// is told nothing of.
+func (h *Host) sendForwards(changedOnly bool) {
+	g := &h.ports
+	g.sendMu.Lock()
+	defer g.sendMu.Unlock()
+	// The snapshot is taken between evaluates, never halfway through one.
+	g.evalMu.Lock()
+	h.mu.Lock()
+	forwarded := slices.Sorted(maps.Keys(h.forwards))
+	var others []int
+	for p := range g.listening {
+		if _, ok := h.forwards[p]; !ok {
+			others = append(others, p)
+		}
+	}
+	slices.Sort(others)
+	msg := agentproto.Message{Type: agentproto.TypeForwards}
+	// What the rest of the message takes, with room to spare.
+	budget := agentproto.MaxPayload - 1024
+	add := func(f agentproto.Forward) bool {
+		b, _ := json.Marshal(f)
+		if len(b)+1 > budget {
+			return false
+		}
+		budget -= len(b) + 1
+		msg.Forwards = append(msg.Forwards, f)
+		return true
+	}
+	full := false
+	for _, p := range forwarded {
+		if !add(agentproto.Forward{Port: p, HostPort: p}) {
+			full = true
+			break
+		}
+	}
+	for _, p := range others {
+		if full || !add(agentproto.Forward{Port: p, Reason: h.refused[p]}) {
+			break
+		}
+	}
+	h.mu.Unlock()
+	g.evalMu.Unlock()
 	slices.SortFunc(msg.Forwards, func(a, b agentproto.Forward) int { return a.Port - b.Port })
+	sig, _ := json.Marshal(msg.Forwards)
+	if changedOnly && g.sent != nil && bytes.Equal(g.sent, sig) {
+		return
+	}
 	if h.cfg.Forwarded != nil {
 		h.cfg.Forwarded(forwarded)
 	}
-	_ = h.sess.Send(msg)
+	// Only what reached the agent counts as sent: a message that did not
+	// is sent again by the next reconcile or recheck.
+	if h.sess.Send(msg) == nil {
+		g.sent = sig
+	}
 }
 
 // serve connects each connection to the forward's port to a new stream.

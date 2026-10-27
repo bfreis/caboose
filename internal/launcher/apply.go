@@ -17,7 +17,8 @@ import (
 
 // `caboose apply` is the host's half of a proposal (internal/proposal): a
 // session in the sandbox writes what it would change -- packages of an
-// apko image, a Dockerfile section, a root, an alias, a writable part of a root -- and apply shows each one and makes
+// apko image, a Dockerfile section, a root, an alias, a writable part of a
+// root, a few settings -- and apply shows each one and makes
 // the change when the user says so. The sandbox never writes config.toml
 // or a dockerfile profile's dir itself: both decide what it is, and what of the host it
 // reaches, so a person at the host says yes to every change, having seen
@@ -86,6 +87,8 @@ type applied struct {
 	// alias is set when an alias was written: config.toml changed, but
 	// nothing about the sandbox, so no build or restart follows.
 	alias bool
+	// settings is set when settings were written that need no restart.
+	settings bool
 }
 
 func (a *App) applyRun(p *prompter, entries []proposal.Entry) error {
@@ -102,8 +105,16 @@ func (a *App) applyRun(p *prompter, entries []proposal.Entry) error {
 	}
 	p.blank()
 	if !done.dockerfile && !done.config {
+		if done.alias && done.settings {
+			p.ok("The aliases and settings applied need no build and no restart: sessions run an alias with caboose-agent run NAME, caboose-agent aliases lists them, and when each setting takes effect is said above")
+			return nil
+		}
 		if done.alias {
 			p.ok("The aliases applied need no build and no restart: sessions run them with caboose-agent run NAME, and caboose-agent aliases lists them")
+			return nil
+		}
+		if done.settings {
+			p.ok("The settings applied need no restart; when each takes effect is said above")
 			return nil
 		}
 		p.same("Nothing was applied")
@@ -128,10 +139,12 @@ type plan struct {
 	alias *aliasPlan
 	// writable is the writable part to add.
 	writable *writablePlan
+	// settings are the settings to set.
+	settings *settingsPlan
 }
 
 func (pl plan) empty() bool {
-	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil && pl.writable == nil
+	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil && pl.writable == nil && pl.settings == nil
 }
 
 // applyOne shows one proposal and does what the user says with it.
@@ -201,6 +214,24 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 			return err
 		}
 		done.config = true
+		if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
+			p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
+			return nil
+		}
+		p.ok("Applied %s", name)
+		return nil
+	}
+
+	if pl.settings != nil {
+		ok, err := a.applySettings(p, *pr.Settings, pl.settings)
+		if err != nil || !ok {
+			return err
+		}
+		if pl.settings.restart {
+			done.config = true
+		} else {
+			done.settings = true
+		}
 		if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
 			p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
 			return nil
@@ -326,6 +357,13 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		warnings = append(warnings, warn...)
 		pl.writable = wp
 	}
+
+	if st := pr.Settings; st != nil {
+		sp, why, warn := a.planSettings(*st)
+		refusals = append(refusals, why...)
+		warnings = append(warnings, warn...)
+		pl.settings = sp
+	}
 	return pl, refusals, warnings
 }
 
@@ -349,6 +387,9 @@ func (a *App) showPlan(p *prompter, pl plan) {
 	}
 	if pl.writable != nil {
 		a.showWritable(p, pl.writable)
+	}
+	if pl.settings != nil {
+		a.showSettings(p, pl.settings)
 	}
 	if pl.root != nil {
 		p.say("Mount a host directory into the sandbox ([roots]):")
@@ -570,7 +611,11 @@ func (a *App) exportProposals() {
 		a.Note("not telling sessions about the Dockerfile: %s", proposal.Printable(err.Error()))
 		return
 	}
-	s := proposal.State{Image: c.ImageProfile.String(), Source: source, Dockerfile: df, Roots: map[string]proposal.StateRoot{}}
+	s := proposal.State{Image: c.ImageProfile.String(), Source: source, Dockerfile: df, Roots: map[string]proposal.StateRoot{},
+		Settings: proposal.StateSettings{Isolation: isolationOf(c), TZ: c.TZ, Hostname: c.Hostname, Tmux: c.Tmux, AutoBuild: c.AutoBuild}}
+	if isolationOf(c) == config.KindVM && c.Profile != "" {
+		s.Settings.VMProfile, s.Settings.CPUs, s.Settings.Memory = c.Profile, c.VMCPUs, c.VMMemory
+	}
 	if ip := c.ImageProfile; ip.Kind == config.ImageKindApko {
 		installed, err := ip.Spec().List()
 		if err != nil {

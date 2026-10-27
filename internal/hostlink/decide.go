@@ -32,7 +32,7 @@ type settingsDecider struct{ p policy.Policy }
 // asks (so, refuses) before any egress no entry names.
 func newSettingsDecider(cfg *Config) settingsDecider {
 	p := policy.Policy{Trust: policy.Trust(cfg.Trust), HostExec: cfg.HostExec != nil, OpenURLs: cfg.OpenURL,
-		CheckpointRequests: cfg.CheckpointRequests}
+		CheckpointRequests: cfg.CheckpointRequests, ForwardPorts: cfg.Ports}
 	if e := cfg.Egress; e != nil {
 		p.Egress = &policy.Egress{Ports: e.Ports, Allow: e.Allow, Deny: e.Deny}
 	}

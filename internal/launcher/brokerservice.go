@@ -447,5 +447,6 @@ func permissionsOf(c *config.Config) *daemonproto.PermissionsResult {
 	} else {
 		r.Egress.Network = "the engine's own network; egress applies under isolation vm only"
 	}
+	r.ForwardPorts = c.ForwardPorts
 	return r
 }

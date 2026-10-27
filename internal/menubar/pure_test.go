@@ -60,6 +60,7 @@ func TestRequestTitle(t *testing.T) {
 			Effect: "open https://evil.example/x in the browser"}, "#8 dev open: https://example.com"},
 		{"effect is not the title", daemonproto.RequestView{ID: 9, Kind: "alias", Key: "alias:x", Effect: "run alias x on the host\nwith " + long}, "#9 dev alias: x"},
 		{"no key", daemonproto.RequestView{ID: 10, Kind: "host_exec"}, "#10 dev host command"},
+		{"port", daemonproto.RequestView{ID: 1, Kind: "port", Key: "port:4321"}, "#1 dev forward: 4321"},
 	}
 	for _, c := range cases {
 		got := RequestTitle("dev", c.view)

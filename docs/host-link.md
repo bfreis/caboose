@@ -128,7 +128,8 @@ changed.
 The agent watches the container's listening TCP ports, once a second. Each
 one that `forward_ports` (in `[link]`) allows is forwarded to the same port on this
 machine's `127.0.0.1`, while it keeps listening; a port already in use here
-is skipped. A server bound only to `127.0.0.1` in the sandbox, as many dev
+is skipped, and so is one that a program here accepts connections on (see
+below). A server bound only to `127.0.0.1` in the sandbox, as many dev
 servers are by default, is forwarded too: the agent connects to it on the
 container's own loopback. Nothing listens on this machine for a port
 nothing listens on in the sandbox, so a wide range costs nothing until a
@@ -155,8 +156,50 @@ on this machine, 7171 a release's and 7172 a checkout's build's, which
 approves what a sandbox asks for.
 
 `caboose-agent ports`, in the sandbox, lists what listens and what came of
-each: forwarded, not in `forward_ports`, the web UI's port, or in use on
-the host.
+each: forwarded, not in `forward_ports` (with how to ask for it), the web
+UI's port, a program on the host listening there, or in use on the host.
+
+Before any forward opens, `forward_ports`' included, the host dials
+`127.0.0.1:PORT`. If something accepts the connection, or the dial does
+anything but be refused, the port is not forwarded: the forward would take
+the connections that program's clients make to `localhost:PORT`. This is
+checked once each time the sandbox starts listening on a port, and again
+after a forward of it ends with its grant, not at every scan, so a
+program that starts on the host later is not noticed until the sandbox's
+listen ends and begins again. The sandbox is told to listen on another
+port.
+
+### A port outside `forward_ports`
+
+A listening port that `forward_ports` does not name is not forwarded, and
+a listen never asks anyone: `caboose-agent ports` says how to. The host
+decides at most 256 of the ports it does not forward at a time, the
+lowest first, and refuses the rest until fewer listen.
+
+```sh
+caboose-agent request port --port 4321 --context "the dev server's preview"
+```
+
+The request is filed like any other (above): `pending #N` until a person
+answers on this machine with `caboose requests`. The answer's scope is the
+usual one:
+
+- once: the next time the sandbox listens on the port, within 15 minutes
+  of the answer, it is forwarded, until it stops listening or the link
+  reconnects (a change to `config.toml` reconnects it); then it asks again
+- for some hours: the port forwards whenever the sandbox listens on it,
+  until the grant ends. Revoking the grant stops new forwards; a forward
+  already open stays until the sandbox stops listening or the grant's end,
+  and closes within a few seconds of that end
+- always: the port is appended to `forward_ports` in `config.toml`. If the
+  file does not set the key, the default list is written out with the port
+  added, and the diff shows it. The link reconnects to read it, within a
+  couple of seconds, which cuts the connections forwarded at that moment
+
+Ports below 1024 forward only when `forward_ports` names them: no request
+or grant covers one. A request for a port the link already forwards is
+answered at once. `caboose permissions` shows `forward_ports` and the
+grants in force.
 
 ## URLs and notifications
 
@@ -470,6 +513,7 @@ caboose-agent request egress --host registry.example.com --port 443 \
   --meanwhile "writing the tests"
 caboose-agent request open_url --url https://example.com/login
 caboose-agent request alias --alias test --arg suite=unit
+caboose-agent request port --port 4321
 caboose-agent requests --all          # what the host decided, and what waits
 ```
 
@@ -507,14 +551,21 @@ Everything the agent sends is treated as untrusted, as everything from the
 sandbox is:
 
 - which ports forward is `forward_ports`, in the host's `config.toml`,
-  which the sandbox cannot write; forwards listen on `127.0.0.1` only, so
-  nothing else on your network reaches them; at most 64 ports at once;
+  which the sandbox cannot write, or a grant you gave to a request for
+  that port; forwards listen on `127.0.0.1` only, so nothing else on your
+  network reaches them; at most 64 ports at once; a port a program here
+  accepts connections on is not forwarded, whatever allows it, and a
+  listen alone never files a request;
   the web UI's ports, 7171 and 7172, never forward, a URL to either never
   opens, and the outbound proxy never reaches either on this machine;
 - a forwarded port can squat one of your own services' ports while that
   service is down: a program here connecting to it would talk to the
-  sandbox. Keep `forward_ports` to the ranges you use for development,
-  and the ephemeral range if you log in from the sandbox;
+  sandbox. The host checks each port as the sandbox starts listening, so
+  a service that starts after the forward exists is not noticed, and
+  neither is one that binds in the moment between the check and the
+  forward's listener; only a service that is up is protected. Keep
+  `forward_ports` to the ranges you use for development, and the ephemeral
+  range if you log in from the sandbox;
 - requests are rate-limited, a URL opens only as the setting says, and a
   dialog is one at a time; a crossing that asks a person is refused at
   once as pending, never waited on, and nothing the sandbox sends

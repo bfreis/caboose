@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // The web UI's ports on any local address are denied before any allow:
 // egress_allow naming 127.0.0.1, a live grant holding the address, the
@@ -36,4 +39,15 @@ func TestDecideEgressUIPort(t *testing.T) {
 		{"loopback, other port", uiPolicy("127.0.0.1"), egressReq("127.0.0.1", 7170, "127.0.0.1"), VerdictAllow, "allow:egress_allow"},
 		{"public address", uiPolicy(""), egressReq("x.example", 7171, "140.82.112.3"), VerdictAllow, "default:fallible-public"},
 	})
+}
+
+// The web UI's ports are never forwarded for a port request: not when
+// forward_ports holds them, not with a grant, not once the host checked.
+func TestDecidePortUIPort(t *testing.T) {
+	for _, port := range []int{7171, 7172} {
+		for _, checked := range []bool{false, true} {
+			p := portPolicy(t, TrustFallible, "1-65535", live(KindPort, fmt.Sprintf("port:%d", port), "g1"))
+			runCases(t, []decideCase{{fmt.Sprintf("%d checked=%v", port, checked), p, portReq(port, checked, false), VerdictDeny, "deny:ui_port"}})
+		}
+	}
 }

@@ -31,7 +31,7 @@ const (
 	waitCmdPad  = 15 * time.Second
 	sessionVar  = "CLAUDE_CODE_SESSION_ID"
 	sinceNow    = "now"
-	requestKind = "alias, egress or open_url"
+	requestKind = "alias, egress, open_url or port"
 )
 
 // sanitize is s without anything a terminal would act on, and without
@@ -230,7 +230,7 @@ func requestWith(socket string, getenv func(string) string, args []string, stdou
 	}
 	ask := agentproto.Ask{Kind: fs.pos[0]}
 	switch ask.Kind {
-	case "alias", "egress", "open_url":
+	case "alias", "egress", "open_url", "port":
 	default:
 		return fail("the kind is %s, not %q", requestKind, sanitize(ask.Kind, 32))
 	}
@@ -267,6 +267,13 @@ func requestWith(socket string, getenv func(string) string, args []string, stdou
 	case "open_url":
 		if ask.URL == "" {
 			return fail("an open_url request needs --url")
+		}
+	case "port":
+		if ask.Port == 0 {
+			return fail("a port request needs --port")
+		}
+		if ask.Host != "" || ask.URL != "" || ask.Alias != "" || len(fs.vals["arg"]) > 0 {
+			return fail("a port request takes --port alone")
 		}
 	}
 	for _, c := range []struct {

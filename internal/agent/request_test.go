@@ -160,6 +160,24 @@ func TestRequestExitCodes(t *testing.T) {
 	}
 }
 
+// A port request carries the port alone, and the host's verdict is
+// reported like any other's.
+func TestRequestPort(t *testing.T) {
+	h := startBrokerLink(t, true, t.TempDir(), func(m agentproto.Message) agentproto.Message {
+		if m.Ask.Kind == "port" && m.Ask.Port == 4321 {
+			return agentproto.Message{OK: true, Verdict: agentproto.VerdictAllowed}
+		}
+		return agentproto.Message{Error: "unexpected"}
+	})
+	code, out, errb := runRequest(t, h.socket, "port", "--port", "4321", "--context", "dev server")
+	if code != 0 || strings.TrimSpace(out) != "allowed" {
+		t.Fatalf("%d %q %q", code, out, errb)
+	}
+	if a := h.last(t).Ask; a.Kind != "port" || a.Port != 4321 || a.Host != "" || a.URL != "" || a.Alias != "" || a.Context != "dev server" {
+		t.Fatalf("the host saw %+v", a)
+	}
+}
+
 func TestRequestUsage(t *testing.T) {
 	h := startBrokerLink(t, true, t.TempDir(), verdicts)
 	for _, args := range [][]string{
@@ -172,6 +190,11 @@ func TestRequestUsage(t *testing.T) {
 		{"egress", "--host", "a", "--port", "1", "--context", strings.Repeat("x", agentproto.MaxAskContext+1)},
 		{"egress", "--bogus"},
 		{"egress", "--host", "a", "--host", "b", "--port", "1"},
+		{"port"},
+		{"port", "--port", "99999"},
+		{"port", "--port", "4321", "--host", "a.example"},
+		{"port", "--port", "4321", "--url", "https://a.example"},
+		{"port", "--port", "4321", "--alias", "x"},
 	} {
 		if code, _, errb := runRequest(t, h.socket, args...); code != 2 {
 			t.Errorf("%v: exit %d, %q", args, code, errb)

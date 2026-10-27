@@ -29,6 +29,8 @@ type fakeDecider struct {
 	moved   chan struct{} // closed and replaced when seq moves
 	waiting int           // Waits running now
 	waited  int           // Waits that ever ran
+	// decideFn, when set, answers Decide instead of verdict.
+	decideFn func(policy.Request) broker.Outcome
 }
 
 func newFakeDecider() *fakeDecider {
@@ -52,6 +54,9 @@ func (f *fakeDecider) Decide(r policy.Request) (broker.Outcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.decided = append(f.decided, r)
+	if f.decideFn != nil {
+		return f.decideFn(r), nil
+	}
 	return f.outcome(r.Kind), nil
 }
 

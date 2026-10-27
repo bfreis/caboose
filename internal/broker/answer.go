@@ -12,6 +12,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/policy"
+	"github.com/bfreis/caboose/internal/uiport"
 )
 
 // Reply is a person's answer to a request.
@@ -327,6 +328,24 @@ func (b *Broker) alwaysEdit(q *reqRec, set Settings) (config.Edit, error) {
 			list = append(list, q.Origin)
 		}
 		return config.Edit{Set: map[string]any{key: list}}, nil
+	case policy.KindPort:
+		if q.Port < 1024 || uiport.Is(q.Port) {
+			return config.Edit{}, newError(KindBadRequest, "port %d cannot be allowed always: ports below 1024 and the host's web UI ports are never added to forward_ports by an answer", q.Port)
+		}
+		have, err := config.ParsePorts(c.ForwardPorts)
+		if err != nil {
+			return config.Edit{}, newError(KindUnavailable, "forward_ports in config.toml cannot be read: %v", err)
+		}
+		if have.Has(q.Port) {
+			return config.Edit{}, newError(KindBadRequest, "port %d is in forward_ports already", q.Port)
+		}
+		// The effective list, so that writing the key where the file
+		// sets none does not drop the default ports.
+		list, err := config.PortsValue(c.ForwardPorts)
+		if err != nil {
+			return config.Edit{}, newError(KindUnavailable, "forward_ports in config.toml cannot be read: %v", err)
+		}
+		return config.Edit{Set: map[string]any{"link.forward_ports": append(list, int64(q.Port))}}, nil
 	}
 	return config.Edit{}, newError(KindBadRequest, "a request of kind %q cannot be allowed always", clip(string(q.Kind), 32))
 }

@@ -53,6 +53,7 @@ const (
 	ProposalPartRoot     = "root"
 	ProposalPartAlias    = "alias"
 	ProposalPartWritable = "writable"
+	ProposalPartSettings = "settings"
 )
 
 // Confirmations a proposal takes beyond the confirmation itself.
@@ -204,7 +205,7 @@ func (p *ProposalInfo) Validate() (diffBytes int, err error) {
 	lines := 0
 	for _, pt := range p.Parts {
 		switch pt.Kind {
-		case ProposalPartSection, ProposalPartPackages, ProposalPartRoot, ProposalPartAlias, ProposalPartWritable:
+		case ProposalPartSection, ProposalPartPackages, ProposalPartRoot, ProposalPartAlias, ProposalPartWritable, ProposalPartSettings:
 		default:
 			return 0, bad("bad proposal part kind")
 		}

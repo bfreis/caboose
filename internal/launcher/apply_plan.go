@@ -39,6 +39,7 @@ const (
 	PartRoot     = daemonproto.ProposalPartRoot
 	PartAlias    = daemonproto.ProposalPartAlias
 	PartWritable = daemonproto.ProposalPartWritable
+	PartSettings = daemonproto.ProposalPartSettings
 )
 
 // The confirmations a proposal takes beyond the confirmation itself.
@@ -151,7 +152,7 @@ func (a *App) ProposalView(e proposal.Entry) (v ProposalView, err error) {
 // packagesWithRoot reports whether parts are pl's packages and its root,
 // and nothing else: the one pair config.toml takes as one edit.
 func packagesWithRoot(pl plan, parts []ProposalPart) bool {
-	return len(parts) == 2 && pl.packages != nil && pl.root != nil && pl.dockerfile == nil && pl.alias == nil && pl.writable == nil
+	return len(parts) == 2 && pl.packages != nil && pl.root != nil && pl.dockerfile == nil && pl.alias == nil && pl.writable == nil && pl.settings == nil
 }
 
 // viewParts fills v's parts from its plan, and what applying them takes.
@@ -204,6 +205,11 @@ func (a *App) viewParts(v *ProposalView) {
 		v.edit, v.editDiff = &edit, wp.diff
 		v.Parts = append(v.Parts, ProposalPart{Kind: PartWritable, Diff: viewLines(wp.diff), Summary: a.writableSummary(wp)})
 		v.Confirm, v.ConfirmName = ConfirmTypeName, wp.root.Name
+	}
+	if sp := pl.settings; sp != nil {
+		edit := sp.edit
+		v.edit, v.editDiff = &edit, sp.diff
+		v.Parts = append(v.Parts, ProposalPart{Kind: PartSettings, Diff: viewLines(sp.diff), Summary: a.settingsSummary(sp)})
 	}
 	if pl.root != nil {
 		rc := a.planRootChange(pl)
@@ -344,6 +350,10 @@ func (a *App) ApplyPlanned(e proposal.Entry, hash, typed string) (notes []string
 		case pl.writable != nil:
 			notes = append(notes, fmt.Sprintf("Wrote the roots to %s: making %s writable takes effect at the %s's next restart (%s, which ends running sessions).",
 				cfgPath, proposal.Printable(pl.writable.container), a.noun(), restart))
+		case pl.settings != nil:
+			for _, k := range pl.settings.keys {
+				notes = append(notes, fmt.Sprintf("Wrote %s to %s: %s.", k.key, cfgPath, k.when))
+			}
 		}
 	default:
 		return nil, daemonproto.NewError(daemonproto.KindBadRequest, "not applied from the page: there is nothing in it to write")

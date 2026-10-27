@@ -16,7 +16,8 @@ const MAX_REMEMBERED = 500
 
 const REQUEST_HELP =
   'Asks the person on the host for something this sandbox may not do on its own: ' +
-  'kind "egress" (host, port), "open_url" (url) or "alias" (alias, args). ' +
+  'kind "egress" (host, port), "open_url" (url), "alias" (alias, args) or "port" ' +
+  '(port: one listening in this sandbox, forwarded to the host\'s localhost). ' +
   'It never waits for an answer. If the result says pending, note the request number, ' +
   'say in "meanwhile" what you will do without it, and carry on; the decision is ' +
   'announced here when it is made. Put what the person needs to decide in "context", ' +
@@ -114,7 +115,7 @@ export const register: Register = on => {
       inputSchema: {
         type: 'object',
         properties: {
-          kind: { type: 'string', enum: ['egress', 'open_url', 'alias'] },
+          kind: { type: 'string', enum: ['egress', 'open_url', 'alias', 'port'] },
           host: { type: 'string' },
           port: { type: 'integer' },
           url: { type: 'string' },

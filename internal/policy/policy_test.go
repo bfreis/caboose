@@ -93,6 +93,9 @@ func TestGrantKey(t *testing.T) {
 		{Kind: KindEgress, Alias: "x"}:                     "",
 		{Kind: KindOpenURL, URL: "https://x.example/"}:     "",
 		{Kind: "nope", Alias: "x", Host: "x", Origin: "x"}: "",
+		{Kind: KindPort, Port: 4321}:                       "port:4321",
+		{Kind: KindPort, Port: 0}:                          "",
+		{Kind: KindPort, Port: 65536}:                      "",
 	} {
 		if got := GrantKey(*r); got != want {
 			t.Errorf("GrantKey(%+v) = %q, want %q", *r, got, want)
@@ -579,5 +582,68 @@ func TestIDOf(t *testing.T) {
 	ib, ok2 := IDOf(b)
 	if !ok1 || !ok2 || ia == ib {
 		t.Errorf("two directories: %v %v, %v %v", ia, ok1, ib, ok2)
+	}
+}
+
+func portPolicy(t *testing.T, trust Trust, forward string, gs ...Grant) Policy {
+	t.Helper()
+	fp, err := config.ParsePorts(forward)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Policy{Trust: trust, ForwardPorts: fp, Grants: gs}
+}
+
+func portReq(port int, checked, listens bool) Request {
+	return Request{Kind: KindPort, Port: port, HostChecked: checked, HostListens: listens}
+}
+
+func TestDecidePort(t *testing.T) {
+	g := live(KindPort, "port:4321", "g1")
+	once := live(KindPort, "port:4321", "g2")
+	once.Once = true
+	expired := g
+	expired.Expires = t0.Add(-time.Second)
+	other := live(KindPort, "port:4322", "g3")
+	low := live(KindPort, "port:80", "g4")
+	everything := func(p Policy) Policy {
+		p.Grants = append(p.Grants, live(KindPort, "port:7171", "g5"), live(KindPort, "port:7172", "g6"), low, g)
+		return p
+	}
+	fp := func(trust Trust) Policy { return portPolicy(t, trust, "3000-3999 80") }
+	runCases(t, []decideCase{
+		{"zero", fp(TrustFallible), portReq(0, true, false), VerdictDeny, "deny:port-bad"},
+		{"too big", fp(TrustFallible), portReq(70000, true, false), VerdictDeny, "deny:port-bad"},
+		{"ui port, everything allows it", everything(portPolicy(t, TrustFallible, "1-65535")), portReq(7171, true, false), VerdictDeny, "deny:ui_port"},
+		{"dev ui port", everything(portPolicy(t, TrustFallible, "1-65535")), portReq(7172, false, false), VerdictDeny, "deny:ui_port"},
+		{"listed low port", fp(TrustFallible), portReq(80, true, false), VerdictAllow, "allow:forward_ports"},
+		{"unlisted low port", fp(TrustFallible), portReq(22, true, false), VerdictDeny, "deny:port-privileged"},
+		{"unlisted low port, granted", everything(fp(TrustFallible)), portReq(80, true, false), VerdictAllow, "allow:forward_ports"},
+		{"low port, granted, unlisted", func() Policy { p := portPolicy(t, TrustFallible, "3000", low); return p }(), portReq(80, true, false), VerdictDeny, "deny:port-privileged"},
+		{"listed, unchecked", fp(TrustFallible), portReq(3000, false, false), VerdictDeny, RulePortUnchecked},
+		{"granted, unchecked", portPolicy(t, TrustFallible, "none", g), portReq(4321, false, false), VerdictDeny, RulePortUnchecked},
+		{"unlisted, ungranted, unchecked", fp(TrustFallible), portReq(4321, false, false), VerdictAsk, RuleAskPort},
+		{"expired grant, unchecked", portPolicy(t, TrustFallible, "none", expired), portReq(4321, false, false), VerdictAsk, RuleAskPort},
+		{"grant of another port, unchecked", portPolicy(t, TrustFallible, "none", other), portReq(4321, false, false), VerdictAsk, RuleAskPort},
+		{"host listens beats forward_ports", fp(TrustFallible), portReq(3000, true, true), VerdictDeny, "deny:port-host-listens"},
+		{"host listens beats a grant", portPolicy(t, TrustFallible, "none", g), portReq(4321, true, true), VerdictDeny, "deny:port-host-listens"},
+		{"listed, checked", fp(TrustFallible), portReq(3000, true, false), VerdictAllow, "allow:forward_ports"},
+		{"granted, checked", portPolicy(t, TrustFallible, "none", g), portReq(4321, true, false), VerdictAllow, "grant:g1"},
+		{"once granted, checked", portPolicy(t, TrustFallible, "none", once), portReq(4321, true, false), VerdictAllow, "grant:g2"},
+		{"expired grant, checked", portPolicy(t, TrustFallible, "none", expired), portReq(4321, true, false), VerdictAsk, RuleAskPort},
+		{"unlisted, ungranted, checked", fp(TrustFallible), portReq(4321, true, false), VerdictAsk, RuleAskPort},
+		{"no forward_ports at all", Policy{Trust: TrustFallible}, portReq(3000, true, false), VerdictAsk, RuleAskPort},
+		{"hostile listed", fp(TrustHostile), portReq(3000, true, false), VerdictAllow, "allow:forward_ports"},
+		{"hostile granted", portPolicy(t, TrustHostile, "none", g), portReq(4321, true, false), VerdictAllow, "grant:g1"},
+		{"hostile unlisted", fp(TrustHostile), portReq(4321, true, false), VerdictAsk, RuleAskPort},
+		{"hostile unchecked", fp(TrustHostile), portReq(3000, false, false), VerdictDeny, RulePortUnchecked},
+		{"no trust", fp(""), portReq(3000, true, false), VerdictAllow, "allow:forward_ports"},
+	})
+	if d := Decide(fp(TrustFallible), portReq(4321, false, false), t0); !strings.Contains(d.Reason, "`caboose-agent request port --port 4321`") {
+		t.Errorf("the ask does not say how to ask: %q", d.Reason)
+	}
+	// A port has no ExactKey: a once grant is for the port, whole.
+	if k := ExactKey(portReq(4321, true, false)); k != "" {
+		t.Errorf("ExactKey = %q", k)
 	}
 }

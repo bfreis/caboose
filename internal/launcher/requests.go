@@ -562,6 +562,9 @@ func (a *App) printPermissions(r *daemonproto.PermissionsResult) {
 		fmt.Fprintf(out, "egress      : ports %s; allow: %s; deny: %s\n", pr(r.Egress.Ports), list(r.Egress.Allow), list(r.Egress.Deny))
 		fmt.Fprintf(out, "              otherwise: %s\n", pr(r.Egress.Default))
 	}
+	if r.ForwardPorts != "" {
+		fmt.Fprintf(out, "forwards    : forward_ports %s; another port asks (caboose-agent request port)\n", pr(r.ForwardPorts))
+	}
 	if len(r.Grants) == 0 {
 		fmt.Fprintln(out, "grants      : none in force")
 	} else {

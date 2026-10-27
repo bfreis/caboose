@@ -27,10 +27,17 @@ host's own description of what would happen.
 ## How
 
 With Claude Code and caboose's mod loaded, use the tool `caboose_request`:
-`kind` is `egress` (`host`, `port`), `open_url` (`url`) or `alias` (`alias`,
-`args`). From a script, `caboose-agent request KIND [--host H --port P]
-[--url U] [--alias NAME --arg KEY=VALUE...]`; `--json` for a machine-readable
-answer.
+`kind` is `egress` (`host`, `port`), `open_url` (`url`), `alias` (`alias`,
+`args`) or `port` (`port`: one listening in this sandbox, forwarded to the
+host's `localhost`). From a script, `caboose-agent request KIND [--host H
+--port P] [--url U] [--alias NAME --arg KEY=VALUE...]`; `--json` for a
+machine-readable answer. A `port` request takes `--port` alone.
+
+A server listening on a port that `forward_ports` does not name is not
+forwarded, and nothing asks the user for it unless you do. Ask once the
+server listens, or ahead of time. A port below 1024 is never forwarded by a
+request, and neither is one a program on the host already listens on: listen
+on another port.
 
 Always give:
 

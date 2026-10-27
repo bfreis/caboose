@@ -1,6 +1,6 @@
 ---
 name: caboose-propose
-description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a directory of a root made writable, a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
+description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a directory of a root made writable, a few settings (time zone, hostname, tmux, auto_build, VM size), a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
 ---
 
 # Proposing a change to the sandbox
@@ -26,6 +26,10 @@ launch and after every `apply`. It is the authority, not these instructions:
 - `[roots.NAME]`: each root's `host` path, container `path`, and
   `writable`: the parts of it the sandbox may write (`"."` for all of it);
   the rest is read-only.
+- `[settings]`: the values a settings proposal changes, as `config.toml` has
+  them now (`tz` and `hostname` are `""` when unset), `isolation` (the
+  kind in use) and `vm_profile` (the `[vm.NAME]` that `cpus` and `memory`
+  are set in, `""` when `config.toml` defines none).
 
 ## 2. Write ~/.caboose-proposals/NAME.toml
 
@@ -33,7 +37,7 @@ NAME: lowercase letters, digits, `-` and `_`, starting with a letter or
 digit, at most 32. One request, one proposal. A proposal holds a `title`
 (one line, at most 100 characters), a `reason` (a sentence or two), and the
 image's part for its kind, one root, or both; or one alias, alone; or one
-writable part, alone.
+writable part, alone; or settings, alone.
 
 @@IF image=apko@@
 ### apko image: packages
@@ -203,6 +207,33 @@ the user to type the root's name. Nothing changes in this sandbox: the
 directory is writable only after `caboose@@CABOOSE_ENV_FLAG@@ restart`,
 which ends every session. Ask for the narrowest directory the task needs.
 
+### Settings: a few keys of config.toml
+
+```toml
+title = "Use Lisbon time, and a bigger VM"
+reason = "build logs are in UTC, and the builds swap."
+
+[settings.session]
+tz = "Europe/Lisbon"       # also hostname = "sbx", tmux = false
+[settings.build]
+auto_build = false
+[settings.vm]              # the VM profile config.toml uses; you never name it
+cpus = 6
+memory = "12G"
+```
+
+Alone in its proposal, and only these six keys (dotted keys, like
+`session.tz = "UTC"` under `[settings]`, are the same): `session.tz` (a zone
+name such as `Europe/Lisbon`), `session.hostname` (one DNS label),
+`session.tmux`, `build.auto_build`, `vm.cpus` and `vm.memory`. Any other key,
+or any other `config.toml` setting, refuses the proposal whole. The VM keys
+are refused when the isolation in `state.toml` is not `vm`, when it has no
+`vm_profile`, and when they ask for more CPUs or memory than the host has;
+a value `config.toml` has already is left out. The host shows the change to
+`config.toml` as a diff and says when each key takes effect: `tz`, `tmux`
+and `auto_build` need no restart (new sessions, the next launch), `hostname`
+and the VM's size take `caboose@@CABOOSE_ENV_FLAG@@ restart`.
+
 ### Everywhere
 
 Plain text only: no control characters (escape sequences) and no invisible
@@ -232,18 +263,18 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | which image profile, which isolation | top-level `image = "<kind>.<name>"`, `isolation = "<kind>.<name>"` |
 | the adversary assumed | top-level `trust = "fallible"` or `"hostile"` (hostile: vm only) |
 | what the host checkpoints | `paths` in `[checkpoints]` (no restart: the daemon reads it again) |
-| whether creating the sandbox builds a missing or stale image | `auto_build` in `[build]` |
+| whether creating the sandbox builds a missing or stale image | `auto_build` in `[build]`, or a `[settings]` proposal as above |
 | an image profile | `[apko.NAME]` `packages`, `defaults`; `[dockerfile.NAME]` (its Dockerfile in the environment's `dockerfile/NAME/`); `[ref.NAME]` `image` |
 | a capability, a device, DNS, any other `docker run` flag | `run_args` in `[container.NAME]` or `[gvisor.NAME]` |
 | the host's Docker engine inside | `engine_socket = true` in `[container.NAME]` or `[gvisor.NAME]`: root-equivalent on the host |
-| VM size | `cpus`, `memory` in `[vm.NAME]` |
+| VM size | `cpus`, `memory` in `[vm.NAME]`, or a `[settings]` proposal as above |
 | VM outbound proxy | `egress`, `egress_ports`, `egress_allow`, `egress_deny` in `[vm.NAME]` (all but `egress` apply without a restart) |
-| forwarded ports, URL opening, any host command, checkpoints asked for from here | `forward_ports`, `open_urls`, `open_urls_allow`, `host_exec`, `checkpoint_requests` in `[link]` (within seconds) |
+| forwarded ports, URL opening, any host command, checkpoints asked for from here | `forward_ports`, `open_urls`, `open_urls_allow`, `host_exec`, `checkpoint_requests` in `[link]` (within seconds); for one port, `caboose-agent request port --port N` also asks the host (caboose-requests skill) |
 | a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |
 | what of a root the sandbox may write | `writable` in its `[roots]` entry, `caboose setup roots`, or a proposal as above; a restart |
-| tmux, time zone, hostname | `tmux`, `tz`, `hostname` in `[session]` (`tmux`, `tz`: the next session; `hostname`: a restart) |
+| tmux, time zone, hostname | `tmux`, `tz`, `hostname` in `[session]` (`tmux`, `tz`: the next session; `hostname`: a restart), or a `[settings]` proposal as above |
 
 @@IF isolation=vm@@
 Under vm there is no `run_args` and no engine socket: root in the VM already

@@ -120,6 +120,15 @@ func (w *writer) Write(e config.Edit, hash string) error {
 				c.EgressDeny = v.([]string)
 			case k == "link.open_urls_allow":
 				c.OpenURLsAllow = v.([]string)
+			case k == "link.forward_ports":
+				var parts []string
+				for _, e := range v.([]any) {
+					parts = append(parts, fmt.Sprint(e))
+				}
+				c.ForwardPorts = strings.Join(parts, " ")
+				if len(parts) == 0 {
+					c.ForwardPorts = "none"
+				}
 			}
 		}
 	})
@@ -283,4 +292,10 @@ func mustPending(t *testing.T, o Outcome) uint64 {
 		t.Fatalf("want pending, got %+v", o)
 	}
 	return o.Request
+}
+
+// portReq is port, as the link asks about it once the host probed it
+// and found no program of its own there.
+func portReq(port int) policy.Request {
+	return policy.Request{Kind: policy.KindPort, Port: port, HostChecked: true}
 }

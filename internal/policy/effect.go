@@ -54,6 +54,8 @@ func Effect(p Policy, r Request) string {
 		return "run a command on the host, through host_exec"
 	case KindCheckpoint:
 		return "take a checkpoint now of paths [checkpoints] already copies"
+	case KindPort:
+		return fmt.Sprintf("forward port %d of the sandbox to localhost:%d on the host", r.Port, r.Port)
 	}
 	return "an unknown request, which the host refuses"
 }
@@ -163,6 +165,8 @@ func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string
 			return fmt.Sprintf("allows this one run of alias %s, %s: another run, or other arguments, asks again", shown(r.Alias, 64), argsNote(r))
 		case KindEgress:
 			return fmt.Sprintf("allows one connection to %s%s on port %d: another connection, or another port, asks again", shown(r.Host, maxShownHost), privateNote(r), r.Port)
+		case KindPort:
+			return fmt.Sprintf("forwards port %d of the sandbox to localhost:%d on the host once: from when it listens there, now or within 15 minutes, until it stops listening or the link reconnects (as a change to config.toml makes it); then it asks again", r.Port, r.Port)
 		}
 		return "allows that once"
 	case ScopeHours:
@@ -181,6 +185,8 @@ func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string
 			what = "connections to " + shown(r.Host, maxShownHost) + privateNote(r) + " on any port egress_ports allows"
 		case KindOpenURL:
 			what = "opening URLs of " + shown(r.Origin, maxShownHost)
+		case KindPort:
+			what = fmt.Sprintf("forwarding port %d of the sandbox to localhost:%d whenever it listens", r.Port, r.Port)
 		}
 		return fmt.Sprintf("allows %s in environment %s for %d %s", what, env, hours, unit)
 	case ScopeAlways:
@@ -191,6 +197,8 @@ func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string
 			return fmt.Sprintf("adds %s to egress_allow in [vm.%s] of %s: connections to it on any port egress_ports allows, without asking", strconv.Quote(shown(r.Host, maxShownHost)), profile, configPath)
 		case KindOpenURL:
 			return fmt.Sprintf("adds %s to open_urls_allow in [link] of %s", strconv.Quote(shown(r.Origin, maxShownHost)), configPath)
+		case KindPort:
+			return fmt.Sprintf("adds %d to forward_ports in [link] of %s: the port forwards whenever the sandbox listens on it, without asking (the link reconnects to read it, which drops the connections forwarded at that moment)", r.Port, configPath)
 		}
 	}
 	return ""
