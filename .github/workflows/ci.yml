@@ -13,34 +13,125 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # make lint's two halves and the tests, side by side: the wall clock is
+  # the slowest of the three, not their sum.
+  check:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # make lint is the one list of checks, here and on a laptop:
+          # bash -n and sh -n, shellcheck (on the runner already), gofmt,
+          # go vet and staticcheck for linux and darwin. It fails on a
+          # missing checker.
+          - name: lint-linux
+            run: make lint-linux
+            staticcheck: true
+          - name: lint-darwin
+            run: make lint-darwin
+            staticcheck: true
+          # The launcher embeds caboose-agent, and the image hashes cover it.
+          - name: test
+            run: make agent && go test ./...
+            history: true
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: ${{ matrix.history && '0' || '1' }}
           persist-credentials: false
 
+      # go test reuses a result only while every file the test read keeps
+      # its size and mtime, and a checkout writes every file anew. Each
+      # tracked file gets the time of the last commit that changed it, and
+      # each directory the newest of what is under it, so a test whose
+      # files a commit did not touch is not run again.
+      - name: files dated by their last commit
+        if: matrix.history
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+
+          log = subprocess.run(
+              ["git", "-c", "core.quotepath=off", "log", "--format=@%ct", "--name-only", "--no-renames", "HEAD"],
+              check=True, capture_output=True, text=True,
+          ).stdout
+          last = {}
+          t = None
+          for line in log.splitlines():
+              if line.startswith("@"):
+                  t = int(line[1:])
+              elif line and line not in last:
+                  last[line] = t
+          dirs = {}
+          for path, t in last.items():
+              if os.path.islink(path) or not os.path.isfile(path):
+                  continue
+              os.utime(path, (t, t))
+              d = os.path.dirname(path)
+              while True:
+                  dirs[d] = max(dirs.get(d, 0), t)
+                  if not d:
+                      break
+                  d = os.path.dirname(d)
+          for d, t in dirs.items():
+              os.utime(d or ".", (t, t))
+          print(f"{len(last)} paths in history, {len(dirs)} directories dated")
+          PY
+
       - uses: actions/setup-go@v7
+        id: go
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache: false
 
-      # make lint is the one list of checks, here and on a laptop: bash -n
-      # and sh -n, shellcheck (on the runner already), gofmt, go vet and
-      # staticcheck for linux and darwin. It fails on a missing checker.
+      # The modules change only with go.sum, so their cache is keyed on it
+      # alone and kept.
+      - uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: mod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      # What go and staticcheck built and found changes with every commit.
+      # Each job keeps its own, saved from main only (every branch reads
+      # main's) under a key per run, and restored from the newest one.
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/staticcheck
+          key: build-${{ matrix.name }}-${{ runner.os }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            build-${{ matrix.name }}-${{ runner.os }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+            build-${{ matrix.name }}-${{ runner.os }}-go${{ steps.go.outputs.go-version }}-
+
+      # go and staticcheck delete cache entries unused for five days, by
+      # their mtime, which a restore keeps: a cache saved a week ago would
+      # lose at the first command whatever it did not use. Restored, they
+      # are as new as this run.
+      - name: freshen the build cache
+        run: |
+          for d in ~/.cache/go-build ~/.cache/staticcheck; do
+            [ -d "$d" ] && find "$d" -exec touch -h {} +
+            du -sh "$d" 2> /dev/null || echo "$d: none restored"
+          done
+
       - name: staticcheck
+        if: matrix.staticcheck
         run: go install "honnef.co/go/tools/cmd/staticcheck@$(make -s staticcheck-version)"
 
-      - name: make lint
-        run: make lint
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}
 
-      # The launcher embeds caboose-agent, and the image hashes cover it.
-      - name: caboose-agent
-        run: make agent
-
-      - name: go test
-        run: go test ./...
-
+      - uses: actions/cache/save@v6
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/.cache/staticcheck
+          key: build-${{ matrix.name }}-${{ runner.os }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
 
   # The vm guest kernel: built from vm/kernel natively on an arm64 runner,
   # as release.yml's vm-assets job builds the one it ships, and booted
@@ -80,8 +171,34 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - uses: docker/setup-buildx-action@v4
+      # The Image is reproducible: the same recipe and pin give the same
+      # bytes. So it is kept, keyed on everything its build reads, and only
+      # a change to those compiles it again (minutes); a run for anything
+      # else boots the kept one. release.yml always builds its own.
+      - name: kernel pin
+        id: pin
         if: steps.changed.outputs.run == 'true'
+        run: echo "pin=$(make -s vm-kernel-pin | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v6
+        id: kernel
+        if: steps.changed.outputs.run == 'true'
+        with:
+          path: |
+            vm-dist/kernel-arm64
+            vm-dist/kernel-arm64.config
+          key: kernel-arm64-${{ hashFiles('vm/kernel/Dockerfile', 'vm/kernel/check-config', 'vm/kernel/config-*') }}-${{ steps.pin.outputs.pin }}
+
+      # Restored, the Image is newer than its inputs, so make takes it as
+      # built and only checks it (the version it names, its config).
+      - name: kept kernel
+        if: steps.changed.outputs.run == 'true' && steps.kernel.outputs.cache-hit == 'true'
+        run: |
+          make -s vm-dist/.kernel-pin
+          touch vm-dist/kernel-arm64 vm-dist/kernel-arm64.config
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.changed.outputs.run == 'true' && steps.kernel.outputs.cache-hit != 'true'
 
       - name: make vm-kernel
         if: steps.changed.outputs.run == 'true'
@@ -90,3 +207,12 @@ jobs:
       - name: make vm-kernel-smoke
         if: steps.changed.outputs.run == 'true'
         run: make vm-kernel-smoke VM_ARCH=arm64
+
+      # Kept only once it booted.
+      - uses: actions/cache/save@v6
+        if: steps.changed.outputs.run == 'true' && steps.kernel.outputs.cache-hit != 'true'
+        with:
+          path: |
+            vm-dist/kernel-arm64
+            vm-dist/kernel-arm64.config
+          key: ${{ steps.kernel.outputs.cache-primary-key }}

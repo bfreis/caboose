@@ -13,7 +13,7 @@ Docker. `make help` lists the targets; the ones that matter:
 | `make vmm` | build `./caboose-vmm`, the vm isolation's VM runner, and sign it with the virtualization entitlement: ad-hoc, or with a Developer ID (below); a Mac only |
 | `make build` | the launcher, then the image (`caboose build`), in the `dev` environment (`DEV_ENV`) |
 | `make restart` / `make stop` / `make status` | the launcher's commands on the `dev` environment, launcher rebuilt first |
-| `make lint` | `bash -n` + shellcheck, gofmt + go vet + staticcheck, for linux and darwin; fails when shellcheck or staticcheck is missing; CI runs it as it is |
+| `make lint` | `bash -n` + shellcheck, gofmt + go vet + staticcheck, for linux and darwin; fails at the first check that fails, and when shellcheck or staticcheck is missing; its halves `make lint-linux` and `make lint-darwin` are what CI runs, side by side |
 | `make go-test` | the launcher's Go unit tests; touches no container |
 | `make test` | build the `test` environment's image (`TEST_ENV`), then run the integration suite (`tests/run.sh`) in it |
 | `make test-vm` | only the integration suite's isolation vm group (`ONLY=vm tests/run.sh`): a throwaway environment, its image built in the builder guest; a Mac only, skipped elsewhere |
@@ -56,8 +56,8 @@ runs on the host too. The suite's last group, isolation vm, never touches
 the real environment either: it builds, boots and tears down a VM of its own
 in a throwaway data dir, every step bounded in time, and skips, saying why,
 anywhere but a Mac with `caboose-vmm`, the kernel and the builder disk;
-`make test-vm` runs it alone. CI runs `make lint` and go test on every branch
-push.
+`make test-vm` runs it alone. CI runs `make lint`'s two halves and go test on every branch
+push, as three jobs side by side.
 
 **Changes to the image need a rebuild, on the host.**
 `layer.Dockerfile`, `layer-user.sh`, `entrypoint.sh`, `xdg-open.sh`,
