@@ -282,9 +282,11 @@ func TestWarnIfAgentUnusable(t *testing.T) {
 	}
 }
 
-// agentMount answers inspect with the forwarded agent's mount from src.
+// agentMount answers inspect with the forwarded agent's mount from src, a
+// bind mount in the four columns docker.CLI.Mounts asks for (destination,
+// source, type, name), as docker prints them.
 func agentMount(src string) string {
-	return `[ "$1 $2" = "inspect --type=container" ] && { printf '%s\t%s\n' ` + containerAgent + ` "` + src + `"; exit 0; }`
+	return `[ "$1 $2" = "inspect --type=container" ] && { printf '%s\t%s\tbind\t\n' ` + containerAgent + ` "` + src + `"; exit 0; }`
 }
 
 // Docker Desktop's forwarded agent is root:root 0660: the launch opens it

@@ -261,7 +261,11 @@ const agentUnknownNoDaemon = "unknown (the daemon is not running or does not ans
 // every container there, but so does root in any of them already.
 func (a *App) openAgentSocket() {
 	mounts, err := a.box().Mounts()
-	if err != nil || !slices.Contains(mounts, backend.Mount{Source: hostServicesAgent, Target: containerAgent}) {
+	// Mounts fills Type and Volume too: match on the paths alone.
+	forwarded := slices.ContainsFunc(mounts, func(m backend.Mount) bool {
+		return m.Source == hostServicesAgent && m.Target == containerAgent
+	})
+	if err != nil || !forwarded {
 		return
 	}
 	if _, err := backend.Output(a.box(), "test", "-w", containerAgent); err == nil {

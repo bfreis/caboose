@@ -166,6 +166,49 @@ func TestVolumeRequestFailsOrDoesNotStart(t *testing.T) {
 	}
 }
 
+// A resize that does not start for a reason naming a host path (jobs.log
+// cannot be opened; the environment cannot be loaded): the request's
+// outcome, which the sandbox reads, leaves the path out; the answer, the
+// person's, keeps it.
+func TestVolumeRequestNotStartedHostPaths(t *testing.T) {
+	w, b := volumeBrokerWorld(t)
+	ran := false
+	w.l.volumeAction = func(*App, broker.Resize) (string, error) { ran = true; return "", nil }
+	jobsLog := filepath.Join(w.b.Cfg.EnvDir, jobsLogFile)
+	if err := os.RemoveAll(jobsLog); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(jobsLog, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := fileResize(t, b, 96<<30)
+	res, err := b.Answer(id, broker.Reply{Verdict: broker.ReplyAllow, Scope: broker.ScopeOnce, By: broker.ByCLI})
+	if err != nil || !strings.Contains(res.ResizeError, jobsLog) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	ri, _ := b.Request(id)
+	if !strings.Contains(ri.Reason, "the resize did not start: ") || !strings.Contains(ri.Reason, "(a path on the host)") || strings.Contains(ri.Reason, w.b.Cfg.EnvDir) || ran {
+		t.Fatalf("jobs.log: request %+v, ran %v", ri, ran)
+	}
+	if err := os.Remove(jobsLog); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgPath := filepath.Join(home, ".caboose", "envs", "default", "config.toml")
+	w.l.newApp = func(string) (*App, error) { return nil, errors.New("cannot read " + cfgPath + ": permission denied") }
+	id = fileResize(t, b, 112<<30)
+	res, err = b.Answer(id, broker.Reply{Verdict: broker.ReplyAllow, Scope: broker.ScopeOnce, By: broker.ByCLI})
+	if err != nil || !strings.Contains(res.ResizeError, cfgPath) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	ri, _ = b.Request(id)
+	if !strings.Contains(ri.Reason, "the resize did not start: cannot read (a path on the host): permission denied") || strings.Contains(ri.Reason, home) || ran {
+		t.Fatalf("newApp: request %+v, ran %v", ri, ran)
+	}
+}
+
 // The job's resize looks again at config.toml and the VM: what changed
 // since the request refuses it, changing nothing; else it is caboose
 // volume resize's live resize, its size written once the disk has it.

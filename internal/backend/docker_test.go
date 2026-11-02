@@ -172,7 +172,7 @@ func volumeDocker(t *testing.T, df string) (d *Docker, dir string, log func() []
 	p := filepath.Join(dir, "docker")
 	script := `#!/bin/sh
 d=$(dirname "$0")
-echo "$*" >> "$d/log"
+printf '%s\n' "$*" >> "$d/log"
 [ -f "$d/fail" ] && case "$*" in "$(cat "$d/fail")"*) echo "boom on $(cat "$d/fail")" >&2; exit 1 ;; esac
 case "$1 $2" in
   "version "*) exit 0 ;;

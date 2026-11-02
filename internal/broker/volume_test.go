@@ -257,3 +257,28 @@ func TestVolumeResizeNotStarted(t *testing.T) {
 		t.Fatalf("%+v", ri)
 	}
 }
+
+// sandboxErr is a Resizer's error with a text of its own for the sandbox.
+type sandboxErr struct{ full, sandbox string }
+
+func (e sandboxErr) Error() string       { return e.full }
+func (e sandboxErr) SandboxText() string { return e.sandbox }
+
+// A resize that does not start with an error that has a sandbox's text:
+// the request's outcome, which the sandbox reads, has that text; the
+// answer, the person's, has the whole error.
+func TestVolumeResizeNotStartedSandboxText(t *testing.T) {
+	f := volumeFixture(t)
+	f.resize.err = sandboxErr{full: "open /Users/x/.caboose/envs/default/jobs.log: is a directory", sandbox: "open (a path on the host): is a directory"}
+	f.reopen()
+	o, _ := f.b.File(Ask{Request: resizeReq("cache", 128<<30)})
+	id := mustPending(t, o)
+	res := f.answer(id, Reply{Verdict: ReplyAllow, Scope: ScopeOnce})
+	if res.ResizeError != "open /Users/x/.caboose/envs/default/jobs.log: is a directory" {
+		t.Fatalf("%+v", res)
+	}
+	ri, _ := f.b.Request(id)
+	if !strings.Contains(ri.Reason, "then: the resize did not start: open (a path on the host): is a directory") || strings.Contains(ri.Reason, "/Users/x") {
+		t.Fatalf("%+v", ri)
+	}
+}

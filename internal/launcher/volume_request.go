@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 
@@ -58,20 +59,51 @@ var _ broker.Resizer = volumeJobs{}
 
 // ResizeVolume is broker.Resizer's: the job started, or why not (another
 // job runs for the environment, the daemon stops or is being replaced).
+// The request's outcome, which the sandbox reads, has the error with the
+// host's paths left out (notStarted); the answer and the daemon's log keep
+// the whole of it, for the person.
 func (v volumeJobs) ResizeVolume(r broker.Resize) error {
 	l := v.l
 	e, err := l.jobEnv(v.env)
 	if err != nil {
-		return err
+		return notStarted(err, stripHostPaths(err.Error(), noAppDirs()))
 	}
 	app, err := l.newApp(v.env)
 	if err != nil {
-		return err
+		return notStarted(err, stripHostPaths(err.Error(), noAppDirs()))
 	}
 	_, err = l.startJob(e, app, daemonproto.JobInfo{Kind: daemonproto.JobVolumeResize}, func(j *envJob, out *cappedlog.Log) {
 		l.runVolumeJob(e, j, app, out, r)
 	})
-	return err
+	if err != nil {
+		return notStarted(err, app.sandboxText(err.Error()))
+	}
+	return nil
+}
+
+// resizeNotStarted is a resize that did not start: the error, and its
+// text as the sandbox may read it (broker.SandboxTexter).
+type resizeNotStarted struct {
+	err     error
+	sandbox string
+}
+
+func (e resizeNotStarted) Error() string       { return e.err.Error() }
+func (e resizeNotStarted) Unwrap() error       { return e.err }
+func (e resizeNotStarted) SandboxText() string { return e.sandbox }
+
+var _ broker.SandboxTexter = resizeNotStarted{}
+
+func notStarted(err error, sandbox string) error {
+	return resizeNotStarted{err: err, sandbox: sandbox}
+}
+
+// noAppDirs are the host's directories a failure's text may name before
+// there is an environment's App to say which: the user's home and the
+// caboose dirs the environment names.
+func noAppDirs() []string {
+	home, _ := os.UserHomeDir()
+	return []string{os.Getenv("CABOOSE_DATA_DIR"), os.Getenv("CABOOSE_HOME"), home}
 }
 
 // runVolumeJob makes request r's resize on app, records what came of it
@@ -121,8 +153,14 @@ func (l *DaemonLinks) volumeRun(app *App, r broker.Resize) (outcome string, err 
 // (a disk's, config.toml's) replaced by "(a path on the host)".
 func (a *App) sandboxText(s string) string {
 	c := a.Cfg
+	return stripHostPaths(s, []string{c.DataDir, c.EnvDir, c.CabooseHome, c.Home})
+}
+
+// stripHostPaths is s in one line, each path under one of dirs replaced
+// by "(a path on the host)".
+func stripHostPaths(s string, dirs []string) string {
 	var alts []string
-	for _, d := range []string{c.DataDir, c.EnvDir, c.CabooseHome, c.Home} {
+	for _, d := range dirs {
 		d = strings.TrimRight(d, "/")
 		if d != "" {
 			alts = append(alts, regexp.QuoteMeta(d))

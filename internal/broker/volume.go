@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/bfreis/caboose/internal/policy"
@@ -15,6 +16,13 @@ import (
 // maxOutcome is the most of an outcome kept, in bytes.
 const maxOutcome = 1000
 
+// SandboxTexter is an error a Resizer returns whose text names what the
+// sandbox may not read (the host's paths): SandboxText is the text the
+// request's outcome, which the sandbox reads, has instead.
+type SandboxTexter interface {
+	SandboxText() string
+}
+
 // startResize starts the resize q, just allowed, asks for, and records an
 // outcome at once when it does not start.
 func (b *Broker) startResize(q *reqRec, res *AnswerResult) {
@@ -23,7 +31,13 @@ func (b *Broker) startResize(q *reqRec, res *AnswerResult) {
 	if err := b.opts.Resizer.ResizeVolume(r); err != nil {
 		res.ResizeError = err.Error()
 		b.logf("request #%d is allowed, but its resize did not start: %v", id, err)
-		if err := b.RecordOutcome(id, "the resize did not start: "+err.Error()); err != nil {
+		// The outcome is the sandbox's to read.
+		text := err.Error()
+		var st SandboxTexter
+		if errors.As(err, &st) {
+			text = st.SandboxText()
+		}
+		if err := b.RecordOutcome(id, "the resize did not start: "+text); err != nil {
 			b.logf("%v", err)
 		}
 	}

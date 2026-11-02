@@ -546,11 +546,19 @@ in the daemon, which makes the resize `caboose volume resize` makes while the
 VM runs (a grow, or a live shrink: [Resizing a
 volume](configuration.md#resizing-a-volume)) after looking at `config.toml`
 and the VM again, and writes the new `size` to `config.toml` once the disk has
-it. One job runs per environment at a time: a resize allowed while a stop or
+it. A volume whose `size` in `config.toml` or whose disk's size is no longer
+the one the request was filed against, or whose vm profile is no longer the
+one in use, is refused, changing nothing, with "the volume changed since this
+was asked: file it again": the person allowed the change from the size the
+request showed. One job runs per environment at a time: a resize allowed while a stop or
 restart runs does not start, and the answer and the request say so. What came
 of it goes to the environment's `jobs.log`, a notification, `decisions.log`
 and the request itself, which `caboose-agent requests` then lists with the
-outcome after its reason. Requests are bounded as every other kind is: the
+outcome after its reason. The sandbox reads that outcome, so in it each path
+of this machine's (under the home or caboose's directories: a disk's,
+`config.toml`'s) is replaced by "(a path on the host)", and a resize that did
+not start is said the same way; `jobs.log`, the notification and the answer
+on the host keep the whole of it. Requests are bounded as every other kind is: the
 link's request bucket, at most 10 new requests a minute and 100 pending in
 an environment.
 

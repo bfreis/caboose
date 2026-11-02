@@ -235,7 +235,7 @@ terminal it refuses). `rm <volume> --delete-disk` also deletes a disk no
 profile declares. While a restore's files are beside the disk (a
 `.before-restore` disk, a checkpoint's copy), `rm` is refused, saying what
 each is; with `--delete-disk` it deletes them with the disk, after the
-same question. `caboose prune` deletes no volume's disk, but names each
+same question, and keeps them beside a disk it keeps. `caboose prune` deletes no volume's disk, but names each
 one no profile declares, and the files `volume ls` names beside the
 disks.
 

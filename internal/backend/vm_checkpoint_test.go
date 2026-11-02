@@ -308,7 +308,8 @@ func TestHoldVolumeWaitsForStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { time.Sleep(150 * time.Millisecond); unstart() }()
+	// Its own copy: unstart is set again below.
+	go func(unlock func()) { time.Sleep(150 * time.Millisecond); unlock() }(unstart)
 	t0 := time.Now()
 	if _, err := r.v.HoldVolume(context.Background(), "cache", r.during(nil)); err != nil || r.got() != "dial,freeze,clone,thaw,close" {
 		t.Errorf("err %v, calls %s", err, r.got())

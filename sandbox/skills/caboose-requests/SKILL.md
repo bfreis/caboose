@@ -97,7 +97,11 @@ for); otherwise it is `pending #N`, and a person allows each resize once. A
 shrink unmounts the volume for a while and is refused while anything in here
 holds a file on it: say so in `meanwhile`, and keep processes off it until
 it is decided. Once allowed, the host runs it; `caboose-agent requests`
-then shows what came of it after the reason ("then: ..."). A volume the
+then shows what came of it after the reason ("then: ..."), with the host's
+paths shown as "(a path on the host)". "the volume changed since this was
+asked: file it again" means its size changed (or the profile did) between
+your request and the person's answer, and nothing was resized: file a new
+request if you still need one. A volume the
 profile lacks is a proposal (the caboose-propose skill), not a request.
 
 ## Good to know

@@ -13,6 +13,7 @@ import (
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/proposal"
 )
 
 // resizerBox is a sandbox whose volumes resize as the test says.
@@ -184,6 +185,38 @@ func TestVolumeResizeFrameworkDisk(t *testing.T) {
 	e, _ = volumeEnv(t, backend.VolumeState{Running: true}, 0)
 	if err := e.a.Volume([]string{"resize", "cache", "96G"}); err != nil || !strings.Contains(e.errb.String(), "created without volume cache") {
 		t.Errorf("not in the VM: %v, said %s", err, e.errb)
+	}
+}
+
+// Every resize that writes config.toml tells sessions the new size
+// (state.toml): live and applied, a stopped VM's, one on the framework's
+// disk; a live one not applied tells them nothing.
+func TestVolumeResizeExports(t *testing.T) {
+	stateSays := func(e *setupEnv, size string) bool {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(e.a.Cfg.DataDir, proposal.Dir, proposal.CurrentDir, "state.toml"))
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(b), `size = "`+size+`"`)
+	}
+	e, b := volumeEnv(t, liveVM, 64<<30)
+	b.err = errors.New("is in use")
+	err := e.a.Volume([]string{"resize", "cache", "32G"})
+	if _, serr := os.Stat(filepath.Join(e.a.Cfg.DataDir, proposal.Dir, proposal.CurrentDir, "state.toml")); err == nil || !errors.Is(serr, os.ErrNotExist) {
+		t.Errorf("not applied: %v, exported (%v)", err, serr)
+	}
+	b.res, b.err = backend.VolumeResize{From: 64 << 30, Applied: true}, nil
+	if err := e.a.Volume([]string{"resize", "cache", "96G"}); err != nil || !stateSays(e, "96G") {
+		t.Errorf("live: %v, exported %v\n%s", err, stateSays(e, "96G"), e.errb)
+	}
+	e, _ = volumeEnv(t, backend.VolumeState{Has: true, Live: true}, 64<<30)
+	if err := e.a.Volume([]string{"resize", "cache", "100G"}); err != nil || !stateSays(e, "100G") {
+		t.Errorf("stopped: %v, exported %v\n%s", err, stateSays(e, "100G"), e.errb)
+	}
+	e, _ = volumeEnv(t, backend.VolumeState{Running: true, Has: true}, 64<<30)
+	if err := e.a.Volume([]string{"resize", "cache", "112G"}); err != nil || !stateSays(e, "112G") {
+		t.Errorf("framework's disk: %v, exported %v\n%s", err, stateSays(e, "112G"), e.errb)
 	}
 }
 

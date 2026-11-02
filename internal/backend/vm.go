@@ -438,6 +438,12 @@ func (v *VM) Stop() error {
 // starting while it changes what a start reads (a volume's disk).
 func (v *VM) HoldStart() (func(), error) { return v.holdStart() }
 
+// HoldVolumes takes the volumes' lock, waiting for it: a launcher that
+// holds it and the start lock takes this one first, as Start does.
+func (v *VM) HoldVolumes() (func(), error) {
+	return v.holdVolumes(context.Background(), 0)
+}
+
 // holdStart takes the VM's start lock (vm.Dir.HoldStart), waiting for
 // it, and says why when a volume's resize or checkpoint holds it: a
 // resize can take many minutes, and a silent wait looks like a hang.

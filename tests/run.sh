@@ -844,12 +844,28 @@ for v in 0.0.9 0.0.10 0.0.11; do printf 'decoy' > "$VERSIONS/$v"; done
 prune_keep $((nreals + 2))
 check 'keeps newest N by version order, not lexically' "$reals 0.0.11 0.0.10" "$(versions_now)"
 
+# sees_link TARGET: until the container's ~/.local/bin/claude reads TARGET,
+# list that dir in the container, at most 5 s. Docker Desktop's file sharing
+# keeps showing the container the link a host's ln -sfn replaced, through
+# any wait (30 s tried), until something in the container lists its dir; the
+# prune would then protect the old link's version, not the new one's.
+sees_link() {
+    for _ in $(seq 25); do
+        docker exec "$CONTAINER" ls /home/agent/.local/bin >/dev/null 2>&1
+        [ "$(cexec readlink /home/agent/.local/bin/claude)" = "$1" ] && return 0
+        sleep 0.2
+    done
+    return 1
+}
 find "$VERSIONS" -maxdepth 1 -name '0.0.*' -delete 2>/dev/null
 for v in 0.0.1 0.0.2; do printf 'decoy' > "$VERSIONS/$v"; done
 ln -sfn "/home/agent/.local/share/claude/versions/0.0.1" "$BIN/claude"
+check 'the container sees the link moved to the oldest version' 0 \
+    "$(sees_link /home/agent/.local/share/claude/versions/0.0.1; echo $?)"
 prune_keep "$nreals"
 check 'protects the active version even when it is oldest' "$reals 0.0.1" "$(versions_now)"
 restore
+[ -z "$ORIGINAL_LINK" ] || check 'the container sees the link restored' 0 "$(sees_link "$ORIGINAL_LINK"; echo $?)"
 check 'real version survived the suite' 0 "$(exists "$VERSIONS/$real")"
 check 'and so did every other real one' "$reals" "$(versions_now)"
 

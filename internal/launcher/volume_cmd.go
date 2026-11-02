@@ -171,6 +171,12 @@ var holdVMStart = func(a *App) (func(), error) {
 	return unlock, err
 }
 
+// holdVolumes takes the volumes' lock, which a checkpoint or restore of a
+// volume holds even where there is no VM directory (and so no start lock),
+// waiting for it. It is taken before the start lock, never after. The
+// tests stand in for it.
+var holdVolumes = func(a *App) (func(), error) { return a.vmBox().HoldVolumes() }
+
 // vmVolumeState is how the environment's VM has volume name: the zero
 // state when there is no VM.
 func (a *App) vmVolumeState(name string) (backend.VolumeState, error) {
@@ -397,6 +403,11 @@ func (a *App) volumeRm(args []string) error {
 	// deleted, so that none opens it in between; one that was running
 	// already holds the disk's lock, which diskFree finds.
 	if deleteDisk {
+		unvol, err := holdVolumes(a)
+		if err != nil {
+			return Die("%v", err)
+		}
+		defer unvol()
 		unlock, err := holdVMStart(a)
 		if err != nil {
 			return Die("%v", err)
@@ -415,9 +426,10 @@ func (a *App) volumeRm(args []string) error {
 		return Die("the running VM has volume %s: 'caboose stop' first (this ends its sessions), then run this again; its disk is kept unless --delete-disk", name)
 	}
 	disk := a.volumeDisk(name)
-	// What a restore left beside the disk: refused without --delete-disk,
-	// which deletes it too, so that it is never left behind a volume
-	// config.toml no longer has.
+	// What a restore left beside the disk: refused without --delete-disk
+	// when the profile removed is a vm profile's (the disk is its), which
+	// deletes it too, so that it is never left behind a volume config.toml
+	// no longer has; another profile's removal has nothing to do with it.
 	var restoreLeft []listedLeftover
 	lefts, err := a.volumeLeftovers()
 	if err != nil {
@@ -427,6 +439,10 @@ func (a *App) volumeRm(args []string) error {
 		if l.Kind == leftoverBeforeRestore || l.Kind == leftoverRestoring {
 			restoreLeft = append(restoreLeft, l)
 		}
+	}
+	var restoreKept []listedLeftover // left where it is, and said so
+	if len(restoreLeft) > 0 && !deleteDisk && profileKind(profile) != config.KindVM {
+		restoreKept, restoreLeft = restoreLeft, nil
 	}
 	if len(restoreLeft) > 0 && !deleteDisk {
 		var lines []string
@@ -468,7 +484,7 @@ func (a *App) volumeRm(args []string) error {
 	if diskKept {
 		// A vm profile still declares the volume: what a restore left
 		// stays beside its disk, which stays.
-		restoreLeft = nil
+		restoreKept, restoreLeft = restoreLeft, nil
 	}
 	if deleteDisk && !diskKept {
 		if left := slices.DeleteFunc(a.declaring(name, true), func(p string) bool { return p == profile }); len(left) > 0 {
@@ -573,6 +589,9 @@ func (a *App) volumeRm(args []string) error {
 	if diskKept && isFile(disk) {
 		a.Note("its vm disk, %s, is kept: %s still %s the volume", disk, strings.Join(a.declaring(name, true), ", "), plural(len(a.declaring(name, true)), "declares", "declare"))
 		kept = true
+	}
+	for _, l := range restoreKept {
+		a.Note("%s, which a restore left beside the vm disk, is kept with it", l.Path)
 	}
 	switch {
 	case fi != nil:
@@ -745,7 +764,11 @@ func (a *App) volumeResize(args []string) error {
 			case <-stopped:
 			}
 		}()
-		_, err := a.liveResize(ctx, vr, name, size, edit, table)
+		res, err := a.liveResize(ctx, vr, name, size, edit, table)
+		if res.Applied {
+			// Sessions' state.toml says the volume's new size.
+			a.exportResized()
+		}
 		close(stopped)
 		signal.Stop(sigs)
 		interrupted := ctx.Err() != nil
@@ -765,6 +788,7 @@ func (a *App) volumeResize(args []string) error {
 		if err := a.recordVolumeSize(edit, table, size); err != nil {
 			return err
 		}
+		a.exportResized()
 		a.Note("%s: the volume grows at the VM's next start ('caboose restart' on macOS %d or later recreates the VM with its volumes on caboose-vmm's disks, which resize while it runs)", why, vm.LiveDiskMacOS)
 		return nil
 	}
@@ -777,6 +801,7 @@ func (a *App) volumeResize(args []string) error {
 	if err := a.recordVolumeSize(edit, table, size); err != nil {
 		return err
 	}
+	a.exportResized()
 	if vs.Running {
 		a.Note("the VM was created without volume %s: 'caboose restart' gives it the volume, at %s", name, gibString(size))
 	} else {

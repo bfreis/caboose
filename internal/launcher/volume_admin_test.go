@@ -858,6 +858,9 @@ size = "8G"
 	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
 		t.Fatalf("kept: %v\n%s", err, e.errb)
 	}
+	if !strings.Contains(e.errb.String(), before+", which a restore left beside the vm disk, is kept with it") {
+		t.Errorf("kept, no note:\n%s", e.errb)
+	}
 	if !isFile(disk) || !isFile(before) || !slices.Equal(b.RemovedVolumes, []string{"cache"}) {
 		t.Errorf("kept: disk %v, before-restore %v, removed %q\n%s", isFile(disk), isFile(before), b.RemovedVolumes, e.errb)
 	}
@@ -962,4 +965,71 @@ func TestVolumeRmContainerPartialFailure(t *testing.T) {
 // answerTerm gives e's commands a terminal that answers s.
 func answerTerm(e *setupEnv, s string) {
 	e.a.Terminal = func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(s)), nil }
+}
+
+// Without --delete-disk, what a restore left beside a vm disk stops only
+// the removal of a vm profile's volume (the disk is its); a container
+// profile's goes, and the files stay, said so.
+func TestVolumeRmRestoreLeftByKind(t *testing.T) {
+	cfg := ctrOnlyConfig + `
+[vm.default]
+
+[vm.default.volume.cache]
+path = "~/.cache/go-build"
+size = "8G"
+`
+	e, _ := adminEnv(t, cfg, nil)
+	disk := e.makeDisk("cache", 8<<30)
+	before := disk + checkpoint.BeforeRestoreSuffix
+	if err := os.WriteFile(before, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.Volume([]string{"rm", "cache"}); err != nil {
+		t.Fatalf("container: %v\n%s", err, e.errb)
+	}
+	if !isFile(disk) || !isFile(before) || !strings.Contains(e.errb.String(), before+", which a restore left beside the vm disk, is kept with it") {
+		t.Errorf("container: disk %v, before-restore %v\n%s", isFile(disk), isFile(before), e.errb)
+	}
+
+	e, _ = adminEnv(t, cfg, nil)
+	disk = e.makeDisk("cache", 8<<30)
+	before = disk + checkpoint.BeforeRestoreSuffix
+	if err := os.WriteFile(before, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgBefore := e.readConfig()
+	err := e.a.Volume([]string{"rm", "cache", "--profile", "vm.default"})
+	if err == nil || !strings.Contains(err.Error(), "deal with it first") || !isFile(before) || e.readConfig() != cfgBefore {
+		t.Errorf("vm: %v\n%s", err, e.errb)
+	}
+}
+
+// rm --delete-disk takes the volumes' lock, and then the start lock, as a
+// checkpoint or restore does, and lets go in the opposite order.
+func TestVolumeRmHoldsVolumesLockFirst(t *testing.T) {
+	e, _ := adminEnv(t, ctrOnlyConfig, nil)
+	e.makeDisk("cache", 8<<30)
+	var events []string
+	hv, hs := holdVolumes, holdVMStart
+	t.Cleanup(func() { holdVolumes, holdVMStart = hv, hs })
+	holdVolumes = func(*App) (func(), error) {
+		events = append(events, "volumes")
+		return func() { events = append(events, "unvolumes") }, nil
+	}
+	holdVMStart = func(*App) (func(), error) {
+		events = append(events, "start")
+		return func() { events = append(events, "unstart") }, nil
+	}
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	if got := strings.Join(events, ","); got != "volumes,start,unstart,unvolumes" {
+		t.Errorf("events %s", got)
+	}
+	events = nil
+	e, _ = adminEnv(t, ctrOnlyConfig, nil)
+	if err := e.a.Volume([]string{"rm", "cache"}); err != nil || len(events) != 0 {
+		t.Errorf("without --delete-disk: %v, events %v", err, events)
+	}
 }
