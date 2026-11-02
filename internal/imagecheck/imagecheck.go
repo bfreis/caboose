@@ -263,7 +263,7 @@ var requirements = []requirement{
 	{name: "tool:grep", label: "grep", tool: true, why: "Claude Code's installer"},
 	{name: "tool:head", label: "head", tool: true, why: "Claude Code's installer"},
 	{name: "tool:sha256sum", label: "sha256sum", tool: true, why: "Claude Code's installer verifies the download with it"},
-	{name: "tool:chown", label: "chown", tool: true, why: "the derived layer gives the agent user its home with it"},
+	{name: "tool:chown", label: "chown", tool: true, why: "the derived layer gives the agent user its home with it, and a container's creation its volumes"},
 	{name: "etc:passwd", label: "/etc/passwd", setup: true, why: "the derived layer adds the agent user to it, in place"},
 	{name: "etc:group", label: "/etc/group", setup: true, why: "the derived layer adds agent's group to it, in place"},
 	{name: "home", label: "/home/agent", setup: true, why: "the derived layer makes it agent's home, with the bind mounts' mountpoints in it"},

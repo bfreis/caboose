@@ -288,11 +288,37 @@ restore it with the VM stopped (`caboose stop`, then move
 `<volume>.img.before-shrink` over `<volume>.img`). A clone left by an
 earlier shrink stops the next one until it is deleted or restored.
 
-**Under `container` and `gvisor`**, a volume takes `path` alone. These
-volumes are read and checked but not yet attached to the sandbox: what the
-sandbox writes at their paths stays in the container's own files, which
-recreating the container (`caboose restart`) loses. `caboose`, as it creates
-the container, and `caboose doctor` say so.
+**Under `container` and `gvisor`**, a volume takes `path` alone: it is a
+docker volume of the engine's, `caboose-<env>-<volume>`
+(`caboose-default-cache`), shared by every `container` and `gvisor` profile
+of the environment that declares it. The container's creation makes it
+when the engine has none, labelled as the container's, and gives its root
+to the sandbox's user before the sandbox starts (a new docker volume at a
+path the image lacks is root's), with the image's `chown` in a throwaway
+container of the same image, runtime and user namespace (a `--userns` of
+`run_args`), as root with no network; under `gvisor` where the sandbox
+runs as root, nothing needs giving. A docker volume of that name that
+caboose did not make for the container is refused: one labelled as
+another container's, one with no label of caboose's, and one that is not
+docker's own storage (another driver, or driver options, as a volume bound
+to a directory of this machine has). The message names `docker volume rm`,
+which deletes it if nothing of yours needs it. The volume is kept when
+the container is removed, so `caboose restart` keeps what it holds.
+Adding, removing or moving a volume takes `caboose restart`, which
+`caboose`, `caboose status` and `caboose doctor` say; `caboose doctor`
+lists each volume with its docker volume and the space the engine says it
+takes ("size unknown" when the engine does not answer within 10 seconds).
+`caboose volume ls` lists the container's docker volumes the same way, one
+no profile declares with the command that deletes it. `caboose volume rm`
+keeps the docker volume; `--delete-disk` deletes it, asking as for a disk,
+once the container no longer has it (`caboose restart` after the `rm`
+recreates it without). It keeps the docker volume, and says so, when the
+profile named is a `vm` profile or another `container` or `gvisor` profile
+still declares the volume; it deletes a `vm` disk of that name that no
+other `vm` profile declares. If something it was to delete does not go,
+it says what did and did not, and that the `config.toml` entry is
+commented out already. `caboose prune` names each docker volume no
+profile declares.
 
 ## Image profiles
 

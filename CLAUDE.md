@@ -440,7 +440,13 @@ outside the repo.
   `createContainer` probes it (`agentCanWrite`, `launcher/isolation.go`)
   and runs as `0:0` with `IS_SANDBOX=1` only where the agent cannot, and
   only under gVisor, whose root is inside its own kernel. Never run as root
-  under runc, and never pick the user by engine name. The container is
+  under runc, and never pick the user by engine name. That rule is about
+  the sandbox's own processes: the throwaway containers that run the
+  user's image as root -- the image check, the layer build's user setup
+  (`layer-user.sh`) and the volumes' ownership helper
+  (`backend.OwnerArgv`: no network, the entrypoint replaced by `chown`,
+  only the volumes mounted, only their roots chowned) -- are the
+  deliberate exceptions. The container is
   labelled with the kind (`assets.LabelIsolation`), the profile
   (`LabelProfile`, `<kind>.<name>`, or the bare kind when config.toml
   defines none: a switch between two profiles of a kind is drift too) and

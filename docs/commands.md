@@ -32,8 +32,8 @@
 | `caboose prune --builder-cache` | delete the builder guest's cache disk, every layer and download builds fetched; the next build makes an empty one (asks; `CABOOSE_FORCE=1` does not; refused while a build runs) |
 | `caboose [-e ENV] disk [--json] [--budget DURATION]` | the disk space caboose takes up on this machine, per environment and per kind, and what frees each; see [Disk space](#disk-space) |
 | `caboose volume create NAME PATH [--size SIZE] [--profile PROFILE]` | add a volume to a profile in `config.toml`; see [Volumes](configuration.md#adding-listing-and-removing-volumes) |
-| `caboose volume ls [--json]` | every volume of the environment: the profiles declaring it, its disk's size and allocated space, whether the running VM has it |
-| `caboose volume rm NAME [--profile PROFILE] [--delete-disk]` | remove a volume from a profile, keeping its disk unless `--delete-disk` (asks) |
+| `caboose volume ls [--json]` | every volume of the environment: the profiles declaring it, its disk's size and allocated space, whether the running VM has it; under `container` and `gvisor`, its docker volume and size |
+| `caboose volume rm NAME [--profile PROFILE] [--delete-disk]` | remove a volume from a profile, keeping its disk (or docker volume) unless `--delete-disk` (asks) |
 | `caboose volume resize NAME SIZE` | change a `vm` volume's size, while the VM runs too; see [Resizing a volume](configuration.md#resizing-a-volume) |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |
@@ -83,10 +83,11 @@ could name anything, so then it removes nothing from the cache and says
 which lock. It ends with one line: what it freed. Before the sandbox
 starts, it deletes the scratch disks VMs that are not running left
 behind (a VM makes its scratch disk at each start and deletes it at its
-stop), skipping any VM starting, stopping or running. A volume's disk
-that no profile declares is never pruned, since it holds what the sandbox wrote: `caboose
-prune` names each one, with `caboose volume rm NAME --delete-disk`, which
-deletes it.
+stop), skipping any VM starting, stopping or running. A volume's disk, or
+under `container` and `gvisor` its docker volume, that no profile declares
+is never pruned, since it holds what the sandbox wrote: `caboose prune`
+names each one, with `caboose volume rm NAME --delete-disk`, which deletes
+it.
 
 `caboose restart` and `caboose stop` destroy every running session, so they list
 the sessions they are about to kill and ask first. `CABOOSE_FORCE=1` (or `true`) skips the

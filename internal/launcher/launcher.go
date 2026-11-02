@@ -112,8 +112,13 @@ func dockerFailed(err error) error {
 
 // boxFailed is dockerFailed for whatever the sandbox is: under vm there is
 // no docker to have said why, so the error says it, or the command's own
-// status stands.
+// status stands. A container's volumes that could not be readied
+// (backend.VolumeError) say why themselves: docker showed nothing.
 func (a *App) boxFailed(err error) error {
+	var ve *backend.VolumeError
+	if errors.As(err, &ve) {
+		return Die("%s", ve.Msg)
+	}
 	if !a.isVM() {
 		return dockerFailed(err)
 	}

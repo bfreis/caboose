@@ -8,6 +8,7 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // goos is runtime.GOOS, a variable so that tests can play the Mac.
@@ -77,6 +79,28 @@ func (c *CLI) RawOutput(args ...string) (string, error) {
 		return out.String(), &Failure{Err: err, Stderr: strings.TrimSpace(errb.String())}
 	}
 	return out.String(), nil
+}
+
+// OutputWithin is Output given at most d: past it docker is killed, and
+// the error says it ran out of time. For a call whose answer is only
+// nice to have, which an engine busy for minutes must not hold up.
+func (c *CLI) OutputWithin(d time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	var out, errb bytes.Buffer
+	cmd := c.cmd(args...)
+	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	// Whatever docker started that keeps its output open is not waited
+	// for past the kill.
+	cmd.WaitDelay = time.Second
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("docker %s: no answer within %s", strings.Join(args, " "), d)
+		}
+		return "", &Failure{Err: err, Stderr: strings.TrimSpace(errb.String())}
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
 }
 
 // Failure is a docker run that failed, with what it said on stderr: a bare
@@ -350,11 +374,12 @@ func ParseMounts(out string) []Mount {
 	return ms
 }
 
-// Volume is what the engine says of a volume: its driver and the
-// driver's options, nil for none.
+// Volume is what the engine says of a volume: its driver, the driver's
+// options and its labels, nil for none.
 type Volume struct {
 	Driver  string
 	Options map[string]string
+	Labels  map[string]string
 }
 
 // InspectVolume is what the engine says of the volume name. exists is

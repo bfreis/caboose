@@ -6,12 +6,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
+	"github.com/bfreis/caboose/internal/checkpoint"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/vm"
 )
@@ -172,14 +175,16 @@ func TestVolumeCreate(t *testing.T) {
 }
 
 // Under container and gvisor a volume is a path alone: a size is refused
-// by the file's keys, and the volume is said not to be attached.
+// by the file's keys, and the volume is said to be a docker volume, which
+// the container gets as it is created.
 func TestVolumeCreateContainer(t *testing.T) {
 	e, _ := adminEnv(t, adminConfig, nil)
 	if err := e.a.Volume([]string{"create", "web", "/srv/web", "--profile", "container.default"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(e.readConfig(), "[container.default.volume.web]\npath = \"/srv/web\"\n\n# the links") ||
-		!strings.Contains(e.errb.String(), "under container caboose makes no volumes yet") {
+		!strings.Contains(e.errb.String(), "under container it is docker volume "+e.a.Cfg.Container+"-web, which the container's creation makes if the engine has none, and keeps when the container goes") ||
+		!strings.Contains(e.errb.String(), "container.default is not the profile in use (vm.default)") {
 		t.Errorf("%s\n%s", e.readConfig(), e.errb)
 	}
 	before := e.readConfig()
@@ -387,7 +392,7 @@ func TestVolumeRmDeleteDisk(t *testing.T) {
 		t.Errorf("the directory went: %v", serr)
 	}
 	// Nothing to delete.
-	if err := e.a.Volume([]string{"rm", "old", "--delete-disk"}); err != nil || !strings.Contains(e.errb.String(), "volume old has no disk here") {
+	if err := e.a.Volume([]string{"rm", "old", "--delete-disk"}); err != nil || !strings.Contains(e.errb.String(), "volume old has no disk or docker volume here: nothing to delete") {
 		t.Errorf("gone: %v\n%s", err, e.errb)
 	}
 }
@@ -654,4 +659,307 @@ func TestEnvVMWithoutVMIsolation(t *testing.T) {
 	if err != nil || !vs.Has {
 		t.Errorf("%+v, %v", vs, err)
 	}
+}
+
+// ctrConfig has cache in the container profile in use and in a gvisor
+// one, which share its docker volume.
+const ctrConfig = `isolation = "container.default"
+
+[container.default]
+
+[container.default.volume.cache]
+path = "~/.cache/go-build"
+
+[gvisor.default]
+
+[gvisor.default.volume.cache]
+path = "~/.cache/go-build"
+`
+
+// ctrOnlyConfig has cache in the container profile in use alone.
+var ctrOnlyConfig = strings.Replace(ctrConfig, "[gvisor.default.volume.cache]", "[gvisor.default.volume.other]", 1)
+
+// cacheLabel is the volumes label of a container created with cache.
+var cacheLabel = map[string]string{assets.LabelVolumes: `{"cache":"/home/agent/.cache/go-build"}`}
+
+// Under the container profile in use, create says what the container's
+// next creation, or a restart, does with the volume.
+func TestVolumeCreateContainerInUse(t *testing.T) {
+	e, _ := adminEnv(t, ctrConfig, nil)
+	if err := e.a.Volume([]string{"create", "web", "/srv/web"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.errb.String(), "the container's creation, at the next start, mounts it at /srv/web") {
+		t.Errorf("absent:\n%s", e.errb)
+	}
+	e, b := adminEnv(t, ctrConfig, nil)
+	b.Status = "running"
+	if err := e.a.Volume([]string{"create", "web", "/srv/web"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.errb.String(), "the container was created without it: 'caboose restart' recreates it with the volume") {
+		t.Errorf("running:\n%s", e.errb)
+	}
+}
+
+// Under container, rm keeps the docker volume and says so; --delete-disk
+// deletes it, asking, once no other container or gvisor profile declares
+// it and the container no longer has it.
+func TestVolumeRmContainer(t *testing.T) {
+	e, b := adminEnv(t, ctrOnlyConfig, nil)
+	vol := e.a.Cfg.Container + "-cache"
+	b.Status, b.SandboxLabels = "running", cacheLabel
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol, Size: "1.2GB"}}
+
+	// The container has it: refused, naming the way out.
+	before := e.readConfig()
+	err := e.a.Volume([]string{"rm", "cache", "--delete-disk"})
+	if err == nil || !strings.Contains(err.Error(), "the container was created with volume cache, and holds its docker volume: 'caboose volume rm cache', then 'caboose restart'") ||
+		e.readConfig() != before || len(b.RemovedVolumes) != 0 {
+		t.Errorf("held: %v", err)
+	}
+	// Without the flag: commented out, the docker volume kept.
+	if err := e.a.Volume([]string{"rm", "cache"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.readConfig(), "#[container.default.volume.cache]") || len(b.RemovedVolumes) != 0 ||
+		!strings.Contains(e.errb.String(), "the container, created with volume cache, keeps it until 'caboose restart'") ||
+		!strings.Contains(e.errb.String(), "its docker volume, "+vol+", is kept, with what it holds") {
+		t.Errorf("rm:\n%s\n%s", e.readConfig(), e.errb)
+	}
+
+	// gvisor.default still declares it, on the same docker volume: kept,
+	// said, and the entry commented out all the same.
+	e, b = adminEnv(t, ctrConfig, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol, Size: "1.2GB"}}
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("declared elsewhere: %v\n%s", err, e.errb)
+	}
+	if len(b.RemovedVolumes) != 0 || !strings.Contains(e.readConfig(), "#[container.default.volume.cache]") ||
+		!strings.Contains(e.errb.String(), "its docker volume, "+vol+", is kept: gvisor.default still declares the volume") ||
+		strings.Contains(e.errb.String(), "nothing to delete") {
+		t.Errorf("declared elsewhere: removed %q\n%s\n%s", b.RemovedVolumes, e.readConfig(), e.errb)
+	}
+
+	// Asked, and refused without a yes.
+	e, b = adminEnv(t, ctrOnlyConfig, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol, Size: "1.2GB"}}
+	before = e.readConfig()
+	answerTerm(e, "n\n")
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err == nil || !strings.Contains(err.Error(), "aborted; nothing was changed") ||
+		e.readConfig() != before || len(b.RemovedVolumes) != 0 {
+		t.Errorf("no: %v", err)
+	}
+	if !strings.Contains(e.errb.String(), "this deletes docker volume "+vol+" (1.2GB): everything volume cache holds") {
+		t.Errorf("not said:\n%s", e.errb)
+	}
+	e.a.Terminal = func() (io.ReadCloser, error) { return nil, errors.New("no terminal") }
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err == nil || !strings.Contains(err.Error(), "refusing to delete it non-interactively") || len(b.RemovedVolumes) != 0 {
+		t.Errorf("no terminal: %v", err)
+	}
+	answerTerm(e, "y\n")
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	if !slices.Equal(b.RemovedVolumes, []string{"cache"}) || !strings.Contains(e.readConfig(), "#[container.default.volume.cache]") ||
+		!strings.Contains(e.errb.String(), "deleted docker volume "+vol) {
+		t.Errorf("yes: removed %q\n%s\n%s", b.RemovedVolumes, e.readConfig(), e.errb)
+	}
+}
+
+// Under container, a docker volume no profile declares is left over: rm
+// names it, --delete-disk deletes it; the engine refusing is said.
+func TestVolumeRmContainerLeftOver(t *testing.T) {
+	e, b := adminEnv(t, ctrConfig, nil)
+	vol := e.a.Cfg.Container + "-old"
+	b.EngineVols = []backend.EngineVolume{{Name: "old", Engine: vol}}
+	err := e.a.Volume([]string{"rm", "old"})
+	if err == nil || !strings.Contains(err.Error(), "its docker volume, "+vol+", is left over ('caboose volume rm old --delete-disk' deletes it)") {
+		t.Errorf("no flag: %v", err)
+	}
+	forceEnv(e)
+	b.RemoveVolumeErr = errors.New("volume is in use")
+	if err := e.a.Volume([]string{"rm", "old", "--delete-disk"}); err == nil || !strings.Contains(err.Error(), "cannot delete docker volume "+vol+": volume is in use") {
+		t.Errorf("refused: %v", err)
+	}
+	b.RemoveVolumeErr = nil
+	if err := e.a.Volume([]string{"rm", "old", "--delete-disk"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.EngineVols) != 0 || !strings.Contains(e.errb.String(), "this deletes docker volume "+vol+" (size unknown)") {
+		t.Errorf("left %+v\n%s", b.EngineVols, e.errb)
+	}
+	// Under vm, docker volumes are not caboose's to name or delete.
+	v, vb := adminEnv(t, adminConfig, nil)
+	vb.EngineVols = []backend.EngineVolume{{Name: "old", Engine: "x"}}
+	if err := v.a.Volume([]string{"rm", "old"}); err == nil || strings.Contains(err.Error(), "docker volume") {
+		t.Errorf("vm, no flag: %v", err)
+	}
+	forceEnv(v)
+	if err := v.a.Volume([]string{"rm", "old", "--delete-disk"}); err != nil || len(vb.RemovedVolumes) != 0 {
+		t.Errorf("vm: %v, removed %q", err, vb.RemovedVolumes)
+	}
+}
+
+// Under container, --delete-disk leaves a vm disk of the name that a vm
+// profile still declares, and deletes one no vm profile declares, with
+// the docker volume, under one question.
+func TestVolumeRmContainerVMDisk(t *testing.T) {
+	cfg := ctrOnlyConfig + `
+[vm.default]
+
+[vm.default.volume.cache]
+path = "~/.cache/go-build"
+size = "8G"
+`
+	e, b := adminEnv(t, cfg, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: e.a.Cfg.Container + "-cache"}}
+	disk := e.makeDisk("cache", 8<<30)
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	if !isFile(disk) || !slices.Equal(b.RemovedVolumes, []string{"cache"}) ||
+		!strings.Contains(e.errb.String(), "its vm disk, "+disk+", is kept: vm.default still declares the volume") {
+		t.Errorf("kept: disk %v, removed %q\n%s", isFile(disk), b.RemovedVolumes, e.errb)
+	}
+
+	e, b = adminEnv(t, ctrOnlyConfig, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: e.a.Cfg.Container + "-cache"}}
+	disk = e.makeDisk("cache", 8<<30)
+	answerTerm(e, "y\n")
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	if isFile(disk) || !slices.Equal(b.RemovedVolumes, []string{"cache"}) || !strings.Contains(e.errb.String(), "delete both?") {
+		t.Errorf("both: disk %v, removed %q\n%s", isFile(disk), b.RemovedVolumes, e.errb)
+	}
+}
+
+// Under container, what a restore left beside a vm disk goes with the
+// disk, and stays with one a vm profile still declares.
+func TestVolumeRmContainerRestoreLeft(t *testing.T) {
+	cfg := ctrOnlyConfig + `
+[vm.default]
+
+[vm.default.volume.cache]
+path = "~/.cache/go-build"
+size = "8G"
+`
+	e, b := adminEnv(t, cfg, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: e.a.Cfg.Container + "-cache"}}
+	disk := e.makeDisk("cache", 8<<30)
+	before := disk + checkpoint.BeforeRestoreSuffix
+	if err := os.WriteFile(before, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("kept: %v\n%s", err, e.errb)
+	}
+	if !isFile(disk) || !isFile(before) || !slices.Equal(b.RemovedVolumes, []string{"cache"}) {
+		t.Errorf("kept: disk %v, before-restore %v, removed %q\n%s", isFile(disk), isFile(before), b.RemovedVolumes, e.errb)
+	}
+
+	e, b = adminEnv(t, ctrOnlyConfig, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: e.a.Cfg.Container + "-cache"}}
+	disk = e.makeDisk("cache", 8<<30)
+	before = disk + checkpoint.BeforeRestoreSuffix
+	if err := os.WriteFile(before, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil {
+		t.Fatalf("deleted: %v\n%s", err, e.errb)
+	}
+	if isFile(disk) || isFile(before) || !slices.Equal(b.RemovedVolumes, []string{"cache"}) || !strings.Contains(e.errb.String(), "deleted "+before) {
+		t.Errorf("deleted: disk %v, before-restore %v, removed %q\n%s", isFile(disk), isFile(before), b.RemovedVolumes, e.errb)
+	}
+}
+
+// Under container, a vm profile's volume removed with --delete-disk
+// deletes its disk and keeps the docker volume, which the container
+// profile in use declares, and the container has; and a container
+// profile's, while another container or gvisor profile declares it,
+// keeps the docker volume and deletes the disk no vm profile declares.
+func TestVolumeRmContainerKeepsDockerVolume(t *testing.T) {
+	cfg := ctrOnlyConfig + `
+[vm.default]
+
+[vm.default.volume.cache]
+path = "~/.cache/go-build"
+size = "8G"
+`
+	e, b := adminEnv(t, cfg, nil)
+	vol := e.a.Cfg.Container + "-cache"
+	b.Status, b.SandboxLabels = "running", cacheLabel
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol}}
+	disk := e.makeDisk("cache", 8<<30)
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--profile", "vm.default", "--delete-disk"}); err != nil {
+		t.Fatalf("vm profile: %v\n%s", err, e.errb)
+	}
+	if isFile(disk) || len(b.RemovedVolumes) != 0 || !strings.Contains(e.readConfig(), "#[vm.default.volume.cache]") ||
+		strings.Contains(e.readConfig(), "#[container.default.volume.cache]") ||
+		!strings.Contains(e.errb.String(), "its docker volume, "+vol+", is kept: vm.default is a vm profile, whose volume is a disk, not it") {
+		t.Errorf("vm profile: disk %v, removed %q\n%s\n%s", isFile(disk), b.RemovedVolumes, e.readConfig(), e.errb)
+	}
+
+	e, b = adminEnv(t, ctrConfig, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol}}
+	disk = e.makeDisk("cache", 8<<30)
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--profile", "gvisor.default", "--delete-disk"}); err != nil {
+		t.Fatalf("other container profile: %v\n%s", err, e.errb)
+	}
+	if isFile(disk) || len(b.RemovedVolumes) != 0 || !strings.Contains(e.readConfig(), "#[gvisor.default.volume.cache]") ||
+		!strings.Contains(e.errb.String(), "its docker volume, "+vol+", is kept: container.default still declares the volume") ||
+		!strings.Contains(e.errb.String(), "deleted "+disk) {
+		t.Errorf("other container profile: disk %v, removed %q\n%s\n%s", isFile(disk), b.RemovedVolumes, e.readConfig(), e.errb)
+	}
+}
+
+// With "delete both?" answered yes, a docker volume that will not go
+// leaves the disk deleted all the same, and the error says what went,
+// what did not, that config.toml is edited already, and what finishes
+// the job; a disk that will not go is said the same way.
+func TestVolumeRmContainerPartialFailure(t *testing.T) {
+	e, b := adminEnv(t, ctrOnlyConfig, nil)
+	vol := e.a.Cfg.Container + "-cache"
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol}}
+	b.RemoveVolumeErr = errors.New("volume is in use")
+	disk := e.makeDisk("cache", 8<<30)
+	answerTerm(e, "y\n")
+	err := e.a.Volume([]string{"rm", "cache", "--delete-disk"})
+	want := "cannot delete docker volume " + vol + ": volume is in use; [container.default.volume.cache] is commented out in config.toml already: once that is fixed, 'caboose volume rm cache --delete-disk' finishes the job"
+	if err == nil || err.Error() != want || isFile(disk) || !strings.Contains(e.errb.String(), "deleted "+disk) ||
+		!strings.Contains(e.readConfig(), "#[container.default.volume.cache]") {
+		t.Errorf("docker volume:\n got %v\nwant %s\ndisk %v\n%s", err, want, isFile(disk), e.errb)
+	}
+	// The finishing run: nothing declares it now.
+	b.RemoveVolumeErr = nil
+	forceEnv(e)
+	if err := e.a.Volume([]string{"rm", "cache", "--delete-disk"}); err != nil || len(b.EngineVols) != 0 {
+		t.Errorf("again: %v, left %+v\n%s", err, b.EngineVols, e.errb)
+	}
+
+	// A disk that will not go, the docker volume deleted.
+	e, b = adminEnv(t, ctrOnlyConfig, nil)
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: vol}}
+	disk = e.makeDisk("cache", 8<<30)
+	forceEnv(e)
+	orig := removeDisk
+	removeDisk = func(string) error { return errors.New("permission denied") }
+	defer func() { removeDisk = orig }()
+	err = e.a.Volume([]string{"rm", "cache", "--delete-disk"})
+	want = "cannot delete " + disk + ": permission denied; [container.default.volume.cache] is commented out in config.toml already: once that is fixed"
+	if err == nil || !strings.HasPrefix(err.Error(), want) || !isFile(disk) || !strings.Contains(e.errb.String(), "deleted docker volume "+vol) {
+		t.Errorf("disk:\n got %v\nwant %s\n%s", err, want, e.errb)
+	}
+}
+
+// answerTerm gives e's commands a terminal that answers s.
+func answerTerm(e *setupEnv, s string) {
+	e.a.Terminal = func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(s)), nil }
 }

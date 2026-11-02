@@ -73,8 +73,15 @@ type Spec struct {
 	Env      []string // NAME=VALUE, for every process in the sandbox
 	Mounts   []Mount
 	// Volumes are filesystems of the sandbox's own that outlive it, kept
-	// across a Remove: a named docker volume, or under vm a disk.
+	// across a Remove: a named docker volume (DockerVolumeName), or under
+	// vm a disk.
 	Volumes []Volume
+	// VolumeOwner is "UID:GID", whom the root of each of Volumes is given
+	// before the sandbox starts, or "" to leave it as the backend makes
+	// it. docker makes a new volume at a path its image lacks root's,
+	// 0755, which the agent under runc could not write. A VM ignores it:
+	// its guest runs as root.
+	VolumeOwner string
 	// User is who the sandbox runs as: "" for the image's own user.
 	User string
 	// Runtime is docker's --runtime: "" for the engine's default.
@@ -122,6 +129,40 @@ type Volume struct {
 	// one only from macOS 27 (vm.LiveDiskMacOS), and refuses to boot a
 	// VM with one before. It means nothing to a container.
 	Live bool
+}
+
+// DockerVolumeName is the name of the docker volume that holds volume
+// vol of the container named container: container-vol
+// (caboose-default-cache).
+func DockerVolumeName(container, vol string) string { return container + "-" + vol }
+
+// The labels of a docker volume caboose made for a container's volume:
+// the container's name, and the volume's own name.
+const (
+	VolumeLabelSandbox = "dev.bfreis.caboose.sandbox"
+	VolumeLabelName    = "dev.bfreis.caboose.volume"
+)
+
+// EngineVolumes is a Backend whose volumes are the engine's, which
+// outlive the sandbox: listed, and deleted, by the volume's own name.
+type EngineVolumes interface {
+	// ListVolumes is the engine's volumes made for this sandbox, by their
+	// labels, whether or not the sandbox exists or mounts them; with
+	// sizes, each with the space it takes, which can take the engine a
+	// while: only where it is shown.
+	ListVolumes(sizes bool) ([]EngineVolume, error)
+	// RemoveVolume deletes the engine's volume for volume name, and what
+	// it holds; the engine refuses one a container mounts.
+	RemoveVolume(name string) error
+}
+
+// EngineVolume is one of the engine's volumes made for the sandbox: the
+// volume's own name, the engine's name for it, and the space it takes
+// as the engine says it ("24.08kB"; "" when it does not say).
+type EngineVolume struct {
+	Name   string `json:"name"`
+	Engine string `json:"engine"`
+	Size   string `json:"size,omitempty"`
 }
 
 // ExecSpec is a command to run in the sandbox.

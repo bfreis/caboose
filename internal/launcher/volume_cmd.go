@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/bfreis/caboose/internal/assets"
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/proposal"
@@ -275,7 +277,15 @@ func (a *App) volumeCreate(args []string) error {
 	}
 	a.Note("%s", said)
 	if profileKind(profile) != config.KindVM {
-		a.Note("under %s caboose makes no volumes yet, only under vm: the sandbox gets none at that path, and what it writes there stays in the container's own files", profileKind(profile))
+		a.Note("under %s it is docker volume %s, which the container's creation makes if the engine has none, and keeps when the container goes", profileKind(profile), backend.DockerVolumeName(a.Cfg.Container, name))
+		switch {
+		case profile != a.Cfg.Profile:
+			a.Note("%s is not the profile in use (%s): a container of %s gets the volume", profile, profileLabel(a.Cfg), profile)
+		case a.state() == "absent":
+			a.Note("the container's creation, at the next start, mounts it at %s", path)
+		default:
+			a.Note("the container was created without it: 'caboose restart' recreates it with the volume (this kills running sessions)")
+		}
 		return nil
 	}
 	disk := a.volumeDisk(name)
@@ -333,6 +343,12 @@ func profileFlag(a *App, profile string) string {
 // --delete-disk it also deletes the volume's disk, once no vm profile
 // declares the volume, after asking (CABOOSE_FORCE=1 does not ask); NAME
 // may then be a volume no profile declares, whose disk is left over.
+// Under container and gvisor --delete-disk deletes the volume's docker
+// volume too, once the container no longer has it, unless PROFILE is a
+// vm profile or another container or gvisor profile still declares the
+// volume, which keep it, with a note; and a vm disk only if no other vm
+// profile declares the volume. What fails to go after the config edit is
+// said, with what did go.
 // Refused while the running VM has the volume, when PROFILE is the one in
 // use or the disk is to go: its disk is in use, and the VM would go on
 // writing to a volume config.toml no longer has.
@@ -372,6 +388,8 @@ func (a *App) volumeRm(args []string) error {
 		next := ""
 		if isFile(a.volumeDisk(name)) {
 			next = fmt.Sprintf(": its disk, %s, is left over ('caboose volume rm %s --delete-disk' deletes it)", a.volumeDisk(name), name)
+		} else if dv, _ := a.engineVolume(name, false); dv != nil {
+			next = fmt.Sprintf(": its docker volume, %s, is left over ('caboose volume rm %s --delete-disk' deletes it)", dv.Engine, name)
 		}
 		return Die("no profile in config.toml declares a volume %s%s", name, next)
 	}
@@ -418,7 +436,41 @@ func (a *App) volumeRm(args []string) error {
 		return Die("%s; deal with %s first, or add --delete-disk, which deletes %s with the disk, after asking", strings.Join(lines, "; "), plural(len(restoreLeft), "it", "them"), plural(len(restoreLeft), "it", "them"))
 	}
 	var fi os.FileInfo
-	if deleteDisk {
+	// Under container and gvisor the volume is a docker volume, which
+	// --delete-disk deletes, unless it is a vm profile's volume going
+	// (whose disk is not it) or another container or gvisor profile still
+	// declares it, which keep it; and once the container does not have
+	// it. A vm disk of the same name goes too, unless a vm profile still
+	// declares it.
+	var dv *backend.EngineVolume
+	dockerKept := "" // why the docker volume stays, when it does
+	diskKept := false
+	if deleteDisk && !a.isVM() {
+		left := slices.DeleteFunc(a.declaringDocker(name), func(p string) bool { return p == profile })
+		switch {
+		case profileKind(profile) == config.KindVM:
+			dockerKept = fmt.Sprintf("%s is a vm profile, whose volume is a disk, not it", profile)
+		case len(left) > 0:
+			dockerKept = fmt.Sprintf("%s still %s the volume", strings.Join(left, ", "), plural(len(left), "declares", "declare"))
+		case a.containerHasVolume(name):
+			rm := "'caboose volume rm " + name + profileFlag(a, profile) + "', then "
+			if profile == "" {
+				rm = ""
+			}
+			return Die("the container was created with volume %s, and holds its docker volume: %s'caboose restart' (recreates it without the volume, ending its sessions), then run 'caboose volume rm %s --delete-disk'", name, rm, name)
+		default:
+			if dv, err = a.engineVolume(name, true); err != nil {
+				return Die("cannot list the docker volumes of %s: %v", a.Cfg.Container, err)
+			}
+		}
+		diskKept = slices.ContainsFunc(a.declaring(name, true), func(p string) bool { return p != profile })
+	}
+	if diskKept {
+		// A vm profile still declares the volume: what a restore left
+		// stays beside its disk, which stays.
+		restoreLeft = nil
+	}
+	if deleteDisk && !diskKept {
 		if left := slices.DeleteFunc(a.declaring(name, true), func(p string) bool { return p == profile }); len(left) > 0 {
 			return Die("%s still %s volume %s, on the same disk: remove it there first ('caboose volume rm %s --profile %s'), or leave out --delete-disk",
 				strings.Join(left, ", "), plural(len(left), "declares", "declare"), name, name, left[0])
@@ -430,28 +482,35 @@ func (a *App) volumeRm(args []string) error {
 	if fi != nil && !fi.Mode().IsRegular() {
 		return Die("%s is not a disk image: delete it by hand if it is nothing of yours", disk)
 	}
-	if fi != nil || len(restoreLeft) > 0 {
-		if fi != nil {
-			if err := diskFree(disk); err != nil {
-				return Die("volume %s: %v", name, err)
-			}
-			a.Note("this deletes %s (%s, %s allocated): everything volume %s holds", disk, gibString(fi.Size()), sizeString(diskAllocated(fi)), name)
+	if fi != nil {
+		if err := diskFree(disk); err != nil {
+			return Die("volume %s: %v", name, err)
 		}
-		for _, l := range restoreLeft {
-			if l.SameAsDisk {
-				a.Note("and %s, a second name of that disk", l.Path)
-				continue
-			}
-			what := "the disk as it was before a checkpoint's restore"
-			if l.Kind == leftoverRestoring {
-				what = "a copy of a checkpoint an interrupted restore left (the checkpoint keeps it)"
-			}
-			a.Note("and %s (%s, %s allocated), %s", l.Path, gibString(l.Size), sizeString(l.Allocated), what)
+		a.Note("this deletes %s (%s, %s allocated): everything volume %s holds", disk, gibString(fi.Size()), sizeString(diskAllocated(fi)), name)
+	}
+	for _, l := range restoreLeft {
+		if l.SameAsDisk {
+			a.Note("and %s, a second name of that disk", l.Path)
+			continue
 		}
+		what := "the disk as it was before a checkpoint's restore"
+		if l.Kind == leftoverRestoring {
+			what = "a copy of a checkpoint an interrupted restore left (the checkpoint keeps it)"
+		}
+		a.Note("and %s (%s, %s allocated), %s", l.Path, gibString(l.Size), sizeString(l.Allocated), what)
+	}
+	if dv != nil {
+		a.Note("this deletes docker volume %s (%s): everything volume %s holds", dv.Engine, or(dv.Size, "size unknown"), name)
+	}
+	if fi != nil || dv != nil || len(restoreLeft) > 0 {
 		if a.force() {
 			a.Note("CABOOSE_FORCE=1 set, continuing.")
 		} else {
-			yes, asked, err := a.askYes("delete it?")
+			q := "delete it?"
+			if fi != nil && dv != nil {
+				q = "delete both?"
+			}
+			yes, asked, err := a.askYes(q)
 			switch {
 			case err != nil:
 				return err
@@ -463,8 +522,10 @@ func (a *App) volumeRm(args []string) error {
 		}
 		// Again, after the wait for an answer: with no VM directory there
 		// was no start lock to hold, and a VM made since may have the disk.
-		if err := diskFree(disk); err != nil {
-			return Die("volume %s: %v; nothing was changed", name, err)
+		if fi != nil || len(restoreLeft) > 0 {
+			if err := diskFree(disk); err != nil {
+				return Die("volume %s: %v; nothing was changed", name, err)
+			}
 		}
 	}
 	if profile != "" {
@@ -476,23 +537,56 @@ func (a *App) volumeRm(args []string) error {
 	if vs.Has {
 		a.Note("the VM, stopped, was created with volume %s, and its next start still mounts it (making an empty disk if there is none): 'caboose restart' recreates it without", name)
 	}
+	kept := false // a note said what of the volume is kept
+	if !a.isVM() && !deleteDisk {
+		if profile == a.Cfg.Profile && a.containerHasVolume(name) {
+			a.Note("the container, created with volume %s, keeps it until 'caboose restart' recreates it without (this kills running sessions)", name)
+		}
+		if ev, _ := a.engineVolume(name, false); ev != nil {
+			a.Note("its docker volume, %s, is kept, with what it holds ('caboose volume rm %s --delete-disk' deletes it once no container or gvisor profile declares it)", ev.Engine, name)
+		}
+	}
+	if dockerKept != "" {
+		if ev, _ := a.engineVolume(name, false); ev != nil {
+			a.Note("its docker volume, %s, is kept: %s", ev.Engine, dockerKept)
+			kept = true
+		}
+	}
+	// What was asked to go is tried in full: a docker volume that will not
+	// go leaves the disk to be deleted all the same, and the error says
+	// what went and what did not.
+	var failed []string
+	if dv != nil {
+		if err := a.box().(backend.EngineVolumes).RemoveVolume(name); err != nil {
+			failed = append(failed, fmt.Sprintf("cannot delete docker volume %s: %v", dv.Engine, err))
+		} else {
+			a.Note("deleted docker volume %s", dv.Engine)
+		}
+	}
 	for _, l := range restoreLeft {
 		if err := os.Remove(l.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return Die("cannot delete %s: %v", l.Path, err)
+			failed = append(failed, fmt.Sprintf("cannot delete %s: %v", l.Path, err))
+			continue
 		}
 		a.Note("deleted %s", l.Path)
 	}
+	if diskKept && isFile(disk) {
+		a.Note("its vm disk, %s, is kept: %s still %s the volume", disk, strings.Join(a.declaring(name, true), ", "), plural(len(a.declaring(name, true)), "declares", "declare"))
+		kept = true
+	}
 	switch {
 	case fi != nil:
-		if err := os.Remove(disk); err != nil {
-			return Die("cannot delete %s: %v", disk, err)
+		if err := removeDisk(disk); err != nil {
+			failed = append(failed, fmt.Sprintf("cannot delete %s: %v", disk, err))
+			break
 		}
 		a.Note("deleted %s", disk)
 		if isFile(disk + backend.BackupSuffix) {
 			a.Note("%s, a shrink's backup of it, is still here: delete it by hand once you no longer need it", disk+backend.BackupSuffix)
 		}
-	case deleteDisk && len(restoreLeft) == 0:
-		a.Note("volume %s has no disk here: nothing to delete", name)
+	case deleteDisk && dv == nil && !kept && len(restoreLeft) == 0:
+		a.Note("volume %s has no disk or docker volume here: nothing to delete", name)
+	case deleteDisk:
 	case isFile(disk):
 		if left := slices.DeleteFunc(a.declaring(name, true), func(p string) bool { return p == profile }); len(left) > 0 {
 			a.Note("its disk, %s, is kept: %s still %s the volume", disk, strings.Join(left, ", "), plural(len(left), "declares", "declare"))
@@ -500,7 +594,75 @@ func (a *App) volumeRm(args []string) error {
 			a.Note("its disk, %s, is kept, with what it holds ('caboose volume rm %s --delete-disk' deletes it; 'caboose volume create %s PATH' gives it back to a profile)", disk, name, name)
 		}
 	}
+	if len(failed) > 0 {
+		return a.rmFailed(name, profile, failed)
+	}
 	return nil
+}
+
+// rmFailed is volume rm's error once what it was to delete did not all
+// go: failed says what did not, the notes before it what did. The config
+// edit is done by then, which the error says, with what finishes the job.
+func (a *App) rmFailed(name, profile string, failed []string) error {
+	msg := strings.Join(failed, "; ")
+	if profile != "" {
+		msg += fmt.Sprintf("; [%s.volume.%s] is commented out in config.toml already", profile, name)
+	}
+	if left := slices.DeleteFunc(a.declaring(name, false), func(p string) bool { return p == profile }); len(left) == 0 {
+		msg += fmt.Sprintf(": once that is fixed, 'caboose volume rm %s --delete-disk' finishes the job", name)
+	} else {
+		msg += fmt.Sprintf(": %s still %s the volume, so delete what is left by hand once that is fixed", strings.Join(left, ", "), plural(len(left), "declares", "declare"))
+	}
+	return Die("%s", msg)
+}
+
+// removeDisk deletes a volume's disk; the tests stand in for it.
+var removeDisk = os.Remove
+
+// declaringDocker is the container and gvisor profiles of config.toml that
+// declare volume name, which share its docker volume; sorted.
+func (a *App) declaringDocker(name string) []string {
+	return slices.DeleteFunc(a.declaring(name, false), func(p string) bool { return profileKind(p) == config.KindVM })
+}
+
+// engineVolume is volume name's docker volume, as the sandbox's backend
+// lists it (backend.EngineVolumes), with its size if sizes; nil when
+// there is none, or the backend keeps no volumes of the engine's (a VM's
+// are disks).
+func (a *App) engineVolume(name string, sizes bool) (*backend.EngineVolume, error) {
+	ev, ok := a.box().(backend.EngineVolumes)
+	if !ok || a.isVM() {
+		return nil, nil
+	}
+	vols, err := ev.ListVolumes(sizes)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range vols {
+		if v.Name == name {
+			return &v, nil
+		}
+	}
+	return nil, nil
+}
+
+// containerHasVolume reports whether the container exists, created with
+// volume name (assets.LabelVolumes): docker refuses to delete a volume a
+// container has, stopped or not.
+func (a *App) containerHasVolume(name string) bool {
+	if a.isVM() || a.state() == "absent" {
+		return false
+	}
+	labels, err := a.box().Labels()
+	if err != nil {
+		return false
+	}
+	var have map[string]string
+	if json.Unmarshal([]byte(labels[assets.LabelVolumes]), &have) != nil {
+		return false
+	}
+	_, ok := have[name]
+	return ok
 }
 
 // declaredBy says which profiles declare volume name: all.

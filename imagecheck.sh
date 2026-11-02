@@ -159,7 +159,8 @@ fi
 # uname, mkdir, chmod, cut, sed, tr, grep, head and sha256sum: what Claude
 # Code's installer runs on its way to a verified binary. chown: what the
 # derived layer's layer-user.sh gives the agent user its home with, the one
-# tool it uses beyond sh builtins and mkdir.
+# tool it uses beyond sh builtins and mkdir, and what a container's
+# creation gives the agent user its volumes with.
 for _t in rm rmdir sleep test uname mkdir chmod cut sed tr grep head sha256sum chown; do
     presence "$_t" "tool:$_t"
 done

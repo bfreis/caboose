@@ -20,8 +20,12 @@ import (
 // dir, shared by every vm profile that declares it, on caboose-vmm's own
 // disk device from macOS 27 (on the framework's own before: liveVolumes)
 // and mounted at its path in the guest; its size is the profile's, read
-// at every start (vmHost.Volume). Under container and gvisor they are
-// read and not attached.
+// at every start (vmHost.Volume). Under container and gvisor each is a
+// docker volume of the engine's, caboose-<env>-VOL (backend.DockerVolumeName),
+// shared by every container and gvisor profile of the environment that
+// declares it, made at the container's creation and given to the agent
+// user (backend.Spec.VolumeOwner), and kept when the container is
+// removed.
 
 // liveVolumes says whether a VM created now puts the profile's volumes on
 // caboose-vmm's own disk device, whose size can change while the VM runs:
@@ -65,25 +69,12 @@ func (a *App) volumesKindNote() string {
 		volumeNames(a.Cfg.Volumes), plural(len(a.Cfg.Volumes), "goes", "go"), mac, vm.LiveDiskMacOS)
 }
 
-// unattachedNote says, under container and gvisor, that the profile's
-// volumes are not attached, and where what the sandbox writes at their
-// paths goes instead; "" under vm, or with none.
-func (a *App) unattachedNote() string {
-	if a.isVM() || len(a.Cfg.Volumes) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%s of %s %s not attached: under %s caboose makes no volumes yet, only under vm, so what the sandbox writes there stays in the container's own files, which a recreation ('caboose restart') loses",
-		volumeNames(a.Cfg.Volumes), a.Cfg.Profile, plural(len(a.Cfg.Volumes), "is", "are"), isolationOf(a.Cfg))
-}
-
 // noteVolumes says, as the sandbox is created, what of the profile's
-// volumes it does not get as they are written: none under container and
-// gvisor, and under vm before macOS 27 not on caboose-vmm's disks.
+// volumes it does not get as they are written: under vm before macOS 27,
+// not on caboose-vmm's disks.
 func (a *App) noteVolumes() {
-	for _, n := range []string{a.unattachedNote(), a.volumesKindNote()} {
-		if n != "" {
-			a.Note("%s.", n)
-		}
+	if n := a.volumesKindNote(); n != "" {
+		a.Note("%s.", n)
 	}
 }
 
@@ -107,12 +98,9 @@ func volumesLabel(vols []backend.Volume) string {
 	return string(b)
 }
 
-// volumesDrift says how the VM's volumes differ from the configuration's,
-// or "" when they do not, the sandbox is no VM, or it cannot be told.
+// volumesDrift says how the sandbox's volumes differ from the
+// configuration's, or "" when they do not, or it cannot be told.
 func (a *App) volumesDrift() string {
-	if !a.isVM() {
-		return ""
-	}
 	if d := a.missingLabel(assets.LabelVolumes, "volumes"); d != "" {
 		return d
 	}
@@ -122,7 +110,7 @@ func (a *App) volumesDrift() string {
 	}
 	var have map[string]string
 	if json.Unmarshal([]byte(labels[assets.LabelVolumes]), &have) != nil || have == nil {
-		return "the VM's record of its volumes cannot be read"
+		return "the " + a.noun() + "'s record of its volumes cannot be read"
 	}
 	want := map[string]string{}
 	for _, v := range a.volumesLive(false) {
@@ -131,10 +119,12 @@ func (a *App) volumesDrift() string {
 	if maps.Equal(have, want) {
 		return ""
 	}
-	return fmt.Sprintf("the VM was created with volumes %s; the configuration says %s", describeVolumes(have), describeVolumes(want))
+	return fmt.Sprintf("the %s was created with volumes %s; the configuration says %s", a.noun(), describeVolumes(have), describeVolumes(want))
 }
 
-// describeVolumes is vols, by name and path, but caboose's own.
+// describeVolumes is vols, by name and path, but caboose's own (dockerd's
+// disk under vm, at /var/lib/docker: a profile's volume cannot be named
+// docker).
 func describeVolumes(vols map[string]string) string {
 	var out []string
 	for _, name := range slices.Sorted(maps.Keys(vols)) {
@@ -152,16 +142,21 @@ func describeVolumes(vols map[string]string) string {
 func (a *App) warnIfVolumesDrifted() {
 	if d := a.volumesDrift(); d != "" {
 		a.Note("%s.", d)
-		a.Note("run 'caboose restart' to recreate it with them (this kills running sessions; every volume's disk is kept).")
+		what := "every volume's disk"
+		if !a.isVM() {
+			what = "every volume's docker volume"
+		}
+		a.Note("run 'caboose restart' to recreate it with them (this kills running sessions; %s is kept).", what)
 	}
 }
 
-// dropKeepsUnderVolumes skips, under vm, each of sb's keep entries at,
-// inside or around the path of a volume of the profile, as one of its
-// problems: the volume wins. Mounted both, one would hide the other, or
-// the volume's mount point would be made in the data dir's home.
+// dropKeepsUnderVolumes skips each of sb's keep entries at, inside or
+// around the path of a volume of the profile, under every isolation, as
+// one of its problems: the volume wins. Mounted both, one would hide the
+// other, or the volume's mount point would be made in the data dir's
+// home.
 func (a *App) dropKeepsUnderVolumes(sb *datadir.Sandbox) {
-	if !a.isVM() || len(a.Cfg.Volumes) == 0 || sb.Config == nil {
+	if len(a.Cfg.Volumes) == 0 || sb.Config == nil {
 		return
 	}
 	keep := sb.Keep[:0]
@@ -188,14 +183,12 @@ func volumeTable(c *config.Config, name string) string {
 
 // doctorVolumes is the volumes' row of doctor: under vm, each volume's
 // size and its disk's, saying when a disk is larger than its size (kept:
-// a start never shrinks one); under container and gvisor, that the
-// profile's volumes are not attached.
+// a start never shrinks one); under container and gvisor, each volume's
+// docker volume (doctorDockerVolumes).
 func (a *App) doctorVolumes(c *checkup) {
 	vols := a.Cfg.Volumes
 	if !a.isVM() {
-		if n := a.unattachedNote(); n != "" {
-			c.note("volumes", "%s", n)
-		}
+		a.doctorDockerVolumes(c)
 		return
 	}
 	var lines, bigger []string
@@ -232,4 +225,40 @@ func (a *App) doctorVolumes(c *checkup) {
 		}
 		c.ok("volumes", "%s", strings.Join(lines, "; "))
 	}
+}
+
+// doctorDockerVolumes is doctorVolumes under container and gvisor: each of
+// the profile's volumes at its path, with its docker volume and the space
+// the engine says it takes, or that the container's creation makes one.
+func (a *App) doctorDockerVolumes(c *checkup) {
+	vols := a.Cfg.Volumes
+	if len(vols) == 0 {
+		return
+	}
+	ev, ok := a.box().(backend.EngineVolumes)
+	if !ok {
+		return
+	}
+	have, err := ev.ListVolumes(true)
+	if err != nil {
+		c.note("volumes", "cannot list the docker volumes of %s: %v", a.Cfg.Container, err)
+		return
+	}
+	var lines []string
+	for _, v := range vols {
+		i := slices.IndexFunc(have, func(e backend.EngineVolume) bool { return e.Name == v.Name })
+		if i < 0 {
+			lines = append(lines, fmt.Sprintf("%s at %s (its docker volume, %s, is made as the container is created)",
+				v.Name, v.Path, backend.DockerVolumeName(a.Cfg.Container, v.Name)))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s at %s, docker volume %s%s", v.Name, v.Path, have[i].Engine, dockerSizeSuffix(have[i].Size)))
+	}
+	c.ok("volumes", "%s", strings.Join(lines, "; "))
+}
+
+// dockerSizeSuffix is ", SIZE" for a docker volume's size as the engine
+// says it, ", size unknown" when it says none.
+func dockerSizeSuffix(size string) string {
+	return ", " + or(size, "size unknown")
 }

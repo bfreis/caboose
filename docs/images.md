@@ -168,7 +168,7 @@ Any image, glibc or musl based, that has all of this — exactly what
 | on musl: `libgcc`, `libstdc++`, `ripgrep` | what Claude Code's musl build needs at run time |
 | `/usr/bin/env` (at that path), `readlink -f`, `mktemp -d`, `find -mindepth -delete`, `rm`, `rmdir`, `sleep`, `test` (a file, not only the builtin) | the entrypoint, and the launcher's readiness check |
 | `uname`, `mkdir`, `chmod`, `cut`, `sed`, `tr`, `grep`, `head`, `sha256sum` | the installer; the launcher also opens Docker Desktop's SSH agent socket with `chmod` |
-| `chown` | the user setup, giving `/home/agent` to the `agent` user |
+| `chown` | the user setup, giving `/home/agent` to the `agent` user; under `container` and `gvisor`, giving each volume to it as the container is created |
 | `/etc/passwd` and `/etc/group`, regular files; no `/home/agent` that is a symlink or not a directory | the user setup edits the first two in place, and makes `/home/agent` and the mountpoints in it |
 | no `/etc/claude-code` | caboose mounts its own instructions there, read-only, as Claude Code's managed policy; an image's own managed Claude Code policy would be hidden |
 | optional: `tic` (ncurses) | compiling your terminal's terminfo; without it `TERM` falls back |

@@ -496,6 +496,15 @@ func (a *App) createContainer(mayBuild bool) error {
 	if err := a.isolate(&spec); err != nil {
 		return err
 	}
+	// The volumes, before the user's arguments are checked against
+	// caboose's: a mount of theirs over one is refused. Under vm also
+	// dockerd's in the guest, which the entrypoint starts when the image
+	// has one, its storage on a disk kept across restarts (overlayfs
+	// cannot sit on virtio-fs, and the images are worth keeping, as a
+	// laptop's Docker keeps them).
+	spec.Volumes = append(spec.Volumes, a.sandboxVolumes()...)
+	spec.Labels = append(spec.Labels, assets.LabelVolumes+"="+volumesLabel(spec.Volumes))
+	spec.VolumeOwner = volumeOwner(a.isVM(), spec, labels)
 	// Under vm, its outbound connections made from this machine (egress.go).
 	withEgress(&spec, egress)
 	spec.Labels = append(spec.Labels, assets.LabelTrust+"="+trustLabel(c), assets.LabelNetwork+"="+a.networkLabel())
@@ -517,12 +526,6 @@ func (a *App) createContainer(mayBuild bool) error {
 	spec.Labels = append(spec.Labels, assets.LabelRunArgs+"="+runArgsLabel(c.RunArgs))
 	a.noteVolumes()
 	if a.isVM() {
-		// Level 3: dockerd in the guest, which the entrypoint starts when
-		// the image has one, its storage on a disk kept across restarts
-		// (overlayfs cannot sit on virtio-fs, and the images are worth
-		// keeping, as a laptop's Docker keeps them).
-		spec.Volumes = append(spec.Volumes, a.sandboxVolumes()...)
-		spec.Labels = append(spec.Labels, assets.LabelVolumes+"="+volumesLabel(spec.Volumes))
 		spec.Env = append(spec.Env, "CABOOSE_ISOLATION="+isolationVM)
 		a.Note("starting the sandbox's VM")
 	}
@@ -538,9 +541,9 @@ func (a *App) createContainer(mayBuild bool) error {
 // sandboxVolumes are the volumes the sandbox is created with: under vm
 // the guest's dockerd's storage, a disk of the framework's kept across
 // restarts, and the profile's volumes, each a disk of caboose-vmm's from
-// macOS 27 (liveVolumes), of the framework's before; none otherwise (a
-// container or gvisor profile's volumes are read, but not attached: a
-// creation and doctor say so). The conformance suite reads the next
+// macOS 27 (liveVolumes), of the framework's before; under container and
+// gvisor the profile's volumes, each a docker volume of the engine's
+// (backend.DockerVolumeName). The conformance suite reads the next
 // launch's from it too.
 func (a *App) sandboxVolumes() []backend.Volume {
 	return a.volumesLive(a.isVM() && len(a.Cfg.Volumes) > 0 && a.liveVolumes())
@@ -550,14 +553,32 @@ func (a *App) sandboxVolumes() []backend.Volume {
 // says, which asks caboose-vmm nothing: what compares only names and
 // paths (volumesDrift) takes it.
 func (a *App) volumesLive(live bool) []backend.Volume {
-	if !a.isVM() {
-		return nil
+	var vols []backend.Volume
+	if a.isVM() {
+		vols = append(vols, backend.Volume{Name: dockerVolume, Target: dockerTarget})
 	}
-	vols := []backend.Volume{{Name: dockerVolume, Target: dockerTarget}}
 	for _, v := range a.Cfg.Volumes {
 		vols = append(vols, backend.Volume{Name: v.Name, Target: v.Path, Live: live})
 	}
 	return vols
+}
+
+// volumeOwner is the Spec's VolumeOwner: under container and gvisor, when
+// the sandbox runs as the image's agent user, that user's IDs, which the
+// layer gave it from this machine's (the image's assets.LabelUID and
+// LabelGID; this process's when the image has none). "" under vm, whose
+// guest runs as root, with no volumes, and for a container that runs as
+// root (gVisor where the agent cannot write its mounts), whose root owns
+// a new volume already.
+func volumeOwner(vm bool, spec backend.Spec, image map[string]string) string {
+	if vm || len(spec.Volumes) == 0 || spec.User != "" {
+		return ""
+	}
+	uid, gid := image[assets.LabelUID], image[assets.LabelGID]
+	if uid == "" || gid == "" {
+		uid, gid = strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid())
+	}
+	return uid + ":" + gid
 }
 
 // hostSocketSet are the host sockets a container is created with.

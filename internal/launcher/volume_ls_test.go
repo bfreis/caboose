@@ -3,6 +3,7 @@ package launcher
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,9 +157,9 @@ func TestVolumeLsStates(t *testing.T) {
 	}
 }
 
-// caboose prune deletes no volume's disk, but names each one no profile
-// declares, with the command that deletes it: never dockerd's, nor one
-// only a container profile declares.
+// caboose prune deletes no volume's disk or docker volume, but names each
+// one no profile declares, with the command that deletes it: never
+// dockerd's, nor one only a container profile declares.
 func TestPruneNamesLeftOverVolumes(t *testing.T) {
 	b := newBoxApp(t, isolationContainer, runningBox(isolationContainer))
 	b.mountLocal("local/linux-arm64")
@@ -179,6 +180,7 @@ func TestPruneNamesLeftOverVolumes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	b.box.EngineVols = []backend.EngineVolume{{Name: "web", Engine: "caboose-default-web", Size: "3MB"}, {Name: "gone", Engine: "caboose-default-gone", Size: "1GB"}}
 	if err := b.Prune(nil); err != nil {
 		t.Fatalf("%v\n%s", err, b.errb)
 	}
@@ -187,8 +189,69 @@ func TestPruneNamesLeftOverVolumes(t *testing.T) {
 		!strings.Contains(errs, ".cache.img.restoring-1000000000 (") || !strings.Contains(errs, "is a copy of a checkpoint that an interrupted restore of volume cache left") {
 		t.Errorf("leftovers not named:\n%s", errs)
 	}
+	if !strings.Contains(errs, "docker volume caboose-default-gone (1GB) is volume gone's, which no profile declares;\ncaboose:   'caboose volume rm gone --delete-disk' deletes it.\n") ||
+		strings.Contains(errs, "caboose-default-web") || len(b.box.RemovedVolumes) != 0 {
+		t.Errorf("docker volumes, stderr:\n%s", errs)
+	}
 	if !strings.Contains(errs, "caboose: "+b.volumeDisk("old")+" (") || !strings.Contains(errs, "is the disk of volume old, which no profile declares;\ncaboose:   'caboose volume rm old --delete-disk' deletes it.\n") ||
 		strings.Contains(errs, "the disk of volume cache") || strings.Contains(errs, "docker.img") || strings.Contains(errs, "web.img") || !isFile(b.volumeDisk("old")) {
 		t.Errorf("stderr:\n%s", errs)
+	}
+}
+
+// Under container, ls lists the container's docker volumes with their
+// size ("size unknown" when the engine said none): a declared one by its
+// profiles, one no profile declares as left over, and a declared one the
+// engine has not got yet as made at the container's creation; the engine
+// not answering fails it.
+func TestVolumeLsContainer(t *testing.T) {
+	e, b := adminEnv(t, ctrConfig+"\n[container.default.volume.web]\npath = \"/srv/web\"\n", nil)
+	ctr := e.a.Cfg.Container
+	b.EngineVols = []backend.EngineVolume{{Name: "cache", Engine: ctr + "-cache", Size: "1.2GB"}, {Name: "old", Engine: ctr + "-old", Size: "0B"}, {Name: "slow", Engine: ctr + "-slow"}}
+	out := e.a.Stdout.(*bytes.Buffer)
+	if err := e.a.Volume([]string{"ls"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{
+		"cache: docker volume " + ctr + "-cache, 1.2GB\n",
+		"old: docker volume " + ctr + "-old, 0B; no profile declares it: 'caboose volume rm old --delete-disk' deletes it\n",
+		"slow: docker volume " + ctr + "-slow, size unknown; no profile declares it",
+		"web: no docker volume yet: a container of a profile that declares it makes " + ctr + "-web as it is created\n",
+	} {
+		if !strings.Contains(out.String(), w) {
+			t.Errorf("no %q in:\n%s", w, out)
+		}
+	}
+	out.Reset()
+	if err := e.a.Volume([]string{"ls", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var l volumeListing
+	if err := json.Unmarshal(out.Bytes(), &l); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	byName := map[string]listedVolume{}
+	for _, v := range l.Volumes {
+		byName[v.Name] = v
+	}
+	if c := byName["cache"]; c.DockerVolume == nil || *c.DockerVolume != (backend.EngineVolume{Name: "cache", Engine: ctr + "-cache", Size: "1.2GB"}) || c.Orphan || len(c.Profiles) != 2 {
+		t.Errorf("cache %+v", c)
+	}
+	if o := byName["old"]; !o.Orphan || o.DockerVolume == nil {
+		t.Errorf("old %+v", o)
+	}
+	if w := byName["web"]; w.DockerVolume != nil || w.Orphan {
+		t.Errorf("web %+v", w)
+	}
+	b.ListVolumesErr = errors.New("engine down")
+	if err := e.a.Volume([]string{"ls"}); err == nil || !strings.Contains(err.Error(), "listing the docker volumes of "+ctr+": engine down") {
+		t.Errorf("err = %v", err)
+	}
+	// Under vm, docker is not asked.
+	v, vb := adminEnv(t, adminConfig, nil)
+	vb.EngineVols = []backend.EngineVolume{{Name: "old", Engine: ctr + "-old"}}
+	out = v.a.Stdout.(*bytes.Buffer)
+	if err := v.a.Volume([]string{"ls"}); err != nil || strings.Contains(out.String(), "old") {
+		t.Errorf("vm: %v\n%s", err, out)
 	}
 }

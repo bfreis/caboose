@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/config"
 )
 
@@ -25,13 +26,15 @@ type volumeListing struct {
 }
 
 // listedVolume is a volume name: the profiles that declare it, its disk
-// when it has one, and how the running VM has it.
+// when it has one, how the running VM has it, and under container and
+// gvisor its docker volume when the engine has one.
 type listedVolume struct {
-	Name     string       `json:"name"`
-	Profiles []declaredIn `json:"profiles"`
-	Disk     *listedDisk  `json:"disk,omitempty"`
-	Attached string       `json:"attached,omitempty"`
-	Orphan   bool         `json:"orphan,omitempty"`
+	Name         string                `json:"name"`
+	Profiles     []declaredIn          `json:"profiles"`
+	Disk         *listedDisk           `json:"disk,omitempty"`
+	DockerVolume *backend.EngineVolume `json:"docker_volume,omitempty"`
+	Attached     string                `json:"attached,omitempty"`
+	Orphan       bool                  `json:"orphan,omitempty"`
 }
 
 // The values of listedVolume.Attached: on which kind of disk the running
@@ -94,7 +97,8 @@ func (a *App) volumeLs(args []string) error {
 
 // listVolumes gathers the listing: the volumes config.toml declares, in
 // any profile, and the disks of vm/volumes in the data dir, each with how
-// the running VM has it.
+// the running VM has it, and under container and gvisor the docker
+// volumes the engine has for the container.
 func (a *App) listVolumes() (volumeListing, error) {
 	// Empty lists, not nil ones, which JSON would show as null.
 	l := volumeListing{Volumes: []listedVolume{}}
@@ -131,6 +135,21 @@ func (a *App) listVolumes() (volumeListing, error) {
 		}
 		lv.Disk = &d
 		lv.Orphan = len(a.declaring(name, false)) == 0
+	}
+	if ev, ok := a.box().(backend.EngineVolumes); ok && !a.isVM() {
+		vols, err := ev.ListVolumes(true)
+		if err != nil {
+			return l, fmt.Errorf("listing the docker volumes of %s: %v", a.Cfg.Container, err)
+		}
+		for _, v := range vols {
+			lv := byName[v.Name]
+			if lv == nil {
+				lv = &listedVolume{Name: v.Name, Profiles: []declaredIn{}}
+				byName[v.Name] = lv
+			}
+			lv.DockerVolume = &v
+			lv.Orphan = len(a.declaring(v.Name, false)) == 0
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
 		lv := byName[name]
@@ -186,7 +205,7 @@ func (l volumeListing) orphans() []listedVolume {
 // profiles' tables, one a line; dockerd's disk last.
 func (a *App) printVolumes(w io.Writer, l volumeListing) {
 	if len(l.Volumes) == 0 && l.Docker == nil && len(l.Leftovers) == 0 {
-		fmt.Fprintln(w, "No volumes: config.toml declares none, and the data dir holds no volume's disk. 'caboose volume create NAME PATH' adds one.")
+		fmt.Fprintln(w, "No volumes: config.toml declares none, and there is no volume's disk or docker volume. 'caboose volume create NAME PATH' adds one.")
 		return
 	}
 	for _, v := range l.Volumes {
@@ -220,16 +239,27 @@ func (a *App) printVolumes(w io.Writer, l volumeListing) {
 // volumeSummary is a volume's line: its disk, or why it has none, and how
 // the running VM has it.
 func (a *App) volumeSummary(v listedVolume) string {
-	var s string
+	var parts []string
 	vmDeclared := slices.ContainsFunc(v.Profiles, func(d declaredIn) bool { return profileKind(d.Profile) == config.KindVM })
+	dockerDeclared := slices.ContainsFunc(v.Profiles, func(d declaredIn) bool { return profileKind(d.Profile) != config.KindVM })
 	switch {
 	case v.Disk != nil:
-		s = fmt.Sprintf("disk %s, %s allocated", gibString(v.Disk.Size), sizeString(v.Disk.Allocated))
-	case vmDeclared:
-		s = "no disk yet: a VM of a profile that declares it makes it as it starts"
-	default:
-		s = "not attached: caboose makes volumes only under vm so far"
+		parts = append(parts, fmt.Sprintf("disk %s, %s allocated", gibString(v.Disk.Size), sizeString(v.Disk.Allocated)))
+	case vmDeclared && (a.isVM() || !dockerDeclared):
+		parts = append(parts, "no disk yet: a VM of a profile that declares it makes it as it starts")
 	}
+	switch {
+	case v.DockerVolume != nil:
+		parts = append(parts, "docker volume "+v.DockerVolume.Engine+dockerSizeSuffix(v.DockerVolume.Size))
+	case dockerDeclared && !a.isVM():
+		parts = append(parts, "no docker volume yet: a container of a profile that declares it makes "+backend.DockerVolumeName(a.Cfg.Container, v.Name)+" as it is created")
+	}
+	if len(parts) == 0 {
+		// Under vm, a volume of container and gvisor profiles alone:
+		// docker is not asked about it.
+		parts = append(parts, "a docker volume under container and gvisor, which 'caboose volume ls' lists while one of them is in use")
+	}
+	s := strings.Join(parts, "; ")
 	switch v.Attached {
 	case attachedLive:
 		s += "; attached to the running VM, on caboose-vmm's own disk (resizes while it runs)"
@@ -237,9 +267,9 @@ func (a *App) volumeSummary(v listedVolume) string {
 		s += "; attached to the running VM, on Virtualization.framework's own disk (resizes at a start)"
 	}
 	if v.Disk != nil && !v.Orphan && !vmDeclared {
-		s += "; only container and gvisor profiles declare it, which attach no disk"
+		s += "; only container and gvisor profiles declare it, which use a docker volume, not the disk"
 	}
-	if v.Orphan && v.Disk != nil {
+	if v.Orphan && (v.Disk != nil || v.DockerVolume != nil) {
 		s += fmt.Sprintf("; no profile declares it: 'caboose volume rm %s --delete-disk' deletes it", v.Name)
 	}
 	return s

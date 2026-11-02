@@ -254,7 +254,7 @@ func runningBox(iso string) *backendtest.Fake {
 		SandboxLabels: map[string]string{assets.LabelIsolation: iso, assets.LabelProfile: iso, assets.LabelUser: "", assets.LabelRunArgs: "", assets.LabelHostname: hostnameOf(config.DefaultEnv, "laptop"),
 			assets.LabelCompat: strconv.Itoa(assets.Compat), assets.LabelEgress: egressLabel(iso == isolationVM),
 			assets.LabelPluginDirs: datadir.PluginDirs, assets.LabelTrust: config.TrustFallible, assets.LabelNetwork: map[bool]string{true: "nat"}[iso == isolationVM],
-			assets.LabelVolumes: map[bool]string{true: `{"docker":"/var/lib/docker"}`}[iso == isolationVM]}}
+			assets.LabelVolumes: map[bool]string{true: `{"docker":"/var/lib/docker"}`, false: `{}`}[iso == isolationVM]}}
 }
 
 // mountLocal gives b's sandbox local (data-dir-relative) at ~/.local/bin,

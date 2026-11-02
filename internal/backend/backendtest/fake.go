@@ -69,12 +69,60 @@ type Fake struct {
 	// Calls are the lifecycle calls made, in order: "create", "start",
 	// "stop", "remove", and "logs N".
 	Calls []string
+
+	// EngineVols are the engine's volumes made for the sandbox, which
+	// outlive it: Create adds each of its Spec's that is not there yet
+	// (Engine named as DockerVolumeName names one for a container
+	// "sandbox", Size "0B"), RemoveVolume takes one away. ListVolumesErr
+	// and RemoveVolumeErr fail those calls; RemovedVolumes are the names
+	// RemoveVolume was given, in order; ListedSizes is the sizes argument
+	// of each ListVolumes call, in order.
+	EngineVols                      []backend.EngineVolume
+	ListVolumesErr, RemoveVolumeErr error
+	RemovedVolumes                  []string
+	ListedSizes                     []bool
 }
 
 var (
-	_ backend.Backend = (*Fake)(nil)
-	_ backend.Starter = (*Fake)(nil)
+	_ backend.Backend       = (*Fake)(nil)
+	_ backend.Starter       = (*Fake)(nil)
+	_ backend.EngineVolumes = (*Fake)(nil)
 )
+
+// ListVolumes is EngineVols, their sizes blank unless sizes; it records
+// sizes in ListedSizes.
+func (f *Fake) ListVolumes(sizes bool) ([]backend.EngineVolume, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ListedSizes = append(f.ListedSizes, sizes)
+	if f.ListVolumesErr != nil {
+		return nil, f.ListVolumesErr
+	}
+	vols := slices.Clone(f.EngineVols)
+	if !sizes {
+		for i := range vols {
+			vols[i].Size = ""
+		}
+	}
+	return vols, nil
+}
+
+// RemoveVolume records name and takes it out of EngineVols; one that is
+// not there is the engine's "no such volume".
+func (f *Fake) RemoveVolume(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.RemovedVolumes = append(f.RemovedVolumes, name)
+	if f.RemoveVolumeErr != nil {
+		return f.RemoveVolumeErr
+	}
+	i := slices.IndexFunc(f.EngineVols, func(v backend.EngineVolume) bool { return v.Name == name })
+	if i < 0 {
+		return fmt.Errorf("no such volume: %s", backend.DockerVolumeName("sandbox", name))
+	}
+	f.EngineVols = slices.Delete(f.EngineVols, i, i+1)
+	return nil
+}
 
 // Started is StartedAt while the sandbox runs and it is set.
 func (f *Fake) Started() (time.Time, bool) {
@@ -124,6 +172,11 @@ func (f *Fake) Create(s backend.Spec) error {
 	for _, l := range s.Labels {
 		k, v, _ := strings.Cut(l, "=")
 		labels[k] = v
+	}
+	for _, v := range s.Volumes {
+		if !slices.ContainsFunc(f.EngineVols, func(e backend.EngineVolume) bool { return e.Name == v.Name }) {
+			f.EngineVols = append(f.EngineVols, backend.EngineVolume{Name: v.Name, Engine: backend.DockerVolumeName("sandbox", v.Name), Size: "0B"})
+		}
 	}
 	f.Status, f.SandboxLabels, f.ImageID = "running", labels, id
 	f.SandboxMounts = slices.Clone(s.Mounts)

@@ -432,12 +432,17 @@ func (a *App) Prune(args []string) error {
 			a.Note("  delete it by hand if no image of yours needs it any more.")
 		}
 	}
-	// A volume's disk that no profile declares holds what the sandbox
-	// wrote there, which nothing could make again: deleting it is the
-	// user's call, one volume at a time.
+	// A volume's disk, or docker volume, that no profile declares holds
+	// what the sandbox wrote there, which nothing could make again:
+	// deleting it is the user's call, one volume at a time.
 	if l, err := a.listVolumes(); err == nil {
 		for _, v := range l.orphans() {
-			a.Note("%s (%s allocated) is the disk of volume %s, which no profile declares;", v.Disk.Path, sizeString(v.Disk.Allocated), v.Name)
+			if v.Disk != nil {
+				a.Note("%s (%s allocated) is the disk of volume %s, which no profile declares;", v.Disk.Path, sizeString(v.Disk.Allocated), v.Name)
+			}
+			if d := v.DockerVolume; d != nil {
+				a.Note("docker volume %s (%s) is volume %s's, which no profile declares;", d.Engine, or(d.Size, "size unknown"), v.Name)
+			}
 			a.Note("  'caboose volume rm %s --delete-disk' deletes it.", v.Name)
 		}
 		for _, f := range l.Leftovers {
