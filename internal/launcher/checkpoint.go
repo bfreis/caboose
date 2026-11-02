@@ -65,13 +65,22 @@ func (a *App) checkpointSources() ([]checkpoint.Source, []UnresolvedPath) {
 	guard, gerr := a.checkpointGuard()
 	roots := a.checkpointRoots()
 	keeps, kerr := a.checkpointKeeps()
+	vols := a.checkpointVolumes()
 	for _, p := range a.Cfg.Checkpoints {
 		if gerr != nil {
 			unresolved(p, "%v", gerr)
 			continue
 		}
 		var s checkpoint.Source
-		if rel, ok := strings.CutPrefix(p, "~/"); ok {
+		if vs, reason, ok := a.volumeSource(p, vols); ok {
+			// A volume's path: its disk, whatever a root or a keep entry
+			// says of the path (the volume wins).
+			if reason != "" {
+				unresolved(p, "%s", reason)
+				continue
+			}
+			s = vs
+		} else if rel, ok := strings.CutPrefix(p, "~/"); ok {
 			if kerr != nil {
 				unresolved(p, "%v", kerr)
 				continue

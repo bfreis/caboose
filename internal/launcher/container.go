@@ -553,7 +553,7 @@ func (a *App) volumesLive(live bool) []backend.Volume {
 	if !a.isVM() {
 		return nil
 	}
-	vols := []backend.Volume{{Name: dockerVolume, Target: "/var/lib/docker"}}
+	vols := []backend.Volume{{Name: dockerVolume, Target: dockerTarget}}
 	for _, v := range a.Cfg.Volumes {
 		vols = append(vols, backend.Volume{Name: v.Name, Target: v.Path, Live: live})
 	}

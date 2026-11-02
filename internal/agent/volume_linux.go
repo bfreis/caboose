@@ -69,6 +69,10 @@ type volumeOps struct {
 	// sizeWait bounds how long a step waits for the guest to see the
 	// disk's new size.
 	sizeWait time.Duration
+	// freezer freezes and thaws a volume's filesystem for a checkpoint;
+	// sameFS says whether the one mounted at a target is on dev.
+	freezer *freezer
+	sameFS  func(dev, target string) error
 }
 
 // toolRun is how a tool's run went.
@@ -100,6 +104,8 @@ var guestVolumes = volumeOps{
 	look:      lookTool,
 	run:       runTool,
 	sizeWait:  10 * time.Second,
+	freezer:   guestFreezer,
+	sameFS:    sameFS,
 }
 
 // Volume is VolumeGuest's: one step of a volume's resize, on the boot's
@@ -116,17 +122,38 @@ func (m *machine) Volume(op agentproto.VolumeOp) agentproto.VolumeInfo {
 func (o volumeOps) step(ds []agentproto.GuestDisk, op agentproto.VolumeOp) agentproto.VolumeInfo {
 	info := agentproto.VolumeInfo{Op: op.Op}
 	var disk *agentproto.GuestDisk
+	checkpoint := op.Op == agentproto.VolumeFreeze || op.Op == agentproto.VolumeThaw
 	for i := range ds {
-		if ds[i].Serial != "" && ds[i].Serial == op.Name {
+		switch {
+		case ds[i].Serial != "" && ds[i].Serial == op.Name && (!checkpoint || ds[i].Target == op.Target):
+			disk = &ds[i]
+		case checkpoint && ds[i].Serial == "" && ds[i].Device != "" && op.Target != "" && ds[i].Target == op.Target:
+			// One of the framework's own disks, which a checkpoint
+			// freezes too: found by where the boot mounted it.
 			disk = &ds[i]
 		}
 	}
 	if disk == nil {
-		info.Error = fmt.Sprintf("this VM has no volume %q on caboose-vmm's disks", op.Name)
+		if checkpoint {
+			info.Error = fmt.Sprintf("this VM has no volume %q at %q", op.Name, op.Target)
+		} else {
+			info.Error = fmt.Sprintf("this VM has no volume %q on caboose-vmm's disks", op.Name)
+		}
+		info.Error = bound(info.Error)
 		return info
 	}
 	info.Target = disk.Target
-	dev, err := o.disks.bySerial(disk.Serial, time.Second)
+	if op.Op == agentproto.VolumeThaw {
+		// Nothing may stand between a thaw and its filesystem: not the
+		// device's lookup, nor the volume's usage.
+		o.thawStep(&info, op)
+		return info
+	}
+	dev := disk.Device
+	var err error
+	if disk.Serial != "" {
+		dev, err = o.disks.bySerial(disk.Serial, time.Second)
+	}
 	if err != nil {
 		info.Error = err.Error()
 		return info
@@ -220,6 +247,14 @@ func (o volumeOps) do(dev string, info *agentproto.VolumeInfo, op agentproto.Vol
 			return fmt.Errorf("a size of %d bytes for a disk of %d", op.Size, info.DiskBytes)
 		}
 		return o.shrinkFS(dev, op.Size, info)
+	case agentproto.VolumeFreeze:
+		if !info.Mounted {
+			return fmt.Errorf("%s is not mounted", target)
+		}
+		if err := o.sameFS(dev, target); err != nil {
+			return err
+		}
+		return o.freezer.Freeze(target, op.Token)
 	case agentproto.VolumeMount:
 		if info.Mounted {
 			return nil
@@ -236,6 +271,16 @@ func (o volumeOps) do(dev string, info *agentproto.VolumeInfo, op agentproto.Vol
 		return fmt.Errorf("no volume step %q", op.Op)
 	}
 	return o.usage(dev, info)
+}
+
+// thawStep is a thaw: of the filesystem at info.Target, which op's token
+// froze.
+func (o volumeOps) thawStep(info *agentproto.VolumeInfo, op agentproto.VolumeOp) {
+	expired, why, err := o.freezer.Thaw(info.Target, op.Token)
+	info.Expired, info.Note = expired, bound(why)
+	if err != nil {
+		info.Error = bound(err.Error())
+	}
 }
 
 // remount mounts the volume's filesystem at target again, as a boot does.

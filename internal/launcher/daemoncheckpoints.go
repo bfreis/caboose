@@ -374,6 +374,9 @@ func (a *App) checkpointListing(st *checkpoint.Status) (*daemonproto.Checkpoints
 				if m.Shrunk != nil {
 					v.Shrunk = daemonproto.Text(m.Shrunk.ID, 100)
 				}
+				if m.Volume != nil {
+					v.Volume, v.Frozen, v.FrozenMS = daemonproto.Text(m.Volume.Name, 100), m.Volume.Frozen, max(m.Volume.FrozenMS, 0)
+				}
 			}
 			out.Checkpoints = append(out.Checkpoints, v)
 		}

@@ -14,6 +14,7 @@
 | `caboose checkpoint list [PATH\|KEY] [--json]` | the [checkpoints](checkpoints.md) of the `[checkpoints]` paths: whether each path is copied now, and its checkpoints, newest first |
 | `caboose checkpoint create [PATH]...` | a checkpoint now of each PATH, or of every path listed |
 | `caboose checkpoint restore ID --to DIR` | copy a checkpoint into DIR, a new directory, made safe to open; see [Restoring](checkpoints.md#restoring) |
+| `caboose checkpoint restore ID` | put a volume's checkpoint back as its disk, with the VM stopped; see [A volume's checkpoint](checkpoints.md#a-volumes-checkpoint) |
 | `caboose checkpoint release ID` | unpin a checkpoint pinned after a sharp shrink; see [Releasing a pin](checkpoints.md#releasing-a-pin) |
 | `caboose doctor [--offline]` | what, if anything, is wrong, and the command that fixes each problem; see [below](#when-something-is-wrong) |
 | `caboose status` | the sandbox, version, the checkpoints (when paths are set: how many, how long since the newest, or what fails), platform, live sessions, disk use |

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,11 @@ type VM struct {
 	Stderr io.Writer
 	// Note, when set, is told what a start, stop or removal waits for.
 	Note func(format string, args ...any)
+	// VolumesLock, when set, is the lock file, beside the volumes' disks,
+	// that a start holds from asking for them until vmm has them open, and
+	// a volume's checkpoint or restore while it reads or replaces a disk:
+	// with no VM directory, there is no start lock to order them.
+	VolumesLock string
 
 	// resize, when set, stands in for what a volume's resize does to the
 	// host and the VM: the tests'.
@@ -358,6 +364,11 @@ func within(dir, base string) bool {
 // throughout, so that a stop in another process waits for vmm to have
 // the new scratch disk, and stops it, rather than delete it under it.
 func (v *VM) Start() error {
+	unvol, err := v.holdVolumes(context.Background(), 0)
+	if err != nil {
+		return err
+	}
+	defer unvol()
 	unlock, err := v.holdStart()
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("no VM %s to start: %w", v.Name, err)
@@ -428,15 +439,20 @@ func (v *VM) Stop() error {
 func (v *VM) HoldStart() (func(), error) { return v.holdStart() }
 
 // holdStart takes the VM's start lock (vm.Dir.HoldStart), waiting for
-// it, and says why when a volume's resize holds it: that can take many
-// minutes, and a silent wait looks like a hang.
+// it, and says why when a volume's resize or checkpoint holds it: a
+// resize can take many minutes, and a silent wait looks like a hang.
 func (v *VM) holdStart() (func(), error) {
 	unlock, err := vm.TryLock(v.Dir.StartLock())
 	if !errors.Is(err, vm.ErrLocked) {
 		return unlock, err
 	}
-	if v.Note != nil && v.Dir.Resizing() {
-		v.Note("a resize of one of the VM's volumes is running; waiting for it to end (a shrink checks and moves the volume's files, which takes minutes on a full volume, longer on a large one)")
+	if v.Note != nil {
+		switch {
+		case v.Dir.Resizing():
+			v.Note("a resize of one of the VM's volumes is running; waiting for it to end (a shrink checks and moves the volume's files, which takes minutes on a full volume, longer on a large one)")
+		case v.Dir.Checkpointing():
+			v.Note("a checkpoint of one of the VM's volumes is being taken; waiting for it to end (its filesystem is frozen for at most %v)", agentproto.MaxFrozen)
+		}
 	}
 	return v.Dir.HoldStart()
 }

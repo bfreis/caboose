@@ -43,6 +43,10 @@ type host struct {
 	sizes            map[string]int64
 	// blk are block devices of caboose-vmm's, besides the volumes'.
 	blk []vm.BlockDevice
+	// agent is the agent's file in DIR, "" for caboose-agent-linux-arm64;
+	// memMiB the guest's memory, 0 for 1024.
+	agent  string
+	memMiB int
 }
 
 func (h host) Image(string) (backend.VMImage, error) {
@@ -68,13 +72,21 @@ func (h host) Machine() (vm.Machine, error) {
 	if err != nil {
 		return vm.Machine{}, err
 	}
-	return vm.Machine{Kernel: filepath.Join(h.dir, "Image"), Initramfs: initramfs, CPUs: 2, MemoryMiB: 1024, Network: "nat", BlockDevices: h.blk}, nil
+	mem := h.memMiB
+	if mem == 0 {
+		mem = 1024
+	}
+	return vm.Machine{Kernel: filepath.Join(h.dir, "Image"), Initramfs: initramfs, CPUs: 2, MemoryMiB: mem, Network: "nat", BlockDevices: h.blk}, nil
 }
 
 // initramfs writes the guest's init from DIR's agent, as the launcher will
 // from the one it embeds.
 func (h host) initramfs() (string, error) {
-	agent, err := os.ReadFile(filepath.Join(h.dir, "caboose-agent-linux-arm64"))
+	name := h.agent
+	if name == "" {
+		name = "caboose-agent-linux-arm64"
+	}
+	agent, err := os.ReadFile(filepath.Join(h.dir, name))
 	if err != nil {
 		return "", err
 	}

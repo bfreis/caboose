@@ -589,3 +589,39 @@ func TestCleanLeftoversKeepsCheckpoints(t *testing.T) {
 		t.Errorf("listed %v (%v)", es, err)
 	}
 }
+
+// The store's log says a path's failure once while it repeats, then how
+// many times more it came.
+func TestStoreLogsFailureOnce(t *testing.T) {
+	s := takeStore(t)
+	for range 3 {
+		s.logFailed("/p", "boom")
+	}
+	s.logFailed("/q", "boom")
+	s.logFailed("/p", "bang")
+	s.logFailed("/p", "bang")
+	s.logSucceeded("/p")
+	s.logSucceeded("/q")
+	s.logFailed("/p", "bang")
+	b, err := os.ReadFile(filepath.Join(s.Dir(), logName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if _, rest, ok := strings.Cut(l, " checkpoint of "); ok {
+			got = append(got, rest)
+		}
+	}
+	want := []string{
+		"/p failed: boom",
+		"/q failed: boom",
+		"/p: the failure logged before came 2 more time(s), then it failed otherwise",
+		"/p failed: bang",
+		"/p: the failure logged before came 1 more time(s), then it succeeded",
+		"/p failed: bang",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("logged:\n%s", strings.Join(got, "\n"))
+	}
+}

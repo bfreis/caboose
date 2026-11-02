@@ -19,6 +19,9 @@ type volumeListing struct {
 	Volumes []listedVolume `json:"volumes"`
 	// Docker is dockerd's disk, under vm: nil when it has none.
 	Docker *listedDocker `json:"docker,omitempty"`
+	// Leftovers are the files beside the disks that are none
+	// (volume_leftovers.go).
+	Leftovers []listedLeftover `json:"leftovers,omitempty"`
 }
 
 // listedVolume is a volume name: the profiles that declare it, its disk
@@ -139,7 +142,8 @@ func (a *App) listVolumes() (volumeListing, error) {
 		}
 		l.Volumes = append(l.Volumes, *lv)
 	}
-	return l, nil
+	l.Leftovers, err = a.volumeLeftovers()
+	return l, err
 }
 
 // volumeDisks is the disks of vm/volumes, NAME.img by NAME; a shrink's
@@ -181,7 +185,7 @@ func (l volumeListing) orphans() []listedVolume {
 // printVolumes prints l for a terminal: each volume's line, then its
 // profiles' tables, one a line; dockerd's disk last.
 func (a *App) printVolumes(w io.Writer, l volumeListing) {
-	if len(l.Volumes) == 0 && l.Docker == nil {
+	if len(l.Volumes) == 0 && l.Docker == nil && len(l.Leftovers) == 0 {
 		fmt.Fprintln(w, "No volumes: config.toml declares none, and the data dir holds no volume's disk. 'caboose volume create NAME PATH' adds one.")
 		return
 	}
@@ -207,6 +211,9 @@ func (a *App) printVolumes(w io.Writer, l volumeListing) {
 			line += fmt.Sprintf(" (docker_size in [%s]: %s)", a.Cfg.Profile, gibString(d.DockerSize))
 		}
 		fmt.Fprintln(w, line+"; 'caboose prune --docker' empties it")
+	}
+	for _, f := range l.Leftovers {
+		fmt.Fprintln(w, a.leftoverLine(f))
 	}
 }
 

@@ -192,6 +192,9 @@ func Restore(ctx context.Context, s *Store, id, to string, o RestoreOptions) (Re
 		return res, fmt.Errorf("checkpoint: %s cannot be read: %v", e.ID, e.Err)
 	}
 	res.ID, res.Path = e.ID, e.Meta.Path
+	if e.Meta.Kind == KindVolume {
+		return res, fmt.Errorf("%s: %w", e.ID, ErrIsVolume)
+	}
 	res.HomePath = strings.HasPrefix(e.Meta.Path, "~")
 
 	target, parent, err := restoreTarget(to)

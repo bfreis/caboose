@@ -397,6 +397,26 @@ func (a *App) volumeRm(args []string) error {
 		return Die("the running VM has volume %s: 'caboose stop' first (this ends its sessions), then run this again; its disk is kept unless --delete-disk", name)
 	}
 	disk := a.volumeDisk(name)
+	// What a restore left beside the disk: refused without --delete-disk,
+	// which deletes it too, so that it is never left behind a volume
+	// config.toml no longer has.
+	var restoreLeft []listedLeftover
+	lefts, err := a.volumeLeftovers()
+	if err != nil {
+		return Die("%v", err)
+	}
+	for _, l := range leftoversOf(lefts, name) {
+		if l.Kind == leftoverBeforeRestore || l.Kind == leftoverRestoring {
+			restoreLeft = append(restoreLeft, l)
+		}
+	}
+	if len(restoreLeft) > 0 && !deleteDisk {
+		var lines []string
+		for _, l := range restoreLeft {
+			lines = append(lines, a.leftoverLine(l))
+		}
+		return Die("%s; deal with %s first, or add --delete-disk, which deletes %s with the disk, after asking", strings.Join(lines, "; "), plural(len(restoreLeft), "it", "them"), plural(len(restoreLeft), "it", "them"))
+	}
 	var fi os.FileInfo
 	if deleteDisk {
 		if left := slices.DeleteFunc(a.declaring(name, true), func(p string) bool { return p == profile }); len(left) > 0 {
@@ -407,14 +427,27 @@ func (a *App) volumeRm(args []string) error {
 			return Die("%v", err)
 		}
 	}
-	if fi != nil {
-		if !fi.Mode().IsRegular() {
-			return Die("%s is not a disk image: delete it by hand if it is nothing of yours", disk)
+	if fi != nil && !fi.Mode().IsRegular() {
+		return Die("%s is not a disk image: delete it by hand if it is nothing of yours", disk)
+	}
+	if fi != nil || len(restoreLeft) > 0 {
+		if fi != nil {
+			if err := diskFree(disk); err != nil {
+				return Die("volume %s: %v", name, err)
+			}
+			a.Note("this deletes %s (%s, %s allocated): everything volume %s holds", disk, gibString(fi.Size()), sizeString(diskAllocated(fi)), name)
 		}
-		if err := diskFree(disk); err != nil {
-			return Die("volume %s: %v", name, err)
+		for _, l := range restoreLeft {
+			if l.SameAsDisk {
+				a.Note("and %s, a second name of that disk", l.Path)
+				continue
+			}
+			what := "the disk as it was before a checkpoint's restore"
+			if l.Kind == leftoverRestoring {
+				what = "a copy of a checkpoint an interrupted restore left (the checkpoint keeps it)"
+			}
+			a.Note("and %s (%s, %s allocated), %s", l.Path, gibString(l.Size), sizeString(l.Allocated), what)
 		}
-		a.Note("this deletes %s (%s, %s allocated): everything volume %s holds", disk, gibString(fi.Size()), sizeString(diskAllocated(fi)), name)
 		if a.force() {
 			a.Note("CABOOSE_FORCE=1 set, continuing.")
 		} else {
@@ -443,6 +476,12 @@ func (a *App) volumeRm(args []string) error {
 	if vs.Has {
 		a.Note("the VM, stopped, was created with volume %s, and its next start still mounts it (making an empty disk if there is none): 'caboose restart' recreates it without", name)
 	}
+	for _, l := range restoreLeft {
+		if err := os.Remove(l.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Die("cannot delete %s: %v", l.Path, err)
+		}
+		a.Note("deleted %s", l.Path)
+	}
 	switch {
 	case fi != nil:
 		if err := os.Remove(disk); err != nil {
@@ -452,7 +491,7 @@ func (a *App) volumeRm(args []string) error {
 		if isFile(disk + backend.BackupSuffix) {
 			a.Note("%s, a shrink's backup of it, is still here: delete it by hand once you no longer need it", disk+backend.BackupSuffix)
 		}
-	case deleteDisk:
+	case deleteDisk && len(restoreLeft) == 0:
 		a.Note("volume %s has no disk here: nothing to delete", name)
 	case isFile(disk):
 		if left := slices.DeleteFunc(a.declaring(name, true), func(p string) bool { return p == profile }); len(left) > 0 {

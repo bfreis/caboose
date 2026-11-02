@@ -55,6 +55,10 @@ type Store struct {
 
 	logMu sync.Mutex
 	log   *cappedlog.Log
+	// failLast is each path's last failure logged, and failMore how many
+	// takes since failed the same way, unlogged (logFailed).
+	failLast map[string]string
+	failMore map[string]int
 }
 
 // Open opens the store of the environment whose directory is envDir,
@@ -132,6 +136,42 @@ func (s *Store) Logf(format string, args ...any) {
 		line += "\n"
 	}
 	_, _ = s.log.Write([]byte(line))
+}
+
+// logFailed logs that the checkpoint of path failed with text, unless its
+// last failure was the same, which is only counted: a schedule that fails
+// the same way every 10 minutes says so once, and how many times more
+// when it fails otherwise or succeeds (logSucceeded).
+func (s *Store) logFailed(path, text string) {
+	s.logMu.Lock()
+	if s.failLast == nil {
+		s.failLast, s.failMore = map[string]string{}, map[string]int{}
+	}
+	if last, ok := s.failLast[path]; ok && last == text {
+		s.failMore[path]++
+		s.logMu.Unlock()
+		return
+	}
+	n := s.failMore[path]
+	s.failLast[path], s.failMore[path] = text, 0
+	s.logMu.Unlock()
+	if n > 0 {
+		s.Logf("checkpoint of %s: the failure logged before came %d more time(s), then it failed otherwise", path, n)
+	}
+	s.Logf("checkpoint of %s failed: %s", path, text)
+}
+
+// logSucceeded ends path's run of failures (logFailed), logging how many
+// went unlogged.
+func (s *Store) logSucceeded(path string) {
+	s.logMu.Lock()
+	n := s.failMore[path]
+	delete(s.failLast, path)
+	delete(s.failMore, path)
+	s.logMu.Unlock()
+	if n > 0 {
+		s.Logf("checkpoint of %s: the failure logged before came %d more time(s), then it succeeded", path, n)
+	}
 }
 
 // exposed runs the exposed-store check, if one is set.

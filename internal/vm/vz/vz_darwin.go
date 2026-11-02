@@ -350,6 +350,13 @@ func configureVM(m vm.Machine) (objc.ID, error) {
 		if att == 0 {
 			return 0, fmt.Errorf("the disk %s: %s", d.Path, describe(nserr))
 		}
+		// What the framework chose for the plain initializer: a volume's
+		// checkpoint counts on a guest's flush reaching the disk's file.
+		caching, sync := objc.Send[int](att, sel("cachingMode")), objc.Send[int](att, sel("synchronizationMode"))
+		logf("disk %s: caching mode %s, synchronization mode %s", d.Path, cachingModeName(caching), syncModeName(sync))
+		if !d.ReadOnly && sync != syncModeFull {
+			logf("disk %s: synchronization mode is not full: a guest's flush may not reach the disk's file on the host", d.Path)
+		}
 		disks = append(disks, class("VZVirtioBlockDeviceConfiguration").Send(sel("alloc")).Send(sel("initWithAttachment:"), att))
 	}
 	cfg.Send(sel("setStorageDevices:"), array(disks...))
@@ -474,4 +481,40 @@ func (r *Runner) Stop() error {
 	case <-time.After(stopTimeout):
 		return fmt.Errorf("the VM did not stop in %v", stopTimeout)
 	}
+}
+
+// VZDiskImageCachingMode and VZDiskImageSynchronizationMode, as the
+// framework's headers number them.
+const (
+	cachingAutomatic = 0
+	cachingUncached  = 1
+	cachingCached    = 2
+
+	syncModeFull  = 1
+	syncModeFsync = 2
+	syncModeNone  = 3
+)
+
+func cachingModeName(m int) string {
+	switch m {
+	case cachingAutomatic:
+		return "automatic"
+	case cachingUncached:
+		return "uncached"
+	case cachingCached:
+		return "cached"
+	}
+	return fmt.Sprintf("unknown (%d)", m)
+}
+
+func syncModeName(m int) string {
+	switch m {
+	case syncModeFull:
+		return "full"
+	case syncModeFsync:
+		return "fsync"
+	case syncModeNone:
+		return "none"
+	}
+	return fmt.Sprintf("unknown (%d)", m)
 }

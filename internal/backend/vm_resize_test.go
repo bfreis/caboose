@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -300,6 +301,40 @@ func TestResizeRefusals(t *testing.T) {
 	unlock()
 	wantErr(t, err, "another resize")
 	r.wantCalls()
+}
+
+// A checkpoint holding the VM (its start lock and its checkpoint lock):
+// the resize says it waits for it, then runs once it ends.
+func TestResizeWaitsForCheckpoint(t *testing.T) {
+	r := newResizeRig(t, true)
+	r.serve()
+	unstart, err := vm.TryLock(r.v.Dir.StartLock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncp, err := vm.TryLock(r.v.Dir.CheckpointLock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { uncp(); unstart() }) }
+	// Never a hang, whatever the resize says.
+	timer := time.AfterFunc(5*time.Second, release)
+	defer timer.Stop()
+	var says []string
+	res, err := r.v.ResizeVolume(r.ctx, "cache", 96<<30, func(format string, args ...any) {
+		s := fmt.Sprintf(format, args...)
+		says = append(says, s)
+		if strings.Contains(s, "a checkpoint of one of the VM's volumes is being taken") {
+			release()
+		}
+	})
+	if err != nil || !res.Applied {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	if len(says) == 0 || !strings.Contains(says[0], "a checkpoint of one of the VM's volumes is being taken; waiting for it to end") {
+		t.Errorf("says %q", says)
+	}
 }
 
 // A shrink: the volume unmounted, its disk cloned, its filesystem

@@ -127,7 +127,7 @@ func TakeLocked(ctx context.Context, l *Lock, s *Store, src Source, reason strin
 	if err := s.exposed(); err != nil {
 		return TakeResult{}, err
 	}
-	if src.Path == "" || (src.Kind != SourceRoot && src.Kind != SourceHome) {
+	if src.Path == "" || (src.Kind != SourceRoot && src.Kind != SourceHome && src.Kind != SourceVolume) {
 		return TakeResult{}, fmt.Errorf("checkpoint: bad source %q (%q)", src.Path, src.Kind)
 	}
 	now := o.Now
@@ -176,23 +176,29 @@ func TakeLocked(ctx context.Context, l *Lock, s *Store, src Source, reason strin
 			s.Logf("removing %s: %v", filepath.Base(tmp), rerr)
 			err = errors.Join(err, rerr)
 		}
-		s.Logf("checkpoint of %s failed: %v", src.Path, err)
+		s.logFailed(src.Path, err.Error())
 		return TakeResult{LowSpace: low}, err
 	}
 
-	co := o.Copy
-	co.Root = s.dir
-	co.Now = now
-	co.Prev, co.PrevStarted = "", time.Time{}
-	co.Space = func() error {
-		_, err := checkSpace(statfsFn, s.dir)
-		return err
+	var cr Result
+	var vol *VolumeMeta
+	if src.Kind == SourceVolume {
+		cr, vol, err = cloneVolume(ctx, src, tmp)
+	} else {
+		co := o.Copy
+		co.Root = s.dir
+		co.Now = now
+		co.Prev, co.PrevStarted = "", time.Time{}
+		co.Space = func() error {
+			_, err := checkSpace(statfsFn, s.dir)
+			return err
+		}
+		if prev != nil && prev.Meta.Kind == kindOf(src) {
+			co.Prev = filepath.Join(s.checkpointDir(prev.ID), TreeName)
+			co.PrevStarted = prev.Meta.Started
+		}
+		cr, err = Copy(ctx, src, filepath.Join(tmp, TreeName), co)
 	}
-	if prev != nil && prev.Meta.Kind == kindOf(src) {
-		co.Prev = filepath.Join(s.checkpointDir(prev.ID), TreeName)
-		co.PrevStarted = prev.Meta.Started
-	}
-	cr, err := Copy(ctx, src, filepath.Join(tmp, TreeName), co)
 	if err != nil {
 		return fail(err)
 	}
@@ -215,8 +221,11 @@ func TakeLocked(ctx context.Context, l *Lock, s *Store, src Source, reason strin
 		SkippedExamples: cr.SkippedExamples,
 		Dropped:         dropped,
 		Caboose:         version.Get().Version,
+		Volume:          vol,
 	}
-	if prev != nil && shrank(prev.Meta, m.Entries, m.Bytes) {
+	// A volume's bytes are its disk's size, which says nothing of what it
+	// holds: no shrink is told from them.
+	if prev != nil && vol == nil && prev.Meta.Volume == nil && shrank(prev.Meta, m.Entries, m.Bytes) {
 		m.Shrunk = &Shrunk{ID: prev.ID.String(), Entries: prev.Meta.Entries, Bytes: prev.Meta.Bytes}
 	}
 	id, err := s.Publish(l, tmp, src.Path, m)
@@ -266,12 +275,19 @@ func TakeLocked(ctx context.Context, l *Lock, s *Store, src Source, reason strin
 	default:
 		res.Pruned, res.PruneErr = s.Prune(l, key, DefaultRules(now()), o.Pinned)
 	}
+	s.logSucceeded(src.Path)
 	s.Logf("took %s method=%s duration=%s entries=%d bytes=%d linked=%d skipped=%d", id, m.Method,
 		m.Finished.Sub(m.Started).Round(time.Millisecond), m.Entries, m.Bytes, m.Linked, m.Skipped)
+	if vol != nil {
+		s.Logf("%s: volume %s, frozen=%v for %d ms", id, vol.Name, vol.Frozen, vol.FrozenMS)
+	}
 	return res, nil
 }
 
 func kindOf(src Source) string {
+	if src.Kind == SourceVolume {
+		return KindVolume
+	}
 	if src.File {
 		return KindFile
 	}

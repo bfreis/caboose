@@ -54,6 +54,7 @@ func (a *App) vmBox() *backend.VM {
 	// it.
 	v.Stderr = nil
 	v.Note = a.Note
+	v.VolumesLock = filepath.Join(a.volumesDir(), volumesLockName)
 	if exe, err := a.executable(); err == nil {
 		v.Self = exe
 	}
@@ -168,8 +169,12 @@ func (a *App) checkVM() error {
 // builderName is the builder guest's VM directory.
 const builderName = "builder"
 
-// dockerVolume is the volume dockerd in the sandbox keeps its images on.
-const dockerVolume = "docker"
+// dockerVolume is the volume dockerd in the sandbox keeps its images on,
+// mounted at dockerTarget.
+const (
+	dockerVolume = "docker"
+	dockerTarget = "/var/lib/docker"
+)
 
 // initramfs writes the guest's init, the agent this launcher embeds, as
 // an initramfs in the data dir's vm/, so the init always matches the
@@ -334,6 +339,10 @@ func scratchSize(c *config.Config) (int64, error) {
 // VM's directory, so caboose restart keeps them.
 func (a *App) volumesDir() string { return filepath.Join(a.vmRoot(), "volumes") }
 
+// volumesLockName is the volumes' lock file in vm/volumes
+// (backend.VM.VolumesLock).
+const volumesLockName = "volumes.lock"
+
 // volumeDisk is the disk of the volume called name.
 func (a *App) volumeDisk(name string) string { return filepath.Join(a.volumesDir(), name+".img") }
 
@@ -369,8 +378,9 @@ func dockerSize(c *config.Config) (int64, error) {
 
 // Volume is the volume's disk, at the size config.toml gives it, read
 // at every start: made from the empty template at that size when it is
-// missing, and grown to it when it is smaller, the guest growing its
-// filesystem to fill it. A disk larger than its size is left as it is: a
+// missing (refused instead while an interrupted restore's files are
+// there: checkRestoreLeft), and grown to it when it is smaller, the guest
+// growing its filesystem to fill it. A disk larger than its size is left as it is: a
 // start never shrinks a volume, which would cut off what the guest wrote
 // there. A volume the profile no longer declares keeps its disk's size,
 // and is made at config.DefaultVolumeSize when missing. A disk another
@@ -385,6 +395,9 @@ func (h *vmHost) Volume(name string) (backend.VMDisk, error) {
 	fi, err := os.Stat(p)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		if err := h.a.checkRestoreLeft(name); err != nil {
+			return backend.VMDisk{}, err
+		}
 		if !ok {
 			size = config.DefaultVolumeSize
 		}

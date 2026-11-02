@@ -1,5 +1,7 @@
 package agentproto
 
+import "time"
+
 // The control port is how the host runs a vm guest, where docker run, the
 // polling for the entrypoint's ready file and docker stop are today. The
 // host dials, opens a Session as on the link and sends TypeHello, then
@@ -113,7 +115,30 @@ const (
 	// still of another size after a bounded wait is mounted ungrown, and
 	// said so (VolumeInfo.Note).
 	VolumeMount = "mount"
+	// VolumeFreeze holds the mounted volume's filesystem still for a
+	// checkpoint (FIFREEZE): everything written is flushed to the disk,
+	// and every write waits until VolumeThaw with the same Token. The
+	// volume is named by Name and Target, so one on the framework's own
+	// disks, which has no serial, is found too. The agent thaws it itself
+	// MaxFrozen after the freeze, and when the connection that froze it
+	// ends, whichever comes first.
+	VolumeFreeze = "freeze"
+	// VolumeThaw lets the volume's filesystem be written again
+	// (FITHAW). VolumeInfo.Expired says the freeze had already ended
+	// before it (the agent's own thaw, or something in the guest's):
+	// what the host copied meanwhile may not be consistent.
+	VolumeThaw = "thaw"
 )
+
+// MaxFrozen is how long the agent leaves a volume frozen before thawing
+// it itself, should the host's thaw not come: the host clones the disk's
+// file in well under a second (one clonefile on APFS), and gives up on
+// the clone after half of this, so only a host gone away meets it, and
+// the sandbox's writers to that volume then wait no longer than this.
+const MaxFrozen = 20 * time.Second
+
+// MaxVolumeToken bounds a VolumeOp's Token, in bytes.
+const MaxVolumeToken = 64
 
 // VolumeOp is one step of a volume's resize, from the host.
 type VolumeOp struct {
@@ -122,6 +147,12 @@ type VolumeOp struct {
 	// Size is the disk's size in bytes the step is for: Grow's, ShrinkFS'
 	// and Mount's.
 	Size int64 `json:"size,omitempty"`
+	// Target is where the volume is mounted, as the boot spec says:
+	// Freeze's and Thaw's.
+	Target string `json:"target,omitempty"`
+	// Token ties a Thaw to its Freeze, chosen by the host: Freeze's and
+	// Thaw's, at most MaxVolumeToken bytes.
+	Token string `json:"token,omitempty"`
 }
 
 // The bounds of a VolumeInfo, which the agent keeps to and the host checks
@@ -155,6 +186,9 @@ type VolumeInfo struct {
 	// Dirty: a ShrinkFS that failed may have left the filesystem half
 	// changed, which must not be mounted again.
 	Dirty bool `json:"dirty,omitempty"`
+	// Expired: a Thaw found its Freeze already ended, and Note says
+	// how; the volume is thawed either way.
+	Expired bool `json:"expired,omitempty"`
 	// Note is what the step has to say beyond its outcome; Error, why it
 	// failed.
 	Note  string `json:"note,omitempty"`

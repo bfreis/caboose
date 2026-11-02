@@ -11,8 +11,9 @@ any of those copies into a new directory.
 paths = ["/work/dev/myproject", "~/.claude"]
 ```
 
-Each path is written as the sandbox sees it: a writable part of a root, or
-a path the sandbox keeps of its home. None are copied by default.
+Each path is written as the sandbox sees it: a writable part of a root, a
+path the sandbox keeps of its home, or, under `vm`, a
+[volume's](#volumes) path. None are copied by default.
 
 ## Choosing the paths
 
@@ -92,6 +93,62 @@ sandbox could reach the store, and when a checkpoint holds half or less of
 what the one before it held: that one names the earlier checkpoint, now
 pinned, and the commands to restore and to release it.
 
+## Volumes
+
+Under `vm`, a path in `[checkpoints] paths` that is a
+[volume's](configuration.md#volumes) path is taken as the volume's disk:
+each checkpoint is a copy-on-write clone of the disk's file
+(`vm/volumes/<volume>.img` in the data dir), on the same schedule, in the
+same store and kept by the same rules as any other path.
+
+```toml
+[vm.default.volume.data]
+path = "~/data"
+
+[checkpoints]
+paths = ["/work/dev/myproject", "~/data"]
+```
+
+- **Held still while cloned**: while the VM runs, its agent syncs the
+  volume's filesystem (writes go on meanwhile), then freezes it (what was
+  written since is flushed to the disk, and every new write waits), the
+  disk's file is cloned, and the filesystem is thawed: the checkpoint is a
+  clean filesystem as of that moment, with no journal to replay. The
+  sandbox's writes to the volume wait from the freeze to the thaw: about a
+  tenth of a second with 1 GiB written to the volume without a sync just
+  before the checkpoint, against over a second without the sync first.
+  With the VM stopped, the disk is cloned as it is, and
+  the VM is kept from starting meanwhile. While a `caboose volume resize`
+  runs, no checkpoint of the VM's volumes is taken. A checkpoint waits up
+  to 2 minutes for a start or stop of the VM to end, and a start or stop
+  waits for a checkpoint, saying so.
+- **Never left frozen**: the agent thaws a volume itself 20 seconds after
+  freezing it if no thaw has come, as soon as the connection that froze it
+  ends (caboose stopped or killed mid-way), and before the VM powers off.
+  caboose gives up on a clone after 10 seconds and thaws it. A checkpoint
+  whose volume was thawed before its clone was done is dropped, since it
+  may not be consistent.
+- **Both kinds of disk**: a volume on caboose-vmm's own disk (from macOS
+  27) and one on Virtualization.framework's own are handled alike.
+- **On one APFS volume only**: a volume is never copied byte by byte. When
+  the store and the data dir are not on one APFS volume, its checkpoint is
+  not taken, and the failure says so, and which setting moves which
+  (`CABOOSE_HOME` the store, `CABOOSE_DATA_DIR` the disks). A schedule
+  that fails the same way at every due time logs it once, then how many
+  more times it came when it changes or ends.
+- **Not a path inside a volume**: what is in a volume lives on its disk,
+  which is cloned whole: a path inside one is not copied (`caboose
+  checkpoint list` says why), and the volume's own path is the one to
+  list. A volume's path wins over a kept path of the home at the same
+  place.
+- **Not dockerd's disk**: `/var/lib/docker`, the sandbox's `dockerd`
+  storage, is never copied: it holds images, containers and build cache
+  that docker makes again.
+- **Size**: a clone takes no space when it is made; it holds on to the
+  blocks the volume rewrites or frees after it, until it is pruned.
+  `caboose checkpoint list` shows the disk's size, not what the clone
+  takes on this Mac.
+
 ## Asked for by the sandbox
 
 A session can have the daemon take one now, before something risky:
@@ -126,7 +183,9 @@ Each configured path, whether it is copied now (and if not, why: a path
 under no writable part, missing, or reached through a symbolic link), the
 daemon's next one when it answers, then its checkpoints, newest first: the
 ID, when it was taken, why (`interval`, `start`, `stop`, `manual`, `agent`,
-`before-restore`), the method and the number of entries, and `(pinned)`
+`before-restore`), the method and the number of entries (for a volume:
+its name, its disk's size, and how long its filesystem was frozen, or that
+the VM was stopped), and `(pinned)`
 for one pinned after a sharp shrink, which is also named above the list
 with the command that releases it. Then the checkpoints of paths no
 longer listed, which age out by the same rule. `--json` prints the same
@@ -176,6 +235,30 @@ tree, and copy back what you need by hand.
 
 It checks everything before writing anything, and exits 1 on any failure.
 No command deletes a checkpoint: retention does.
+
+### A volume's checkpoint
+
+```
+caboose checkpoint restore ID
+```
+
+puts a [volume's](#volumes) checkpoint back as the volume's disk, in place,
+with the VM stopped (`caboose stop`; it is refused while the VM runs, and
+the VM is kept from starting meanwhile). The checkpoint is cloned again
+beside the disk (`.<volume>.img.restoring-<number>`), the disk is given a
+second name, `<volume>.img.before-restore`, and the clone is renamed over
+`<volume>.img`, which replaces the disk in one step: `<volume>.img` is
+never missing, even if the restore is interrupted, and the next restore
+cleans up what an interrupted one left. The VM's next start mounts the
+restored disk. Delete the `.before-restore` file once the volume is right;
+to undo, with the VM stopped, move it back over `<volume>.img`. A restore
+is refused while an earlier one's `.before-restore` file is still there;
+`caboose volume ls` and `caboose prune` name it, with its size. A start
+never makes an empty disk for a volume whose `<volume>.img` is missing
+while a `.before-restore` file or a checkpoint's copy is beside it: it is
+refused, with the commands that put either in place. `--to DIR` is refused
+for a volume's checkpoint. Opening a checkpoint read-only to pick single
+files out of it is not there yet.
 
 ## Releasing a pin
 

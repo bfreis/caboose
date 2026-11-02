@@ -978,3 +978,55 @@ func TestScheduleCancelled(t *testing.T) {
 		t.Fatalf("took %v", got)
 	}
 }
+
+// The same failure at every due time is logged once, then counted: the
+// count is logged when the failure changes or a take succeeds.
+func TestScheduleFailureLoggedOnce(t *testing.T) {
+	w := newSchedWorld(t, nil)
+	var mu sync.Mutex
+	var logged []string
+	w.s.o.Logf = func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+	count := func(sub string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, l := range logged {
+			if strings.Contains(l, sub) {
+				n++
+			}
+		}
+		return n
+	}
+	setFail := func(err error) {
+		w.take.mu.Lock()
+		w.take.fail = err
+		w.take.mu.Unlock()
+	}
+	setFail(errors.New("boom"))
+	w.tick(t)
+	w.ticks(t, 3*Interval)
+	if got := len(w.take.calls()); got != 4 || count("failed: boom") != 1 {
+		t.Fatalf("%d takes, logged %q", got, logged)
+	}
+	setFail(errors.New("bang"))
+	w.ticks(t, Interval)
+	if count("came 3 more times, then failed otherwise") != 1 || count("failed: bang") != 1 {
+		t.Fatalf("logged %q", logged)
+	}
+	w.ticks(t, Interval)
+	setFail(nil)
+	w.ticks(t, Interval)
+	if count("came 1 more time, then succeeded") != 1 {
+		t.Fatalf("logged %q", logged)
+	}
+	// A new failure after the success is logged again.
+	setFail(errors.New("boom"))
+	w.ticks(t, Interval)
+	if count("failed: boom") != 2 {
+		t.Fatalf("logged %q", logged)
+	}
+}

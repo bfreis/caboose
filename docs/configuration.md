@@ -212,7 +212,13 @@ space it takes up on this machine (a sparse disk takes only what was
 written); and whether the running VM has it, on caboose-vmm's disk or the
 framework's. A disk in `vm/volumes` that no profile declares is listed
 with the command that deletes it, and so is `dockerd`'s disk, with
-`docker_size`. `--json` prints the same as JSON.
+`docker_size`. So are the files beside the disks that nothing deletes on
+its own, each with its size and how to remove it: a disk as it was before
+a [checkpoint's restore](checkpoints.md#a-volumes-checkpoint)
+(`<volume>.img.before-restore`), a shrink's clone
+(`<volume>.img.before-shrink`), and the copy of a checkpoint an
+interrupted restore left (`.<volume>.img.restoring-<number>`). `--json`
+prints the same as JSON.
 
 `caboose volume rm <volume> [--profile <profile>] [--delete-disk]` comments
 out the volume's table in `config.toml`, so that `create` with the same
@@ -226,8 +232,12 @@ kept, with what it holds, unless `--delete-disk`, which deletes it once no
 `vm` profile declares the volume,
 after asking (no by default; `CABOOSE_FORCE=1` does not ask, and with no
 terminal it refuses). `rm <volume> --delete-disk` also deletes a disk no
-profile declares. `caboose prune` deletes no volume's disk, but names each
-one no profile declares.
+profile declares. While a restore's files are beside the disk (a
+`.before-restore` disk, a checkpoint's copy), `rm` is refused, saying what
+each is; with `--delete-disk` it deletes them with the disk, after the
+same question. `caboose prune` deletes no volume's disk, but names each
+one no profile declares, and the files `volume ls` names beside the
+disks.
 
 #### Resizing a volume
 

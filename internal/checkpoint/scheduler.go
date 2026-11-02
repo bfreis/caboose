@@ -208,6 +208,7 @@ type Scheduler struct {
 	resolved map[string]string // path: "" when it resolved, else why not
 	said     map[string]bool   // path: its not resolving was notified
 	failing  map[string]string // path: the last take's error, until one succeeds
+	repeated map[string]int    // path: takes since that failed the same way, not logged
 	notified map[string]time.Time
 	skipped  string
 
@@ -231,7 +232,7 @@ func NewScheduler(o SchedulerOptions) *Scheduler {
 		o.Command = func(args string) string { return "caboose -e " + name + " " + args }
 	}
 	return &Scheduler{o: o, tick: make(chan struct{}, 1), failedAt: map[string]time.Time{}, prunedAt: map[string]time.Time{},
-		resolved: map[string]string{}, said: map[string]bool{}, failing: map[string]string{}, notified: map[string]time.Time{}}
+		resolved: map[string]string{}, said: map[string]bool{}, failing: map[string]string{}, repeated: map[string]int{}, notified: map[string]time.Time{}}
 }
 
 // Status is the Scheduler's state as the last tick left it.
@@ -587,8 +588,15 @@ func (s *Scheduler) takeOne(ctx context.Context, store *Store, l *Lock, src Sour
 		s.failedAt[key] = end
 		text := printable(err.Error())
 		s.fail(end, src.Path, text)
+		// The same failure every Interval is logged once, and counted
+		// until it changes or ends.
+		if s.failing[src.Path] == text {
+			s.repeated[src.Path]++
+		} else {
+			s.logRepeats(src.Path, "then failed otherwise")
+			s.logf("%s (%s) failed: %s", src.Path, reason, text)
+		}
 		s.pathFailing(src.Path, text)
-		s.logf("%s (%s) failed: %s", src.Path, reason, text)
 		switch {
 		case errors.Is(err, ErrExposed):
 			s.mu.Lock()
@@ -606,6 +614,7 @@ func (s *Scheduler) takeOne(ctx context.Context, store *Store, l *Lock, src Sour
 		return res, err
 	}
 	delete(s.failedAt, key)
+	s.logRepeats(src.Path, "then succeeded")
 	s.pathFailing(src.Path, "")
 	s.mu.Lock()
 	s.st.Exposed, s.st.LowSpace, s.st.SpaceSkipped = "", res.LowSpace, ""
@@ -794,6 +803,19 @@ func (s *Scheduler) fail(now time.Time, path, text string) {
 	s.mu.Lock()
 	s.st.LastError, s.st.LastErrorAt = printable(text), now
 	s.mu.Unlock()
+}
+
+// logRepeats logs how many more times path's last logged failure came
+// again, unlogged, if it did, and what happened then.
+func (s *Scheduler) logRepeats(path, then string) {
+	if n := s.repeated[path]; n > 0 {
+		times := "times"
+		if n == 1 {
+			times = "time"
+		}
+		s.logf("%s: the failure logged before came %d more %s, %s", path, n, times, then)
+	}
+	delete(s.repeated, path)
 }
 
 func (s *Scheduler) pathFailing(path, text string) {

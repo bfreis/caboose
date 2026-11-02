@@ -310,7 +310,7 @@ var diskFrees = map[string]string{
 	"root disks":       "the next 'caboose build' deletes those no image or VM uses",
 	"empty disks":      "what scratch disks and volumes are cloned from: they share its blocks, so deleting it frees only its unshared size",
 	"scratch disks":    "made at a VM's start, deleted at its stop: 'caboose prune' deletes those left over by a VM that is not running",
-	"volumes":          "'caboose volume rm NAME --delete-disk' deletes a volume's disk, 'caboose prune --docker' empties dockerd's",
+	"volumes":          "'caboose volume rm NAME --delete-disk' deletes a volume's disk, 'caboose prune --docker' empties dockerd's, and 'caboose volume ls' names the files restores and shrinks left beside them",
 	"builder cache":    "only grows: 'caboose prune --builder-cache' deletes it (asking first), and the next build makes it again, fetching everything anew",
 	"checkpoints":      "kept by the retention rules ('caboose help checkpoint'); clones of each other and of the live files, so only unshared counts",
 	"Claude Code":      "'caboose prune' deletes the versions beyond keep_versions",

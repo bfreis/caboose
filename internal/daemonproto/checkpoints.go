@@ -115,6 +115,12 @@ type CheckpointView struct {
 	PinnedBy string    `json:"pinned_by,omitempty"`
 	PinnedAt time.Time `json:"pinned_at,omitzero"`
 	Error    string    `json:"error,omitempty"`
+	// Volume names the volume a checkpoint cloned the disk of (Bytes is
+	// then the disk's size); Frozen says its filesystem was held frozen,
+	// for FrozenMS milliseconds, the VM running.
+	Volume   string `json:"volume,omitempty"`
+	Frozen   bool   `json:"frozen,omitempty"`
+	FrozenMS int64  `json:"frozen_ms,omitempty"`
 }
 
 func (c *CheckpointStatus) validate() error {
@@ -204,12 +210,13 @@ func (v *CheckpointView) validate() error {
 		{"checkpoint ID", v.ID, maxCheckpointShort}, {"checkpoint reason", v.Reason, maxCheckpointShort},
 		{"checkpoint method", v.Method, maxCheckpointShort}, {"checkpoint ID", v.Shrunk, maxCheckpointShort},
 		{"checkpoint ID", v.PinnedBy, maxCheckpointShort}, {"checkpoint error", v.Error, maxCheckpointText},
+		{"checkpoint volume", v.Volume, maxCheckpointShort},
 	} {
 		if err := checkText(s.what, s.v, s.max); err != nil {
 			return err
 		}
 	}
-	if v.Entries < 0 || v.Bytes < 0 || v.Linked < 0 || v.Skipped < 0 {
+	if v.Entries < 0 || v.Bytes < 0 || v.Linked < 0 || v.Skipped < 0 || v.FrozenMS < 0 {
 		return bad("negative checkpoint counts")
 	}
 	return nil

@@ -34,7 +34,8 @@ const (
 // RunGuest serves the guest's ports until one fails; log is the console.
 func RunGuest(log io.Writer) error {
 	logf := func(format string, args ...any) { fmt.Fprintf(log, "caboose-agent: "+format+"\n", args...) }
-	m := &machine{logf: logf, console: log, done: make(chan struct{})}
+	m := &machine{logf: logf, console: log, done: make(chan struct{}), freezer: guestFreezer}
+	guestFreezer.logf = logf
 	go m.keepLease()
 	if err := m.resume(); err != nil {
 		logf("the boot before this agent's restart is lost: %v", err)
@@ -86,6 +87,8 @@ type machine struct {
 
 	done     chan struct{} // closed by Shutdown: ends keepLease
 	doneOnce sync.Once
+	// freezer is the volumes' freezes, which Shutdown thaws first.
+	freezer *freezer
 }
 
 func (m *machine) booted() *agentproto.BootSpec {
@@ -377,7 +380,7 @@ func (m *machine) serveLink(c io.ReadWriteCloser) {
 // then the kept disks are trimmed (trimDisks) and synced, and the machine
 // powers off.
 func (m *machine) Shutdown() {
-	m.doneOnce.Do(func() { close(m.done) })
+	m.stopping()
 	m.mu.Lock()
 	entry, exited := m.entry, m.exited
 	m.mu.Unlock()
@@ -398,6 +401,16 @@ func (m *machine) Shutdown() {
 	unix.Sync()
 	if err := unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF); err != nil {
 		m.logf("power off: %v", err)
+	}
+}
+
+// stopping is Shutdown's first step: keepLease is told to end, and every
+// frozen volume is thawed, since a frozen one would hold up every process
+// writing to it, and the trims that follow.
+func (m *machine) stopping() {
+	m.doneOnce.Do(func() { close(m.done) })
+	if m.freezer != nil {
+		m.freezer.ThawAll()
 	}
 }
 

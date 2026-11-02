@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -21,6 +22,16 @@ func (d Dir) HoldStart() (func(), error) { return HoldLock(d.StartLock()) }
 // ResizeLock now.
 func (d Dir) Resizing() bool {
 	unlock, err := TryLock(d.ResizeLock())
+	if err == nil {
+		unlock()
+	}
+	return errors.Is(err, ErrLocked)
+}
+
+// Checkpointing says whether a checkpoint of one of the VM's volumes
+// holds its CheckpointLock now.
+func (d Dir) Checkpointing() bool {
+	unlock, err := TryLock(d.CheckpointLock())
 	if err == nil {
 		unlock()
 	}
@@ -118,4 +129,42 @@ func (d Dir) Runs() bool {
 	}
 	unlock()
 	return d.Answers()
+}
+
+// lockPoll is how often WaitLock tries the lock again.
+var lockPoll = 20 * time.Millisecond
+
+// WaitLock takes the exclusive flock on path as HoldLock does, but polls
+// for it: waiting, when set, is called once if the lock is held at the
+// first try, and the wait ends with an error when ctx does, or after
+// bound (0: no bound).
+func WaitLock(ctx context.Context, path string, bound time.Duration, waiting func()) (func(), error) {
+	unlock, err := TryLock(path)
+	if !errors.Is(err, ErrLocked) {
+		return unlock, err
+	}
+	if waiting != nil {
+		waiting()
+	}
+	var deadline <-chan time.Time
+	if bound > 0 {
+		t := time.NewTimer(bound)
+		defer t.Stop()
+		deadline = t.C
+	}
+	tick := time.NewTicker(lockPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline:
+			return nil, fmt.Errorf("waited %v for %s: %w", bound, path, ErrLocked)
+		case <-tick.C:
+		}
+		unlock, err := TryLock(path)
+		if !errors.Is(err, ErrLocked) {
+			return unlock, err
+		}
+	}
 }

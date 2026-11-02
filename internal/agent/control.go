@@ -81,6 +81,8 @@ func (c *ControlServer) logf(format string, args ...any) {
 func (c *ControlServer) ServeConn(conn io.ReadWriteCloser) error {
 	s := agentproto.NewSession(conn, conn, false)
 	defer s.Close()
+	frozen := &connFreezes{}
+	defer c.thawConn(frozen)
 	hello := false
 	for b := range s.Control() {
 		m, err := agentproto.Decode(b)
@@ -132,6 +134,12 @@ func (c *ControlServer) ServeConn(conn io.ReadWriteCloser) error {
 			// long, and the connection's other messages keep coming.
 			go func() {
 				info := c.volumeStep(op)
+				if op.Op == agentproto.VolumeFreeze && info.Error == "" && !frozen.add(op) {
+					// The connection ended while the freeze ran: no thaw
+					// can come on it.
+					c.thawOne(op)
+					return
+				}
 				_ = s.Send(agentproto.Message{Type: agentproto.TypeVolume, VolumeInfo: &info})
 			}()
 		case agentproto.TypeShutdown:
@@ -154,10 +162,14 @@ func (c *ControlServer) volumeStep(op agentproto.VolumeOp) agentproto.VolumeInfo
 	if !ok {
 		return agentproto.VolumeInfo{Op: op.Op, Error: "this guest resizes no volumes"}
 	}
-	if !c.volume.TryLock() {
-		return agentproto.VolumeInfo{Op: op.Op, Error: "another step of a volume's resize is running in the guest"}
+	// A checkpoint's freeze and thaw take no turn among a resize's steps:
+	// a thaw must never wait, and a freeze of an unmounted volume fails.
+	if op.Op != agentproto.VolumeFreeze && op.Op != agentproto.VolumeThaw {
+		if !c.volume.TryLock() {
+			return agentproto.VolumeInfo{Op: op.Op, Error: "another step of a volume's resize is running in the guest"}
+		}
+		defer c.volume.Unlock()
 	}
-	defer c.volume.Unlock()
 	c.logf("volume %s: %s", op.Name, op.Op)
 	info := g.Volume(op)
 	if info.Error != "" {
@@ -181,4 +193,45 @@ func (c *ControlServer) boot(spec agentproto.BootSpec) error {
 		}
 	})
 	return c.bootErr
+}
+
+// connFreezes are the freezes one connection made, which it thaws when it
+// ends: a host gone away sends no thaw.
+type connFreezes struct {
+	mu     sync.Mutex
+	ended  bool
+	frozen []agentproto.VolumeOp
+}
+
+// add records the freeze op, unless the connection has ended.
+func (f *connFreezes) add(op agentproto.VolumeOp) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ended {
+		return false
+	}
+	f.frozen = append(f.frozen, op)
+	return true
+}
+
+// thawConn thaws what the ended connection froze; one already thawed is
+// left alone (its token no longer matches).
+func (c *ControlServer) thawConn(f *connFreezes) {
+	f.mu.Lock()
+	f.ended = true
+	ops := f.frozen
+	f.frozen = nil
+	f.mu.Unlock()
+	for _, op := range ops {
+		c.thawOne(op)
+	}
+}
+
+// thawOne thaws what the freeze op froze, unless it is thawed already.
+func (c *ControlServer) thawOne(op agentproto.VolumeOp) {
+	op.Op = agentproto.VolumeThaw
+	info := c.volumeStep(op)
+	if info.Error == "" && !info.Expired {
+		c.logf("volume %s: thawed, as the connection that froze it ended", op.Name)
+	}
 }

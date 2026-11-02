@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/checkpoint"
 	"github.com/bfreis/caboose/internal/config"
 )
 
@@ -38,11 +40,28 @@ func lsEnv(t *testing.T) *setupEnv {
 	// web's profile is a container's, whose volumes are no disks: a disk
 	// of that name is still the name's, not left over.
 	e.makeDisk("web", 4<<30)
-	// Not volumes' disks: a shrink's backup, and a name no volume has.
-	for _, n := range []string{"cache.img" + backend.BackupSuffix, "Not-A-Volume.img"} {
+	// Not volumes' disks: a shrink's backup, a name no volume has, and
+	// files no volume's name is in.
+	for _, n := range []string{"cache.img" + backend.BackupSuffix, "Not-A-Volume.img", "Not-A-Volume.img.before-restore", ".cache.img.restoring-x", "volumes.lock"} {
 		if err := os.WriteFile(filepath.Join(e.a.volumesDir(), n), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// What restores left: web's disk as it was, a copy of a checkpoint of
+	// cache, and old's disk under a second name (a restore interrupted
+	// before its last step).
+	before := filepath.Join(e.a.volumesDir(), "web.img"+checkpoint.BeforeRestoreSuffix)
+	if err := os.WriteFile(before, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(before, 2<<30); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.a.volumesDir(), checkpoint.RestoringName("cache", time.Unix(1700000000, 0))), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(e.a.volumeDisk("old"), e.a.volumeDisk("old")+checkpoint.BeforeRestoreSuffix); err != nil {
+		t.Fatal(err)
 	}
 	return e
 }
@@ -155,12 +174,21 @@ func TestPruneNamesLeftOverVolumes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, n := range []string{"cache.img" + checkpoint.BeforeRestoreSuffix, checkpoint.RestoringName("cache", time.Unix(1, 0))} {
+		if err := os.WriteFile(filepath.Join(b.volumesDir(), n), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := b.Prune(nil); err != nil {
 		t.Fatalf("%v\n%s", err, b.errb)
 	}
 	_, errs := b.said()
+	if !strings.Contains(errs, "caboose: "+b.volumeDisk("cache")+checkpoint.BeforeRestoreSuffix+" (") || !strings.Contains(errs, "is volume cache's disk as it was before a checkpoint's restore") ||
+		!strings.Contains(errs, ".cache.img.restoring-1000000000 (") || !strings.Contains(errs, "is a copy of a checkpoint that an interrupted restore of volume cache left") {
+		t.Errorf("leftovers not named:\n%s", errs)
+	}
 	if !strings.Contains(errs, "caboose: "+b.volumeDisk("old")+" (") || !strings.Contains(errs, "is the disk of volume old, which no profile declares;\ncaboose:   'caboose volume rm old --delete-disk' deletes it.\n") ||
-		strings.Contains(errs, "volume cache") || strings.Contains(errs, "docker.img") || strings.Contains(errs, "web.img") || !isFile(b.volumeDisk("old")) {
+		strings.Contains(errs, "the disk of volume cache") || strings.Contains(errs, "docker.img") || strings.Contains(errs, "web.img") || !isFile(b.volumeDisk("old")) {
 		t.Errorf("stderr:\n%s", errs)
 	}
 }

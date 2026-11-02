@@ -53,6 +53,12 @@ func (d Dir) StartLock() string { return filepath.Join(string(d), "start.lock") 
 // ResizeLock makes a VM's volume resizes one at a time (TryLock).
 func (d Dir) ResizeLock() string { return filepath.Join(string(d), "resize.lock") }
 
+// CheckpointLock is held while a checkpoint of one of the VM's volumes
+// holds the VM, so that what waits for the start lock can say so
+// (Checkpointing). Resizes and checkpoints exclude each other through the
+// start lock, which both hold throughout.
+func (d Dir) CheckpointLock() string { return filepath.Join(string(d), "checkpoint.lock") }
+
 // ShareTag is the virtio-fs tag of the one share every mount is a
 // directory of (Machine.Shares).
 const ShareTag = "caboose"

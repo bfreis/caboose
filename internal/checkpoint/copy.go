@@ -21,6 +21,9 @@ import (
 const (
 	SourceRoot = "root" // a writable part of a root
 	SourceHome = "home" // a kept path of the sandbox's home, in the data dir
+	// SourceVolume is a volume's disk, a file of the data dir's vm/volumes
+	// (Rel), cloned whole while the VM holds its filesystem still (Hold).
+	SourceVolume = "volume"
 )
 
 // Source is what a checkpoint copies: a directory the host owns (Top),
@@ -32,6 +35,10 @@ type Source struct {
 	Top  string // the physical host directory: a root's host path, or the data dir
 	Rel  string // slash-separated and clean, below Top; "" is Top itself (never for a home source)
 	File bool   // the source is a single regular file
+	// Volume is a volume source's name; Hold holds its filesystem still
+	// while during clones its disk (required for a volume source).
+	Volume string
+	Hold   Holder
 }
 
 // Host is the source's host path (for meta.json and messages; never opened).

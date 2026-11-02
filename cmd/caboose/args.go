@@ -242,6 +242,11 @@ ACTION is one of:
                  place. A checkpoint of the live path is taken first. In
                  the copy, setuid, setgid and sticky bits are cleared. A
                  DIR in ~/.caboose or that a sandbox can write is refused.
+  restore ID
+                 put the checkpoint of a volume (a [checkpoints] path that
+                 is a vm volume's path, whose disk is cloned with its
+                 filesystem frozen) back as its disk, with the VM stopped;
+                 the disk as it was is kept as NAME.img.before-restore
   release ID
                  unpin checkpoint ID: one is pinned, kept whatever its
                  age, when the next checkpoint of its path holds half or

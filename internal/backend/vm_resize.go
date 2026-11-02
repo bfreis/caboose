@@ -135,7 +135,16 @@ func (v *VM) ResizeVolume(ctx context.Context, name string, size int64, say func
 		return res, err
 	}
 	defer unlock()
-	unstart, err := v.Dir.HoldStart()
+	unstart, err := vm.TryLock(v.Dir.StartLock())
+	if errors.Is(err, vm.ErrLocked) {
+		// A start or stop of the VM, or a checkpoint of one of its
+		// volumes, which holds the start lock throughout: said, as a
+		// start waiting for one says it (holdStart).
+		if v.Dir.Checkpointing() && say != nil {
+			say("a checkpoint of one of the VM's volumes is being taken; waiting for it to end (its filesystem is frozen for at most %v)", agentproto.MaxFrozen)
+		}
+		unstart, err = v.Dir.HoldStart()
+	}
 	if err != nil {
 		return res, err
 	}

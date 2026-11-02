@@ -440,6 +440,9 @@ func (a *App) Prune(args []string) error {
 			a.Note("%s (%s allocated) is the disk of volume %s, which no profile declares;", v.Disk.Path, sizeString(v.Disk.Allocated), v.Name)
 			a.Note("  'caboose volume rm %s --delete-disk' deletes it.", v.Name)
 		}
+		for _, f := range l.Leftovers {
+			a.Note("%s.", a.leftoverLine(f))
+		}
 	}
 	return cacheErr
 }

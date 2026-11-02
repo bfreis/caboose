@@ -40,6 +40,9 @@ const (
 const (
 	KindDir  = "dir"
 	KindFile = "file"
+	// KindVolume is a volume's disk: the tree is a clone of its image
+	// file, and Meta.Volume says which.
+	KindVolume = "volume"
 )
 
 // Meta is a checkpoint's meta.json, written last, so a checkpoint without
@@ -64,6 +67,22 @@ type Meta struct {
 	SkippedExamples []string `json:"skipped_examples,omitempty"` // a few relative paths
 	Dropped         []string `json:"dropped,omitempty"`          // login files left out
 	Caboose         string   `json:"caboose"`                    // the version that took it
+	// Volume is a KindVolume checkpoint's volume; its clone is the
+	// checkpoint's tree, a file.
+	Volume *VolumeMeta `json:"volume,omitempty"`
+}
+
+// VolumeMeta is the volume a checkpoint cloned the disk of.
+type VolumeMeta struct {
+	Name string `json:"name"`
+	// Bytes is the disk's size (its image file's length; sparse, so
+	// what it takes on the host is less).
+	Bytes int64 `json:"bytes"`
+	// Frozen: the VM ran, and held the volume's filesystem still for
+	// FrozenMS milliseconds around the clone; else it did not run, and
+	// nothing wrote the disk meanwhile.
+	Frozen   bool  `json:"frozen,omitempty"`
+	FrozenMS int64 `json:"frozen_ms,omitempty"`
 }
 
 // Shrunk is the previous checkpoint's counts, when this one fell sharply.

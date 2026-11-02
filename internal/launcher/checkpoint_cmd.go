@@ -17,7 +17,7 @@ import (
 	"github.com/bfreis/caboose/internal/proposal"
 )
 
-const checkpointUsage = "usage: caboose checkpoint list [PATH|KEY] [--json] | create [PATH]... | restore ID --to DIR | release ID"
+const checkpointUsage = "usage: caboose checkpoint list [PATH|KEY] [--json] | create [PATH]... | restore ID [--to DIR] | release ID"
 
 // checkpointOpts are the checkpoint commands' seams, for the tests.
 type checkpointOpts struct {
@@ -238,7 +238,11 @@ func printCheckpoints(a *App, l daemonproto.CheckpointListed, now time.Time) {
 			fmt.Fprintf(w, "  %s  %s\n", c.ID, c.Error)
 			continue
 		}
-		line := fmt.Sprintf("  %s  %s (%s)  %s  %s  %s", c.ID, c.Started.Local().Format("2006-01-02 15:04"), ckAgo(c.Started, now), c.Reason, c.Method, entries(c.Entries))
+		what := entries(c.Entries)
+		if c.Volume != "" {
+			what = volumeWords(c.Volume, c.Bytes, c.Frozen, c.FrozenMS)
+		}
+		line := fmt.Sprintf("  %s  %s (%s)  %s  %s  %s", c.ID, c.Started.Local().Format("2006-01-02 15:04"), ckAgo(c.Started, now), c.Reason, c.Method, what)
 		if c.Linked > 0 {
 			line += fmt.Sprintf(", %d linked", c.Linked)
 		}
@@ -256,6 +260,16 @@ func printCheckpoints(a *App, l daemonproto.CheckpointListed, now time.Time) {
 		}
 		fmt.Fprintln(w, line)
 	}
+}
+
+// volumeWords says what a checkpoint of a volume's disk is: the volume,
+// its disk's size, and whether and how long its filesystem was frozen.
+func volumeWords(name string, bytes int64, frozen bool, ms int64) string {
+	s := fmt.Sprintf("volume %s's disk, %s", name, gibString(bytes))
+	if frozen {
+		return s + fmt.Sprintf(", frozen %d ms", ms)
+	}
+	return s + ", the VM stopped"
 }
 
 // entries is a count of entries in words.
@@ -359,7 +373,11 @@ func (a *App) checkpointCreate(args []string, o checkpointOpts) error {
 			continue
 		}
 		m := r.Meta
-		line := fmt.Sprintf("%s: took %s (%s, %s", p, r.ID, m.Method, entries(m.Entries))
+		what := entries(m.Entries)
+		if m.Volume != nil {
+			what = volumeWords(m.Volume.Name, m.Volume.Bytes, m.Volume.Frozen, m.Volume.FrozenMS)
+		}
+		line := fmt.Sprintf("%s: took %s (%s, %s", p, r.ID, m.Method, what)
 		if m.Linked > 0 {
 			line += fmt.Sprintf(", %d linked", m.Linked)
 		}
@@ -395,7 +413,7 @@ func (a *App) checkpointCreate(args []string, o checkpointOpts) error {
 // checkpoint of the live path. Restore checks everything before it writes
 // anything; this says what it did, and what to mind.
 func (a *App) checkpointRestore(args []string, o checkpointOpts) error {
-	const usage = "usage: caboose checkpoint restore ID --to DIR"
+	const usage = "usage: caboose checkpoint restore ID --to DIR (a path's), or restore ID (a volume's, in place)"
 	var id, to string
 	for i := 0; i < len(args); i++ {
 		x := args[i]
@@ -417,7 +435,7 @@ func (a *App) checkpointRestore(args []string, o checkpointOpts) error {
 			id = x
 		}
 	}
-	if id == "" || to == "" {
+	if id == "" {
 		return Die("%s", usage)
 	}
 	if _, err := checkpoint.ParseID(id); err != nil {
@@ -431,6 +449,9 @@ func (a *App) checkpointRestore(args []string, o checkpointOpts) error {
 		return Die("%v", err)
 	}
 	defer s.Close()
+	if to == "" {
+		return a.restoreVolume(s, id, o)
+	}
 
 	ro := o.restore
 	ro.CabooseHome = a.Cfg.CabooseHome
@@ -482,6 +503,9 @@ func (a *App) checkpointRestore(args []string, o checkpointOpts) error {
 			continue // said above
 		}
 		fmt.Fprintf(w, "Warning: %s.\n", proposal.Printable(x))
+	}
+	if errors.Is(err, checkpoint.ErrIsVolume) {
+		return Die("%s: 'caboose -e %s checkpoint restore %s', without --to, puts it back as the volume's disk", proposal.Printable(err.Error()), a.Cfg.Env, res.ID)
 	}
 	if err != nil {
 		return Die("%s", proposal.Printable(err.Error()))
