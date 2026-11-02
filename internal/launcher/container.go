@@ -515,12 +515,14 @@ func (a *App) createContainer(mayBuild bool) error {
 	}
 	spec.Labels = append(spec.Labels, assets.LabelHostname+"="+spec.Hostname)
 	spec.Labels = append(spec.Labels, assets.LabelRunArgs+"="+runArgsLabel(c.RunArgs))
+	a.noteVolumes()
 	if a.isVM() {
 		// Level 3: dockerd in the guest, which the entrypoint starts when
 		// the image has one, its storage on a disk kept across restarts
 		// (overlayfs cannot sit on virtio-fs, and the images are worth
 		// keeping, as a laptop's Docker keeps them).
 		spec.Volumes = append(spec.Volumes, a.sandboxVolumes()...)
+		spec.Labels = append(spec.Labels, assets.LabelVolumes+"="+volumesLabel(spec.Volumes))
 		spec.Env = append(spec.Env, "CABOOSE_ISOLATION="+isolationVM)
 		a.Note("starting the sandbox's VM")
 	}
@@ -534,13 +536,28 @@ func (a *App) createContainer(mayBuild bool) error {
 }
 
 // sandboxVolumes are the volumes the sandbox is created with: under vm
-// the guest's dockerd's storage, a disk kept across restarts; none
-// otherwise. The conformance suite reads the next launch's from it too.
+// the guest's dockerd's storage, a disk of the framework's kept across
+// restarts, and the profile's volumes, each a disk of caboose-vmm's from
+// macOS 27 (liveVolumes), of the framework's before; none otherwise (a
+// container or gvisor profile's volumes are read, but not attached: a
+// creation and doctor say so). The conformance suite reads the next
+// launch's from it too.
 func (a *App) sandboxVolumes() []backend.Volume {
+	return a.volumesLive(a.isVM() && len(a.Cfg.Volumes) > 0 && a.liveVolumes())
+}
+
+// volumesLive is sandboxVolumes with the profile's volumes Live as live
+// says, which asks caboose-vmm nothing: what compares only names and
+// paths (volumesDrift) takes it.
+func (a *App) volumesLive(live bool) []backend.Volume {
 	if !a.isVM() {
 		return nil
 	}
-	return []backend.Volume{{Name: dockerVolume, Target: "/var/lib/docker"}}
+	vols := []backend.Volume{{Name: dockerVolume, Target: "/var/lib/docker"}}
+	for _, v := range a.Cfg.Volumes {
+		vols = append(vols, backend.Volume{Name: v.Name, Target: v.Path, Live: live})
+	}
+	return vols
 }
 
 // hostSocketSet are the host sockets a container is created with.
@@ -892,6 +909,7 @@ func (a *App) ensureRunning(mayBuild bool) error {
 		a.warnIfTrustDrifted()
 		a.warnIfPluginDirsDrifted()
 		a.warnIfHostnameDrifted()
+		a.warnIfVolumesDrifted()
 	case "absent":
 		if err := a.createContainer(mayBuild); err != nil {
 			return err

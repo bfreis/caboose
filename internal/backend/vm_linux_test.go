@@ -43,7 +43,9 @@ type fakeVMM struct {
 	boots    []agentproto.BootSpec
 	clocks   int
 	volumes  int
-	ln       net.Listener
+	// grown is added to every volume's size.
+	grown int64
+	ln    net.Listener
 	// madeScratch, when set, runs once NewScratch has made the disk.
 	madeScratch func()
 }
@@ -68,11 +70,11 @@ func (f *fakeVMM) NewScratch(path string) error {
 	return nil
 }
 
-func (f *fakeVMM) Volume(name string) (string, error) {
+func (f *fakeVMM) Volume(name string) (VMDisk, error) {
 	f.mu.Lock()
 	f.volumes++
 	f.mu.Unlock()
-	return "/volumes/" + name + ".img", nil
+	return VMDisk{Path: "/volumes/" + name + ".img", Size: int64(len(name))<<30 + f.grown}, nil
 }
 
 func (f *fakeVMM) StartVMM(dir vm.Dir) error {
@@ -200,6 +202,46 @@ func newTestVM(t *testing.T) (*VM, *fakeVMM) {
 	return v, f
 }
 
+// Volumes that are not Live (before macOS 27) are the framework's own
+// disks, after dockerd's, which the guest finds by device, in order; the
+// VM's record says none of them resizes while it runs.
+func TestVMVolumesOnOwnDisks(t *testing.T) {
+	v, f := newTestVM(t)
+	spec := Spec{
+		Image: "caboose", Hostname: "caboose", User: "0:0",
+		Volumes: []Volume{{Name: "docker", Target: "/var/lib/docker"}, {Name: "cache", Target: "/home/agent/.cache/x"}, {Name: "data", Target: "/data"}},
+	}
+	if err := v.Create(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.WaitReady(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	boot, m := f.boots[0], f.machines[0]
+	f.mu.Unlock()
+	wantGuest := []agentproto.GuestDisk{{Device: "/dev/vdc", Target: "/var/lib/docker"},
+		{Device: "/dev/vdd", Target: "/home/agent/.cache/x"}, {Device: "/dev/vde", Target: "/data"}}
+	if !reflect.DeepEqual(boot.Disks, wantGuest) {
+		t.Errorf("guest disks %+v", boot.Disks)
+	}
+	wantDisks := []vm.Disk{{Path: "/images/root-abc.img", ReadOnly: true}, {Path: v.Dir.Scratch()},
+		{Path: "/volumes/docker.img"}, {Path: "/volumes/cache.img"}, {Path: "/volumes/data.img"}}
+	if !reflect.DeepEqual(m.Disks, wantDisks) || len(m.BlockDevices) != 0 {
+		t.Errorf("disks %+v, block devices %+v", m.Disks, m.BlockDevices)
+	}
+	st, err := v.Dir.ReadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LiveVolume("cache") || st.LiveVolume("data") {
+		t.Error("a volume on the framework's disk is recorded as live")
+	}
+	if err := v.Remove(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Create, a command, the link, stop, start again and remove: the whole
 // life of a VM, against the agent's own servers.
 func TestVMLifecycle(t *testing.T) {
@@ -210,10 +252,11 @@ func TestVMLifecycle(t *testing.T) {
 	repo := t.TempDir()
 	spec := Spec{
 		Image: "caboose", Hostname: "caboose",
-		Env:     []string{"HOME=/root", "IS_SANDBOX=1"},
-		User:    "0:0",
-		Mounts:  []Mount{{Source: repo, Target: "/work"}},
-		Volumes: []Volume{{Name: "docker", Target: "/var/lib/docker"}},
+		Env:    []string{"HOME=/root", "IS_SANDBOX=1"},
+		User:   "0:0",
+		Mounts: []Mount{{Source: repo, Target: "/work"}},
+		// A live volume first: the framework's own disks still come first.
+		Volumes: []Volume{{Name: "cache", Target: "/home/agent/.cache/x", Live: true}, {Name: "docker", Target: "/var/lib/docker"}, {Name: "data", Target: "/data", Live: true}},
 		Labels:  []string{"caboose.isolation=vm", "caboose.hash=abc=def"},
 		Egress:  agentproto.EgressListen,
 	}
@@ -235,10 +278,11 @@ func TestVMLifecycle(t *testing.T) {
 		Env:      []string{"PATH=" + os.Getenv("PATH"), "HOME=/root", "IS_SANDBOX=1"},
 		User:     "0:0",
 		Mounts:   []agentproto.GuestMount{{Tag: vm.ShareTag, Path: "m0", Target: "/work"}},
-		Disks:    []agentproto.GuestDisk{{Device: "/dev/vdc", Target: "/var/lib/docker"}},
-		Cmd:      []string{"/usr/local/bin/entrypoint.sh"},
-		Ready:    "/run/ready",
-		Egress:   agentproto.EgressListen,
+		Disks: []agentproto.GuestDisk{{Device: "/dev/vdc", Target: "/var/lib/docker"},
+			{Serial: "cache", Target: "/home/agent/.cache/x"}, {Serial: "data", Target: "/data"}},
+		Cmd:    []string{"/usr/local/bin/entrypoint.sh"},
+		Ready:  "/run/ready",
+		Egress: agentproto.EgressListen,
 	}
 	if !reflect.DeepEqual(boot, want) {
 		t.Errorf("boot spec\n got %+v\nwant %+v", boot, want)
@@ -247,6 +291,11 @@ func TestVMLifecycle(t *testing.T) {
 		t.Error("no clock before the boot")
 	}
 	wantDisks := []vm.Disk{{Path: "/images/root-abc.img", ReadOnly: true}, {Path: v.Dir.Scratch()}, {Path: "/volumes/docker.img"}}
+	// Served at the size the host says, by serial.
+	wantBlk := []vm.BlockDevice{{Path: "/volumes/cache.img", Serial: "cache", Size: 5 << 30}, {Path: "/volumes/data.img", Serial: "data", Size: 4 << 30}}
+	if !reflect.DeepEqual(m.BlockDevices, wantBlk) {
+		t.Errorf("block devices %+v", m.BlockDevices)
+	}
 	if !reflect.DeepEqual(m.Disks, wantDisks) || m.Network != "nat" || m.Console != v.Dir.Console() ||
 		!reflect.DeepEqual(m.Shares, []vm.Share{{Name: "m0", Path: repo}}) || m.CPUs != 2 || m.MAC != v.Dir.MAC() {
 		t.Errorf("machine %+v", m)
@@ -321,6 +370,9 @@ func TestVMLifecycle(t *testing.T) {
 	if _, err := os.Stat(v.Dir.Scratch()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the scratch disk outlived the VM's stop: %v", err)
 	}
+	f.mu.Lock()
+	f.grown = 1 << 30
+	f.mu.Unlock()
 	if err := v.Stop(); err != nil {
 		t.Fatalf("stopping a stopped VM: %v", err)
 	}
@@ -343,13 +395,20 @@ func TestVMLifecycle(t *testing.T) {
 	if scratch != 2 {
 		t.Errorf("%d scratch disks for two starts", scratch)
 	}
-	// Asked for at create and again at each start, which makes a deleted
-	// one afresh.
-	if volumes != 3 {
-		t.Errorf("the volume asked for %d times in a create and two starts", volumes)
+	// Asked for at each start, which makes a deleted one afresh and
+	// takes a new size.
+	if volumes != 6 {
+		t.Errorf("three volumes asked for %d times in two starts", volumes)
 	}
 	if boots != 2 {
 		t.Errorf("%d boots for two starts", boots)
+	}
+	// The second start serves the sizes the host says then.
+	f.mu.Lock()
+	m = f.machines[len(f.machines)-1]
+	f.mu.Unlock()
+	if len(m.BlockDevices) != 2 || m.BlockDevices[0].Size != 6<<30 || m.BlockDevices[1].Size != 5<<30 || m.BlockDevices[1].Path != "/volumes/data.img" {
+		t.Errorf("block devices at the second start %+v", m.BlockDevices)
 	}
 
 	if err := v.Remove(); err != nil {

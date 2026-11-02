@@ -156,6 +156,18 @@ type Config struct {
 	// VMScratchSize is a vm profile's scratch_size, "" for
 	// DefaultScratchSize; checked at load (ParseScratchSize).
 	VMScratchSize string
+	// VMDockerSize is a vm profile's docker_size, "" for
+	// DefaultDockerSize; checked at load (ParseScratchSize).
+	VMDockerSize string
+	// VMVolumeLimit is a vm profile's volume_limit in bytes,
+	// DefaultVolumeLimit when unset (and under any other kind; Load sets
+	// it, a Config made by hand has 0): the total
+	// of the profile's volume sizes a sandbox's resize request may bring
+	// them to (ParseVolumeLimit).
+	VMVolumeLimit int64
+	// Volumes are the volumes of the profile in use, sorted by name; nil
+	// when it has none.
+	Volumes []Volume
 	// Egress is a vm profile's egress: whether the sandbox's outbound
 	// connections are dialled from this machine, through the link, so that
 	// its VPN routes and resolver apply. EgressPorts are the ports it
@@ -386,6 +398,7 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 		return nil, fmt.Errorf("HOME is not set (needed for the default %s)", strings.Join(need, " and "))
 	}
 	c.DataDir = or(dataDir, c.EnvDir+"/data")
+	c.VMVolumeLimit = DefaultVolumeLimit
 	if c.File != nil {
 		if err := c.readFile(); err != nil {
 			return nil, err
@@ -393,6 +406,11 @@ func Load(getenv Env, fsys FS, env string) (*Config, error) {
 	}
 	if c.Roots == nil {
 		c.Roots = []Root{{Name: DefaultRootName, Host: home + "/" + DefaultRootName, Container: WorkDir + "/" + DefaultRootName}}
+	}
+	if c.File != nil {
+		if err := c.checkVolumeRoots(); err != nil {
+			return nil, err
+		}
 	}
 	return c, nil
 }
@@ -489,11 +507,27 @@ func (c *Config) readFile() error {
 			return err
 		}
 		str(p+".memory", &c.VMMemory)
+		for _, v := range f.Volumes[p] {
+			c.Volumes = append(c.Volumes, Volume(v))
+		}
 		str(p+".scratch_size", &c.VMScratchSize)
 		if c.VMScratchSize != "" {
 			if _, err := ParseScratchSize(c.VMScratchSize); err != nil {
 				return fail("%s: %v", displayKey(p+".scratch_size"), err)
 			}
+		}
+		str(p+".docker_size", &c.VMDockerSize)
+		if c.VMDockerSize != "" {
+			if _, err := ParseScratchSize(c.VMDockerSize); err != nil {
+				return fail("%s: %v", displayKey(p+".docker_size"), err)
+			}
+		}
+		if v, ok := f.Vals[p+".volume_limit"].(string); ok {
+			n, err := ParseVolumeLimit(v)
+			if err != nil {
+				return fail("%s: %v", displayKey(p+".volume_limit"), err)
+			}
+			c.VMVolumeLimit = n
 		}
 		boolean(p+".egress", &c.Egress)
 		if v, ok := f.Vals[p+".egress_ports"]; ok {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/tty"
 )
 
@@ -98,14 +99,14 @@ func TestPruneDocker(t *testing.T) {
 					t.Errorf("missing %q in:\n%s", want, errs)
 				}
 			}
-			// The empty disk is the template made volumeSize long.
+			// The empty disk is the template made docker_size long (the default).
 			if f, err := os.Open(disk); err != nil {
 				t.Errorf("no new disk: %v", err)
 			} else {
 				got := make([]byte, 5)
 				_, rerr := f.ReadAt(got, 0)
 				fi, serr := f.Stat()
-				if rerr != nil || serr != nil || string(got) != "empty" || fi.Size() != volumeSize {
+				if rerr != nil || serr != nil || string(got) != "empty" || fi.Size() != config.DefaultDockerSize {
 					t.Errorf("the disk is not the empty one: %q, %v, %v, %v", got, rerr, serr, fi)
 				}
 				f.Close()

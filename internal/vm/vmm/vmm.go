@@ -95,7 +95,7 @@ func Run(ctx context.Context, dir vm.Dir, r Runner, logf func(format string, arg
 		_ = r.Stop()
 		return err
 	}
-	go serve(ln, r)
+	go serve(ln, r, newDisks(m, r, logf))
 
 	kctx, stopKeeper := context.WithCancel(context.Background())
 	defer stopKeeper()
@@ -191,8 +191,9 @@ func shutdown(r Runner, logf func(format string, args ...any)) {
 }
 
 // serve answers each connection to vm.sock with the guest port it asks
-// for, as hybrid vsock does: nothing listening there closes it.
-func serve(ln net.Listener, r Runner) {
+// for, as hybrid vsock does: nothing listening there closes it. A
+// connection to vm.VMMPort is vmm's own (d).
+func serve(ln net.Listener, r Runner, d *disks) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -202,6 +203,14 @@ func serve(ln net.Listener, r Runner) {
 			port, err := hvsock.Accept(c, 5*time.Second)
 			if err != nil {
 				c.Close()
+				return
+			}
+			if port == vm.VMMPort {
+				if hvsock.Ready(c, port) != nil {
+					c.Close()
+					return
+				}
+				d.serve(c)
 				return
 			}
 			g, err := r.Connect(port)

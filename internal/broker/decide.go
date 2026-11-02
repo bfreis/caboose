@@ -343,13 +343,18 @@ func record(p policy.Policy, r policy.Request, key, session string, text *AskTex
 	if len(r.Args) > 0 {
 		args = maps.Clone(r.Args)
 	}
-	return reqRec{
+	q := reqRec{
 		ID: id, Kind: r.Kind, Key: key, Effect: policy.Effect(p, r),
 		Created: now, Expires: now.Add(RequestTTL), State: StatePending,
 		Attempts: 1, Session: session, Ask: text,
 		Alias: r.Alias, Args: args, Host: r.Host, Literal: r.Literal, Port: r.Port,
 		Addrs: slices.Clone(addrs), URL: r.URL, Origin: r.Origin,
+		Volume: r.Volume, Size: r.VolumeSize,
 	}
+	if r.Kind == policy.KindVolumeResize {
+		q.VolumeFrom, q.Configured, q.Profile = r.VolumeFrom, p.Volumes[r.Volume], p.VMProfile
+	}
+	return q
 }
 
 // expireIn expires every request in d pending past its time, and returns

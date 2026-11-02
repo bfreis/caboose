@@ -116,6 +116,12 @@ type Mount struct {
 type Volume struct {
 	Name   string
 	Target string
+	// Live puts a VM's volume on caboose-vmm's own disk device, whose
+	// size can change while the VM runs, rather than one of the
+	// framework's, which every macOS vm runs on has: caboose-vmm serves
+	// one only from macOS 27 (vm.LiveDiskMacOS), and refuses to boot a
+	// VM with one before. It means nothing to a container.
+	Live bool
 }
 
 // ExecSpec is a command to run in the sandbox.

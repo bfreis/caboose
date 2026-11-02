@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/bfreis/caboose/internal/config"
@@ -276,8 +277,8 @@ func TestNewScratchMakesTemplate(t *testing.T) {
 	if err := os.Remove(tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if p, err := h.Volume("docker"); err != nil || g.boots != 2 || !isFile(p) {
-		t.Errorf("a volume with no template: %q, %v, %d builder boots", p, err, g.boots)
+	if d, err := h.Volume("docker"); err != nil || g.boots != 2 || !isFile(d.Path) {
+		t.Errorf("a volume with no template: %q, %v, %d builder boots", d.Path, err, g.boots)
 	}
 }
 
@@ -303,7 +304,8 @@ func TestNewScratchTemplateFails(t *testing.T) {
 }
 
 // doctor names a missing template and what makes it, and a scratch_size
-// past the space the data dir's volume has, which it allows.
+// or docker_size past the space the data dir's volume has, which it
+// allows.
 func TestDoctorVMDisks(t *testing.T) {
 	h, _ := scratchHost(t, &config.Config{VMScratchSize: "64G"})
 	free := vmFreeSpace
@@ -314,13 +316,22 @@ func TestDoctorVMDisks(t *testing.T) {
 		h.a.doctorVMDisks(c)
 		return c
 	}
-	if c := doctor(); c.row(levelOK, "a scratch disk of up to 64G at each start") == nil {
+	if c := doctor(); c.row(levelOK, "a scratch disk of up to 64G at each start, and dockerd's of up to 64G") == nil {
 		t.Errorf("fits:\n%s", c)
 	}
 	vmFreeSpace = func(string) (int64, error) { return 10<<30 + 1<<29, nil }
-	if c := doctor(); c.row(levelNote, "scratch_size is 64G, and the volume of the data dir") == nil || c.row(levelNote, "has 10.5G free") == nil {
+	if c := doctor(); c.row(levelNote, "scratch_size is 64G, and the volume of the data dir") == nil || c.row(levelNote, "has 10.5G free") == nil ||
+		c.row(levelNote, "docker_size is 64G, and the volume of the data dir") == nil {
 		t.Errorf("past the free space:\n%s", c)
 	}
+	// dockerd's alone past it.
+	h.a.Cfg.VMScratchSize, h.a.Cfg.VMDockerSize = "8G", "100G"
+	vmFreeSpace = func(string) (int64, error) { return 50 << 30, nil }
+	if c := doctor(); c.row(levelNote, "docker_size is 100G, and the volume of the data dir") == nil || c.row(levelNote, "dockerd's disk takes only what the VM writes") == nil ||
+		c.row(levelNote, "scratch_size") != nil || c.row(levelOK, "scratch disk") != nil {
+		t.Errorf("docker_size past the free space:\n%s", c)
+	}
+	h.a.Cfg.VMScratchSize, h.a.Cfg.VMDockerSize = "64G", ""
 	if err := os.Remove(h.a.vmImages().template()); err != nil {
 		t.Fatal(err)
 	}
@@ -329,25 +340,129 @@ func TestDoctorVMDisks(t *testing.T) {
 	}
 }
 
-// A new volume is volumeSize long, made from the same template, and an
-// existing one is left as it is.
+// A volume's disk has the size config.toml gives it, read at every
+// start: made at it from the template when missing, grown to it when
+// smaller, and left as it is when larger -- a start never shrinks a disk.
+// caboose's own takes docker_size; a volume the profile no longer
+// declares keeps its disk's size.
 func TestVolumeSize(t *testing.T) {
-	h, _ := scratchHost(t, &config.Config{})
-	p, err := h.Volume("docker")
+	c := &config.Config{Volumes: []config.Volume{{Name: "cache", Path: "/home/agent/.cache/x", Size: 8 << 30}}}
+	h, _ := scratchHost(t, c)
+	if f, err := os.OpenFile(h.a.vmImages().template(), os.O_WRONLY, 0); err != nil {
+		t.Fatal(err)
+	} else if _, err := f.WriteAt([]byte("empty"), 0); err != nil || f.Close() != nil {
+		t.Fatal(err)
+	}
+	size := func(p string) int64 {
+		t.Helper()
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	d, err := h.Volume("docker")
+	if err != nil || d.Path != h.a.dockerDisk() || size(d.Path) != config.DefaultDockerSize || d.Size != config.DefaultDockerSize {
+		t.Fatalf("docker: %+v, %v", d, err)
+	}
+	if !strings.HasPrefix(head(t, d.Path), "empty") {
+		t.Error("not made from the template")
+	}
+	d, err = h.Volume("cache")
+	if err != nil || d.Path != h.a.volumeDisk("cache") || d.Size != 8<<30 || size(d.Path) != 8<<30 {
+		t.Fatalf("cache: %+v, %v", d, err)
+	}
+	// Raised in config.toml: grown, and what it held kept.
+	if err := os.WriteFile(d.Path, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(d.Path, 8<<30); err != nil {
+		t.Fatal(err)
+	}
+	c.Volumes[0].Size = 12 << 30
+	if d, err = h.Volume("cache"); err != nil || d.Size != 12<<30 || size(d.Path) != 12<<30 {
+		t.Fatalf("grown: %+v, %v", d, err)
+	}
+	if !strings.HasPrefix(head(t, d.Path), "data") {
+		t.Error("the grown disk lost its data")
+	}
+	// Lowered: kept at the size it has.
+	c.Volumes[0].Size = 4 << 30
+	if d, err = h.Volume("cache"); err != nil || d.Size != 12<<30 || size(d.Path) != 12<<30 {
+		t.Fatalf("lowered: %+v, %v", d, err)
+	}
+	c.VMDockerSize = "4G"
+	if d, err = h.Volume("docker"); err != nil || d.Size != config.DefaultDockerSize {
+		t.Fatalf("docker_size lowered: %+v, %v", d, err)
+	}
+	c.VMDockerSize = "100G"
+	if d, err = h.Volume("docker"); err != nil || d.Size != 100<<30 || size(d.Path) != 100<<30 {
+		t.Fatalf("docker_size raised: %+v, %v", d, err)
+	}
+	// No longer declared: left as it is, and made at the default when gone.
+	c.Volumes = nil
+	if d, err = h.Volume("cache"); err != nil || d.Size != 12<<30 {
+		t.Fatalf("undeclared: %+v, %v", d, err)
+	}
+	if err := os.Remove(d.Path); err != nil {
+		t.Fatal(err)
+	}
+	if d, err = h.Volume("cache"); err != nil || d.Size != config.DefaultVolumeSize {
+		t.Fatalf("undeclared, made: %+v, %v", d, err)
+	}
+	c.VMDockerSize = "huge"
+	if _, err := h.Volume("docker"); err == nil || !strings.Contains(err.Error(), "docker_size") {
+		t.Errorf("a bad docker_size: %v", err)
+	}
+}
+
+// head is the first bytes of the file at p, which may be a sparse disk
+// of many GiB.
+func head(t *testing.T, p string) string {
+	t.Helper()
+	f, err := os.Open(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(p); err != nil || fi.Size() != volumeSize {
-		t.Fatalf("%v, %v", fi, err)
-	}
-	if err := os.Truncate(p, 10<<30); err != nil {
+	defer f.Close()
+	b := make([]byte, 16)
+	n, _ := f.Read(b)
+	return string(b[:n])
+}
+
+// A disk another process holds the lock of, as caboose-vmm does one it
+// serves, is refused, saying so, before it is grown.
+func TestVolumeInUse(t *testing.T) {
+	c := &config.Config{Volumes: []config.Volume{{Name: "cache", Path: "/c", Size: 8 << 30}}}
+	h, _ := scratchHost(t, c)
+	d, err := h.Volume("cache")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if q, err := h.Volume("docker"); err != nil || q != p {
-		t.Fatalf("%q, %v", q, err)
+	f, err := os.OpenFile(d.Path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(p); fi.Size() != 10<<30 {
-		t.Errorf("an existing volume was made again: %d", fi.Size())
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	// Held and raised in config.toml: refused, and not grown under the
+	// VM that serves it.
+	c.Volumes[0].Size = 12 << 30
+	if _, err := h.Volume("cache"); err == nil || !strings.Contains(err.Error(), "its disk "+d.Path+" is in use by another process") {
+		t.Errorf("a held disk: %v", err)
+	}
+	if fi, err := os.Stat(d.Path); err != nil {
+		t.Fatal(err)
+	} else if fi.Size() != 8<<30 {
+		t.Errorf("a held disk grew to %d", fi.Size())
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Volume("cache"); err != nil {
+		t.Errorf("once let go: %v", err)
 	}
 }
 

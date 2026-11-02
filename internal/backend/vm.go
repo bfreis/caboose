@@ -36,6 +36,12 @@ type VM struct {
 	// Stderr gets what Stop and Remove have to say, as docker's own
 	// stderr does.
 	Stderr io.Writer
+	// Note, when set, is told what a start, stop or removal waits for.
+	Note func(format string, args ...any)
+
+	// resize, when set, stands in for what a volume's resize does to the
+	// host and the VM: the tests'.
+	resize *resizeSeams
 }
 
 // VMHost is what the VM needs of the rest of caboose: its images, its
@@ -49,12 +55,24 @@ type VMHost interface {
 	// NewScratch makes an empty scratch disk at path, over any there.
 	NewScratch(path string) error
 	// Volume is the disk of the volume called name, made empty when it
-	// is new: kept apart from the VM's directory, so it outlives it.
-	Volume(name string) (string, error)
+	// is new: kept apart from the VM's directory, so it outlives it. It
+	// is asked for at every start, and says the size the disk is to have.
+	Volume(name string) (VMDisk, error)
 	// StartVMM starts vmm, detached, to boot the VM of dir's machine.json
 	// and serve its vm.sock.
 	StartVMM(dir vm.Dir) error
 }
+
+// VMDisk is a volume's disk: its image, and its size in bytes, which a
+// volume on caboose-vmm's own device is served at (vm.BlockDevice.Size).
+type VMDisk struct {
+	Path string
+	Size int64
+}
+
+// maxVMDisks is how many volumes may be on the framework's own disks:
+// their devices are named in order, vdc to vdz (checkDisks, in the agent).
+const maxVMDisks = 24
 
 // VMImage is an image as the vm isolation boots it: a disk, and what the
 // image's config says, which the guest cannot read.
@@ -139,19 +157,9 @@ func (v *VM) Create(s Spec) error {
 		return err
 	}
 	m.Disks = []vm.Disk{{Path: img.Disk, ReadOnly: true}, {Path: v.Dir.Scratch()}}
-	var disks []agentproto.GuestDisk
-	var volumes []string
-	for i, vol := range s.Volumes {
-		if i >= 24 {
-			return errors.New("a VM takes at most 24 volumes")
-		}
-		p, err := v.Host.Volume(vol.Name)
-		if err != nil {
-			return fmt.Errorf("volume %s: %w", vol.Name, err)
-		}
-		m.Disks = append(m.Disks, vm.Disk{Path: p})
-		volumes = append(volumes, vol.Name)
-		disks = append(disks, agentproto.GuestDisk{Device: "/dev/vd" + string(rune('c'+i)), Target: vol.Target})
+	disks, volumes, err := planVolumes(&m, s.Volumes)
+	if err != nil {
+		return err
 	}
 	m.Shares = shares
 	m.Console = v.Dir.Console()
@@ -191,6 +199,46 @@ func (v *VM) Create(s Spec) error {
 }
 
 var numericUser = regexp.MustCompile(`^[0-9]+(:[0-9]+)?$`)
+
+// planVolumes adds vols' disks to m, without their paths, which Start
+// fills in: those on the framework's own disks after the scratch disk,
+// named by their device, then those on caboose-vmm's, named by their
+// serial, the volume's name. It returns the disks for the boot spec and
+// the volumes' names in the order of their disks, as vm.State keeps them.
+func planVolumes(m *vm.Machine, vols []Volume) ([]agentproto.GuestDisk, []string, error) {
+	var own, live []Volume
+	for _, vol := range vols {
+		if vol.Live {
+			live = append(live, vol)
+		} else {
+			own = append(own, vol)
+		}
+	}
+	switch {
+	case len(own) > maxVMDisks:
+		return nil, nil, fmt.Errorf("a VM takes at most %d volumes on its own disks, not %d", maxVMDisks, len(own))
+	case len(live) > vm.MaxBlockDevices:
+		return nil, nil, fmt.Errorf("a VM takes at most %d volumes on caboose-vmm's disks, not %d", vm.MaxBlockDevices, len(live))
+	}
+	var disks []agentproto.GuestDisk
+	var names []string
+	seen := map[string]bool{}
+	for i, vol := range append(own, live...) {
+		if seen[vol.Name] {
+			return nil, nil, fmt.Errorf("volume %s twice", vol.Name)
+		}
+		seen[vol.Name] = true
+		names = append(names, vol.Name)
+		if i < len(own) {
+			m.Disks = append(m.Disks, vm.Disk{})
+			disks = append(disks, agentproto.GuestDisk{Device: "/dev/vd" + string(rune('c'+i)), Target: vol.Target})
+			continue
+		}
+		m.BlockDevices = append(m.BlockDevices, vm.BlockDevice{Serial: vol.Name})
+		disks = append(disks, agentproto.GuestDisk{Serial: vol.Name, Target: vol.Target})
+	}
+	return disks, names, nil
+}
 
 // mergeEnv is base with over on top: a name over sets replaces base's in
 // place, as docker run -e does the image's ENV.
@@ -310,7 +358,7 @@ func within(dir, base string) bool {
 // throughout, so that a stop in another process waits for vmm to have
 // the new scratch disk, and stops it, rather than delete it under it.
 func (v *VM) Start() error {
-	unlock, err := v.Dir.HoldStart()
+	unlock, err := v.holdStart()
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("no VM %s to start: %w", v.Name, err)
 	}
@@ -329,16 +377,20 @@ func (v *VM) Start() error {
 	if err := v.Host.NewScratch(v.Dir.Scratch()); err != nil {
 		return fmt.Errorf("the VM's scratch disk: %w", err)
 	}
-	// The volumes' disks follow the scratch disk, after the image's root.
+	// The volumes' disks follow the scratch disk, after the image's
+	// root, and then come caboose-vmm's, in the order of st.Volumes.
+	own := len(st.Machine.Disks) - 2
 	for i, name := range st.Volumes {
-		if 2+i >= len(st.Machine.Disks) {
-			break
-		}
-		p, err := v.Host.Volume(name)
+		d, err := v.Host.Volume(name)
 		if err != nil {
 			return fmt.Errorf("volume %s: %w", name, err)
 		}
-		st.Machine.Disks[2+i].Path = p
+		switch j := i - own; {
+		case i < own:
+			st.Machine.Disks[2+i].Path = d.Path
+		case j < len(st.Machine.BlockDevices):
+			st.Machine.BlockDevices[j].Path, st.Machine.BlockDevices[j].Size = d.Path, d.Size
+		}
 	}
 	return v.Dir.Boot(st.Machine, st.Boot, v.Host.StartVMM)
 }
@@ -360,7 +412,7 @@ func (v *VM) WaitReady(timeout time.Duration) error {
 // start anyway, and nothing in the guest outlives the boot that made it.
 // Both happen under the VM's start lock (Start).
 func (v *VM) Stop() error {
-	unlock, err := v.Dir.HoldStart()
+	unlock, err := v.holdStart()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil // no directory, no VM
 	}
@@ -369,6 +421,24 @@ func (v *VM) Stop() error {
 	}
 	defer unlock()
 	return v.stop()
+}
+
+// HoldStart is holdStart, for a launcher that has to keep the VM from
+// starting while it changes what a start reads (a volume's disk).
+func (v *VM) HoldStart() (func(), error) { return v.holdStart() }
+
+// holdStart takes the VM's start lock (vm.Dir.HoldStart), waiting for
+// it, and says why when a volume's resize holds it: that can take many
+// minutes, and a silent wait looks like a hang.
+func (v *VM) holdStart() (func(), error) {
+	unlock, err := vm.TryLock(v.Dir.StartLock())
+	if !errors.Is(err, vm.ErrLocked) {
+		return unlock, err
+	}
+	if v.Note != nil && v.Dir.Resizing() {
+		v.Note("a resize of one of the VM's volumes is running; waiting for it to end (a shrink checks and moves the volume's files, which takes minutes on a full volume, longer on a large one)")
+	}
+	return v.Dir.HoldStart()
 }
 
 // stop is Stop with the start lock held.
@@ -386,7 +456,7 @@ func (v *VM) stop() error {
 // throughout, so a start waiting on it finds no VM; the image's disk,
 // which other VMs may share, stays.
 func (v *VM) Remove() error {
-	unlock, err := v.Dir.HoldStart()
+	unlock, err := v.holdStart()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

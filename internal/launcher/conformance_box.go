@@ -469,6 +469,9 @@ func (r confVMRecord) inspection() (conformance.Inspection, error) {
 			m.Paths = append(m.Paths, dk.Path)
 		}
 	}
+	for _, b := range r.Machine.BlockDevices {
+		m.Paths = append(m.Paths, b.Path)
+	}
 	if r.Machine.Console != "" {
 		m.Paths = append(m.Paths, r.Machine.Console)
 	}

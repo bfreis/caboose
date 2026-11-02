@@ -160,6 +160,8 @@ func (h *Host) askRequest(a *agentproto.Ask) (policy.Request, error) {
 			Addrs: addrs, Own: h.ownAddrs()}, nil
 	case policy.KindPort:
 		return h.askPort(a.Port)
+	case policy.KindVolumeResize:
+		return h.askVolumeResize(a)
 	case policy.KindAlias:
 		if !h.aliasesOn() {
 			return policy.Request{}, errNoAliases

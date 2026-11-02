@@ -15,11 +15,13 @@ import (
 )
 
 // How long a VM has to come up: vmm to serve its socket, the agent to
-// listen once the kernel has booted, and the VM to go once asked to.
+// listen once the kernel has booted, and the VM to go once asked to: the
+// guest's shutdown gives the sandbox 11 seconds, then up to 8 to trim its
+// kept disks (the agent's trimWait), then syncs.
 var (
 	vmmTimeout   = 30 * time.Second
 	agentTimeout = 60 * time.Second
-	stopTimeout  = 20 * time.Second
+	stopTimeout  = 30 * time.Second
 	killTimeout  = 15 * time.Second
 	pollEvery    = 100 * time.Millisecond
 	// dialEvery is how soon the control port is tried again: the boot

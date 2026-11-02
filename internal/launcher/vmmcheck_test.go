@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,5 +161,23 @@ func TestStartVMMNotesVersion(t *testing.T) {
 				time.Sleep(20 * time.Millisecond)
 			}
 		})
+	}
+}
+
+// The Mac's macOS is what caboose-vmm --check says, asked once; "" when
+// there is no caboose-vmm to ask, and then volumes are not live.
+func TestMacOSVersion(t *testing.T) {
+	count := filepath.Join(t.TempDir(), "count")
+	vmm := fakeVMM(t, "echo x >> '"+count+"'; printf '%s' '"+checkOut("macos=27.0.1")+"'")
+	a := &App{Cfg: &config.Config{Isolation: isolationVM}, vmFiles: func() (vmFiles, error) { return vmFiles{VMM: vmm}, nil }}
+	if v := a.macOSVersion(); v != "27.0.1" || !a.liveVolumes() {
+		t.Errorf("macOS %q, live %v", v, a.liveVolumes())
+	}
+	if b, _ := os.ReadFile(count); string(b) != "x\n" {
+		t.Errorf("caboose-vmm asked %q", b)
+	}
+	none := &App{Cfg: &config.Config{Isolation: isolationVM}, vmFiles: func() (vmFiles, error) { return vmFiles{}, errors.New("no caboose-vmm") }}
+	if v := none.macOSVersion(); v != "" || none.liveVolumes() {
+		t.Errorf("without caboose-vmm: macOS %q, live %v", v, none.liveVolumes())
 	}
 }

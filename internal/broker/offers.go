@@ -92,6 +92,26 @@ func (b *Broker) offer(q *reqRec, set Settings, scope string) (Offer, error) {
 	if r.Kind == policy.KindOpenURL && b.opts.Opener == nil {
 		return Offer{}, newError(KindUnavailable, "this host has nothing to open URLs with, so a URL request cannot be allowed")
 	}
+	if r.Kind == policy.KindVolumeResize {
+		if scope != ScopeOnce {
+			return Offer{}, newError(KindBadRequest, "a volume resize is allowed once, each by a person: never for some hours, never always")
+		}
+		if b.opts.Resizer == nil {
+			return Offer{}, newError(KindUnavailable, "this host runs no volume resizes (only the caboose daemon's link does), so a resize cannot be allowed here")
+		}
+		// config.toml as it is now: the volume gone, or volume_limit
+		// lowered, since the request was filed refuses it; another vm
+		// profile, or another size for the volume, withholds it (the
+		// person approves the change the request showed, from that
+		// size).
+		p, _ := b.snapshot(b.now())
+		if _, why := policy.VolumeResizeRefusal(p, r.Volume, r.VolumeSize); why != "" {
+			return Offer{}, newError(KindBadRequest, "%s", why)
+		}
+		if q.Profile != p.VMProfile || p.Volumes[r.Volume] != q.Configured {
+			return Offer{}, newError(KindBadRequest, "%s", VolumeChanged)
+		}
+	}
 	o := Offer{Scope: scope}
 	switch scope {
 	case ScopeOnce:

@@ -18,6 +18,7 @@ func TestJobInfoValidate(t *testing.T) {
 		{Kind: JobApply, State: JobDone, Since: at, Finished: at, Proposal: "dot.toml", Notes: []string{"Wrote it", "restart"}},
 		{Kind: JobApply, State: JobFailed, Since: at, Finished: at, Proposal: "dot.toml", Error: "the build failed", Lines: []string{"x"}},
 		{Kind: JobRestart, State: JobRunning, Since: at, Lines: make([]string, MaxJobLines)},
+		{Kind: JobVolumeResize, State: JobFailed, Since: at, Finished: at, Error: "volume cache is in use"},
 	}
 	for _, j := range good {
 		if err := j.Validate(); err != nil {
@@ -30,6 +31,7 @@ func TestJobInfoValidate(t *testing.T) {
 	}
 	for _, j := range []JobInfo{
 		{Kind: "start", State: JobRunning, Since: at},
+		{Kind: JobVolumeResize, State: JobRunning, Since: at, Proposal: "dot.toml"},
 		{Kind: JobStop, State: "queued", Since: at},
 		{Kind: JobStop, State: JobRunning},
 		{Kind: JobStop, State: JobRunning, Since: at, Finished: at},

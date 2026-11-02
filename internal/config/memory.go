@@ -13,8 +13,32 @@ import (
 const (
 	EmptyDiskSize      = 4 << 30
 	DefaultScratchSize = 64 << 30
+	DefaultDockerSize  = 64 << 30
 	MaxScratchSize     = 1024 << 30
 )
+
+// The bounds of a vm profile's volume_limit: the total of its volumes'
+// sizes a sandbox's resize request may bring them to. It is 256G unless
+// set, at least the smallest disk, and at most what the profile's
+// volumes could total (MaxVMVolumes disks of MaxScratchSize).
+const (
+	DefaultVolumeLimit = 256 << 30
+	MaxVolumeLimit     = MaxVMVolumes * MaxScratchSize
+)
+
+// ParseVolumeLimit is a volume_limit in bytes, written as a size is
+// ("256G", "262144M"): from EmptyDiskSize to MaxVolumeLimit.
+func ParseVolumeLimit(s string) (int64, error) {
+	mib, err := parseMiB(s, "\"256G\" or \"262144M\"")
+	if err != nil {
+		return 0, err
+	}
+	n := int64(mib) << 20
+	if n < EmptyDiskSize || n > MaxVolumeLimit {
+		return 0, fmt.Errorf("%q is outside %dG to %dG, the totals a profile's volumes can have", s, EmptyDiskSize>>30, MaxVolumeLimit>>30)
+	}
+	return n, nil
+}
 
 // ParseScratchSize is a scratch disk's size in bytes, written as a
 // memory is ("64G", "65536M", or a number of MiB): at least EmptyDiskSize

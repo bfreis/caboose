@@ -2,8 +2,9 @@
 // the host can make: packages added to or removed from an apko image, a
 // section in a dockerfile image's Dockerfile, another root, an alias
 // (a host command a session may then run), a part of a root made
-// writable, or a few settings of config.toml (the session's time zone,
-// hostname and tmux, whether a missing image is built, a VM's size).
+// writable, a few settings of config.toml (the session's time zone,
+// hostname and tmux, whether a missing image is built, a VM's size), or a
+// volume of the isolation profile in use.
 // (What the sandbox keeps of its home is its own to change, in the sandbox
 // config: no proposal.) The session writes a
 // proposal, a small TOML file, into the data dir's proposals/ (mounted at
@@ -16,13 +17,14 @@
 // the terminal show other than what is there, a section that starts a
 // stage -- and what it may ask for is an allowlist: package names or a
 // Dockerfile section, and one root; or one alias, alone; or one path of a
-// root made writable, alone; or those settings, alone. Nothing else in
-// config.toml can be proposed at all.
+// root made writable, alone; or those settings, alone; or one volume,
+// alone. Nothing else in config.toml can be proposed at all.
 //
 // The host also writes what a proposal is made against into proposals/
 // current/ (WriteCurrent): the Dockerfile the next build uses, and the
 // roots config.toml has, and an apko image's packages, and the settings a
-// [settings] proposal changes, which the sandbox
+// [settings] proposal changes, and the volumes the profile in use has,
+// which the sandbox
 // cannot otherwise see. A proposal for a section names the hash of that
 // Dockerfile, and is refused when the real one has changed since. Beside a
 // proposal for packages the host writes what checking it found (CheckExt).
@@ -106,14 +108,24 @@ type Writable struct {
 	Path string `toml:"path"`
 }
 
+// Volume is a volume to add to the isolation profile in use (the sandbox
+// never names the profile): its name, its path in the sandbox as
+// config.toml writes it ("~/.cache/go-build", "/data"), and its size
+// ("40G"; "" for the default, and the only value outside vm).
+type Volume struct {
+	Name string `toml:"name"`
+	Path string `toml:"path"`
+	Size string `toml:"size"`
+}
+
 // Settings are the settings of config.toml a proposal sets, each nil when
 // it does not: [session] tz, hostname and tmux, [build] auto_build, and
-// the cpus, memory and scratch_size of the VM profile in use (the sandbox
+// the cpus, memory, scratch_size and docker_size of the VM profile in use (the sandbox
 // never names the profile). Which of them applies, and when, is the host's to say.
 type Settings struct {
-	TZ, Hostname, Memory, ScratchSize *string
-	Tmux, AutoBuild                   *bool
-	CPUs                              *int
+	TZ, Hostname, Memory, ScratchSize, DockerSize *string
+	Tmux, AutoBuild                               *bool
+	CPUs                                          *int
 }
 
 // Proposal is one proposal, checked.
@@ -139,6 +151,8 @@ type Proposal struct {
 	Writable *Writable
 	// Settings are the settings to set, or nil; always alone.
 	Settings *Settings
+	// Volume is the volume to add, or nil; always alone.
+	Volume *Volume
 }
 
 // file is a proposal as written.
@@ -152,6 +166,7 @@ type file struct {
 	Alias            map[string]aliasFile `toml:"alias"`
 	Writable         *Writable            `toml:"writable"`
 	Settings         *settingsFile        `toml:"settings"`
+	Volume           *Volume              `toml:"volume"`
 }
 
 // settingsFile is a [settings] table as written: the keys of config.toml's
@@ -169,6 +184,7 @@ type settingsFile struct {
 		CPUs        *int    `toml:"cpus"`
 		Memory      *string `toml:"memory"`
 		ScratchSize *string `toml:"scratch_size"`
+		DockerSize  *string `toml:"docker_size"`
 	} `toml:"vm"`
 }
 
@@ -194,10 +210,10 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 			if k[0] == "settings" {
-				return nil, fmt.Errorf("%s cannot be proposed: [settings] holds session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory and vm.scratch_size only; every other config.toml key is the user's to change", Printable(clip(k.String(), 100)))
+				return nil, fmt.Errorf("%s cannot be proposed: [settings] holds session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory, vm.scratch_size and vm.docker_size only; every other config.toml key is the user's to change", Printable(clip(k.String(), 100)))
 			}
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], [writable], with path, and [settings], with session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory and vm.scratch_size; what the sandbox keeps is changed in %s, with no proposal)",
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], [writable], with path, [settings], with session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory, vm.scratch_size and vm.docker_size, and [volume], with name, path and size; what the sandbox keeps is changed in %s, with no proposal)",
 			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
@@ -299,8 +315,19 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		p.Settings = st
 	}
 
-	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil && p.Writable == nil && p.Settings == nil {
-		return nil, errors.New("it proposes nothing: no [section], [packages], [roots], [alias], [writable] or [settings]")
+	if f.Volume != nil {
+		if p.Section != nil || p.Packages != nil || p.Root != nil || p.Alias != nil || p.Writable != nil || p.Settings != nil {
+			return nil, errors.New("[volume] with another change: a volume is proposed alone, so that it is confirmed on its own")
+		}
+		v, err := checkVolume(*f.Volume)
+		if err != nil {
+			return nil, err
+		}
+		p.Volume = v
+	}
+
+	if p.Section == nil && p.Packages == nil && p.Root == nil && p.Alias == nil && p.Writable == nil && p.Settings == nil && p.Volume == nil {
+		return nil, errors.New("it proposes nothing: no [section], [packages], [roots], [alias], [writable], [settings] or [volume]")
 	}
 	return p, nil
 }
@@ -374,11 +401,54 @@ func checkSettings(f settingsFile) (*Settings, error) {
 			}
 			st.ScratchSize = &v
 		}
+		if m.DockerSize != nil {
+			v := *m.DockerSize
+			if err := checkText("settings.vm.docker_size", v, false, MaxSettingText); err != nil {
+				return nil, err
+			}
+			if _, err := config.ParseScratchSize(v); err != nil {
+				return nil, fmt.Errorf("settings.vm.docker_size: %s", Printable(err.Error()))
+			}
+			st.DockerSize = &v
+		}
 	}
 	if st == (Settings{}) {
-		return nil, errors.New("[settings] proposes nothing: set session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory or vm.scratch_size")
+		return nil, errors.New("[settings] proposes nothing: set session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory, vm.scratch_size or vm.docker_size")
 	}
 	return &st, nil
+}
+
+// checkVolume checks a [volume] table: a volume's name, a path config.toml
+// takes for one (in a directory of the home a kept path may sit in, or
+// absolute outside it, never at, in or around caboose's own mounts, the
+// paths kept for caboose itself or a system directory: config.VolumePath),
+// and a size when it has one, from 4G to 1024G. Which profile it goes in,
+// whether that profile takes a size, and the roots and other volumes it
+// must not meet are the host's to judge.
+func checkVolume(v Volume) (*Volume, error) {
+	for _, t := range []struct{ field, s string }{{"volume.name", v.Name}, {"volume.path", v.Path}, {"volume.size", v.Size}} {
+		if err := checkText(t.field, t.s, false, MaxWritablePath); err != nil {
+			return nil, err
+		}
+	}
+	if v.Name == "" {
+		return nil, errors.New("[volume] needs name: the volume's, lowercase letters, digits, - and _")
+	}
+	if err := config.CheckVolumeName(v.Name); err != nil {
+		return nil, fmt.Errorf("volume.name: %s", Printable(clip(err.Error(), 300)))
+	}
+	if v.Path == "" {
+		return nil, errors.New("[volume] needs path: where the sandbox sees the volume, such as ~/.cache/go-build or /data")
+	}
+	if _, err := config.VolumePath(v.Path); err != nil {
+		return nil, fmt.Errorf("volume.path: %s", Printable(clip(err.Error(), 300)))
+	}
+	if v.Size != "" {
+		if _, err := config.ParseScratchSize(v.Size); err != nil {
+			return nil, fmt.Errorf("volume.size: %s", Printable(err.Error()))
+		}
+	}
+	return &Volume{Name: v.Name, Path: v.Path, Size: v.Size}, nil
 }
 
 // checkWritable checks a [writable] table: a path in the sandbox, at or

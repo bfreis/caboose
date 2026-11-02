@@ -81,6 +81,60 @@ type Report struct {
 	Engine map[string]string
 	// EngineVersion is dockerd's, as its --version gives it; "" if unknown.
 	EngineVersion string
+	// E2fsprogs is where the image has each of E2fsprogsParts, "" for one
+	// it lacks; nil when the probe did not say. A fact, never a
+	// requirement: see VolumeShrink.
+	E2fsprogs map[string]string
+}
+
+// E2fsprogsParts are the tools the agent shrinks a volume's filesystem with
+// while a VM runs, in the order the probe reports them.
+var E2fsprogsParts = []string{"e2fsck", "resize2fs"}
+
+// E2fsprogsMissing lists the parts of E2fsprogsParts the image lacks; nil
+// when it has both, or when the probe did not report them.
+func (r *Report) E2fsprogsMissing() []string {
+	if r.E2fsprogs == nil {
+		return nil
+	}
+	var missing []string
+	for _, p := range E2fsprogsParts {
+		if r.E2fsprogs[p] == "" {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+// VolumeShrink is the checklist's row for shrinking a volume while the VM
+// runs, which only isolation vm has: the agent checks and shrinks the
+// volume's filesystem with the image's own e2fsck and resize2fs. Never
+// Unmet -- without them `caboose volume resize` refuses a live shrink
+// before touching anything, and nothing else is affected -- and false when
+// the probe did not report them.
+func (r *Report) VolumeShrink() (Row, bool) {
+	if r.NoShell || r.E2fsprogs == nil {
+		return Row{}, false
+	}
+	const label = "volume shrink"
+	missing := r.E2fsprogsMissing()
+	if len(missing) == 0 {
+		return Row{label, "available (" + r.E2fsprogs["e2fsck"] + ", " + r.E2fsprogs["resize2fs"] + ")", Met}, true
+	}
+	return Row{label, "no " + strings.Join(missing, ", ") + ": a volume can't be shrunk while the VM runs", Noted}, true
+}
+
+// VolumeShrinkNote says what to add for shrinking a volume while the VM
+// runs; "" when the image has both tools, or the probe did not say.
+func (r *Report) VolumeShrinkNote() string {
+	missing := r.E2fsprogsMissing()
+	if r.NoShell || len(missing) == 0 {
+		return ""
+	}
+	return "under isolation vm, shrinking a volume while the VM runs needs the image's own e2fsck and resize2fs: " +
+		"for it, add " + strings.Join(missing, ", ") + " to the image (Debian and Ubuntu: e2fsprogs; Alpine and Wolfi: " +
+		"e2fsprogs and e2fsprogs-extra). Not a requirement: without them `caboose volume resize` refuses a live " +
+		"shrink before touching anything, and the sandbox runs as usual"
 }
 
 // EngineParts are what the entrypoint's dockerd needs to run containers
@@ -575,6 +629,12 @@ func (r *Report) info(key, val string) error {
 		r.Engine[part] = path
 	case "engine-version":
 		r.EngineVersion = val
+	case "e2fsprogs":
+		part, path, _ := strings.Cut(val, " ")
+		if r.E2fsprogs == nil {
+			r.E2fsprogs = map[string]string{}
+		}
+		r.E2fsprogs[part] = path
 	}
 	// Unknown keys are facts this launcher has no use for.
 	return nil

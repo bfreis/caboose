@@ -79,6 +79,10 @@ const (
 	// KindPort is a port the sandbox listens on, forwarded to the host's
 	// localhost although forward_ports does not name it.
 	KindPort Kind = "port"
+	// KindVolumeResize is a new size for a volume of the vm profile in
+	// use, made while the VM runs: it always asks, and a person allows it
+	// once, never for hours or always (AnswerEffect).
+	KindVolumeResize Kind = "volume_resize"
 )
 
 // The rules a port's decision names that its callers act on: an ask, and
@@ -149,6 +153,18 @@ type Request struct {
 	// HostListens is what it found.
 	HostChecked bool
 	HostListens bool
+
+	// Volume is the volume a resize asks for, by name, and VolumeSize the
+	// size it asks for, in bytes. The rest are what the host found:
+	// VolumeFrom is the size of the volume's disk now (0 when it has
+	// none), VolumeLive whether the running VM has the volume on a disk
+	// whose size can change while it runs, and VolumeFree the space free
+	// on this machine where the disk is (-1 when unknown).
+	Volume     string
+	VolumeSize int64
+	VolumeFrom int64
+	VolumeLive bool
+	VolumeFree int64
 }
 
 // Policy is everything Decide compares a request with: config.toml's
@@ -182,6 +198,13 @@ type Policy struct {
 	// Grants are the timed and once grants in force; what is always
 	// allowed is in the fields above.
 	Grants []Grant
+	// VMProfile is the vm profile in use, as "vm.NAME"; "" under any
+	// other isolation, where no volume has a size. Volumes are its
+	// volumes' sizes in config.toml, by name, and VolumeLimit its
+	// volume_limit, in bytes.
+	VMProfile   string
+	Volumes     map[string]int64
+	VolumeLimit int64
 }
 
 // FileID is a file's identity on this machine: its device and inode.
@@ -283,7 +306,9 @@ const (
 )
 
 // GrantKey is what a grant for r names: "alias:NAME", "egress:HOST",
-// "open_url:ORIGIN" or "port:N"; "" for a request no grant can allow.
+// "open_url:ORIGIN" or "port:N"; "" for a request no grant can allow. A
+// volume resize has one too, "volume_resize:NAME", which keeps its
+// requests apart, though no grant is ever made for one.
 func GrantKey(r Request) string {
 	var v string
 	switch r.Kind {
@@ -298,6 +323,8 @@ func GrantKey(r Request) string {
 			return ""
 		}
 		v = strconv.Itoa(r.Port)
+	case KindVolumeResize:
+		v = r.Volume
 	default:
 		return ""
 	}
@@ -323,6 +350,8 @@ func ExactKey(r Request) string {
 		return strings.Join(parts, " ")
 	case KindEgress:
 		return strconv.Itoa(r.Port)
+	case KindVolumeResize:
+		return strconv.FormatInt(r.VolumeSize, 10)
 	}
 	return ""
 }
@@ -342,6 +371,8 @@ func Decide(p Policy, r Request, now time.Time) Decision {
 		return decideCheckpoint(p)
 	case KindPort:
 		return decidePort(p, r, now)
+	case KindVolumeResize:
+		return decideVolumeResize(p, r)
 	}
 	return deny("deny:unknown-kind", "the host does not know this kind of request")
 }

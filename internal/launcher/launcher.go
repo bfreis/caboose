@@ -271,6 +271,11 @@ type App struct {
 	// launcher (findVMFiles), which only a Mac has: the tests' way to
 	// take the vm isolation's paths anywhere.
 	vmFiles func() (vmFiles, error)
+	// macOS, when set, stands in for the Mac's product version as
+	// caboose-vmm --check says it (macOSVersion): the tests'. macOSSeen
+	// is that answer, once asked.
+	macOS     func() string
+	macOSSeen *string
 	// terminal and replace, when set, stand in for asking whether caboose
 	// runs on a terminal (isTerminal) and for replacing this process with
 	// a command (exec): the tests' way to run what ends in one.

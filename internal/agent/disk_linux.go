@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -96,16 +98,22 @@ func growFS(dev, mnt string) error {
 	return nil
 }
 
-// diskOps is what mounting a writable disk does to the guest: mount it,
-// with diskMountData, and grow its filesystem to fill it. The tests stand
-// in for both.
+// diskOps is what mounting a writable disk does to the guest: find it,
+// mount it, with diskMountData, and grow its filesystem to fill it. The
+// tests stand in for all of it.
 type diskOps struct {
 	mount func(src, dst, fs string, flags uintptr, data string) error
 	grow  func(dev, mnt string) error
+	// sysBlock is where the kernel lists the guest's disks (/sys/block),
+	// and dev where their nodes are (/dev).
+	sysBlock, dev string
 }
 
 // guestDisks is the guest's own.
-var guestDisks = diskOps{mount: mount, grow: growFS}
+var guestDisks = diskOps{mount: mount, grow: growFS, sysBlock: "/sys/block", dev: "/dev"}
+
+// diskWait bounds how long a boot waits for a disk to show up.
+var diskWait = 5 * time.Second
 
 // mountScratch mounts the scratch disk dev at mnt and grows its
 // filesystem. A grow that fails fails the boot, saying what to change:
@@ -125,21 +133,68 @@ func (o diskOps) mountScratch(dev, mnt string) error {
 // mountDisks mounts each volume's ext4 disk at its target, making the
 // target, and grows its filesystem to fill the disk. A grow that fails is
 // said, and the volume used at the size it has: what it holds is what the
-// sandbox kept, which a failed boot would keep from it.
+// sandbox kept, which a failed boot would keep from it. A disk is named
+// by its serial (one of caboose-vmm's, from macOS 27) or by its device
+// (one of the framework's: dockerd's storage, and the volumes before
+// macOS 27). The VM's user is root (launcher's isolation.go), so the
+// targets made, and a new filesystem's root, stay root's.
 func (o diskOps) mountDisks(ds []agentproto.GuestDisk, logf func(format string, args ...any)) error {
 	for _, d := range ds {
-		if err := waitForFile(d.Device, 5*time.Second); err != nil {
+		dev := d.Device
+		if d.Serial != "" {
+			var err error
+			if dev, err = o.bySerial(d.Serial, diskWait); err != nil {
+				return err
+			}
+		} else if err := waitForFile(dev, diskWait); err != nil {
 			return err
 		}
 		if err := os.MkdirAll(d.Target, 0o755); err != nil {
 			return err
 		}
-		if err := o.mount(d.Device, d.Target, "ext4", 0, diskMountData); err != nil {
-			return err
+		if err := o.mount(dev, d.Target, "ext4", 0, diskMountData); err != nil {
+			return fmt.Errorf("mounting %s at %s: %w", dev, d.Target, err)
 		}
-		if err := o.grow(d.Device, d.Target); err != nil {
+		if err := o.grow(dev, d.Target); err != nil {
 			logf("the volume at %s keeps its filesystem's size: %v", d.Target, err)
 		}
 	}
 	return nil
+}
+
+// bySerial is the node of the disk whose serial is serial, waiting up to
+// wait for it to show up: caboose-vmm's disks are named in the order the
+// guest finds them, which nothing fixes, and are told apart by their
+// serial alone.
+func (o diskOps) bySerial(serial string, wait time.Duration) (string, error) {
+	for deadline := time.Now().Add(wait); ; time.Sleep(20 * time.Millisecond) {
+		names, err := o.serials(serial)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case len(names) == 1:
+			return filepath.Join(o.dev, names[0]), nil
+		case len(names) > 1:
+			return "", fmt.Errorf("the disks %s all have serial %q", strings.Join(names, ", "), serial)
+		case time.Now().After(deadline):
+			return "", fmt.Errorf("no disk with serial %q (in %s)", serial, o.sysBlock)
+		}
+	}
+}
+
+// serials are the disks of sysBlock whose serial is serial.
+func (o diskOps) serials(serial string) ([]string, error) {
+	ents, err := os.ReadDir(o.sysBlock)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range ents {
+		b, err := os.ReadFile(filepath.Join(o.sysBlock, e.Name(), "serial"))
+		if err == nil && strings.TrimSpace(string(b)) == serial {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
 }

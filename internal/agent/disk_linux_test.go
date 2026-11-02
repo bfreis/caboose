@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
 )
@@ -115,6 +116,8 @@ type diskCalls struct {
 	mounts  []string // "src dst fs data"
 	grows   []string // "dev mnt"
 	growErr map[string]error
+	// sysBlock and dev are the disks the guest has, by serial.
+	sysBlock, dev string
 }
 
 func (c *diskCalls) ops() diskOps {
@@ -127,7 +130,26 @@ func (c *diskCalls) ops() diskOps {
 			c.grows = append(c.grows, dev+" "+mnt)
 			return c.growErr[dev]
 		},
+		sysBlock: c.sysBlock, dev: c.dev,
 	}
+}
+
+// sysDisks writes a /sys/block of disks named as serials says, by node
+// name ("" for a disk with no serial file), and is that directory.
+func sysDisks(t *testing.T, serials map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, serial := range serials {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if serial != "" {
+			if err := os.WriteFile(filepath.Join(dir, name, "serial"), []byte(serial+"\n"), 0o444); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return dir
 }
 
 // The scratch disk is mounted with discard, so that what the guest
@@ -188,10 +210,83 @@ func TestMountDisks(t *testing.T) {
 	}
 }
 
-// The guest's own mounts and grows are the real ones.
+// The guest's own mounts and grows are the real ones, and its disks are
+// the kernel's.
 func TestGuestDisks(t *testing.T) {
 	if reflect.ValueOf(guestDisks.mount).Pointer() != reflect.ValueOf(mount).Pointer() ||
 		reflect.ValueOf(guestDisks.grow).Pointer() != reflect.ValueOf(growFS).Pointer() {
 		t.Error("the guest's disks are mounted or grown by something else")
+	}
+	if guestDisks.sysBlock != "/sys/block" || guestDisks.dev != "/dev" {
+		t.Errorf("the guest's disks are looked for in %s and %s", guestDisks.sysBlock, guestDisks.dev)
+	}
+}
+
+// A volume on one of caboose-vmm's disks is found by its serial, whatever
+// node the guest gave it; one on the framework's, by its device, as
+// caboose's own disk is; each target is made.
+func TestMountDisksBySerial(t *testing.T) {
+	sys := sysDisks(t, map[string]string{"vda": "", "vdc": "", "vdd": "data", "vde": "cache"})
+	dir := t.TempDir()
+	for _, n := range []string{"vdc", "vdf"} {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ds := []agentproto.GuestDisk{
+		{Device: filepath.Join(dir, "vdc"), Target: filepath.Join(dir, "docker", "lib")},
+		{Device: filepath.Join(dir, "vdf"), Target: filepath.Join(dir, "home", "old")},
+		{Serial: "cache", Target: filepath.Join(dir, "home", "c", "cache")},
+		{Serial: "data", Target: filepath.Join(dir, "data")},
+	}
+	c := &diskCalls{sysBlock: sys, dev: "/dev"}
+	if err := c.ops().mountDisks(ds, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ds[0].Device + " " + ds[0].Target + " ext4 discard", ds[1].Device + " " + ds[1].Target + " ext4 discard",
+		"/dev/vde " + ds[2].Target + " ext4 discard", "/dev/vdd " + ds[3].Target + " ext4 discard"}
+	if !reflect.DeepEqual(c.mounts, want) {
+		t.Errorf("mounts %q, want %q", c.mounts, want)
+	}
+	for _, d := range ds {
+		if fi, err := os.Stat(d.Target); err != nil || !fi.IsDir() {
+			t.Errorf("no target made at %s: %v", d.Target, err)
+		}
+	}
+}
+
+// A serial no disk has fails the boot, once the wait is over, and so does
+// one two disks have.
+func TestMountDisksSerialMissing(t *testing.T) {
+	defer func(w time.Duration) { diskWait = w }(diskWait)
+	diskWait = 50 * time.Millisecond
+	c := &diskCalls{sysBlock: sysDisks(t, map[string]string{"vdc": "data", "vdd": "data"}), dev: "/dev"}
+	err := c.ops().mountDisks([]agentproto.GuestDisk{{Serial: "cache", Target: filepath.Join(t.TempDir(), "c")}}, t.Logf)
+	if err == nil || !strings.Contains(err.Error(), `no disk with serial "cache"`) {
+		t.Errorf("a missing disk: %v", err)
+	}
+	err = c.ops().mountDisks([]agentproto.GuestDisk{{Serial: "data", Target: filepath.Join(t.TempDir(), "d")}}, t.Logf)
+	if err == nil || !strings.Contains(err.Error(), `all have serial "data"`) {
+		t.Errorf("a serial twice: %v", err)
+	}
+	if len(c.mounts) != 0 {
+		t.Errorf("mounted %q", c.mounts)
+	}
+}
+
+// A disk that shows up late is waited for.
+func TestMountDisksSerialLate(t *testing.T) {
+	sys := t.TempDir()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = os.MkdirAll(filepath.Join(sys, "vdc"), 0o755)
+		_ = os.WriteFile(filepath.Join(sys, "vdc", "serial"), []byte("late"), 0o444)
+	}()
+	c := &diskCalls{sysBlock: sys, dev: "/dev"}
+	if err := c.ops().mountDisks([]agentproto.GuestDisk{{Serial: "late", Target: filepath.Join(t.TempDir(), "l")}}, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.mounts) != 1 || !strings.HasPrefix(c.mounts[0], "/dev/vdc ") {
+		t.Errorf("mounts %q", c.mounts)
 	}
 }

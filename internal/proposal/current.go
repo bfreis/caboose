@@ -38,13 +38,27 @@ type State struct {
 	// Settings are the settings a [settings] proposal changes, as
 	// config.toml has them.
 	Settings StateSettings
+	// VolumeProfile is the isolation profile in use, "<kind>.<name>",
+	// which a [volume] proposal adds to; "" when config.toml defines none
+	// in use, and then none can be proposed. Volumes are its volumes, by
+	// name, and VolumeLimit its volume_limit (vm only, "" otherwise).
+	VolumeProfile string
+	VolumeLimit   string
+	Volumes       map[string]StateVolume
+}
+
+// StateVolume is one volume of the profile in use in state.toml: its path
+// in the sandbox, and under vm its size ("" otherwise).
+type StateVolume struct {
+	Path string `toml:"path"`
+	Size string `toml:"size,omitempty"`
 }
 
 // StateSettings are the settings a [settings] proposal sets, as the host
 // has them now: Isolation is the kind in use and VMProfile the [vm.NAME]
-// profile cpus, memory and scratch_size are set in ("" when config.toml
-// defines none, and then they cannot be proposed). CPUs is 0, Memory and
-// ScratchSize "" when not set.
+// profile cpus, memory, scratch_size and docker_size are set in ("" when
+// config.toml defines none, and then they cannot be proposed). CPUs is 0,
+// Memory, ScratchSize and DockerSize "" when not set.
 type StateSettings struct {
 	Isolation   string `toml:"isolation"`
 	VMProfile   string `toml:"vm_profile"`
@@ -55,6 +69,7 @@ type StateSettings struct {
 	CPUs        int    `toml:"cpus"`
 	Memory      string `toml:"memory"`
 	ScratchSize string `toml:"scratch_size"`
+	DockerSize  string `toml:"docker_size"`
 }
 
 // ApkoState is what an apko image profile is made of.
@@ -83,14 +98,17 @@ type StateRoot struct {
 
 // stateFile is State as state.toml has it.
 type stateFile struct {
-	Image            string               `toml:"image"`
-	Packages         *[]string            `toml:"packages,omitempty"`
-	Defaults         *bool                `toml:"defaults,omitempty"`
-	Installed        *[]string            `toml:"installed,omitempty"`
-	Dockerfile       string               `toml:"dockerfile,omitempty"`
-	DockerfileSHA256 string               `toml:"dockerfile_sha256,omitempty"`
-	Roots            map[string]StateRoot `toml:"roots,omitempty"`
-	Settings         StateSettings        `toml:"settings"`
+	Image            string                 `toml:"image"`
+	Packages         *[]string              `toml:"packages,omitempty"`
+	Defaults         *bool                  `toml:"defaults,omitempty"`
+	Installed        *[]string              `toml:"installed,omitempty"`
+	Dockerfile       string                 `toml:"dockerfile,omitempty"`
+	DockerfileSHA256 string                 `toml:"dockerfile_sha256,omitempty"`
+	VolumeProfile    string                 `toml:"volume_profile"`
+	VolumeLimit      string                 `toml:"volume_limit,omitempty"`
+	Roots            map[string]StateRoot   `toml:"roots,omitempty"`
+	Settings         StateSettings          `toml:"settings"`
+	Volumes          map[string]StateVolume `toml:"volumes,omitempty"`
 }
 
 const stateHeader = `# Written by caboose on the host, at every launch and after 'caboose apply':
@@ -124,10 +142,17 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 #
 # settings: the values a [settings] proposal changes, as config.toml has
 # them: tz and hostname ("" for this machine's zone and the default
-# hostname), tmux, auto_build, and the cpus, memory and scratch_size of the
-# VM profile in use (0 and "" while unset). isolation is the kind in use, and
-# vm_profile the [vm.NAME] cpus, memory and scratch_size are set in: they apply under vm only, and
+# hostname), tmux, auto_build, and the cpus, memory, scratch_size and
+# docker_size of the VM profile in use (0 and "" while unset). isolation is the kind in use, and
+# vm_profile the [vm.NAME] cpus, memory, scratch_size and docker_size are set in: they apply under vm only, and
 # only when config.toml defines that profile.
+#
+# volumes: the volumes of the isolation profile in use, volume_profile
+# ("" when config.toml defines none in use: then no volume can be
+# proposed), each with its path in the sandbox and, under vm, its size. A
+# [volume] proposal adds one; under vm, caboose-agent request volume-resize
+# asks for a new size of one, which a person allows, and the total of the
+# sizes may not pass volume_limit that way.
 
 `
 
@@ -135,7 +160,8 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 // the Dockerfile when there is one (a stale one removed when not). Every
 // write goes through nofollow: the container can write the directory too.
 func WriteCurrent(dataDir string, s State) error {
-	sf := stateFile{Image: s.Image, Dockerfile: s.Source, Roots: s.Roots, Settings: s.Settings}
+	sf := stateFile{Image: s.Image, Dockerfile: s.Source, Roots: s.Roots, Settings: s.Settings,
+		VolumeProfile: s.VolumeProfile, VolumeLimit: s.VolumeLimit, Volumes: s.Volumes}
 	if a := s.Apko; a != nil {
 		pkgs := append([]string{}, a.Packages...)
 		inst := append([]string{}, a.Installed...)

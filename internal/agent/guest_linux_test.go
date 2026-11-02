@@ -295,17 +295,24 @@ func TestLateMountTable(t *testing.T) {
 // A boot spec's disks are after the root and scratch disk, at clean
 // absolute targets.
 func TestCheckDisks(t *testing.T) {
-	ok := []agentproto.GuestDisk{{Device: "/dev/vdc", Target: "/var/lib/docker"}, {Device: "/dev/vdz", Target: "/data"}}
+	ok := []agentproto.GuestDisk{{Device: "/dev/vdc", Target: "/var/lib/docker"}, {Device: "/dev/vdz", Target: "/data"},
+		{Serial: "cache", Target: "/home/agent/.cache"}, {Serial: "a2345678901234567890", Target: "/v"}}
 	if err := checkDisks(ok); err != nil {
 		t.Fatal(err)
 	}
 	for _, d := range []agentproto.GuestDisk{
 		{Device: "/dev/vda", Target: "/x"}, {Device: "/dev/vdb", Target: "/x"}, {Device: "/dev/sda", Target: "/x"},
 		{Device: "/dev/vdc", Target: "x"}, {Device: "/dev/vdc", Target: "/"}, {Device: "/dev/vdc", Target: "/a/../b"},
+		{Target: "/x"}, {Device: "/dev/vdc", Serial: "cache", Target: "/x"},
+		{Serial: "a23456789012345678901", Target: "/x"}, {Serial: "Cache", Target: "/x"}, {Serial: "../x", Target: "/x"},
+		{Serial: "cache", Target: "x"},
 	} {
 		if checkDisks([]agentproto.GuestDisk{d}) == nil {
 			t.Errorf("%+v accepted", d)
 		}
+	}
+	if checkDisks([]agentproto.GuestDisk{{Serial: "cache", Target: "/a"}, {Serial: "cache", Target: "/b"}}) == nil {
+		t.Error("a serial twice accepted")
 	}
 }
 

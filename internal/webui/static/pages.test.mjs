@@ -210,6 +210,17 @@ test("Deny sends no scope; once and hours send theirs, the hours clamped", async
   assert.deepEqual(s.daemon.calls("answer")[1].body, { env: "default", id: 2, verdict: "allow", scope: "hours", hours: 24 });
 });
 
+test("an allowed resize that did not start says why in the alert", async () => {
+  const s = setup();
+  s.daemon.handlers.answer = ({ id }) => ({ body: { result: { request: { ...view(id), state: "allowed" }, recorded: true, resize_error: "a restart job already runs" } } });
+  await s.start();
+  s.button("Allow request 2 for the hours chosen", s.card(2)).click();
+  await s.run(0);
+  s.buttons(s.dialog()).find((b) => texts(b).join("").startsWith("Allow")).click();
+  await s.run(0);
+  assert.equal(texts(s.doc.getElementById(IDS.alert)).join(""), "Request 2 is allowed, but its resize did not start: a restart job already runs");
+});
+
 test("always: the dialog fetches the request afresh and answers with that offer's hash, never the polled one", async () => {
   const s = setup();
   s.world.hash = HASH_POLLED;

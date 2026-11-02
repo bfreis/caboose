@@ -393,10 +393,14 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
   request KIND [--alias NAME] [--arg KEY=VALUE]... [--host H --port P] [--url U]
           [--context TEXT] [--option TEXT]... [--recommend TEXT]
           [--meanwhile TEXT] [--session ID] [--json]
+  request volume-resize NAME SIZE [--context TEXT] ... [--json]
                       ask the host ahead of time for something the sandbox
                       needs: KIND is alias (run NAME), egress (connect to H:P)
-                      open_url (open U in the browser) or port (forward P of the
-                      sandbox to the host's localhost). It never waits for
+                      open_url (open U in the browser), port (forward P of the
+                      sandbox to the host's localhost) or volume-resize (make
+                      volume NAME SIZE, such as 128G, while the VM runs; a
+                      person approves each one, within volume_limit in
+                      config.toml on the host). It never waits for
                       a person: exit 0 when it is allowed, 75 when it waits
                       (prints pending #N), 77 when denied. The session
                       defaults to $CLAUDE_CODE_SESSION_ID

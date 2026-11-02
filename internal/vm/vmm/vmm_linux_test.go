@@ -157,7 +157,9 @@ func (h *host) StartVMM(dir vm.Dir) error {
 	return nil
 }
 
-func (h *host) Volume(name string) (string, error) { return "/volumes/" + name + ".img", nil }
+func (h *host) Volume(name string) (backend.VMDisk, error) {
+	return backend.VMDisk{Path: "/volumes/" + name + ".img"}, nil
+}
 
 func newVM(t *testing.T) (*backend.VM, *host) {
 	t.Helper()

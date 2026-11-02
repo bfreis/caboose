@@ -24,7 +24,8 @@
 #     warn NAME DETAIL        worth knowing, never a failure (reachability)
 #     info KEY VALUE...       a fact: libc, arch, platform, uid/gid holders
 #                             (and the uid holder's home and shell), Docker's
-#                             engine; facts are never a failure
+#                             engine, e2fsck and resize2fs; facts are never
+#                             a failure
 #     end                     last line, so truncated output is detectable
 #
 # CABOOSE_PROBE_ROOT, for tests only, prefixes every file the probe looks at
@@ -432,6 +433,34 @@ if _p=$(lookpath dockerd); then
         *) echo "info engine-version $_v" ;;
     esac
 fi
+
+# --- e2fsprogs: a fact, never a requirement --------------------------------
+#
+# Under isolation vm, shrinking a volume while the VM runs checks and shrinks
+# its ext4 filesystem with the image's own e2fsck and resize2fs; without them
+# a volume can still grow, and caboose volume resize refuses a shrink before
+# touching anything. Reported, not
+# judged: one "info e2fsprogs NAME [PATH]" line each, no PATH when absent.
+# The agent looks them up in /usr/local/sbin:/usr/local/bin:/usr/sbin:
+# /usr/bin:/sbin:/bin, and an image's PATH may leave some of those out, so
+# when PATH misses they are also looked for in those directories, below $R.
+for _t in e2fsck resize2fs; do
+    _p=
+    if ! _p=$(lookpath "$_t"); then
+        _p=
+        for _d in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+            if [ -f "$R$_d/$_t" ] && [ -x "$R$_d/$_t" ]; then
+                _p=$_d/$_t
+                break
+            fi
+        done
+    fi
+    if [ -n "$_p" ]; then
+        echo "info e2fsprogs $_t $_p"
+    else
+        echo "info e2fsprogs $_t"
+    fi
+done
 
 echo "end"
 exit 0

@@ -5,7 +5,7 @@
 name = "required"
 title = "what the sandbox requires"
 required = true
-packages = ["wolfi-baselayout", "ca-certificates-bundle", "busybox", "bash", "curl", "git", "tmux", "ncurses", "tzdata"]
+packages = ["wolfi-baselayout", "ca-certificates-bundle", "busybox", "bash", "curl", "git", "tmux", "e2fsprogs", "e2fsprogs-extra", "ncurses", "tzdata"]
 
 [[group]]
 name = "core"

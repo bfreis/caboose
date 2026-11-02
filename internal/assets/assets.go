@@ -145,6 +145,11 @@ const (
 	// does not name, is read as wholly writable, failing closed, and is
 	// drift that 'caboose restart' fixes.
 	LabelWritable = "dev.bfreis.caboose.writable"
+	// LabelVolumes is on a VM: the volumes it was created with, a JSON
+	// object of each one's name and the path it is mounted at, caboose's
+	// own among them. Set on every VM; a VM without it is drift that
+	// 'caboose restart' fixes.
+	LabelVolumes = "dev.bfreis.caboose.volumes"
 )
 
 // Compat is the version of what the launcher expects of a container it did

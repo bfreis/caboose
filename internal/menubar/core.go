@@ -1026,6 +1026,8 @@ func (c *Core) sendAnswer(kind string, p daemonproto.AnswerParams, report bool) 
 				c.addInfo(fmt.Sprintf("#%d: %s", p.ID, err.Error()))
 			case r.OpenError != "":
 				c.addInfo("opening the URL failed: " + r.OpenError)
+			case r.ResizeError != "":
+				c.addInfo("the resize did not start: " + r.ResizeError)
 			}
 			delete(c.fetched, p.Env) // list it again at the next status
 			c.render()

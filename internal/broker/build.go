@@ -48,6 +48,13 @@ func (b *Broker) Reload() error {
 			p.ForwardPorts = fp
 		}
 	}
+	if c.Isolation == config.KindVM && c.Profile != "" {
+		p.VMProfile, p.VolumeLimit = c.Profile, c.VMVolumeLimit
+		p.Volumes = map[string]int64{}
+		for _, v := range c.Volumes {
+			p.Volumes[v.Name] = v.Size
+		}
+	}
 	p.Writable, p.WritableIDs = b.writable()
 	for _, a := range c.Aliases {
 		params := map[string][]string{}

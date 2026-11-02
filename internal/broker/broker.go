@@ -182,6 +182,33 @@ type Opener interface {
 	OpenURL(url string) error
 }
 
+// Resizer resizes a volume of the sandbox's for a volume resize a person
+// allowed. ResizeVolume must not block: it starts the resize (the daemon
+// runs it as a job of the environment's) and returns; once the resize has
+// ended, the job records what came of it with RecordOutcome. An error is
+// a resize that did not start.
+type Resizer interface {
+	ResizeVolume(r Resize) error
+}
+
+// Resize is the resize a person allowed: request ID's volume to Size, in
+// bytes. From, Configured and Profile are what the request was filed
+// against (reqRec's VolumeFrom, Configured and Profile): a resize that
+// finds the volume changed since refuses, with VolumeChanged.
+type Resize struct {
+	ID         uint64
+	Volume     string
+	Size       int64
+	From       int64
+	Configured int64
+	Profile    string
+}
+
+// VolumeChanged is why a volume resize filed against one size, or one vm
+// profile, is not made once either has changed: the size the person
+// approved from is no longer the volume's.
+const VolumeChanged = "the volume changed since this was asked: file it again"
+
 // Dialog asks a person about a URL request as soon as it is filed. Ask
 // must not block: whoever implements it shows the dialog later, and
 // answers with Broker.Answer, By "dialog" (or the menu-bar app does, By
@@ -214,6 +241,9 @@ type Options struct {
 	Opener Opener
 	// Dialog is told of each new URL request; nil leaves it pending.
 	Dialog Dialog
+	// Resizer runs the volume resizes a person allows; nil refuses
+	// allowing one.
+	Resizer Resizer
 	// Now is the clock; nil for time.Now.
 	Now func() time.Time
 	// Log is for what the host's operator should see (unusable files,

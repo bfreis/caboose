@@ -60,7 +60,7 @@ func info(q *reqRec) RequestInfo {
 	ri := RequestInfo{
 		ID: q.ID, Kind: policy.Kind(shown(string(q.Kind), 32)), Key: shown(q.Key, 600), Effect: shown(q.Effect, 4000),
 		State: q.State, Scope: q.Scope, Hours: q.Hours, Created: q.Created, Expires: q.Expires,
-		DecidedAt: q.DecidedAt, DecidedBy: q.DecidedBy, Reason: shown(q.Reason, 4000), Seq: q.Seq,
+		DecidedAt: q.DecidedAt, DecidedBy: q.DecidedBy, Reason: shown(reasonOf(q), 4000), Seq: q.Seq,
 		Attempts: q.Attempts, Session: shown(q.Session, MaxSession),
 	}
 	if a := q.Ask; a != nil {
@@ -74,6 +74,15 @@ func info(q *reqRec) RequestInfo {
 		ri.Ask = t
 	}
 	return ri
+}
+
+// reasonOf is q's reason as it is shown: with what came of a volume
+// resize once that is known.
+func reasonOf(q *reqRec) string {
+	if q.Outcome == "" {
+		return q.Reason
+	}
+	return q.Reason + "; then: " + q.Outcome
 }
 
 // Query says which requests List gives.

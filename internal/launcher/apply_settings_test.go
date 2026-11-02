@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,8 +32,9 @@ func vmSettingsEnv(t *testing.T) *setupEnv {
 	return e
 }
 
-// A scratch_size past the space free where the disk would be is written,
-// with a warning: the disk is a sparse file, so it may never take it.
+// A scratch_size or docker_size past the space free where the disk would
+// be is written, with a warning: the disk is a sparse file, so it may
+// never take it.
 func TestSettingsScratchSpace(t *testing.T) {
 	e := vmSettingsEnv(t)
 	vmFreeSpace = func(string) (int64, error) { return 100 << 30, nil }
@@ -45,6 +47,17 @@ func TestSettingsScratchSpace(t *testing.T) {
 	}
 	if _, _, w := e.a.planSettings(proposal.Settings{ScratchSize: ptr("64G")}); len(w) > 0 {
 		t.Errorf("64G of 100G free: %q", w)
+	}
+	// docker_size too.
+	pl, refusals, w = e.a.planSettings(proposal.Settings{DockerSize: ptr("128G")})
+	if pl == nil || len(refusals) > 0 || pl.edit.Set["vm.default.docker_size"] != "128G" {
+		t.Fatalf("%+v %v", pl, refusals)
+	}
+	if ws := strings.Join(w, "\n"); !strings.Contains(ws, "docker_size is 128G, and the volume of the data dir") || !strings.Contains(ws, "dockerd's disk takes only what the VM writes") {
+		t.Errorf("docker_size's warnings: %q", ws)
+	}
+	if _, _, w := e.a.planSettings(proposal.Settings{DockerSize: ptr("64G")}); len(w) > 0 {
+		t.Errorf("docker_size 64G of 100G free: %q", w)
 	}
 }
 
@@ -119,6 +132,10 @@ func TestSettingsVMKeys(t *testing.T) {
 	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "this environment's isolation is container") {
 		t.Errorf("under container, scratch_size: %q", r)
 	}
+	_, refusals, _ = e.a.planSettings(proposal.Settings{DockerSize: ptr("8G")})
+	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "vm.docker_size") || !strings.Contains(r, "this environment's isolation is container") {
+		t.Errorf("under container, docker_size: %q", r)
+	}
 
 	// Under vm with a profile: written into it.
 	e = vmSettingsEnv(t)
@@ -151,6 +168,24 @@ func TestSettingsVMKeys(t *testing.T) {
 		t.Errorf("the same size in other words: %+v %v %v", pl, refusals, w)
 	}
 	e.a.Cfg.VMScratchSize = ""
+
+	// The docker disk's size goes into the profile too, and says a disk is
+	// never shrunk.
+	pl, refusals, _ = e.a.planSettings(proposal.Settings{DockerSize: ptr("128G")})
+	if len(refusals) > 0 || pl == nil || pl.edit.Set["vm.default.docker_size"] != "128G" || !pl.restart || !strings.Contains(pl.diff, `docker_size = "128G"`) {
+		t.Errorf("docker_size: %v %+v", refusals, pl)
+	} else if !strings.Contains(fmt.Sprint(pl.keys), "never shrunk") {
+		t.Errorf("docker_size's when: %+v", pl.keys)
+	}
+	_, refusals, _ = e.a.planSettings(proposal.Settings{DockerSize: ptr("2G")})
+	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "vm.docker_size") || !strings.Contains(r, "outside 4G to 1024G") {
+		t.Errorf("a docker_size under the floor: %q", r)
+	}
+	e.a.Cfg.VMDockerSize = "65536M"
+	if pl, refusals, w := e.a.planSettings(proposal.Settings{DockerSize: ptr("64G")}); pl != nil || len(refusals) > 0 || len(w) != 1 {
+		t.Errorf("the same docker size in other words: %+v %v %v", pl, refusals, w)
+	}
+	e.a.Cfg.VMDockerSize = ""
 
 	// Past this machine.
 	_, refusals, _ = e.a.planSettings(proposal.Settings{CPUs: ptr(9)})

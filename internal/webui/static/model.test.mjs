@@ -240,6 +240,11 @@ test("a writable part is a part the page shows, applies and labels", () => {
   assert.deepEqual(p.confirm, { kind: "type_name", name: "dev" });
   assert.match(M.partLabel("writable"), /may write/);
   assert.equal(M.partDiffLabel("writable"), "The change to config.toml");
+  const v = { file: "v.toml", title: "t", reason: "r", parts: [{ kind: "volume", summary: "add volume cache to vm.default", diff: ["+[vm.default.volume.cache]"] }], refusals: [], warnings: [], web_apply: true, confirm: { kind: "none" }, hash: H };
+  const pv = M.asProposal(v);
+  assert.deepEqual(pv.parts.map((x) => x.kind), ["volume"]);
+  assert.equal(pv.web_apply, true);
+  assert.match(M.partLabel("volume"), /volume/);
 });
 
 test("a settings part is a part the page shows, applies and labels", () => {

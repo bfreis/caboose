@@ -353,6 +353,8 @@ func jobLine(j *daemonproto.JobInfo) string {
 	switch j.Kind {
 	case daemonproto.JobRestart:
 		verb, past = "restarting", "restarted"
+	case daemonproto.JobVolumeResize:
+		verb, past = "resizing a volume", "resized a volume"
 	case daemonproto.JobApply:
 		// The proposal's file name is the sandbox's: never in a title.
 		verb, past = "applying a proposal", "applied a proposal: its image is used from the next restart"

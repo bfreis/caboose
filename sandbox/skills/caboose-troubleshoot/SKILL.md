@@ -1,6 +1,6 @@
 ---
 name: caboose-troubleshoot
-description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac, or caboose's Claude Code mod or its request tools (caboose_request, caboose-agent request, exit 75 or 77) not working. Explains causes per isolation and what the user runs on the host.
+description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac, a vm volume full or empty after a resize, or caboose's Claude Code mod or its request tools (caboose_request, caboose-agent request, exit 75 or 77) not working. Explains causes per isolation and what the user runs on the host.
 ---
 
 # When the sandbox misbehaves
@@ -175,6 +175,19 @@ fix.
 @@END@@
 
 @@IF isolation=vm@@
+
+## A volume full, or empty after a resize (vm)
+
+A profile's volumes (`[vm.NAME.volume.VOL]` in config.toml) are disks of their
+own, mounted at their paths (`df -h PATH` shows one). A full one grows with
+`caboose@@CABOOSE_ENV_FLAG@@ volume resize VOL SIZE` on the host, at once while the VM
+runs on macOS 27 or later, else at the next start. A shrink unmounts the
+volume for a moment and is refused while any process here holds a file or
+directory on it: it names them, and they are this sandbox's to stop. If a
+resize failed and the path looks empty, the volume is not mounted (no line
+for it in `/proc/mounts`): writes there land on the scratch disk and are
+lost at the next start; the host's error said what to do, and
+`caboose@@CABOOSE_ENV_FLAG@@ restart` mounts it again.
 
 ## Slow git, hung starts, "Too many open files in system" (vm)
 

@@ -59,6 +59,9 @@ type AnswerResult struct {
 	// OpenError is why the URL an allowed URL request named could not be
 	// opened, "" when it was (or there was none to open).
 	OpenError string
+	// ResizeError is why an allowed volume resize did not start, "" when
+	// it did (or there was none).
+	ResizeError string
 }
 
 // DiffHash is the hash an "always" answer confirms a diff by.
@@ -164,7 +167,8 @@ func (b *Broker) Answer(id uint64, rp Reply) (AnswerResult, error) {
 		allowed := privateAddrsOf(q)
 		switch rp.Scope {
 		case ScopeOnce:
-			if r.Kind != policy.KindOpenURL {
+			// A URL is opened, a volume resized, by the answer itself.
+			if r.Kind != policy.KindOpenURL && r.Kind != policy.KindVolumeResize {
 				// For the request shown alone: the alias with these
 				// arguments, the host on this port (policy.ExactKey).
 				grant = &grantRec{Kind: q.Kind, Key: q.Key, Once: true, Exact: policy.ExactKey(r), Addrs: allowed, Created: now, Expires: now.Add(OnceTTL), Request: q.ID}
@@ -254,6 +258,9 @@ func (b *Broker) Answer(id uint64, rp Reply) (AnswerResult, error) {
 	b.dlog.answer(now, &answered, res.Grant)
 	for _, o := range also {
 		b.dlog.answer(now, &o, res.Grant)
+	}
+	if answered.State == StateAllowed && answered.Kind == policy.KindVolumeResize {
+		b.startResize(&answered, &res)
 	}
 	if answered.State == StateAllowed && answered.Kind == policy.KindOpenURL {
 		// The requests decided with it asked to open URLs too: open each

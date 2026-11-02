@@ -118,6 +118,30 @@ func TestEditFile(t *testing.T) {
 			"",
 			Edit{Set: map[string]any{"apko.default.packages": []string{}}},
 			"[apko.default]\npackages = []\n"},
+		{"adds a table of a table after that one's tables, ahead of the comments leading into the next header",
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume.x]\npath = \"/x\"\n\n# the link\n[link]\nhost_exec = true\n",
+			Edit{Tables: []string{"vm.a.volume.y"}, Set: map[string]any{"vm.a.volume.y.path": "/y"}},
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume.x]\npath = \"/x\"\n\n[vm.a.volume.y]\npath = \"/y\"\n\n# the link\n[link]\nhost_exec = true\n"},
+		{"a table added there takes no commented key, and leaves one right under a table's settings with that table",
+			"[vm.a]\ncpus = 2\n# path = \"/old\"\n[link]\n",
+			Edit{Tables: []string{"vm.a.volume.y"}, Set: map[string]any{"vm.a.volume.y.path": "/y"}},
+			"[vm.a]\ncpus = 2\n# path = \"/old\"\n\n[vm.a.volume.y]\npath = \"/y\"\n\n[link]\n"},
+		{"a table whose table the file lacks goes at the end",
+			"[vm.b]\ncpus = 2\n\n[link]\nhost_exec = true\n",
+			Edit{Tables: []string{"vm.a.volume.y"}},
+			"[vm.b]\ncpus = 2\n\n[link]\nhost_exec = true\n\n[vm.a.volume.y]\n"},
+		{"removes a table by commenting it out, its neighbours and comments kept",
+			"[vm.a]\ncpus = 2\n\n# cache\n[vm.a.volume.x]\npath = \"/x\" # mine\n# a note\nsize = \"8G\"\n\n[vm.a.volume.y]\npath = \"/y\"\n",
+			Edit{Remove: []string{"vm.a.volume.x"}},
+			"[vm.a]\ncpus = 2\n\n# cache\n#[vm.a.volume.x]\n#path = \"/x\" # mine\n# a note\n#size = \"8G\"\n\n[vm.a.volume.y]\npath = \"/y\"\n"},
+		{"removing a table the file lacks changes nothing",
+			"[vm.a]\ncpus = 2\n#[vm.a.volume.x]\n",
+			Edit{Remove: []string{"vm.a.volume.x"}},
+			"[vm.a]\ncpus = 2\n#[vm.a.volume.x]\n"},
+		{"a removed table made again is uncommented where it was",
+			"[vm.a]\ncpus = 2\n\n#[vm.a.volume.x]\n#path = \"/x\"\n#size = \"8G\"\n\n[link]\n",
+			Edit{Tables: []string{"vm.a.volume.x"}, Set: map[string]any{"vm.a.volume.x.path": "/z", "vm.a.volume.x.size": "9G"}},
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume.x]\npath = \"/z\"\nsize = \"9G\"\n\n[link]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := string(EditFile([]byte(tc.in), tc.e))
@@ -125,6 +149,99 @@ func TestEditFile(t *testing.T) {
 				t.Errorf("got\n%s\nwant\n%s", got, tc.want)
 			}
 		})
+	}
+}
+
+// A header names its table as TOML reads it, a line inside a multi-line
+// value is no header, and a table given by dotted keys is removed by
+// commenting out those keys: each result as EditFile makes it, and read
+// back by CheckEdit.
+func TestEditTomlForms(t *testing.T) {
+	rm := Edit{Remove: []string{"vm.a.volume.x"}}
+	mk := Edit{Tables: []string{"vm.a.volume.x"}, Set: map[string]any{"vm.a.volume.x.path": "/z"}}
+	for _, tc := range []struct {
+		name, in string
+		e        Edit
+		want     string
+	}{
+		{"removes a table whose header quotes a part",
+			"[vm.a]\ncpus = 2\n\n[vm.\"a\".volume.x]\npath = \"/x\"\n\n[link]\n", rm,
+			"[vm.a]\ncpus = 2\n\n#[vm.\"a\".volume.x]\n#path = \"/x\"\n\n[link]\n"},
+		{"removes a table whose header is spaced and commented",
+			"[vm.a]\ncpus = 2\n\n[ vm.a . volume.x ] # mine\npath = \"/x\"\n\n[link]\n", rm,
+			"[vm.a]\ncpus = 2\n\n#[ vm.a . volume.x ] # mine\n#path = \"/x\"\n\n[link]\n"},
+		{"removes a table given by dotted keys of its profile",
+			"[vm.a]\ncpus = 2\nvolume.x.path = \"/x\"\nvolume . \"x\" . size = \"8G\"\nvolume.xy.path = \"/xy\"\n\n[link]\n", rm,
+			"[vm.a]\ncpus = 2\n#volume.x.path = \"/x\"\n#volume . \"x\" . size = \"8G\"\nvolume.xy.path = \"/xy\"\n\n[link]\n"},
+		{"removes a table given as an inline table",
+			"[vm.a]\ncpus = 2\nvolume.x = { path = \"/x\" }\n", rm,
+			"[vm.a]\ncpus = 2\n#volume.x = { path = \"/x\" }\n"},
+		{"removes a table given by dotted keys of [PROFILE.volume]",
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume]\nx.path = \"/x\"\n", rm,
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume]\n#x.path = \"/x\"\n"},
+		{"a header-looking line inside a multi-line string is the table's",
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume.x]\npath = '''\n[link]\n'''\nsize = \"8G\"\n\n[link]\nhost_exec = true\n", rm,
+			"[vm.a]\ncpus = 2\n\n#[vm.a.volume.x]\n#path = '''\n#[link]\n#'''\n#size = \"8G\"\n\n[link]\nhost_exec = true\n"},
+		{"made again after a removal with a trailing comment, it is uncommented as it was",
+			"[vm.a]\ncpus = 2\n\n#[vm.a.volume.x] # mine\n#path = \"/x\"\n\n[link]\n", mk,
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume.x] # mine\npath = \"/z\"\n\n[link]\n"},
+		{"made again after the removal of a spaced header, it is uncommented as it was",
+			"[vm.a]\ncpus = 2\n\n#[ vm.a.volume.x ]\n#path = \"/x\"\n\n[link]\n", mk,
+			"[vm.a]\ncpus = 2\n\n[ vm.a.volume.x ]\npath = \"/z\"\n\n[link]\n"},
+		{"made again from a header a person commented out, it is uncommented",
+			"[vm.a]\ncpus = 2\n\n#  [vm.a.volume.x]  # old\n# path = \"/x\"\n\n[link]\n", mk,
+			"[vm.a]\ncpus = 2\n\n[vm.a.volume.x]  # old\npath = \"/z\"\n\n[link]\n"},
+		{"a comment right under the last table's settings stays with it",
+			"[vm.a]\n\n[vm.a.volume.w]\npath = \"/w\"\n# size = \"8G\"\n[link]\n", mk,
+			"[vm.a]\n\n[vm.a.volume.w]\npath = \"/w\"\n# size = \"8G\"\n\n[vm.a.volume.x]\npath = \"/z\"\n\n[link]\n"},
+		{"a comment past a blank line leads into the next header",
+			"[vm.a]\n\n[vm.a.volume.w]\npath = \"/w\"\n# size = \"8G\"\n\n# the link\n[link]\n", mk,
+			"[vm.a]\n\n[vm.a.volume.w]\npath = \"/w\"\n# size = \"8G\"\n\n[vm.a.volume.x]\npath = \"/z\"\n\n# the link\n[link]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EditFile([]byte(tc.in), tc.e)
+			if string(got) != tc.want {
+				t.Errorf("got\n%s\nwant\n%s", got, tc.want)
+			}
+			if err := CheckEdit("config.toml", []byte(tc.in), got, tc.e); err != nil {
+				t.Errorf("CheckEdit: %v", err)
+			}
+		})
+	}
+}
+
+// A line of a multi-line array that starts as a header does is no header:
+// the table above it goes on past it.
+func TestEditNestedArrayLine(t *testing.T) {
+	in := "[a]\nx = 1\nv = [\n[\"x\"],\n]\ny = 2\n"
+	got := string(EditFile([]byte(in), Edit{Set: map[string]any{"a.y": 3}}))
+	if want := "[a]\nx = 1\nv = [\n[\"x\"],\n]\ny = 3\n"; got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A key's line inside a multi-line string is the string's, however it
+// reads, and a multi-line basic string ends only at three quotes no
+// backslash escapes.
+func TestEditMultiLineStringLines(t *testing.T) {
+	in := "[vm.a]\nnote = '''\nvolume.x.path = 1\n'''\nb = \"\"\"\n\\\"\"\"\n[link]\n\"\"\"\nvolume.x.path = \"/x\"\n"
+	want := "[vm.a]\nnote = '''\nvolume.x.path = 1\n'''\nb = \"\"\"\n\\\"\"\"\n[link]\n\"\"\"\n#volume.x.path = \"/x\"\n"
+	if got := string(EditFile([]byte(in), Edit{Remove: []string{"vm.a.volume.x"}})); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A file that is no TOML is edited without a panic: a header TOML refuses
+// opens no value, so the tables after it are found, and a table the edit
+// cannot find once made gets no key.
+func TestEditUnclosed(t *testing.T) {
+	in := "[vm.a\ncpus = 2\n"
+	if got, want := string(EditFile([]byte(in), Edit{Set: map[string]any{"link.host_exec": true}})), in+"\n[link]\nhost_exec = true\n"; got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+	in = "x = \"\"\"\n"
+	if got, want := string(EditFile([]byte(in), Edit{Set: map[string]any{"link.host_exec": true}})), in+"\n[link]\n"; got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}
 }
 
@@ -190,6 +307,11 @@ func TestCheckEdit(t *testing.T) {
 		{"", "", Edit{Set: map[string]any{"format": 1}}, "format reads back as <nil>, not 1"},
 		{"", "[vm.a]\ncpus = 4\n", Edit{Set: map[string]any{"vm.a.cpus": 4}, Tables: []string{"vm.a"}}, ""},
 		{"", "", Edit{Tables: []string{"vm.a"}}, "[vm.a] is not there"},
+		{"[vm.a]\n[vm.a.volume.x]\npath = \"/x\"\n", "[vm.a]\n#[vm.a.volume.x]\n#path = \"/x\"\n", Edit{Remove: []string{"vm.a.volume.x"}}, ""},
+		{"[vm.a]\n[vm.a.volume.x]\npath = \"/x\"\n", "[vm.a]\n[vm.a.volume.x]\npath = \"/x\"\n", Edit{Remove: []string{"vm.a.volume.x"}}, "[vm.a.volume.x] is still there"},
+		{"[vm.a]\ncpus = 2\n[vm.a.volume.x]\npath = \"/x\"\n", "[vm.a]\n#[vm.a.volume.x]\n#path = \"/x\"\n", Edit{Remove: []string{"vm.a.volume.x"}}, "cpus in [vm.a] would change"},
+		{"[vm.a]\n", "[vm.a]\n", Edit{Remove: []string{"vm.a"}}, "[vm.a] is still there"},
+		{"[apko.a]\n", "[apko.a]\n", Edit{Remove: []string{"apko.a"}}, "[apko.a] is still there"},
 	} {
 		err := CheckEdit("config.toml", []byte(tc.orig), []byte(tc.data), tc.e)
 		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
@@ -200,9 +322,9 @@ func TestCheckEdit(t *testing.T) {
 
 func TestSnippet(t *testing.T) {
 	e := Edit{Set: map[string]any{"isolation": "vm.default", "vm.default.cpus": 4}, Tables: []string{"vm.default", "gvisor.x"},
-		Unset: []string{"ref.a.image"}, SetRoots: true,
+		Unset: []string{"ref.a.image"}, Remove: []string{"vm.a.volume.x"}, SetRoots: true,
 		Roots: map[string]FileRoot{"dev": {Host: "~/dev"}, "t": {Host: "/t", Path: "/opt/t"}}}
-	want := "isolation = \"vm.default\"\n[gvisor.x]\n[vm.default]\ncpus = 4\n# (remove image in [ref.a])\n" +
+	want := "isolation = \"vm.default\"\n[gvisor.x]\n[vm.default]\ncpus = 4\n# (remove image in [ref.a])\n# (remove the [vm.a.volume.x] table)\n" +
 		"[roots]\ndev = \"~/dev\"\nt = { host = \"/t\", path = \"/opt/t\" }\n"
 	if got := e.Snippet(); got != want {
 		t.Errorf("got\n%s", got)

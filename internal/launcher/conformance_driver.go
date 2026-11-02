@@ -186,7 +186,9 @@ func (r *confReal) Up(ctx context.Context) (conformance.Inputs, error) {
 		for _, s := range shares {
 			in.PlannedShares = append(in.PlannedShares, conformance.Share{Name: s.Name, Path: s.Path, ReadOnly: s.ReadOnly})
 		}
-		in.Volumes = []string{dockerVolume}
+		for _, v := range r.a.sandboxVolumes() {
+			in.Volumes = append(in.Volumes, v.Name)
+		}
 		files, err := r.a.findVMFiles()
 		if err != nil {
 			return in, err

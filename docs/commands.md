@@ -28,6 +28,10 @@
 | `caboose daemon [status\|stop\|restart]` | the host daemon that runs the links: how it is, stop it, or restart it; it starts on demand and exits when idle; see [The host link](host-link.md#the-daemon) |
 | `caboose prune` | delete old Claude Code versions now, and cached packages no environment's lock names |
 | `caboose prune --docker` | under a `vm` profile, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `CABOOSE_FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
+| `caboose volume create NAME PATH [--size SIZE] [--profile PROFILE]` | add a volume to a profile in `config.toml`; see [Volumes](configuration.md#adding-listing-and-removing-volumes) |
+| `caboose volume ls [--json]` | every volume of the environment: the profiles declaring it, its disk's size and allocated space, whether the running VM has it |
+| `caboose volume rm NAME [--profile PROFILE] [--delete-disk]` | remove a volume from a profile, keeping its disk unless `--delete-disk` (asks) |
+| `caboose volume resize NAME SIZE` | change a `vm` volume's size, while the VM runs too; see [Resizing a volume](configuration.md#resizing-a-volume) |
 | `caboose sync [--remote URL]` | sync what the [sandbox config](sandbox-config.md) names (memories, settings, skills, ...) with your other machines; see [Syncing](sync.md) |
 | `caboose sync status` | what a sync would send and take, changing nothing |
 | `caboose sync add PATH`, `caboose sync rm PATH` | make a path of the sandbox's home sync, or stop it, in the sandbox config |
@@ -73,13 +77,17 @@ link's check of a proposal, is using the cache, it leaves the cache
 alone and says so ("a build is using the package cache; not pruned"),
 pruning the Claude Code versions all the same. A lock it cannot read
 could name anything, so then it removes nothing from the cache and says
-which lock. It ends with one line: what it freed.
+which lock. It ends with one line: what it freed. A volume's disk that no profile
+declares is never pruned, since it holds what the sandbox wrote: `caboose
+prune` names each one, with `caboose volume rm NAME --delete-disk`, which
+deletes it.
 
 `caboose restart` and `caboose stop` destroy every running session, so they list
 the sessions they are about to kill and ask first. `CABOOSE_FORCE=1` (or `true`) skips the
 prompt; without a tty they refuse rather than assume. `caboose prune
 --docker` asks the same way, with or without sessions, since what it
-deletes cannot come back, and lists those stopping a running VM ends.
+deletes cannot come back, and lists those stopping a running VM ends;
+`caboose volume rm --delete-disk` asks the same way too.
 The daemon's stop and restart, for a client that asked you itself, ask
 nothing more (see [the host link](host-link.md#the-daemon)).
 

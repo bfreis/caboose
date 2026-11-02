@@ -24,7 +24,7 @@ const (
 // entry is one line of decisions.log.
 type entry struct {
 	Time    time.Time      `json:"time"`
-	Event   string         `json:"event"` // "decision", "answer", "expiry", "revoke", "egress-edit", "egress-counts", "suppressed"
+	Event   string         `json:"event"` // "decision", "answer", "expiry", "revoke", "egress-edit", "egress-counts", "suppressed", "outcome"
 	Kind    policy.Kind    `json:"kind,omitempty"`
 	Key     string         `json:"key,omitempty"`
 	Verdict string         `json:"verdict,omitempty"`
@@ -136,6 +136,15 @@ func (l *decisionLog) answer(now time.Time, q *reqRec, grant string) {
 	}
 	l.write(entry{Time: now, Event: ev, Kind: q.Kind, Key: shown(q.Key, 600), Verdict: q.State, Reason: shown(q.Reason, 2000),
 		Request: q.ID, By: q.DecidedBy, Scope: q.Scope, Hours: q.Hours, Grant: grant, Session: shown(q.Session, MaxSession)})
+}
+
+// outcome logs what came of an allowed volume resize: one line per
+// request a person allowed, so the sandbox cannot make more of them.
+func (l *decisionLog) outcome(now time.Time, q *reqRec) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.write(entry{Time: now, Event: "outcome", Kind: q.Kind, Key: shown(q.Key, 600), Verdict: q.State, Reason: shown(q.Outcome, 2000),
+		Request: q.ID, By: q.DecidedBy, Session: shown(q.Session, MaxSession)})
 }
 
 // revoke logs a grant revoked.

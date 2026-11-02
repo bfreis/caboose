@@ -75,6 +75,8 @@ func kindWord(kind string) string {
 		return "forward"
 	case "host_exec":
 		return "host command"
+	case "volume_resize":
+		return "resize"
 	}
 	return Clean(kind)
 }

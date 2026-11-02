@@ -50,6 +50,9 @@ func NewControl(conn io.ReadWriteCloser, timeout time.Duration) (*Control, error
 	return c, nil
 }
 
+// errNoAnswer is next's timeout.
+var errNoAnswer = errors.New("control: the agent did not answer")
+
 // next is the agent's next message, within timeout (0: no limit).
 func (c *Control) next(timeout time.Duration) (agentproto.Message, error) {
 	var expired <-chan time.Time
@@ -69,7 +72,7 @@ func (c *Control) next(timeout time.Duration) (agentproto.Message, error) {
 		}
 		return agentproto.Decode(b)
 	case <-expired:
-		return agentproto.Message{}, errors.New("control: the agent did not answer")
+		return agentproto.Message{}, errNoAnswer
 	}
 }
 
@@ -106,6 +109,40 @@ func (c *Control) Ready(timeout time.Duration) error {
 			return fmt.Errorf("the guest could not boot: %.500s", m.Error)
 		}
 		return nil
+	}
+}
+
+// ErrNoVolumeAnswer is a volume step the agent did not answer in time: a
+// guest's agent from a caboose without volume resizes never answers one.
+var ErrNoVolumeAnswer = errors.New("control: the guest's agent did not answer the volume step in time")
+
+// Volume asks the agent for one step of a volume's resize and waits up to
+// timeout for its answer, which is the guest's: the caller bounds what it
+// shows of it. The steps on one connection go one at a time.
+func (c *Control) Volume(op agentproto.VolumeOp, timeout time.Duration) (agentproto.VolumeInfo, error) {
+	if err := c.s.Send(agentproto.Message{Type: agentproto.TypeVolume, VolumeOp: &op}); err != nil {
+		return agentproto.VolumeInfo{}, err
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return agentproto.VolumeInfo{}, ErrNoVolumeAnswer
+		}
+		m, err := c.next(left)
+		if err != nil {
+			if errors.Is(err, errNoAnswer) {
+				return agentproto.VolumeInfo{}, ErrNoVolumeAnswer
+			}
+			return agentproto.VolumeInfo{}, err
+		}
+		if m.Type != agentproto.TypeVolume || m.VolumeInfo == nil {
+			continue
+		}
+		if m.VolumeInfo.Op != op.Op {
+			return agentproto.VolumeInfo{}, fmt.Errorf("control: the agent answered another step than %q", op.Op)
+		}
+		return *m.VolumeInfo, nil
 	}
 }
 

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +14,63 @@ import (
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/vm"
 )
+
+// Volumes on the framework's own disks follow the scratch disk, as vdc
+// on; those on caboose-vmm's come after, named by serial; each kind has
+// its limit, and a name is one volume.
+func TestPlanVolumes(t *testing.T) {
+	m := vm.Machine{Disks: []vm.Disk{{Path: "root"}, {Path: "scratch"}}}
+	disks, names, err := planVolumes(&m, []Volume{{Name: "a", Target: "/a", Live: true}, {Name: "docker", Target: "/d"}, {Name: "b", Target: "/b", Live: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"docker", "a", "b"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names %q", names)
+	}
+	wantDisks := []agentproto.GuestDisk{{Device: "/dev/vdc", Target: "/d"}, {Serial: "a", Target: "/a"}, {Serial: "b", Target: "/b"}}
+	if !reflect.DeepEqual(disks, wantDisks) {
+		t.Errorf("disks %+v", disks)
+	}
+	if len(m.Disks) != 3 || !reflect.DeepEqual(m.BlockDevices, []vm.BlockDevice{{Serial: "a"}, {Serial: "b"}}) {
+		t.Errorf("machine %+v", m)
+	}
+	// What a resize asks of the VM's record: which volumes it can resize
+	// while the VM runs.
+	st := vm.State{Machine: m, Volumes: names}
+	if !st.LiveVolume("a") || !st.LiveVolume("b") || st.LiveVolume("docker") || st.LiveVolume("none") {
+		t.Errorf("live: a %v, b %v, docker %v, none %v", st.LiveVolume("a"), st.LiveVolume("b"), st.LiveVolume("docker"), st.LiveVolume("none"))
+	}
+
+	many := func(n int, live bool) []Volume {
+		var vs []Volume
+		for i := range n {
+			vs = append(vs, Volume{Name: fmt.Sprintf("v%d", i), Target: fmt.Sprintf("/v%d", i), Live: live})
+		}
+		return vs
+	}
+	for _, tc := range []struct {
+		vols []Volume
+		ok   bool
+	}{
+		{many(maxVMDisks, false), true},
+		{many(maxVMDisks+1, false), false},
+		{many(vm.MaxBlockDevices, true), true},
+		{many(vm.MaxBlockDevices+1, true), false},
+		{[]Volume{{Name: "a", Target: "/a"}, {Name: "a", Target: "/b", Live: true}}, false},
+	} {
+		m := vm.Machine{}
+		_, _, err := planVolumes(&m, tc.vols)
+		if (err == nil) != tc.ok {
+			t.Errorf("%d volumes: %v", len(tc.vols), err)
+		}
+	}
+	// The last of the framework's own is vdz, which the agent takes.
+	m = vm.Machine{}
+	disks, _, _ = planVolumes(&m, many(maxVMDisks, false))
+	if d := disks[len(disks)-1].Device; d != "/dev/vdz" {
+		t.Errorf("the last disk is %s", d)
+	}
+}
 
 // A directory is a share of its own; a file is mounted from its
 // directory's, shared once; a missing source is made a directory. A
@@ -217,7 +275,7 @@ type stubHost struct{ img VMImage }
 func (h stubHost) Image(string) (VMImage, error) { return h.img, nil }
 func (h stubHost) Machine() (vm.Machine, error)  { return vm.Machine{CPUs: 1}, nil }
 func (h stubHost) NewScratch(string) error       { return nil }
-func (h stubHost) Volume(string) (string, error) { return "", nil }
+func (h stubHost) Volume(string) (VMDisk, error) { return VMDisk{}, nil }
 func (h stubHost) StartVMM(vm.Dir) error         { return os.ErrPermission }
 
 // What a VM cannot be is refused before anything is written.

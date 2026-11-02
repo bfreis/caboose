@@ -102,6 +102,8 @@ Each kind has its own keys, and a key another kind has is an error, so
 | `vm` | `cpus` | half the CPUs | the VM's CPUs; at least 1 |
 | `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` (a bare number is MiB); at least `512M` |
 | `vm` | `scratch_size` | `"64G"` | the size of the VM's scratch disk, the one everything the sandbox writes outside the mounts goes to, written as `memory` is; from `4G` to `1024G`. A disk takes up only what the VM has written, and the space comes back as files are deleted. The scratch disk is made at every start and deleted when caboose stops the VM (`caboose stop`, `caboose restart`); a VM that ends any other way (powered off from inside, crashed, this Mac restarted) leaves it until the next start, which replaces it, or a `caboose stop`. So the size is a ceiling for one run: a new one takes effect at the VM's next start, and a smaller one needs nothing more. A size past the space free on the data dir's volume is allowed, and `caboose doctor` and `caboose apply` say so |
+| `vm` | `docker_size` | `"64G"` | the size of the disk the sandbox's `dockerd` keeps its storage on, written as `memory` is; from `4G` to `1024G`. It is read at every start: the disk is made at that size when it is missing, and a disk smaller than `docker_size` is grown to it at the next start (the guest grows its filesystem to fill it). A disk larger than `docker_size` is left as it is and never shrunk; `caboose prune --docker` deletes it, and the empty one that replaces it is made at `docker_size`. A size past the space free on the data dir's volume is allowed, and `caboose doctor` and `caboose apply` say so |
+| `vm` | `volume_limit` | `"256G"` | the most the `size`s of this profile's [volumes](#volumes) may total once a resize the sandbox asks for is made (`caboose-agent request volume-resize`, see [Resizing a volume](#resizing-a-volume)), written as `memory` is; from `4G` to `19456G` (19 volumes of `1024G`). A request that would take the total past it is refused, naming this key; a request that shrinks a volume never is. Your own edits and `caboose volume resize` are not bound by it, and a total past the space free on the data dir's volume is allowed, as for `scratch_size` |
 | `vm` | `egress` | `true` | whether the sandbox's outbound connections through the link's proxy (HTTP(S) through the proxy settings, ssh through its `ProxyCommand`) are made from this machine, so a VPN's routes and DNS apply. At `trust = "fallible"` the VM keeps its own NAT beside the proxy, and a program that ignores the proxy settings leaves through it, unrestricted; under `"hostile"` there is no NAT. `false` is the VM's own NAT alone. See [the host link](host-link.md#outbound-connections) |
 | `vm` | `egress_ports` | `[22, 80, 443]` | the ports the sandbox may reach that way, written as `forward_ports` is; `[]` for none |
 | `vm` | `egress_allow` | `[]` | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
@@ -129,10 +131,158 @@ run_args = ["--cap-add=NET_ADMIN"]
 cpus = 8
 memory = "16G"
 scratch_size = "128G"
+docker_size = "128G"
 ```
 
 `caboose status` says which is in use and, when no profile is defined, that
 it is the default.
+
+### Volumes
+
+A profile's volumes are tables of their own, `[<kind>.<name>.volume.<volume>]`:
+a filesystem of the sandbox's that outlives it, mounted at `path`.
+
+```toml
+[vm.big.volume.gocache]
+path = "~/.cache/go-build"
+size = "40G"
+
+[vm.big.volume.data]
+path = "/data"
+```
+
+| Kind | Key | Default | |
+|---|---|---|---|
+| all | `path` | (required) | where the sandbox sees the volume: `~/NAME` directly in `~`, `~/.config`, `~/.local`, `~/.local/share` or `~/.cache`, or an absolute path outside the home. It may not be at, in or around caboose's own mounts, the paths kept for caboose itself, a root's path or `/work`, nor nest with another volume of the profile |
+| `vm` | `size` | `"64G"` | the size of the volume's disk, written as `memory` is; from `4G` to `1024G`. `caboose volume resize` changes it, while the VM runs too |
+
+A volume's name is lowercase letters, digits, `-` and `_`, starting with a
+letter or digit, at most 20 characters; `docker` is caboose's own (see
+`docker_size`). Only the profile in use has volumes.
+
+**Under `vm`**, a volume is a disk of the environment's, the data dir's
+`vm/volumes/<volume>.img`, kept across `caboose restart` and shared by every
+`vm` profile of the environment that declares that name. It is sparse, like
+every VM disk, and mounted with `discard`. Its size is read at every start:
+the disk is made at that size when it is missing, and a disk smaller than
+`size` is grown to it, the guest growing its filesystem to fill it. A disk
+larger than `size` is left as it is: a start never shrinks a volume, and
+`caboose doctor` says when a disk is larger than its size. A profile takes
+at most 19 volumes, which is as many disks as Virtualization.framework
+starts a VM with beside caboose's own devices. On macOS 27 and later, a
+volume is served by caboose-vmm itself, so that its size can later change
+while the VM runs. On an older macOS, a volume is one of
+Virtualization.framework's own disks instead: it holds the same data and is
+mounted the same way, but a new size reaches it only at the VM's next start.
+Which of the two a volume gets is decided when the VM is created, and
+`caboose` (as it creates the VM) and `caboose doctor` say when it is the
+framework's; a VM created before a macOS update keeps the framework's disks
+until `caboose restart`. Adding,
+removing or moving a volume takes `caboose restart`, which `caboose` and
+`caboose doctor` say; a new `size` takes effect at the VM's next start, or
+at once through `caboose volume resize`. A
+[kept path](sandbox-config.md) at, inside or around a volume's path is
+skipped, and `caboose doctor` names it: the volume wins.
+
+#### Adding, listing and removing volumes
+
+A session may propose a volume too, a `[volume]` part that `caboose apply`
+shows and writes as `create` would, into the profile in use: see
+[proposals](proposals.md#what-can-be-proposed).
+
+`caboose volume create <volume> <path> [--size <size>] [--profile <profile>]`
+adds `[<profile>.volume.<volume>]` to `config.toml`, after the profile's own
+tables, with `path` and, for a `vm` profile, `size` (`64G` when not given;
+under `container` and `gvisor` a size is refused). The profile is the one in
+use unless `--profile` names another, as `<kind>.<name>`. The file is written
+line by line, comments kept, and only if it then loads: a name, path or size
+`config.toml` would refuse, a volume the profile already has, a path that
+nests with another volume or sits at a root, or a 20th volume of a `vm`
+profile is refused, and nothing is written. The disk is not made then. A
+VM's volumes are fixed when it is created: with no VM, the next start
+creates one with the volume, making its disk; a VM that exists, running or
+stopped, gets the volume when `caboose restart` recreates it, which `create`
+says. A disk already at `vm/volumes/<volume>.img`
+(left by an earlier `rm`) is the volume's, with what it holds, which
+`create` says.
+
+`caboose volume ls` lists every volume of the environment by name: the
+profiles that declare it, with `path` and `size`; its disk's size and the
+space it takes up on this machine (a sparse disk takes only what was
+written); and whether the running VM has it, on caboose-vmm's disk or the
+framework's. A disk in `vm/volumes` that no profile declares is listed
+with the command that deletes it, and so is `dockerd`'s disk, with
+`docker_size`. `--json` prints the same as JSON.
+
+`caboose volume rm <volume> [--profile <profile>] [--delete-disk]` comments
+out the volume's table in `config.toml`, so that `create` with the same
+name uncomments it (a volume written as dotted keys of its profile,
+`volume.cache.path = ...`, has those lines commented out, and `create`
+adds a table instead). A volume written in a form it cannot comment out
+(inside an inline table) is refused, with the change to make by hand. It
+is refused while the running VM has the volume, when the profile is the
+one in use or the disk is to be deleted: `caboose stop` first. The disk is
+kept, with what it holds, unless `--delete-disk`, which deletes it once no
+`vm` profile declares the volume,
+after asking (no by default; `CABOOSE_FORCE=1` does not ask, and with no
+terminal it refuses). `rm <volume> --delete-disk` also deletes a disk no
+profile declares. `caboose prune` deletes no volume's disk, but names each
+one no profile declares.
+
+#### Resizing a volume
+
+`caboose volume resize <volume> <size>` changes a `vm` volume's size, from
+`4G` to `1024G`, and writes the new `size` to its table in `config.toml`
+once the disk has it (line by line, comments kept). What it does depends on
+the VM:
+
+- **Running, the volume on caboose-vmm's disk** (macOS 27 and later): the
+  change happens at once. A grow makes the disk longer, then the guest grows
+  the filesystem while it stays mounted, so the sandbox keeps working. A
+  shrink unmounts the volume in the guest, refusing (and naming each process
+  and mount) while anything holds a file, a directory or a mapping on it;
+  clones its disk beside it, as `<volume>.img.before-shrink`, an APFS clone
+  that takes no space until either file changes; checks and shrinks the
+  filesystem with the image's own `e2fsck -f -p` and `resize2fs` (which is
+  why [e2fsprogs is a requirement](images.md#requirements-for-your-own-image));
+  cuts the disk to the new size; and mounts the volume again. The clone is
+  deleted once the filesystem's steps are done and the volume is mounted.
+  The filesystem is never shrunk while mounted.
+- **Running, the volume on Virtualization.framework's disk** (a VM created
+  before macOS 27): a grow is written to `config.toml` and takes effect at
+  the next start; a shrink is refused, as a start never shrinks a disk.
+  `caboose restart` on macOS 27 or later recreates the VM with its volumes
+  on caboose-vmm's disks.
+- **Stopped**: a grow is written to `config.toml` and takes effect at the
+  next start; a shrink needs the VM running, whose guest shrinks the
+  filesystem first.
+
+A session may ask for a resize of the same kind itself
+(`caboose-agent request volume-resize <volume> <size>`): a person allows
+each one on the host, and the daemon then makes it as `caboose volume
+resize` would while the VM runs, within `volume_limit`. See [the host
+link](host-link.md#volume-resizes).
+
+A shrink is refused below what the volume's filesystem uses plus a margin
+of a tenth of that, at least `1G`, and says the smallest size it takes. It
+moves whatever lies past the new end, which takes a while on a full volume
+(the guest's tools are bounded at 30 minutes). One resize of a VM runs at a
+time, and a start or stop of the VM waits for it.
+
+A step that fails says what it left and what to do. Before the filesystem
+is touched (a holder, a failed unmount or clone), nothing has changed and
+the volume is mounted again. If `e2fsck` or `resize2fs` fails, the volume
+is mounted again at its disk's size, its filesystem grown back to fill it,
+and the clone is kept: check the volume's files, then delete the clone, or
+restore it with the VM stopped (`caboose stop`, then move
+`<volume>.img.before-shrink` over `<volume>.img`). A clone left by an
+earlier shrink stops the next one until it is deleted or restored.
+
+**Under `container` and `gvisor`**, a volume takes `path` alone. These
+volumes are read and checked but not yet attached to the sandbox: what the
+sandbox writes at their paths stays in the container's own files, which
+recreating the container (`caboose restart`) loses. `caboose`, as it creates
+the container, and `caboose doctor` say so.
 
 ## Image profiles
 
@@ -387,7 +537,7 @@ root's, so the agent user could not tell its own. Root's home is
 on the mounts are yours on the Mac. The Mac's edits under the roots reach the
 sandbox's watchers through the [host link](host-link.md#file-changes), and
 so does your [SSH agent](ssh.md) (any command that starts the VM starts
-the link too). The engine socket cannot be mounted into a VM, and `run_args` mean nothing there: a `vm` profile has no such key, and `cpus`, `memory` and `scratch_size` size the VM instead. `caboose logs`
+the link too). The engine socket cannot be mounted into a VM, and `run_args` mean nothing there: a `vm` profile has no such key, and `cpus`, `memory`, `scratch_size` and `docker_size` size the VM instead. `caboose logs`
 shows the VM's console (`--tail N`). The data dir's path must be short
 enough for the VM's socket (macOS allows 103 bytes); `caboose doctor`
 says when it is not. Where caboose would say "container" -- `caboose

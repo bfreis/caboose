@@ -50,6 +50,9 @@ func (d Dir) Log() string { return filepath.Join(string(d), "vmm.log") }
 // apart from vmm's own Lock, which vmm holds for as long as it runs.
 func (d Dir) StartLock() string { return filepath.Join(string(d), "start.lock") }
 
+// ResizeLock makes a VM's volume resizes one at a time (TryLock).
+func (d Dir) ResizeLock() string { return filepath.Join(string(d), "resize.lock") }
+
 // ShareTag is the virtio-fs tag of the one share every mount is a
 // directory of (Machine.Shares).
 const ShareTag = "caboose"
@@ -64,6 +67,11 @@ type Machine struct {
 	// Disks are attached in order: vda, the image's root, read-only;
 	// vdb, the scratch disk.
 	Disks []Disk `json:"disks"`
+	// BlockDevices are disks caboose-vmm serves itself, as virtio-blk
+	// devices of its own, after Disks; the guest tells them apart by
+	// their Serial. Their size can change while the VM runs. They need
+	// macOS 27.
+	BlockDevices []BlockDevice `json:"block_devices,omitempty"`
 	// Shares are the directories of the one virtio-fs share, ShareTag,
 	// each under its Name.
 	Shares []Share `json:"shares,omitempty"`
@@ -80,6 +88,38 @@ type Machine struct {
 type Disk struct {
 	Path     string `json:"path"`
 	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+// LiveDiskMacOS is the first macOS (major version) on which caboose-vmm
+// serves BlockDevices: Virtualization.framework's custom virtio devices
+// came with it. On an older one a volume goes on one of the framework's
+// own Disks instead, which works the same but for a resize: that takes
+// effect only at the VM's next start.
+const LiveDiskMacOS = 27
+
+// MaxBlockDevices is how many BlockDevices a sandbox's Machine may have:
+// every device takes one of the VM's PCI slots, and on macOS 27 the
+// framework starts no VM with more than 19 of them beside the root,
+// scratch and dockerd's disks, the share, the network, the console, the
+// entropy, memory balloon and socket devices (it says the configuration
+// is invalid, although it validated).
+const MaxBlockDevices = 19
+
+// BlockDevice is a raw disk image on caboose-vmm's own virtio-blk device.
+// vmm holds an exclusive lock (flock) on the image while it serves it,
+// and refuses one another process holds.
+type BlockDevice struct {
+	Path string `json:"path"`
+	// Serial is what the guest reads as the disk's ID (at most 20 bytes).
+	Serial string `json:"serial,omitempty"`
+	// Size is the disk's size in bytes at boot, which vmm grows a
+	// smaller file to (a larger file's end goes unused); 0 is the file's
+	// size. The unused end keeps its bytes: a later grow into it shows
+	// the guest what was there, not zeroes. vmm does not clear it: a
+	// size that lagged a resize the guest heard of would otherwise lose
+	// the guest's own data there, which the grow that catches the size
+	// up gives back.
+	Size int64 `json:"size,omitempty"`
 }
 
 // Share is one host directory in the share, at Name in the guest's mount
@@ -115,6 +155,21 @@ type State struct {
 	Volumes []string `json:"volumes,omitempty"`
 }
 
+// LiveVolume says whether the volume name is on one of caboose-vmm's
+// BlockDevices, which can be resized while the VM runs (Runner.ResizeDisk),
+// and not on one of the framework's Disks, which cannot: the VM was
+// created on a macOS before LiveDiskMacOS, and a resize of it takes
+// effect at the next start only, or after a restart on a newer macOS
+// recreates it. False too for a name the VM has no volume of.
+func (s State) LiveVolume(name string) bool {
+	for _, b := range s.Machine.BlockDevices {
+		if b.Serial == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ReadState reads d's State; an error wrapping os.ErrNotExist means there
 // is no VM.
 func (d Dir) ReadState() (State, error) {
@@ -127,6 +182,20 @@ func (d Dir) ReadState() (State, error) {
 		return st, fmt.Errorf("%s: %w", d.State(), err)
 	}
 	return st, nil
+}
+
+// ReadMachine reads the machine.json vmm booted from, which holds the
+// paths of the VM's disks as this start found them.
+func (d Dir) ReadMachine() (Machine, error) {
+	var m Machine
+	b, err := os.ReadFile(d.Machine())
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, fmt.Errorf("%s: %w", d.Machine(), err)
+	}
+	return m, nil
 }
 
 // WriteState writes st, making d first.

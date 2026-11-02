@@ -86,7 +86,7 @@ RUN set -eux; \
         git openssh-client \
         ripgrep jq less vim procps unzip \
         build-essential python3 python3-venv \
-        tmux zstd \
+        tmux zstd e2fsprogs \
         ncurses-term; \
     apt-mark auto gpg >/dev/null; \
     $apt autoremove --purge -y; \

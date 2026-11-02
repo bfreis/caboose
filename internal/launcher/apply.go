@@ -141,10 +141,12 @@ type plan struct {
 	writable *writablePlan
 	// settings are the settings to set.
 	settings *settingsPlan
+	// volume is the volume to add.
+	volume *volumePlan
 }
 
 func (pl plan) empty() bool {
-	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil && pl.writable == nil && pl.settings == nil
+	return pl.dockerfile == nil && pl.packages == nil && pl.root == nil && pl.alias == nil && pl.writable == nil && pl.settings == nil && pl.volume == nil
 }
 
 // applyOne shows one proposal and does what the user says with it.
@@ -210,6 +212,20 @@ func (a *App) applyOne(p *prompter, e proposal.Entry, done *applied) error {
 
 	if pl.writable != nil {
 		ok, err := a.applyWritable(p, pl.writable)
+		if err != nil || !ok {
+			return err
+		}
+		done.config = true
+		if err := proposal.Remove(a.Cfg.DataDir, e.File); err != nil {
+			p.warn("Applied, but it could not be removed (%s): delete %s by hand, or apply will offer it again", proposal.Printable(err.Error()), a.short(filepath.Join(a.Cfg.DataDir, proposal.Dir, e.File)))
+			return nil
+		}
+		p.ok("Applied %s", name)
+		return nil
+	}
+
+	if pl.volume != nil {
+		ok, err := a.applyVolume(p, *pr.Volume, pl.volume)
 		if err != nil || !ok {
 			return err
 		}
@@ -364,6 +380,13 @@ func (a *App) planProposal(pr *proposal.Proposal) (pl plan, refusals, warnings [
 		warnings = append(warnings, warn...)
 		pl.settings = sp
 	}
+
+	if v := pr.Volume; v != nil {
+		vp, why, warn := a.planVolume(*v)
+		refusals = append(refusals, why...)
+		warnings = append(warnings, warn...)
+		pl.volume = vp
+	}
 	return pl, refusals, warnings
 }
 
@@ -390,6 +413,9 @@ func (a *App) showPlan(p *prompter, pl plan) {
 	}
 	if pl.settings != nil {
 		a.showSettings(p, pl.settings)
+	}
+	if pl.volume != nil {
+		a.showVolume(p, pl.volume)
 	}
 	if pl.root != nil {
 		p.say("Mount a host directory into the sandbox ([roots]):")
@@ -615,7 +641,19 @@ func (a *App) exportProposals() {
 		Settings: proposal.StateSettings{Isolation: isolationOf(c), TZ: c.TZ, Hostname: c.Hostname, Tmux: c.Tmux, AutoBuild: c.AutoBuild}}
 	if isolationOf(c) == config.KindVM && c.Profile != "" {
 		s.Settings.VMProfile, s.Settings.CPUs, s.Settings.Memory = c.Profile, c.VMCPUs, c.VMMemory
-		s.Settings.ScratchSize = c.VMScratchSize
+		s.Settings.ScratchSize, s.Settings.DockerSize = c.VMScratchSize, c.VMDockerSize
+		s.VolumeLimit = sizeValue(c.VMVolumeLimit)
+	}
+	if c.Profile != "" {
+		s.VolumeProfile = c.Profile
+		s.Volumes = map[string]proposal.StateVolume{}
+		for _, v := range c.Volumes {
+			sv := proposal.StateVolume{Path: v.Path}
+			if v.Size > 0 {
+				sv.Size = sizeValue(v.Size)
+			}
+			s.Volumes[v.Name] = sv
+		}
 	}
 	if ip := c.ImageProfile; ip.Kind == config.ImageKindApko {
 		installed, err := ip.Spec().List()

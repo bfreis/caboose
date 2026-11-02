@@ -42,13 +42,14 @@ What a proposal can change in the image depends on the kind of the
 | one root | any | mounts a host directory at `/work/NAME` | refusals and warnings below, and you type the root's name |
 | one alias, alone | any | adds an [`[alias.NAME]`](configuration.md#aliasname), a host command sessions may run | refusals and warnings below, the change to `config.toml` as a diff, and you type the alias's name |
 | one writable part, alone | any | makes a directory of a root [writable](configuration.md#read-only-roots-and-writable-parts), from the next restart | refusals and warnings below, the change to `config.toml` as a diff, and you type the root's name |
-| settings, alone | any (the VM keys: vm only) | sets `tz`, `hostname`, `tmux` in `[session]`, `auto_build` in `[build]`, and `cpus`, `memory`, `scratch_size` of the `[vm.NAME]` in use | the change to `config.toml` as a diff, and when each key takes effect |
+| settings, alone | any (the VM keys: vm only) | sets `tz`, `hostname`, `tmux` in `[session]`, `auto_build` in `[build]`, and `cpus`, `memory`, `scratch_size`, `docker_size` of the `[vm.NAME]` in use | the change to `config.toml` as a diff, and when each key takes effect |
+| one volume, alone | any (a size: vm only) | adds a [volume](configuration.md#volumes) to the isolation profile in use, from the VM's next creation | refusals and warnings below, and the change to `config.toml` as a diff |
 
 Under a `ref` profile, an image of your own, nothing in the image can be
 proposed: a session that needs a tool says what to add to your image.
 
 Nothing else. A proposal that names anything more — the docker socket, a
-base image, the sync remote, any other setting than those seven — is refused whole, not
+base image, the sync remote, any other setting than those eight, a volume of another profile — is refused whole, not
 offered for a yes. So is one with a control character (an escape sequence
 could redraw the terminal and hide part of the proposal), an invisible
 formatting character such as a bidi override, or a section holding `FROM`,
@@ -203,7 +204,7 @@ the mounts are fixed when it is created, so the part is writable from the
 next `caboose restart`, which `apply` offers. Every launch checks the
 writable parts again, and refuses one that has become a symbolic link.
 
-**Settings** are seven keys of `config.toml`, alone in their proposal, as a
+**Settings** are eight keys of `config.toml`, alone in their proposal, as a
 `[settings]` table with the keys' own tables inside it (dotted keys decode
 the same):
 
@@ -216,13 +217,14 @@ auto_build = false
 cpus = 6
 memory = "12G"
 scratch_size = "128G"
+docker_size = "128G"
 ```
 
-The session never names the VM profile: `cpus`, `memory` and `scratch_size`
-are written into the one `isolation` selects. They are refused when the
+The session never names the VM profile: `cpus`, `memory`, `scratch_size` and
+`docker_size` are written into the one `isolation` selects. They are refused when the
 isolation is not `vm`, when `config.toml` defines no profile, when they ask
-for more CPUs or memory than this machine has, and when `scratch_size` is
-not from `4G` to `1024G`. A value `config.toml` already has is left
+for more CPUs or memory than this machine has, and when `scratch_size` or
+`docker_size` is not from `4G` to `1024G`. A value `config.toml` already has is left
 out with a warning, and a proposal with nothing left changes nothing. Any
 other key under `[settings]` refuses the proposal whole, as does any other
 part next to it. They widen nothing the sandbox reaches, so `apply` shows
@@ -232,11 +234,45 @@ it takes effect: `tz` for sessions started from the next launch (what
 already runs keeps its zone until the next restart), `tmux` for sessions
 started from the next launch, `auto_build` from the next launch that
 creates the sandbox, `hostname`, `cpus` and `memory` at the next restart,
-and `scratch_size` at the VM's next start: a VM that runs as `apply` writes
+and `scratch_size` and `docker_size` at the VM's next start: a VM that runs as `apply` writes
 it keeps the disk it has until it is stopped (`caboose stop`, then a
 launch, or `caboose restart`). `apply` offers the restart only when a key
-needs one. A `scratch_size` past the space free on the data dir's volume is
-written with a warning: the disk takes only what the VM writes.
+needs one. A `scratch_size` or `docker_size` past the space free on the data
+dir's volume is written with a warning: the disk takes only what the VM writes.
+A `docker_size` below the size of the disk the VM already has leaves that
+disk as it is: a disk is never shrunk, and a larger one is grown to it at the
+next start.
+
+**A volume** is one table of a [profile's volumes](configuration.md#volumes),
+alone in its proposal, as `caboose volume create` would add it:
+
+```toml
+[volume]
+name = "gocache"
+path = "~/.cache/go-build"
+size = "40G"             # vm only; 64G when left out
+```
+
+The session never names the profile: the volume goes into the one
+`isolation` selects, as `[<profile>.volume.<name>]`. The name, path and size
+are checked as `config.toml` checks them (a path directly in `~`,
+`~/.config`, `~/.local`, `~/.local/share` or `~/.cache`, or absolute outside
+the home, never at, in or around caboose's own mounts or the paths kept for
+caboose itself; a size from `4G` to `1024G`), and `apply` writes it only if
+`config.toml` then loads, so a volume the profile has already, a size under
+`container` or `gvisor`, a path at, inside or around a root's or `/work`, one
+that nests with another volume, or a 20th volume of a `vm` profile is refused
+whole. A volume the profile has gets a new size by a request instead
+(`caboose-agent request volume-resize`, see [the host
+link](host-link.md#volume-resizes)), not a proposal. It widens nothing of
+this machine's beyond a disk of up to that size, so `apply` shows the diff and
+asks for a yes, no typed name, and writes it only if `config.toml` has not
+changed since; a size past the space free on the data dir's volume, or a disk
+already there from an earlier volume of that name (which the volume gets, with
+what it holds), is a warning. The VM gets the volume when it is next created:
+`caboose restart`, which `apply` offers. Under `container` and `gvisor` the
+volume is written but [not yet attached](configuration.md#volumes), which
+`apply` says.
 
 ## The files
 
@@ -282,6 +318,18 @@ description = "keep the Mac awake until interrupted"
 policy = "ask"
 ```
 
+A volume, alone in its proposal:
+
+```toml
+title = "Keep the Go build cache"
+reason = "every build starts cold"
+
+[volume]
+name = "gocache"
+path = "~/.cache/go-build"
+size = "40G"
+```
+
 A writable part, alone in its proposal:
 
 ```toml
@@ -306,7 +354,10 @@ every `apply`: `state.toml`, with the image profile in use (`image`,
 `config.toml` has (each a `[roots.NAME]` with its `host`, container
 `path`, and `writable`: the parts the sandbox may write), and `[settings]`,
 the values a settings proposal changes as `config.toml` has them, with the
-isolation in use and the VM profile `cpus`, `memory` and `scratch_size` go in. Under `apko` it lists the profile's own `packages`, `defaults`, and
+isolation in use and the VM profile `cpus`, `memory`, `scratch_size` and `docker_size` go in, and
+`volume_profile`, the isolation profile a volume would go in (`""` when
+`config.toml` defines none in use), with its volumes as `[volumes.NAME]`
+(`path`, and under `vm` `size`) and, under `vm`, its `volume_limit`. Under `apko` it lists the profile's own `packages`, `defaults`, and
 every package `installed`; under `dockerfile`, where the Dockerfile comes
 from (`dockerfile`, the profile's own, or `seed`, caboose's, when the
 profile has none yet) and its hash, with the file itself as `Dockerfile`

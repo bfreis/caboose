@@ -56,6 +56,8 @@ func Effect(p Policy, r Request) string {
 		return "take a checkpoint now of paths [checkpoints] already copies"
 	case KindPort:
 		return fmt.Sprintf("forward port %d of the sandbox to localhost:%d on the host", r.Port, r.Port)
+	case KindVolumeResize:
+		return volumeResizeEffect(p, r)
 	}
 	return "an unknown request, which the host refuses"
 }
@@ -155,6 +157,13 @@ const (
 func AnswerEffect(r Request, s Scope, hours int, env, profile, configPath string) string {
 	if GrantKey(r) == "" {
 		return ""
+	}
+	if r.Kind == KindVolumeResize {
+		// Each resize is a person's: never for some hours, never always.
+		if s != ScopeOnce {
+			return ""
+		}
+		return fmt.Sprintf("resizes volume %s to %s now, as a job of the host's daemon, and allows nothing more: another resize asks again", shown(r.Volume, 64), SizeText(r.VolumeSize))
 	}
 	switch s {
 	case ScopeOnce:

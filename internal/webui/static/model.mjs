@@ -517,7 +517,7 @@ export function egressResult(r) {
   return { diff: r.diff, hash: r.hash, effect: r.effect, written: r.written === true };
 }
 
-const PART_KINDS = ["section", "packages", "root", "alias", "writable", "settings"];
+const PART_KINDS = ["section", "packages", "root", "alias", "writable", "settings", "volume"];
 const fileRe = /^[^/.\u0000][^/\u0000]{0,254}$/;
 
 // appliableParts reports whether parts are what the page applies: one
@@ -588,6 +588,8 @@ export function partLabel(kind) {
       return "A part of a root the sandbox may write ([roots], writable)";
     case "settings":
       return "Settings in config.toml ([session], [build], the VM's size)";
+    case "volume":
+      return "A volume of the sandbox's isolation profile ([<profile>.volume.NAME])";
   }
   return "A change";
 }

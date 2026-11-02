@@ -260,6 +260,7 @@ func (a *App) renderStatus(d *statusData) error {
 	a.warnIfTrustDrifted()
 	a.warnIfPluginDirsDrifted()
 	a.warnIfHostnameDrifted()
+	a.warnIfVolumesDrifted()
 
 	fmt.Fprintf(out, "claude    : %s\n", d.claude)
 	fmt.Fprintf(out, "timezone  : %s (host: %s)\n", or(d.containerTZ, "UTC"), or(d.hostTZ, "unknown"))
@@ -419,12 +420,21 @@ func (a *App) Prune(args []string) error {
 			a.Note("  delete it by hand if no image of yours needs it any more.")
 		}
 	}
+	// A volume's disk that no profile declares holds what the sandbox
+	// wrote there, which nothing could make again: deleting it is the
+	// user's call, one volume at a time.
+	if l, err := a.listVolumes(); err == nil {
+		for _, v := range l.orphans() {
+			a.Note("%s (%s allocated) is the disk of volume %s, which no profile declares;", v.Disk.Path, sizeString(v.Disk.Allocated), v.Name)
+			a.Note("  'caboose volume rm %s --delete-disk' deletes it.", v.Name)
+		}
+	}
 	return cacheErr
 }
 
 // dockerDisk is the disk the vm sandbox's dockerd keeps its images on.
 func (a *App) dockerDisk() string {
-	return filepath.Join(a.vmRoot(), "volumes", dockerVolume+".img")
+	return a.volumeDisk(dockerVolume)
 }
 
 // pruneDocker deletes the disk the vm sandbox's dockerd keeps everything

@@ -1,0 +1,9 @@
+cache: disk 96G, 6.4 GB allocated; attached to the running VM, on caboose-vmm's own disk (resizes while it runs)
+  vm.big               /home/agent/.cache/go-build  128G
+  vm.default (in use)  /home/agent/.cache/go-build  64G
+data: no disk yet: a VM of a profile that declares it makes it as it starts
+  vm.default (in use)  /data  8G
+old: disk 32G, 2.1 GB allocated; no profile declares it: 'caboose volume rm old --delete-disk' deletes it
+web: disk 4G, 268 MB allocated; only container and gvisor profiles declare it, which attach no disk
+  container.default  /srv/web  -
+docker: dockerd's disk, 64G, 4.3 GB allocated (docker_size in [vm.default]: 64G); 'caboose prune --docker' empties it

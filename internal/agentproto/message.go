@@ -49,6 +49,9 @@ const (
 	TypeBoot     = "boot"
 	TypeReady    = "ready"
 	TypeShutdown = "shutdown"
+	// TypeVolume is a step of a volume's resize, and its answer
+	// (control.go).
+	TypeVolume = "volume"
 )
 
 // MaxChanged is the most paths one TypeChanged message carries.
@@ -210,13 +213,16 @@ const (
 	MaxAskMeanwhile      = 1000
 	MaxAskSession        = 100
 	MaxAskArgs           = MaxAliasArgs
+	// MaxAskVolume and MaxAskSize bound a volume_resize's name and size.
+	MaxAskVolume = 64
+	MaxAskSize   = 32
 )
 
 // Ask is a request filed ahead of time (OpBrokerRequest): which crossing,
 // and what the sandbox says of it. Everything in it is the sandbox's, and
 // the host bounds and checks it before use.
 type Ask struct {
-	// Kind is "alias", "egress", "open_url" or "port".
+	// Kind is "alias", "egress", "open_url", "port" or "volume_resize".
 	Kind string `json:"kind"`
 	// Alias and Args, for an alias.
 	Alias string            `json:"alias,omitempty"`
@@ -226,6 +232,11 @@ type Ask struct {
 	Port int    `json:"port,omitempty"`
 	// URL, for open_url.
 	URL string `json:"url,omitempty"`
+	// Volume and Size, for volume_resize: a volume of the profile in use,
+	// by name, and its new size as config.toml writes one ("128G"). The
+	// host parses and checks both.
+	Volume string `json:"volume,omitempty"`
+	Size   string `json:"size,omitempty"`
 	// The sandbox's words about it.
 	Context        string   `json:"context,omitempty"`
 	Options        []string `json:"options,omitempty"`
@@ -380,6 +391,10 @@ type Message struct {
 	Window uint32 `json:"window,omitempty"`
 
 	Boot *BootSpec `json:"boot,omitempty"`
+	// VolumeOp is TypeVolume's step, from the host; VolumeInfo the
+	// agent's answer.
+	VolumeOp   *VolumeOp   `json:"volume_op,omitempty"`
+	VolumeInfo *VolumeInfo `json:"volume_info,omitempty"`
 	// Time is the host's wall clock, in nanoseconds since the Unix epoch.
 	Time int64 `json:"time,omitempty"`
 

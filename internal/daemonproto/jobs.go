@@ -20,6 +20,9 @@ const (
 	JobStop    = "stop"
 	JobRestart = "restart"
 	JobApply   = "apply"
+	// JobVolumeResize is a volume resize the sandbox asked for, run once
+	// a person allowed it (the request's answer starts it).
+	JobVolumeResize = "volume_resize"
 
 	JobRunning = "running"
 	JobDone    = "done"
@@ -57,7 +60,7 @@ type JobInfo struct {
 // is done; every string bounded and printable.
 func (j *JobInfo) Validate() error {
 	switch j.Kind {
-	case JobStop, JobRestart:
+	case JobStop, JobRestart, JobVolumeResize:
 		if j.Proposal != "" || len(j.Notes) > 0 {
 			return bad("a proposal or notes on a %s job", j.Kind)
 		}

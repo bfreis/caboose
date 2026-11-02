@@ -79,17 +79,25 @@ func TestProfiles(t *testing.T) {
 	if err != nil || c.Isolation != KindGVisor || c.Profile != "gvisor.strict" || c.RunArgs != nil {
 		t.Errorf("gvisor: %+v %v", c, err)
 	}
-	c, err = load(t, "[vm.big]\ncpus = 8\nmemory = \"16G\"\nscratch_size = \"128G\"\negress = false\negress_ports = [22, \"8000-8100\"]\negress_allow = [\"*.corp.example\", \"10.0.0.0/8\"]\n")
-	if err != nil || c.Isolation != KindVM || c.Profile != "vm.big" || c.VMCPUs != 8 || c.VMMemory != "16G" || c.VMScratchSize != "128G" || c.Egress ||
+	c, err = load(t, "[vm.big]\ncpus = 8\nmemory = \"16G\"\nscratch_size = \"128G\"\ndocker_size = \"256G\"\negress = false\negress_ports = [22, \"8000-8100\"]\negress_allow = [\"*.corp.example\", \"10.0.0.0/8\"]\n")
+	if err != nil || c.Isolation != KindVM || c.Profile != "vm.big" || c.VMCPUs != 8 || c.VMMemory != "16G" || c.VMScratchSize != "128G" || c.VMDockerSize != "256G" || c.Egress ||
 		c.EgressPorts != "22 8000-8100" || !reflect.DeepEqual(c.EgressAllow, []string{"*.corp.example", "10.0.0.0/8"}) {
 		t.Errorf("vm: %+v %v", c, err)
 	}
 	if got := c.ProfileKey("cpus"); got != "cpus in [vm.big]" {
 		t.Errorf("ProfileKey %q", got)
 	}
+	c, err = load(t, "[vm.big]\nvolume_limit = \"512G\"\n")
+	if err != nil || c.VMVolumeLimit != 512<<30 {
+		t.Errorf("volume_limit: %d %v", c.VMVolumeLimit, err)
+	}
+	c, err = load(t, "[vm.big]\nvolume_limit = \"19456G\"\n")
+	if err != nil || c.VMVolumeLimit != MaxVolumeLimit {
+		t.Errorf("volume_limit at its most: %d %v", c.VMVolumeLimit, err)
+	}
 	// A vm profile's defaults.
 	c, err = load(t, "[vm.default]\n")
-	if err != nil || !c.Egress || c.EgressPorts != DefaultEgressPorts || c.VMCPUs != 0 || c.VMMemory != "" || c.VMScratchSize != "" {
+	if err != nil || !c.Egress || c.EgressPorts != DefaultEgressPorts || c.VMCPUs != 0 || c.VMMemory != "" || c.VMScratchSize != "" || c.VMDockerSize != "" || c.VMVolumeLimit != DefaultVolumeLimit {
 		t.Errorf("vm defaults: %+v %v", c, err)
 	}
 	// No inheritance: the profile not in use gives nothing.
@@ -135,14 +143,26 @@ func TestConfigFileRefuses(t *testing.T) {
 		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [alias.NAME], [apko.NAME], [build], [checkpoints], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation, trust; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
 		"a misspelled table key": {"[session]\ntmuz = true", "unknown setting in [session] tmuz (known: auto_sync, hostname, keep_versions, ready_timeout, tmux, tz;"},
 		"another table":          {"[mounts]\ndev = \"/x\"", "unknown top-level setting mounts"},
-		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: cpus, egress, egress_allow, egress_deny, egress_ports, memory, scratch_size;"},
+		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: [vm.a.volume.NAME], cpus, docker_size, egress, egress_allow, egress_deny, egress_ports, memory, scratch_size, volume_limit;"},
 		"vm keys under gvisor":   {"[gvisor.a]\ncpus = 2", "unknown setting in [gvisor.a] cpus"},
 		"scratch under gvisor":   {"[gvisor.a]\nscratch_size = \"8G\"", "unknown setting in [gvisor.a] scratch_size"},
 		"scratch, container":     {"[container.a]\nscratch_size = \"8G\"", "unknown setting in [container.a] scratch_size"},
 		"scratch as a number":    {"[vm.a]\nscratch_size = 64", "scratch_size in [vm.a] must be a string"},
 		"scratch as a word":      {"[vm.a]\nscratch_size = \"big\"", "scratch_size in [vm.a]: \"big\" is not an amount like"},
 		"scratch too small":      {"[vm.a]\nscratch_size = \"2G\"", "scratch_size in [vm.a]: \"2G\" is outside 4G to 1024G"},
+		"docker under gvisor":    {"[gvisor.a]\ndocker_size = \"8G\"", "unknown setting in [gvisor.a] docker_size"},
+		"docker, container":      {"[container.a]\ndocker_size = \"8G\"", "unknown setting in [container.a] docker_size"},
+		"docker as a number":     {"[vm.a]\ndocker_size = 64", "docker_size in [vm.a] must be a string"},
+		"docker as a word":       {"[vm.a]\ndocker_size = \"big\"", "docker_size in [vm.a]: \"big\" is not an amount like"},
+		"docker too small":       {"[vm.a]\ndocker_size = \"2G\"", "docker_size in [vm.a]: \"2G\" is outside 4G to 1024G"},
+		"docker too big":         {"[vm.a]\ndocker_size = \"2048G\"", "docker_size in [vm.a]: \"2048G\" is outside 4G to 1024G"},
 		"scratch too big":        {"[vm.a]\nscratch_size = \"2048G\"", "scratch_size in [vm.a]: \"2048G\" is outside 4G to 1024G"},
+		"limit under gvisor":     {"[gvisor.a]\nvolume_limit = \"8G\"", "unknown setting in [gvisor.a] volume_limit"},
+		"limit, container":       {"[container.a]\nvolume_limit = \"8G\"", "unknown setting in [container.a] volume_limit"},
+		"limit as a number":      {"[vm.a]\nvolume_limit = 256", "volume_limit in [vm.a] must be a string"},
+		"limit as a word":        {"[vm.a]\nvolume_limit = \"lots\"", "volume_limit in [vm.a]: \"lots\" is not an amount like"},
+		"limit too small":        {"[vm.a]\nvolume_limit = \"2G\"", "volume_limit in [vm.a]: \"2G\" is outside 4G to 19456G"},
+		"limit too big":          {"[vm.a]\nvolume_limit = \"19457G\"", "volume_limit in [vm.a]: \"19457G\" is outside 4G to 19456G"},
 		"a table as a key":       {"session = 1", "session must be a table"},
 		"a kind not of tables":   {"[vm]\ncpus = 1", "vm must be tables of profiles, [vm.NAME]"},
 		"a bad profile name":     {"[vm.Big]", "'Big' is not a profile name"},

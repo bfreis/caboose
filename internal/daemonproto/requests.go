@@ -430,6 +430,9 @@ type AnswerResult struct {
 	Also []uint64 `json:"also,omitempty"`
 	// OpenError is why the URL an allowed URL request named did not open.
 	OpenError string `json:"open_error,omitempty"`
+	// ResizeError is why the resize an allowed volume resize asked for
+	// did not start.
+	ResizeError string `json:"resize_error,omitempty"`
 }
 
 // Validate checks an answer's strings.
@@ -452,7 +455,10 @@ func (r *AnswerResult) Validate() error {
 	if len(r.Also) > MaxRequestsLimit*4 {
 		return bad("too many requests decided together")
 	}
-	return checkText("open error", r.OpenError, maxViewText)
+	if err := checkText("open error", r.OpenError, maxViewText); err != nil {
+		return err
+	}
+	return checkText("resize error", r.ResizeError, maxViewText)
 }
 
 // Lines is s as a peer takes a text of several lines: like Text, but a

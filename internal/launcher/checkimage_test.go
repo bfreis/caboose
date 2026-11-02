@@ -198,3 +198,33 @@ func TestCheckImageVMNoDockerd(t *testing.T) {
 		t.Errorf("stdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 }
+
+// Under vm an image without e2fsprogs is usable all the same: the
+// checklist says a volume cannot be shrunk while the VM runs, and stderr
+// what to add; with them, the row says where they are.
+func TestCheckImageVMNoE2fsprogs(t *testing.T) {
+	rep := passingReport(t)
+	rep.E2fsprogs = map[string]string{"e2fsck": "/usr/sbin/e2fsck", "resize2fs": ""}
+	g := &fakeImageGuest{store: map[string]*imagecheck.Report{"caboose-base:default": rep}}
+	a, stdout, stderr := vmCheckApp(g, nil)
+	if err := a.CheckImage(nil); err != nil {
+		t.Fatalf("CheckImage: %v", err)
+	}
+	for _, s := range []string{"volume shrink", "no resize2fs", "Usable: every requirement is met."} {
+		if !strings.Contains(stdout.String(), s) {
+			t.Errorf("stdout lacks %q:\n%s", s, stdout)
+		}
+	}
+	if !strings.Contains(stderr.String(), "e2fsprogs-extra") {
+		t.Errorf("stderr says nothing of what to add:\n%s", stderr)
+	}
+
+	rep.E2fsprogs["resize2fs"] = "/usr/sbin/resize2fs"
+	a, stdout, stderr = vmCheckApp(g, nil)
+	if err := a.CheckImage(nil); err != nil {
+		t.Fatalf("CheckImage: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "available (/usr/sbin/e2fsck, /usr/sbin/resize2fs)") || strings.Contains(stderr.String(), "e2fsprogs-extra") {
+		t.Errorf("stdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+}

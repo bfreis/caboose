@@ -106,12 +106,25 @@ type reqRec struct {
 	Addrs   []netip.Addr      `json:"addrs,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Origin  string            `json:"origin,omitempty"`
+	// Volume and Size are a volume resize's volume and new size, in
+	// bytes; Outcome is what came of the resize once allowed, "" until
+	// the resize has ended (or could not start).
+	Volume  string `json:"volume,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	// VolumeFrom and Configured are the volume's size when the resize
+	// was filed, its disk's (the host's facts) and config.toml's, and
+	// Profile the vm profile then in use: a volume that has changed
+	// since is never resized for the request (VolumeChanged).
+	VolumeFrom int64  `json:"volume_from,omitempty"`
+	Configured int64  `json:"configured,omitempty"`
+	Profile    string `json:"profile,omitempty"`
 }
 
 // request is the policy.Request r stands for, as far as an answer needs.
 func (r *reqRec) request() policy.Request {
 	return policy.Request{Kind: r.Kind, Alias: r.Alias, Args: r.Args, Host: r.Host, Literal: r.Literal,
-		Port: r.Port, Addrs: r.Addrs, URL: r.URL, Origin: r.Origin}
+		Port: r.Port, Addrs: r.Addrs, URL: r.URL, Origin: r.Origin, Volume: r.Volume, VolumeSize: r.Size}
 }
 
 type requestsDoc struct {

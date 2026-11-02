@@ -287,6 +287,34 @@ func TestProbeGitVersion(t *testing.T) {
 	}
 }
 
+// e2fsck and resize2fs are reported as facts, never a problem when absent:
+// where each is, found on PATH, else in the fixed directories under the root.
+func TestProbeE2fsprogs(t *testing.T) {
+	f := newFake(t)
+	r := f.probe(1000, 1000)
+	if !r.OK() || !slices.Equal(r.E2fsprogsMissing(), E2fsprogsParts) || len(r.E2fsprogs) != 2 {
+		t.Errorf("none: ok %v e2fsprogs %q", r.OK(), r.E2fsprogs)
+	}
+	f.stub("e2fsck", "exit 0")
+	r = f.probe(1000, 1000)
+	if !r.OK() || !slices.Equal(r.E2fsprogsMissing(), []string{"resize2fs"}) || r.E2fsprogs["e2fsck"] != filepath.Join(f.bin, "e2fsck") {
+		t.Errorf("e2fsck only: ok %v e2fsprogs %q", r.OK(), r.E2fsprogs)
+	}
+	f.stub("resize2fs", "exit 0")
+	r = f.probe(1000, 1000)
+	if !r.OK() || r.E2fsprogsMissing() != nil || r.E2fsprogs["resize2fs"] != filepath.Join(f.bin, "resize2fs") {
+		t.Errorf("both: ok %v e2fsprogs %q", r.OK(), r.E2fsprogs)
+	}
+	f.unstub("e2fsck")
+	f.unstub("resize2fs")
+	f.file("usr/local/sbin/e2fsck", "")
+	f.file("sbin/resize2fs", "")
+	r = f.probe(1000, 1000)
+	if !r.OK() || r.E2fsprogs["e2fsck"] != "/usr/local/sbin/e2fsck" || r.E2fsprogs["resize2fs"] != "/sbin/resize2fs" {
+		t.Errorf("off PATH: ok %v e2fsprogs %q", r.OK(), r.E2fsprogs)
+	}
+}
+
 func TestProbeNeitherLibc(t *testing.T) {
 	f := newFake(t)
 	f.remove("lib/aarch64-linux-gnu/libc.so.6")

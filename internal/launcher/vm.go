@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,6 +53,7 @@ func (a *App) vmBox() *backend.VM {
 	// The launcher says what went wrong, as Die; the backend only returns
 	// it.
 	v.Stderr = nil
+	v.Note = a.Note
 	if exe, err := a.executable(); err == nil {
 		v.Self = exe
 	}
@@ -328,31 +330,122 @@ func scratchSize(c *config.Config) (int64, error) {
 	return n, nil
 }
 
-// volumeSize is the size of a volume's disk, made when it is new.
-const volumeSize = 64 << 30
+// volumesDir is the data dir's directory of volumes' disks, beside every
+// VM's directory, so caboose restart keeps them.
+func (a *App) volumesDir() string { return filepath.Join(a.vmRoot(), "volumes") }
 
-// Volume is the volume's disk in the data dir's vm/volumes/, outside
-// every VM's directory, so caboose restart keeps it: cloned from the empty
-// template when it is new.
-func (h *vmHost) Volume(name string) (string, error) {
-	dir := filepath.Join(h.a.vmRoot(), "volumes")
-	p := filepath.Join(dir, name+".img")
-	if isFile(p) {
-		return p, nil
+// volumeDisk is the disk of the volume called name.
+func (a *App) volumeDisk(name string) string { return filepath.Join(a.volumesDir(), name+".img") }
+
+// volumeSize is the size config.toml gives the volume called name: the
+// profile's docker_size for caboose's own, else the size of the profile's
+// volume of that name; ok is false for a volume the profile does not
+// declare (the VM was created with it, and the profile changed since).
+func volumeSize(c *config.Config, name string) (size int64, ok bool, err error) {
+	if name == dockerVolume {
+		n, err := dockerSize(c)
+		return n, err == nil, err
 	}
+	for _, v := range c.Volumes {
+		if v.Name == name {
+			return v.Size, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// dockerSize is the size of the disk of the sandbox's dockerd: the
+// profile's docker_size, else config.DefaultDockerSize.
+func dockerSize(c *config.Config) (int64, error) {
+	if c.VMDockerSize == "" {
+		return config.DefaultDockerSize, nil
+	}
+	n, err := config.ParseScratchSize(c.VMDockerSize)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %v", c.ProfileKey("docker_size"), err)
+	}
+	return n, nil
+}
+
+// Volume is the volume's disk, at the size config.toml gives it, read
+// at every start: made from the empty template at that size when it is
+// missing, and grown to it when it is smaller, the guest growing its
+// filesystem to fill it. A disk larger than its size is left as it is: a
+// start never shrinks a volume, which would cut off what the guest wrote
+// there. A volume the profile no longer declares keeps its disk's size,
+// and is made at config.DefaultVolumeSize when missing. A disk another
+// process holds (a VM of its own, caboose-vmm's lock) is refused here,
+// naming the volume, rather than by caboose-vmm as the VM boots.
+func (h *vmHost) Volume(name string) (backend.VMDisk, error) {
+	size, ok, err := volumeSize(h.a.Cfg, name)
+	if err != nil {
+		return backend.VMDisk{}, err
+	}
+	p := h.a.volumeDisk(name)
+	fi, err := os.Stat(p)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if !ok {
+			size = config.DefaultVolumeSize
+		}
+		if err := h.newVolume(p, size); err != nil {
+			return backend.VMDisk{}, err
+		}
+	case err != nil:
+		return backend.VMDisk{}, err
+	case !fi.Mode().IsRegular():
+		return backend.VMDisk{}, fmt.Errorf("%s is not a disk image", p)
+	default:
+		// Before it is grown: a VM running on it serves it at the size
+		// it booted with.
+		if err := diskFree(p); err != nil {
+			return backend.VMDisk{}, err
+		}
+		if ok && fi.Size() < size {
+			if err := os.Truncate(p, size); err != nil {
+				return backend.VMDisk{}, fmt.Errorf("growing %s to %s: %v", p, gibString(size), err)
+			}
+		}
+	}
+	if fi, err = os.Stat(p); err != nil {
+		return backend.VMDisk{}, err
+	}
+	return backend.VMDisk{Path: p, Size: fi.Size()}, nil
+}
+
+// newVolume makes a volume's disk at p, of size, from the empty template.
+func (h *vmHost) newVolume(p string, size int64) error {
 	tmpl, err := h.a.vmTemplate()
 	if err != nil {
-		return "", err
+		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
 	}
 	_ = os.Remove(p + ".new")
-	if err := vm.NewDisk(tmpl, p+".new", volumeSize); err != nil {
+	if err := vm.NewDisk(tmpl, p+".new", size); err != nil {
 		os.Remove(p + ".new")
-		return "", err
+		return err
 	}
-	return p, os.Rename(p+".new", p)
+	return os.Rename(p+".new", p)
+}
+
+// diskFree says, as an error, when another process holds the lock
+// caboose-vmm takes on a disk it serves.
+func diskFree(p string) error {
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return fmt.Errorf("its disk %s is in use by another process (a VM still running on it?)", p)
+	}
+	if err != nil {
+		return fmt.Errorf("locking its disk %s: %v", p, err)
+	}
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
 func (h *vmHost) StartVMM(dir vm.Dir) error {
@@ -426,11 +519,21 @@ func (a *App) doctorVMDisks(c *checkup) {
 		c.note("disks", "%s, the empty disk scratch disks and volumes are made from, is missing: the next start makes it in the builder guest, or 'caboose build' now", a.short(tmpl))
 		return
 	}
-	if warn := scratchSpaceWarning(a.Cfg.DataDir, size); warn != "" {
-		c.note("disks", "%s", warn)
+	docker, err := dockerSize(a.Cfg)
+	if err != nil {
+		c.problem("disks", "fix it in config.toml", "%v", err)
 		return
 	}
-	c.ok("disks", "a scratch disk of up to %s at each start", gibString(size))
+	warned := false
+	for _, w := range []string{scratchSpaceWarning(a.Cfg.DataDir, size), dockerSpaceWarning(a.Cfg.DataDir, docker)} {
+		if w != "" {
+			c.note("disks", "%s", w)
+			warned = true
+		}
+	}
+	if !warned {
+		c.ok("disks", "a scratch disk of up to %s at each start, and dockerd's of up to %s", gibString(size), gibString(docker))
+	}
 }
 
 // vmFreeSpace is the space free to this user on the volume that holds
@@ -445,12 +548,25 @@ var vmFreeSpace = func(path string) (int64, error) {
 // the disk takes only what the VM writes, but a VM that writes that much
 // fills the volume first. "" when it fits, or when the space is unknown.
 func scratchSpaceWarning(dataDir string, size int64) string {
+	return diskSpaceWarning(dataDir, "scratch_size", "the scratch disk", size)
+}
+
+// dockerSpaceWarning is scratchSpaceWarning for dockerd's disk, of
+// docker_size, which the data dir holds too.
+func dockerSpaceWarning(dataDir string, size int64) string {
+	return diskSpaceWarning(dataDir, "docker_size", "dockerd's disk", size)
+}
+
+// diskSpaceWarning says when disk, of size as key gives it, could outgrow
+// the space free on the volume of the data dir; "" when it fits, or when
+// the space is unknown.
+func diskSpaceWarning(dataDir, key, disk string, size int64) string {
 	free, err := vmFreeSpace(dataDir)
 	if err != nil || size <= free {
 		return ""
 	}
-	return fmt.Sprintf("scratch_size is %s, and the volume of the data dir (%s) has %s free: the scratch disk takes only what the VM writes, but a VM that writes past %s fills that volume first",
-		gibString(size), dataDir, gibString(free), gibString(free))
+	return fmt.Sprintf("%s is %s, and the volume of the data dir (%s) has %s free: %s takes only what the VM writes, but a VM that writes past %s fills that volume first",
+		key, gibString(size), dataDir, gibString(free), disk, gibString(free))
 }
 
 // gibString is n bytes in the units config.toml writes a size in: "64G",

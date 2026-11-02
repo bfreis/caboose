@@ -1,0 +1,36 @@
+
+  caboose apply  environment default
+  1 proposal from sessions in the sandbox. Each is shown whole, and nothing
+  changes until you say so. ^C stops; what was applied before it stays.
+
+  A build cache                                                            1/1
+  ────────────────────────────────────────────────────────────────────────────
+  go builds start cold
+
+  cache.toml, proposed 1h ago
+
+  A volume of vm.default ([vm.default.volume.gocache]):
+    --- TMP/.caboose/envs/default/config.toml
+    +++ with the change
+      [vm.default]
+      cpus = 2
+    + 
+    + [vm.default.volume.gocache]
+    + path = "~/.cache/go-build"
+    + size = "40G"
+
+  "~/.cache/go-build": the VM gets it, its disk made then, when caboose restart
+  recreates it (which ends running sessions), or at its creation when there is
+  none
+
+  ? Apply this proposal?
+    1  Apply it
+    2  Leave it pending
+    3  Delete it
+    choose 1-3 [1]:   ✓ Wrote [vm.default.volume.gocache] to
+    TMP/.caboose/envs/default/config.toml:
+    the VM gets it, its disk made then, when caboose restart recreates it (which
+    ends running sessions), or at its creation when there is none
+  ✓ Applied cache
+
+  There is no VM yet: the next launch creates it with all of this.

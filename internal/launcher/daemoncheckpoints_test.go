@@ -458,6 +458,10 @@ func TestDaemonAgentCheckpoint(t *testing.T) {
 	if in == nil || in.runner.cfg.Checkpoints == nil || in.runner.cfg.CheckpointLimits == nil || in.runner.cfg.CheckpointRequests != config.CheckpointRequestsAllow {
 		t.Fatalf("the link offers no checkpoints: %+v", in)
 	}
+	// It offers volume resizes too, as the environment's jobs.
+	if in.runner.cfg.Volumes == nil || in.runner.resizer != (volumeJobs{l: l, env: "alpha"}) {
+		t.Fatalf("the link offers no volume resizes: %+v %+v", in.runner.cfg.Volumes, in.runner.resizer)
+	}
 	cp, lim := l.agentCheckpoints(e)
 	if lim != in.runner.cfg.CheckpointLimits {
 		t.Error("the limits are not the environment's")

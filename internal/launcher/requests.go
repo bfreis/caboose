@@ -408,6 +408,9 @@ func (a *App) printAnswer(r *daemonproto.AnswerResult) {
 		}
 		fmt.Fprintf(out, "  also decided with it: %s\n", strings.Join(ids, ", "))
 	}
+	if r.ResizeError != "" {
+		fmt.Fprintf(out, "  the resize did not start: %s\n", pr(r.ResizeError))
+	}
 	if r.OpenError != "" {
 		fmt.Fprintf(out, "  the URL did not open: %s\n", pr(r.OpenError))
 	}

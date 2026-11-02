@@ -495,6 +495,7 @@ export function createPages(deps) {
       done: (res) => {
         announce(M.announcement(res, choice, id));
         if (isStr(res?.open_error) && res.open_error !== "") alertMsg("Request " + id + " is allowed, but its URL did not open: " + res.open_error);
+        if (isStr(res?.resize_error) && res.resize_error !== "") alertMsg("Request " + id + " is allowed, but its resize did not start: " + res.resize_error);
         const card = requestsList.cache.get(M.cardKey(env, id));
         if (card) {
           card.state.done = true;

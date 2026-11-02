@@ -1,6 +1,6 @@
 ---
 name: caboose-requests
-description: Use when something the sandbox needs is refused or waits for a person on the host - a connection answered 403 with "pending #N", an open of a URL that says "pending", an alias that exits 75 or 77, a host the egress proxy will not reach - or when you can tell ahead that you will need one, or want the host to take a checkpoint now (caboose-agent checkpoint) before something risky. Explains how to ask the user on the host with the caboose_request tool or caboose-agent request, what to put in it, never to wait for the answer, how to find out what was decided, and what the exit codes mean.
+description: Use when something the sandbox needs is refused or waits for a person on the host - a connection answered 403 with "pending #N", an open of a URL that says "pending", an alias that exits 75 or 77, a host the egress proxy will not reach - or when you can tell ahead that you will need one, or want the host to take a checkpoint now (caboose-agent checkpoint) before something risky, or need one of the VM's volumes bigger or smaller (caboose-agent request volume-resize). Explains how to ask the user on the host with the caboose_request tool or caboose-agent request, what to put in it, never to wait for the answer, how to find out what was decided, and what the exit codes mean.
 ---
 
 # Asking the host for what the sandbox cannot do alone
@@ -81,6 +81,24 @@ too often (later, not in a loop), 77 when the user turned it off, 69 when the
 host takes none here. At most one per path a
 minute and 10 requests an hour; do not call it in a loop. The user restores
 one on the host; you cannot.
+
+## A volume's size
+
+Under `vm`, a volume of the profile (a disk mounted at a path, listed under
+`[volumes]` in `~/.caboose-proposals/current/state.toml`) can change size
+while the VM runs: `caboose-agent request volume-resize NAME SIZE`, such as
+`caboose-agent request volume-resize cache 128G`, with `--context` and the
+rest as above (the tool `caboose_request` does not take this kind: run the
+command). You name the volume and the size, nothing else. The host refuses
+at once (exit 77, with why) a volume the profile lacks, one the running VM
+cannot resize live, a size outside `4G` to `1024G`, or a total of the
+profile's volume sizes past its `volume_limit` (it says the most you may ask
+for); otherwise it is `pending #N`, and a person allows each resize once. A
+shrink unmounts the volume for a while and is refused while anything in here
+holds a file on it: say so in `meanwhile`, and keep processes off it until
+it is decided. Once allowed, the host runs it; `caboose-agent requests`
+then shows what came of it after the reason ("then: ..."). A volume the
+profile lacks is a proposal (the caboose-propose skill), not a request.
 
 ## Good to know
 

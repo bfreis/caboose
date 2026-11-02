@@ -31,7 +31,10 @@ const (
 	waitCmdPad  = 15 * time.Second
 	sessionVar  = "CLAUDE_CODE_SESSION_ID"
 	sinceNow    = "now"
-	requestKind = "alias, egress, open_url or port"
+	requestKind = "alias, egress, open_url, port or volume-resize"
+	// volumeResize is the command line's kind of a volume_resize request,
+	// which takes the volume's name and size as words of their own.
+	volumeResize = "volume-resize"
 )
 
 // sanitize is s without anything a terminal would act on, and without
@@ -214,7 +217,7 @@ func requestWith(socket string, getenv func(string) string, args []string, stdou
 		fmt.Fprintf(stderr, "caboose-agent: request: %v\n", err)
 		return 2
 	}
-	if len(fs.pos) != 1 {
+	if len(fs.pos) == 0 || len(fs.pos) != 1 && fs.pos[0] != volumeResize {
 		return usage()
 	}
 	asJSON := fs.set("json")
@@ -231,6 +234,19 @@ func requestWith(socket string, getenv func(string) string, args []string, stdou
 	ask := agentproto.Ask{Kind: fs.pos[0]}
 	switch ask.Kind {
 	case "alias", "egress", "open_url", "port":
+	case volumeResize:
+		if len(fs.pos) != 3 {
+			return fail("a volume-resize request takes a volume's name and its new size: volume-resize NAME SIZE, such as volume-resize cache 128G")
+		}
+		ask.Kind, ask.Volume, ask.Size = "volume_resize", fs.pos[1], fs.pos[2]
+		if len(ask.Volume) > agentproto.MaxAskVolume || len(ask.Size) > agentproto.MaxAskSize {
+			return fail("the volume's name is at most %d bytes, and its size %d", agentproto.MaxAskVolume, agentproto.MaxAskSize)
+		}
+		for _, f := range []string{"alias", "arg", "host", "port", "url"} {
+			if fs.set(f) {
+				return fail("a volume-resize request takes NAME SIZE alone, not --%s", f)
+			}
+		}
 	default:
 		return fail("the kind is %s, not %q", requestKind, sanitize(ask.Kind, 32))
 	}

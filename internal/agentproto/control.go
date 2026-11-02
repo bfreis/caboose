@@ -9,6 +9,12 @@ package agentproto
 // already booted is answered the same way, so a later launch can connect
 // again and learn it is up. The host sends TypeClock again after every
 // sleep of the host's, and TypeShutdown to stop the guest.
+//
+// TypeVolume asks the agent for one step of a volume's resize (Volume,
+// a VolumeOp), on a connection of its own, one step at a time; the agent
+// answers each with a TypeVolume of its own (VolumeInfo, or Error). An
+// agent that does not know it never answers, which the host's bounded
+// wait tells: the guest's agent is from another caboose.
 
 // The ports the agent listens on in a vm guest; the host dials each
 // through the VM's vsock (vm.sock, internal/hvsock).
@@ -71,8 +77,86 @@ type GuestMount struct {
 	ReadOnly bool `json:"read_only,omitempty"`
 }
 
-// GuestDisk is one of the VM's disks, mounted at Target.
+// GuestDisk is one of the VM's disks, mounted at Target: by its Device,
+// one of the framework's own disks, whose names follow their order; or by
+// its Serial, one of caboose-vmm's block devices, which the guest names
+// in the order it finds them.
 type GuestDisk struct {
-	Device string `json:"device"` // /dev/vdc, /dev/vdd, ...
+	Device string `json:"device,omitempty"` // /dev/vdc, /dev/vdd, ...
+	Serial string `json:"serial,omitempty"`
 	Target string `json:"target"`
+}
+
+// The steps of a volume's resize (VolumeOp.Op). The volume is named by
+// its disk's serial, its name, and is one of the boot's disks; the agent
+// finds its device and target itself.
+const (
+	// VolumeUsage says what the volume holds, and whether the image has
+	// what a shrink runs: VolumeInfo, changing nothing.
+	VolumeUsage = "usage"
+	// VolumeGrow grows the mounted filesystem, online, to fill its disk,
+	// once the disk is Size bytes (the host grew it: the guest hears of
+	// the new size a moment later).
+	VolumeGrow = "grow"
+	// VolumeUnmount trims the volume and unmounts it, refusing while any
+	// process holds a file, a directory or a mapping on it
+	// (VolumeInfo.Holders) or anything is mounted inside it, and mounting
+	// it again when its filesystem stays in use elsewhere (another mount
+	// namespace's mount of it).
+	VolumeUnmount = "unmount"
+	// VolumeShrinkFS checks the unmounted filesystem (e2fsck), discarding
+	// its free blocks, and shrinks it to Size bytes (resize2fs), each to
+	// its end, however long it takes.
+	VolumeShrinkFS = "shrinkfs"
+	// VolumeMount mounts the volume again, as a boot does, and grows its
+	// filesystem to fill the disk once the disk is Size bytes; a disk
+	// still of another size after a bounded wait is mounted ungrown, and
+	// said so (VolumeInfo.Note).
+	VolumeMount = "mount"
+)
+
+// VolumeOp is one step of a volume's resize, from the host.
+type VolumeOp struct {
+	Op   string `json:"op"`
+	Name string `json:"name"`
+	// Size is the disk's size in bytes the step is for: Grow's, ShrinkFS'
+	// and Mount's.
+	Size int64 `json:"size,omitempty"`
+}
+
+// The bounds of a VolumeInfo, which the agent keeps to and the host checks
+// again: it is the guest's.
+const (
+	MaxVolumeHolders = 10
+	MaxVolumeText    = 1000
+)
+
+// VolumeInfo is the agent's answer to a VolumeOp. Everything in it is
+// the guest's, which the host bounds and checks before use.
+type VolumeInfo struct {
+	Op string `json:"op"`
+	// Target is where the volume is mounted, Mounted whether it is now.
+	Target  string `json:"target,omitempty"`
+	Mounted bool   `json:"mounted,omitempty"`
+	// DiskBytes is the disk's size as the guest sees it.
+	DiskBytes int64 `json:"disk_bytes,omitempty"`
+	// FSBytes and UsedBytes are the filesystem's size and what is used of
+	// it (statfs), while it is mounted.
+	FSBytes   int64 `json:"fs_bytes,omitempty"`
+	UsedBytes int64 `json:"used_bytes,omitempty"`
+	// Holders are the processes and mounts that keep the volume from
+	// being unmounted, at most MaxVolumeHolders, each "PID (COMMAND):
+	// PATH" or "mount at PATH"; HoldersMore says how many more there are.
+	Holders     []string `json:"holders,omitempty"`
+	HoldersMore int      `json:"holders_more,omitempty"`
+	// Missing names the tools a shrink runs that the image lacks
+	// (e2fsck, resize2fs), "" when it has them: Usage's.
+	Missing string `json:"missing,omitempty"`
+	// Dirty: a ShrinkFS that failed may have left the filesystem half
+	// changed, which must not be mounted again.
+	Dirty bool `json:"dirty,omitempty"`
+	// Note is what the step has to say beyond its outcome; Error, why it
+	// failed.
+	Note  string `json:"note,omitempty"`
+	Error string `json:"error,omitempty"`
 }

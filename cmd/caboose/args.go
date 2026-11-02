@@ -295,6 +295,64 @@ path. It does not sign it ('make app' does, ad hoc).
 writes DIR/Caboose.app, which must not exist, around the binary at PATH,
 with the release's identifier and VERSION, and prints its path. It signs
 nothing either.`},
+	{Name: "volume", Usage: "ACTION", Args: ownArgs,
+		Summary: "add, list, remove or resize the profiles' volumes",
+		Help: `ACTION is one of:
+  create NAME PATH [--size SIZE] [--profile PROFILE]
+  ls [--json]
+  rm NAME [--profile PROFILE] [--delete-disk]
+  resize NAME SIZE
+
+A volume is a table of an isolation profile in config.toml,
+[PROFILE.volume.NAME], mounted at its path in the sandbox. Under vm it is a
+disk of the environment's, vm/volumes/NAME.img in the data dir, kept
+between starts and shared by every vm profile that declares NAME; under
+container and gvisor caboose attaches none yet. PROFILE is the profile in
+use unless --profile names another, as <kind>.<name> (vm.default).
+
+create adds the table, after the profile's own, with path and, under vm,
+size (SIZE, 64G when not given; under container and gvisor a volume has
+none). PATH is a directory of the sandbox: ~/REL directly in ~, ~/.config,
+~/.local, ~/.local/share or ~/.cache, or an absolute path outside the
+roots and caboose's own mounts. config.toml is written only if it then
+loads, every check of the volumes included. A VM's volumes are fixed when
+it is created: the next start of an environment with no VM makes the disk
+and mounts it, and a VM that exists, running or stopped, gets the volume
+when 'caboose restart' recreates it.
+
+ls shows each volume: the profiles that declare it, with path and size,
+its disk's size and the space it takes up on this machine, and whether the
+running VM has it, on which kind of disk; a disk no profile declares, and
+dockerd's disk, too. --json prints the same as JSON.
+
+rm comments out the table, refused while the running VM has the volume
+and the profile is the one in use, or the disk is to go ('caboose stop'
+first). The disk is kept, with what it holds, unless
+--delete-disk, which deletes it once no vm profile declares NAME, after
+asking (no by default; CABOOSE_FORCE=1 skips the question, and with no
+terminal it refuses). NAME may then be a volume no profile declares.
+
+resize makes volume NAME of the vm profile in use SIZE (4G to 1024G, as
+config.toml writes a size: "48G", "49152M"), and writes the new size to its
+[vm.PROFILE.volume.NAME] table in config.toml once the disk has it.
+
+While the VM runs, with the volume on caboose-vmm's own disk (macOS 27 or
+later), it changes at once. Growing, the disk and then the filesystem grow,
+mounted, with the sandbox at work. Shrinking, the volume is unmounted in the
+guest -- refused, naming them, while any process holds a file or directory
+on it -- its disk is cloned beside it as a backup (NAME.img.before-shrink,
+which takes no space until either changes), the guest checks and shrinks
+the filesystem with e2fsck and resize2fs, the disk is cut to SIZE, and the
+volume is mounted again; the backup is then deleted. A shrink is refused
+below what the volume holds plus a margin of a tenth of that, at least 1G.
+A step that fails says what it left and what to do, keeping the backup if
+the filesystem was touched.
+
+With the VM stopped, or a volume on Virtualization.framework's own disks
+(a VM created before macOS 27), the new size takes effect at the next
+start, and only to grow: a start never shrinks a disk, so a shrink needs
+the VM running, on macOS 27 or later. Under container and gvisor volumes
+have no size.`},
 	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
 		Summary: "delete old Claude Code versions and unused packages",
 		Help: `Deletes the installed Claude Code versions beyond the newest

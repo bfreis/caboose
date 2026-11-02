@@ -13,7 +13,7 @@ import (
 
 // A proposed settings part sets a few keys of config.toml: [session] tz,
 // hostname and tmux, [build] auto_build, and the cpus, memory and
-// scratch_size of the [vm.NAME] profile in use. It widens nothing the sandbox reaches, so it
+// scratch_size and docker_size of the [vm.NAME] profile in use. It widens nothing the sandbox reaches, so it
 // is confirmed by the diff alone, but it is still the host's to judge: the
 // VM keys need a vm isolation and a profile to write them in (the session
 // never names the profile), and a VM cannot be sized past this machine.
@@ -75,10 +75,10 @@ func (a *App) planSettings(s proposal.Settings) (pl *settingsPlan, refusals, war
 		set("build.auto_build", strconv.FormatBool(*s.AutoBuild), *s.AutoBuild, c.AutoBuild == *s.AutoBuild,
 			"from the next launch that has to create the "+a.noun(), false)
 	}
-	if s.CPUs != nil || s.Memory != nil || s.ScratchSize != nil {
+	if s.CPUs != nil || s.Memory != nil || s.ScratchSize != nil || s.DockerSize != nil {
 		switch {
 		case isolationOf(c) != config.KindVM:
-			refusals = append(refusals, fmt.Sprintf("vm.cpus, vm.memory and vm.scratch_size size a VM, and this environment's isolation is %s.", isolationOf(c)))
+			refusals = append(refusals, fmt.Sprintf("vm.cpus, vm.memory, vm.scratch_size and vm.docker_size size a VM, and this environment's isolation is %s.", isolationOf(c)))
 		case c.Profile == "":
 			refusals = append(refusals, "config.toml has no [vm.NAME] profile to set them in.")
 		}
@@ -112,6 +112,21 @@ func (a *App) planSettings(s proposal.Settings) (pl *settingsPlan, refusals, war
 			set(c.Profile+".scratch_size", str(*s.ScratchSize), *s.ScratchSize, same, "from the VM's next start", true)
 			// A warning, not a refusal: the disk is a sparse file.
 			if w := scratchSpaceWarning(c.DataDir, n); w != "" && !same {
+				warnings = append(warnings, proposal.Printable(w)+".")
+			}
+		}
+	}
+	if len(refusals) == 0 && s.DockerSize != nil {
+		n, err := config.ParseScratchSize(*s.DockerSize)
+		if err != nil {
+			refusals = append(refusals, fmt.Sprintf("vm.docker_size: %s.", proposal.Printable(err.Error())))
+		} else {
+			cur, cerr := config.ParseScratchSize(c.VMDockerSize)
+			same := c.VMDockerSize != "" && cerr == nil && cur == n
+			set(c.Profile+".docker_size", str(*s.DockerSize), *s.DockerSize, same,
+				"from the VM's next start; a size below the disk's current one leaves the disk as it is, since a disk is never shrunk", true)
+			// A warning, not a refusal, as for scratch_size.
+			if w := dockerSpaceWarning(c.DataDir, n); w != "" && !same {
 				warnings = append(warnings, proposal.Printable(w)+".")
 			}
 		}

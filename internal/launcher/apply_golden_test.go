@@ -143,6 +143,15 @@ func TestApplyGolden(t *testing.T) {
 		e.propose("ssh.toml", "title = \"Mount ssh\"\n[roots]\nssh = \"~/.ssh\"\n")
 		goldenApply(t, e, "refused", "2\n")
 	})
+	t.Run("volume", func(t *testing.T) {
+		e := newGoldenEnv(t, "default")
+		free := vmFreeSpace
+		vmFreeSpace = func(string) (int64, error) { return 1 << 50, nil }
+		t.Cleanup(func() { vmFreeSpace = free })
+		e.writeConfig("isolation = \"vm.default\"\n\n[vm.default]\ncpus = 2\n")
+		e.propose("cache.toml", "title = \"A build cache\"\nreason = \"go builds start cold\"\n[volume]\nname = \"gocache\"\npath = \"~/.cache/go-build\"\nsize = \"40G\"\n")
+		goldenApply(t, e, "volume", "1\n")
+	})
 	t.Run("unparsable", func(t *testing.T) {
 		e := newGoldenEnv(t, "default")
 		e.propose("junk.toml", "title = \"t\"\n[nope]\nx = 1\n")

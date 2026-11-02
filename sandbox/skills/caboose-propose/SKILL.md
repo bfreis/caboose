@@ -1,6 +1,6 @@
 ---
 name: caboose-propose
-description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a directory of a root made writable, a few settings (time zone, hostname, tmux, auto_build, VM size), a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
+description: Use when the user wants a tool, package or command installed for good in the caboose sandbox, a change to its image or Dockerfile, another host directory mounted (a new root), a directory of a root made writable, a few settings (time zone, hostname, tmux, auto_build, VM size), a volume (a disk of its own mounted at a path), a named command on the host the sandbox may run (an alias), or any change to the sandbox that a session cannot make itself (ports, URLs, host commands, isolation, VM size, docker run flags, engine socket, network egress). Writes a proposal to ~/.caboose-proposals/ for the user to review with caboose apply on the host, and says which config.toml key the user changes for what cannot be proposed.
 ---
 
 # Proposing a change to the sandbox
@@ -28,8 +28,11 @@ launch and after every `apply`. It is the authority, not these instructions:
   the rest is read-only.
 - `[settings]`: the values a settings proposal changes, as `config.toml` has
   them now (`tz` and `hostname` are `""` when unset), `isolation` (the
-  kind in use) and `vm_profile` (the `[vm.NAME]` that `cpus`, `memory` and `scratch_size`
-  are set in, `""` when `config.toml` defines none).
+  kind in use) and `vm_profile` (the `[vm.NAME]` that `cpus`, `memory`, `scratch_size` and
+  `docker_size` are set in, `""` when `config.toml` defines none).
+- `volume_profile`: the isolation profile a volume proposal goes into (`""`
+  when `config.toml` defines none in use), its volumes as `[volumes.NAME]`
+  (`path`, and under vm `size`), and under vm its `volume_limit`.
 
 ## 2. Write ~/.caboose-proposals/NAME.toml
 
@@ -37,7 +40,7 @@ NAME: lowercase letters, digits, `-` and `_`, starting with a letter or
 digit, at most 32. One request, one proposal. A proposal holds a `title`
 (one line, at most 100 characters), a `reason` (a sentence or two), and the
 image's part for its kind, one root, or both; or one alias, alone; or one
-writable part, alone; or settings, alone.
+writable part, alone; or settings, alone; or one volume, alone.
 
 @@IF image=apko@@
 ### apko image: packages
@@ -221,13 +224,14 @@ auto_build = false
 cpus = 6
 memory = "12G"
 scratch_size = "128G"   # the disk everything outside the mounts is written to
+docker_size = "128G"    # the disk dockerd keeps its storage on; never shrunk
 ```
 
-Alone in its proposal, and only these seven keys (dotted keys, like
+Alone in its proposal, and only these eight keys (dotted keys, like
 `session.tz = "UTC"` under `[settings]`, are the same): `session.tz` (a zone
 name such as `Europe/Lisbon`), `session.hostname` (one DNS label),
-`session.tmux`, `build.auto_build`, `vm.cpus`, `vm.memory` and
-`vm.scratch_size` (`4G` to `1024G`, written as memory is). Any other key,
+`session.tmux`, `build.auto_build`, `vm.cpus`, `vm.memory`,
+`vm.scratch_size` and `vm.docker_size` (`4G` to `1024G`, written as memory is). Any other key,
 or any other `config.toml` setting, refuses the proposal whole. The VM keys
 are refused when the isolation in `state.toml` is not `vm`, when it has no
 `vm_profile`, and when they ask for more CPUs or memory than the host has;
@@ -235,6 +239,27 @@ a value `config.toml` has already is left out. The host shows the change to
 `config.toml` as a diff and says when each key takes effect: `tz`, `tmux`
 and `auto_build` need no restart (new sessions, the next launch), `hostname`
 and the VM's size take `caboose@@CABOOSE_ENV_FLAG@@ restart`.
+
+### A volume
+
+```toml
+title = "Keep the Go build cache"
+reason = "every build starts cold."
+
+[volume]
+name = "gocache"            # lowercase letters, digits, - and _, at most 20
+path = "~/.cache/go-build"  # directly in ~, ~/.config, ~/.local, ~/.local/share or ~/.cache, or absolute
+size = "40G"                # vm only, 4G to 1024G; 64G when left out
+```
+
+Alone in its proposal. It goes into `volume_profile`; you never name the
+profile. The host refuses a name the profile has already (under vm, a new
+size for one is `caboose-agent request volume-resize NAME SIZE`, the
+caboose-requests skill, not a proposal), `docker`, a size outside vm, a path
+at, in or around caboose's own mounts, the kept paths caboose reads, a root
+or `/work`, one nesting with another volume, and a 20th volume under vm. The
+sandbox gets the volume only after `caboose@@CABOOSE_ENV_FLAG@@ restart`
+(which ends every session).
 
 ### Everywhere
 
@@ -269,7 +294,8 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | an image profile | `[apko.NAME]` `packages`, `defaults`; `[dockerfile.NAME]` (its Dockerfile in the environment's `dockerfile/NAME/`); `[ref.NAME]` `image` |
 | a capability, a device, DNS, any other `docker run` flag | `run_args` in `[container.NAME]` or `[gvisor.NAME]` |
 | the host's Docker engine inside | `engine_socket = true` in `[container.NAME]` or `[gvisor.NAME]`: root-equivalent on the host |
-| VM size | `cpus`, `memory`, `scratch_size` in `[vm.NAME]`, or a `[settings]` proposal as above |
+| VM size | `cpus`, `memory`, `scratch_size`, `docker_size` in `[vm.NAME]`, or a `[settings]` proposal as above |
+| volumes | `[<profile>.volume.NAME]` (`caboose volume create` on the host), or a `[volume]` proposal as above; a volume's size under vm: `caboose-agent request volume-resize`, within `volume_limit` in `[vm.NAME]` (the user's key) |
 | VM outbound proxy | `egress`, `egress_ports`, `egress_allow`, `egress_deny` in `[vm.NAME]` (all but `egress` apply without a restart) |
 | forwarded ports, URL opening, any host command, checkpoints asked for from here | `forward_ports`, `open_urls`, `open_urls_allow`, `host_exec`, `checkpoint_requests` in `[link]` (within seconds); for one port, `caboose-agent request port --port N` also asks the host (caboose-requests skill) |
 | a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |

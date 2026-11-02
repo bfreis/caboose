@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bfreis/caboose/internal/broker"
 	"github.com/bfreis/caboose/internal/checkpoint"
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/daemon"
@@ -67,10 +68,13 @@ type DaemonLinks struct {
 	// no one. jobAction, when set, stands in for the job's Stop or
 	// Restart: the tests'. jobsLogMax caps jobs.log; 0 is maxJobsLog.
 	// jobNow is the jobs' clock; nil is time.Now.
-	jobNotify  func(env string) func(title, text string)
-	jobAction  func(app *App, kind string) error
-	jobsLogMax int64
-	jobNow     func() time.Time
+	jobNotify func(env string) func(title, text string)
+	jobAction func(app *App, kind string) error
+	// volumeAction, when set, stands in for a volume resize job's resize
+	// (volume_request.go): the tests'.
+	volumeAction func(app *App, r broker.Resize) (string, error)
+	jobsLogMax   int64
+	jobNow       func() time.Time
 
 	mu     sync.Mutex
 	log    *log.Logger
@@ -352,7 +356,7 @@ func (l *DaemonLinks) start(e *envLink, app *App) error {
 	}
 	cp, cpLimits := l.agentCheckpoints(e)
 	in.runner, err = app.newLinkRunner(linkRun{out: out, daemon: l.dir, execs: in.execs, gate: l.gate, decide: decide, lock: lock, actions: actions, dialogs: l.dialogs,
-		checkpoints: cp, cpLimits: cpLimits})
+		checkpoints: cp, cpLimits: cpLimits, resizer: volumeJobs{l: l, env: e.name}})
 	if err != nil {
 		out.Close()
 		unlock()

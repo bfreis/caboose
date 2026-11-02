@@ -30,7 +30,7 @@ caboose's packages. They come in groups, in
 
 | group | packages | |
 |---|---|---|
-| required | `wolfi-baselayout`, `ca-certificates-bundle`, `busybox`, `bash`, `curl`, `git`, `tmux`, `ncurses`, `tzdata` | always in: what the sandbox [requires](#requirements-for-your-own-image) |
+| required | `wolfi-baselayout`, `ca-certificates-bundle`, `busybox`, `bash`, `curl`, `git`, `tmux`, `e2fsprogs`, `e2fsprogs-extra`, `ncurses`, `tzdata` | always in: what the sandbox [requires](#requirements-for-your-own-image) |
 | core | coreutils, findutils, grep, sed, diffutils, an ssh client and ssh-keygen (for signing commits), ripgrep, jq, less, vim, procps, unzip, zstd, a C toolchain (`build-base`), Python | default |
 | node | Node.js, npm and corepack | default |
 | bun | Bun | default |
@@ -214,6 +214,18 @@ and the seed's `dockerd` section, have both. An image without them is as
 usable: its sandbox just has no docker. Under container and gvisor nothing
 starts an image's dockerd, so the check says nothing about it there.
 
+**Shrinking a volume while the VM runs** is a fact the check reports too,
+never a requirement. Under `vm`, `caboose volume resize` checks and shrinks
+a volume's filesystem with the image's own `e2fsck` and `resize2fs`, found
+on `PATH` or in `/usr/local/sbin`, `/usr/local/bin`, `/usr/sbin`,
+`/usr/bin`, `/sbin` or `/bin`. Debian and Ubuntu have both in `e2fsprogs`;
+Alpine and Wolfi have `e2fsck` in `e2fsprogs` and `resize2fs` in
+`e2fsprogs-extra`. caboose's required group and the seed's packages have
+them. An image without them is as usable: its volumes still grow, and
+`caboose volume resize` refuses a live shrink before touching anything.
+Only `vm` shrinks a volume while the sandbox runs, so under container and
+gvisor the check says nothing about it.
+
 The layer edits `/etc/passwd`, `/etc/group` and, where they exist,
 `/etc/shadow` and `/etc/gshadow` directly, with plain `sh`: no `useradd` or
 `adduser`. A user already holding your UID (ubuntu's `ubuntu`, node's
@@ -268,7 +280,8 @@ docker engine on this Mac has cannot reach the builder, so its pull fails
 
 Under `vm`, the checklist ends with a `docker inside` row: `available (dockerd VERSION)`, or what the
 image lacks for it, marked `!` and never counted as unmet, with what to add
-on stderr; `caboose build` notes it too.
+on stderr; `caboose build` notes it too. A `volume shrink` row follows it:
+`available (E2FSCK, RESIZE2FS)`, or the tool it lacks, marked `!` the same way.
 
 ## What a build does
 

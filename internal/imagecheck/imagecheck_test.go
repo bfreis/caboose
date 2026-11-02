@@ -462,3 +462,52 @@ func TestDockerInside(t *testing.T) {
 		t.Error("a row for an image the probe could not run in")
 	}
 }
+
+// e2fsck and resize2fs are a fact, never a requirement: an image without
+// them passes, and the row says what a live shrink lacks. A report that
+// never mentioned them has no row, and the checklist itself never has it.
+func TestVolumeShrink(t *testing.T) {
+	both := []string{"info e2fsprogs e2fsck /usr/sbin/e2fsck", "info e2fsprogs resize2fs /usr/sbin/resize2fs"}
+	with := func(lines ...string) *Report {
+		return mustParse(t, strings.Replace(debianFull, "end\n", strings.Join(lines, "\n")+"\nend\n", 1))
+	}
+	for _, tc := range []struct {
+		name  string
+		r     *Report
+		value string
+		level Level
+		note  string
+	}{
+		{"both", with(both...), "available (/usr/sbin/e2fsck, /usr/sbin/resize2fs)", Met, ""},
+		{"neither", with("info e2fsprogs e2fsck", "info e2fsprogs resize2fs"),
+			"no e2fsck, resize2fs: a volume can't be shrunk while the VM runs", Noted, "add e2fsck, resize2fs to the image"},
+		{"no resize2fs", with(both[0], "info e2fsprogs resize2fs"),
+			"no resize2fs: a volume can't be shrunk while the VM runs", Noted, "add resize2fs to the image"},
+		{"no e2fsck", with("info e2fsprogs e2fsck", both[1]),
+			"no e2fsck: a volume can't be shrunk while the VM runs", Noted, "add e2fsck to the image"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.r.OK() {
+				t.Errorf("problems %q", tc.r.Problems())
+			}
+			row, ok := tc.r.VolumeShrink()
+			if !ok || row.Label != "volume shrink" || row.Value != tc.value || row.Level != tc.level {
+				t.Errorf("row %+v (%v), want %q at %v", row, ok, tc.value, tc.level)
+			}
+			if note := tc.r.VolumeShrinkNote(); tc.note == "" && note != "" || !strings.Contains(note, tc.note) {
+				t.Errorf("note %q, want %q", note, tc.note)
+			}
+			for _, r := range tc.r.Checklist() {
+				if r.Label == "volume shrink" || r.Level == Unmet {
+					t.Errorf("checklist row %+v: the row is vm's alone, and nothing is unmet", r)
+				}
+			}
+		})
+	}
+	if _, ok := mustParse(t, debianFull).VolumeShrink(); ok {
+		t.Error("a row for a report that never mentioned e2fsprogs")
+	}
+	if _, ok := NoShellReport("x", 1000, 1000).VolumeShrink(); ok {
+		t.Error("a row for an image the probe could not run in")
+	}
+}

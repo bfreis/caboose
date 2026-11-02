@@ -500,6 +500,44 @@ as `checkpoint_requests` says (`"allow"` by default, or `"off"`). The host
 offers it in its hello only from a link the daemon runs; the agent says so
 when the host offers none.
 
+## Volume resizes
+
+Under `vm`, a session may ask for one of the profile's
+[volumes](configuration.md#volumes) to change size while the VM runs:
+
+```sh
+caboose-agent request volume-resize cache 128G --context "the Go build cache is full"
+```
+
+The sandbox names the volume and the size, nothing more: the profile is the
+one in use, and the disk and the VM are the host's. The host refuses it at
+once (exit 77, with the reason) when the profile has no such volume, when the
+running VM does not have it on caboose-vmm's own disk (a VM created before
+macOS 27, or one stopped), when the size is outside `4G` to `1024G` or the
+disk's size already, or when the profile's volume sizes would then total more
+than its [`volume_limit`](configuration.md#isolation-profiles) (`256G` by
+default), saying by how much and the most it may ask for; a resize that does
+not grow the volume's `size` is never refused by the limit. Otherwise it is
+filed as a request (`pending #N`), whose description gives the volume, both
+sizes, whether it grows or shrinks, and the space free on this Mac where the
+disk is.
+
+A person allows each resize once (`caboose requests approve N`, the web
+page, the menu-bar app): never for some hours, never always, since each one
+changes a disk the sandbox writes, and a shrink unmounts it. Only a link the
+caboose daemon runs offers it. Allowing it starts a job of the environment's
+in the daemon, which makes the resize `caboose volume resize` makes while the
+VM runs (a grow, or a live shrink: [Resizing a
+volume](configuration.md#resizing-a-volume)) after looking at `config.toml`
+and the VM again, and writes the new `size` to `config.toml` once the disk has
+it. One job runs per environment at a time: a resize allowed while a stop or
+restart runs does not start, and the answer and the request say so. What came
+of it goes to the environment's `jobs.log`, a notification, `decisions.log`
+and the request itself, which `caboose-agent requests` then lists with the
+outcome after its reason. Requests are bounded as every other kind is: the
+link's request bucket, at most 10 new requests a minute and 100 pending in
+an environment.
+
 ## Asking the host ahead of time
 
 A crossing that asks is refused as `pending #N` at once (above), and the
@@ -514,6 +552,7 @@ caboose-agent request egress --host registry.example.com --port 443 \
 caboose-agent request open_url --url https://example.com/login
 caboose-agent request alias --alias test --arg suite=unit
 caboose-agent request port --port 4321
+caboose-agent request volume-resize cache 128G
 caboose-agent requests --all          # what the host decided, and what waits
 ```
 
@@ -582,6 +621,9 @@ sandbox is:
   filed), never what `egress_deny` names. A program that ignores the proxy
   settings leaves through the VM's NAT instead (except under `trust = "hostile"`, where the VM has no NAT and reaches nothing that way), and under `container` and
   `gvisor` the engine's network is unrestricted;
+- a volume resize the sandbox asks for names only a volume of the profile
+  in use and a size; it is never made without a person allowing it, once,
+  and never past `volume_limit`;
 - a checkpoint the sandbox asks for copies only a path `[checkpoints]`
   lists, resolved on the host; the paths it sends are bounded, must be
   printable, absolute and clean (or `~/...`), and any other is refused;

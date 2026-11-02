@@ -231,6 +231,10 @@ func (m *machine) Boot(spec agentproto.BootSpec) error {
 	if err := mountShares(sharesDir, tags, binds, sysMounts{}); err != nil {
 		return err
 	}
+	// The volumes, after the shares, though neither holds the other:
+	// config.toml refuses a volume at, inside or around a root or one of
+	// caboose's own mounts, and a launch skips a kept path at, inside or
+	// around a volume (launcher's dropKeepsUnderVolumes).
 	if err := guestDisks.mountDisks(spec.Disks, m.logf); err != nil {
 		return err
 	}
@@ -370,7 +374,8 @@ func (m *machine) serveLink(c io.ReadWriteCloser) {
 
 // Shutdown is Guest's: the entrypoint's group gets a TERM and ten seconds,
 // as docker stop gives a container, then every process a TERM and a KILL;
-// then the disks are synced and the machine powers off.
+// then the kept disks are trimmed (trimDisks) and synced, and the machine
+// powers off.
 func (m *machine) Shutdown() {
 	m.doneOnce.Do(func() { close(m.done) })
 	m.mu.Lock()
@@ -387,6 +392,9 @@ func (m *machine) Shutdown() {
 	_ = unix.Kill(-1, unix.SIGTERM)
 	time.Sleep(time.Second)
 	_ = unix.Kill(-1, unix.SIGKILL)
+	if spec := m.linkable(); spec != nil {
+		trimDisks(spec.Disks, fitrim, trimWait, m.logf)
+	}
 	unix.Sync()
 	if err := unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF); err != nil {
 		m.logf("power off: %v", err)
@@ -544,14 +552,31 @@ func mountShares(base string, tags []string, binds []bind, m mounts) (err error)
 	return nil
 }
 
-// vdName is a disk the boot spec may name: one after the root and the
-// scratch disk.
+// vdName is a disk the boot spec may name by its device: one after the
+// root and the scratch disk.
 var vdName = regexp.MustCompile(`^/dev/vd[c-z]$`)
 
-// checkDisks checks the boot spec's disks before anything is mounted.
+// diskSerial is a disk the boot spec may name by its serial: a volume's
+// name, which is at most the 20 bytes a virtio-blk serial holds.
+var diskSerial = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,19}$`)
+
+// checkDisks checks the boot spec's disks before anything is mounted:
+// each named by a device or by a serial, no serial twice.
 func checkDisks(ds []agentproto.GuestDisk) error {
+	serials := map[string]bool{}
 	for _, d := range ds {
-		if !vdName.MatchString(d.Device) {
+		switch {
+		case d.Serial != "" && d.Device != "":
+			return fmt.Errorf("disk: both a device %q and a serial %q", d.Device, d.Serial)
+		case d.Serial != "":
+			if !diskSerial.MatchString(d.Serial) {
+				return fmt.Errorf("disk: bad serial %q", d.Serial)
+			}
+			if serials[d.Serial] {
+				return fmt.Errorf("disk: serial %q twice", d.Serial)
+			}
+			serials[d.Serial] = true
+		case !vdName.MatchString(d.Device):
 			return fmt.Errorf("disk: bad device %q", d.Device)
 		}
 		if !filepath.IsAbs(d.Target) || filepath.Clean(d.Target) != d.Target || d.Target == "/" {

@@ -45,6 +45,8 @@ func boundAsk(a agentproto.Ask) agentproto.Ask {
 		Host:           clipBytes(a.Host, agentproto.MaxEgressHost),
 		Port:           a.Port,
 		URL:            clipBytes(a.URL, 2048),
+		Volume:         clipBytes(a.Volume, agentproto.MaxAskVolume),
+		Size:           clipBytes(a.Size, agentproto.MaxAskSize),
 		Context:        clipBytes(a.Context, agentproto.MaxAskContext),
 		Recommendation: clipBytes(a.Recommendation, agentproto.MaxAskRecommendation),
 		Meanwhile:      clipBytes(a.Meanwhile, agentproto.MaxAskMeanwhile),

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/hvsock"
+	"github.com/bfreis/caboose/internal/vm"
 )
 
 // pairRunner hands each connection's guest end to the benchmark: a
@@ -45,7 +46,7 @@ func BenchmarkRelay(b *testing.B) {
 			}
 			defer ln.Close()
 			r := &pairRunner{guests: make(chan *os.File, 1)}
-			go serve(ln, r)
+			go serve(ln, r, newDisks(vm.Machine{}, r, b.Logf))
 			const total = 64 << 20
 			b.SetBytes(total)
 			for i := 0; i < b.N; i++ {

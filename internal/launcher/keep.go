@@ -42,6 +42,7 @@ func (a *App) sandboxConfig() (*datadir.Sandbox, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading the sandbox config: %v", err)
 		}
+		a.dropKeepsUnderVolumes(sb)
 		a.sb = sb
 	}
 	return a.sb, nil

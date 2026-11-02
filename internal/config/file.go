@@ -111,6 +111,8 @@ var profileKeys = map[string]map[string]valueType{
 		"cpus":         typeInt,
 		"memory":       typeString,
 		"scratch_size": typeString,
+		"docker_size":  typeString,
+		"volume_limit": typeString,
 		"egress":       typeBool,
 		"egress_ports": typePorts,
 		"egress_allow": typeStrings,
@@ -162,6 +164,15 @@ type File struct {
 	// Checkpoints is [checkpoints] paths, checked and normalised
 	// (CheckCheckpoints); nil when the file sets none.
 	Checkpoints []string
+	// Volumes are each isolation profile's [<kind>.NAME.volume.VOLUME]
+	// tables, by "<kind>.<name>", sorted by name; checked but for where
+	// the roots are (checkVolumeRoots).
+	Volumes map[string][]FileVolume
+
+	// defined are the tables and keys the file writes, by their dotted
+	// names: not the tables TOML makes implicitly ([vm.a] of a lone
+	// [vm.a.volume.v]).
+	defined map[string]bool
 }
 
 // FileRoot is a [roots] entry as written: the host path, ~ and all, the
@@ -200,10 +211,14 @@ func readFile(path string, fsys FS) (*File, error) {
 // value of its key's type.
 func ParseFile(path string, data []byte) (*File, error) {
 	var raw map[string]any
-	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&raw); err != nil {
+	md, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&raw)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %v", path, err)
 	}
-	f := &File{Path: path, Vals: map[string]any{}}
+	f := &File{Path: path, Vals: map[string]any{}, defined: map[string]bool{}}
+	for _, k := range md.Keys() {
+		f.defined[k.String()] = true
+	}
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%s: "+format, append([]any{path}, args...)...)
 	}
@@ -291,7 +306,28 @@ func (f *File) readProfiles(kind string, v any) ([]string, error) {
 		if !ValidProfileName(name) {
 			return nil, fmt.Errorf("[%s.%s]: '%s' is not a profile name: lowercase letters, digits, - and _, starting with a letter or digit, at most 32", kind, name, name)
 		}
-		if err := f.readTable(kind+"."+name, profiles[name], kindKeys(kind)); err != nil {
+		table := profiles[name].(map[string]any)
+		if vols, ok := table[volumeKey]; ok && volumeKeys[kind] != nil {
+			if !f.defined[kind+"."+name] {
+				vnames := []string{"NAME"}
+				if m, ok := vols.(map[string]any); ok && len(m) > 0 {
+					vnames = slices.Sorted(maps.Keys(m))
+				}
+				return nil, fmt.Errorf("[%s.%s.%s.%s] is in [%s.%s], which the file does not define: add a [%s.%s] table above it",
+					kind, name, volumeKey, vnames[0], kind, name, kind, name)
+			}
+			list, err := f.readVolumes(kind, kind+"."+name, vols)
+			if err != nil {
+				return nil, err
+			}
+			if f.Volumes == nil {
+				f.Volumes = map[string][]FileVolume{}
+			}
+			f.Volumes[kind+"."+name] = list
+			table = maps.Clone(table)
+			delete(table, volumeKey)
+		}
+		if err := f.readTable(kind+"."+name, table, kindKeys(kind)); err != nil {
 			return nil, err
 		}
 		names = append(names, kind+"."+name)
@@ -401,8 +437,13 @@ func unknownKey(table, key string) string {
 		if keys == nil {
 			kind, _, _ := strings.Cut(table, ".")
 			keys = kindKeys(kind)
-			if kind == aliasKey {
+			switch vkind, isVolume := volumeTable(table); {
+			case kind == aliasKey:
 				keys = aliasKeys
+			case isVolume:
+				keys = volumeKeys[vkind]
+			case volumeKeys[kind] != nil:
+				known = append(known, "["+table+"."+volumeKey+".NAME]")
 			}
 		}
 		for k := range keys {
@@ -649,6 +690,15 @@ format = 1    # this file's structure
 # default, 4G to 1024G. It takes up only what is written, and the space
 # comes back when the VM stops. A new size takes effect at the next start.
 #scratch_size = "64G"
+# The size of the disk the sandbox's dockerd keeps its images, containers
+# and volumes on, kept between starts: 64G by default, 4G to 1024G. A
+# smaller size than the disk has does not shrink it.
+#docker_size = "64G"
+# The most the sizes of this profile's volumes may total once a resize the
+# sandbox asks for (caboose-agent request volume-resize) is made: 256G by
+# default, 4G to 19456G. A request past it is refused; your own edits and
+# 'caboose volume resize' are not bound by it.
+#volume_limit = "256G"
 # Make the sandbox's outbound connections through the link's proxy from
 # this machine, so that a VPN's routes and DNS apply as they do here. Under
 # trust = "fallible" the VM keeps its own NAT beside it, which a program

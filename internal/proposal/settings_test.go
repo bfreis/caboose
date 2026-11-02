@@ -16,6 +16,7 @@ auto_build = false
 cpus = 6
 memory = "12G"
 scratch_size = "128G"
+docker_size = "256G"
 `
 
 func TestSettingsProposal(t *testing.T) {
@@ -27,17 +28,17 @@ func TestSettingsProposal(t *testing.T) {
 	if s == nil || p.Root != nil || p.Alias != nil || p.Writable != nil {
 		t.Fatalf("%+v", p)
 	}
-	if *s.TZ != "Europe/Lisbon" || *s.Hostname != "sbx-1" || *s.Tmux || *s.AutoBuild || *s.CPUs != 6 || *s.Memory != "12G" || *s.ScratchSize != "128G" {
+	if *s.TZ != "Europe/Lisbon" || *s.Hostname != "sbx-1" || *s.Tmux || *s.AutoBuild || *s.CPUs != 6 || *s.Memory != "12G" || *s.ScratchSize != "128G" || *s.DockerSize != "256G" {
 		t.Errorf("%+v", s)
 	}
 
 	// Dotted keys decode the same.
-	dotted := "title = \"Settings\"\n[settings]\nsession.tz = \"Europe/Lisbon\"\nsession.hostname = \"sbx-1\"\nsession.tmux = false\nbuild.auto_build = false\nvm.cpus = 6\nvm.memory = \"12G\"\nvm.scratch_size = \"128G\"\n"
+	dotted := "title = \"Settings\"\n[settings]\nsession.tz = \"Europe/Lisbon\"\nsession.hostname = \"sbx-1\"\nsession.tmux = false\nbuild.auto_build = false\nvm.cpus = 6\nvm.memory = \"12G\"\nvm.scratch_size = \"128G\"\nvm.docker_size = \"256G\"\n"
 	q, err := Parse("s.toml", []byte(dotted))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *q.Settings.TZ != *s.TZ || *q.Settings.CPUs != *s.CPUs || *q.Settings.Tmux != *s.Tmux || *q.Settings.Memory != *s.Memory || *q.Settings.ScratchSize != *s.ScratchSize || *q.Settings.AutoBuild != *s.AutoBuild || *q.Settings.Hostname != *s.Hostname {
+	if *q.Settings.TZ != *s.TZ || *q.Settings.CPUs != *s.CPUs || *q.Settings.Tmux != *s.Tmux || *q.Settings.Memory != *s.Memory || *q.Settings.ScratchSize != *s.ScratchSize || *q.Settings.DockerSize != *s.DockerSize || *q.Settings.AutoBuild != *s.AutoBuild || *q.Settings.Hostname != *s.Hostname {
 		t.Errorf("dotted %+v", q.Settings)
 	}
 
@@ -77,6 +78,11 @@ func TestSettingsProposalRefusals(t *testing.T) {
 		{"scratch big", "[settings.vm]\nscratch_size = \"1025G\"\n", "is outside 4G to 1024G"},
 		{"scratch number", "[settings.vm]\nscratch_size = 64\n", "not a proposal"},
 		{"scratch escape", "[settings.vm]\nscratch_size = \"64G\\u202e\"\n", "character U+202E"},
+		{"docker bad", "[settings.vm]\ndocker_size = \"huge\"\n", "settings.vm.docker_size"},
+		{"docker small", "[settings.vm]\ndocker_size = \"3G\"\n", "settings.vm.docker_size: \"3G\" is outside 4G to 1024G"},
+		{"docker big", "[settings.vm]\ndocker_size = \"1025G\"\n", "settings.vm.docker_size: \"1025G\" is outside 4G to 1024G"},
+		{"docker number", "[settings.vm]\ndocker_size = 64\n", "not a proposal"},
+		{"docker escape", "[settings.vm]\ndocker_size = \"64G\\u202e\"\n", "character U+202E"},
 		{"memory escape", "[settings.vm]\nmemory = \"8G\\u202e\"\n", "character U+202E"},
 	} {
 		_, err := Parse("s.toml", []byte("title = \"t\"\n"+tc.body))

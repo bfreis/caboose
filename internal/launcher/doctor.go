@@ -250,6 +250,7 @@ func (a *App) runCheckup(c *checkup, offline bool) {
 	}
 	if reachable {
 		a.doctorIsolation(c)
+		a.doctorVolumes(c)
 		c.checking("the image")
 		a.doctorImage(c)
 		c.checking("the " + a.noun())
@@ -561,6 +562,9 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	}
 	if d := a.hostnameDrift(); d != "" {
 		c.problem("hostname", "caboose restart"+endsSessions, "%s", d)
+	}
+	if d := a.volumesDrift(); d != "" {
+		c.problem("volumes", "caboose restart"+endsSessions, "%s", d)
 	}
 	if d := a.egressDrift(); d != "" {
 		c.problem("egress", "caboose restart"+endsSessions, "%s", d)

@@ -38,8 +38,11 @@ type host struct {
 	root, empty string
 	env         []string
 	// scratch is the scratch disk's size, 0 for config.DefaultScratchSize,
-	// and volSize a volume's.
+	// and volSize a volume's, unless sizes names its own.
 	scratch, volSize int64
+	sizes            map[string]int64
+	// blk are block devices of caboose-vmm's, besides the volumes'.
+	blk []vm.BlockDevice
 }
 
 func (h host) Image(string) (backend.VMImage, error) {
@@ -65,7 +68,7 @@ func (h host) Machine() (vm.Machine, error) {
 	if err != nil {
 		return vm.Machine{}, err
 	}
-	return vm.Machine{Kernel: filepath.Join(h.dir, "Image"), Initramfs: initramfs, CPUs: 2, MemoryMiB: 1024, Network: "nat"}, nil
+	return vm.Machine{Kernel: filepath.Join(h.dir, "Image"), Initramfs: initramfs, CPUs: 2, MemoryMiB: 1024, Network: "nat", BlockDevices: h.blk}, nil
 }
 
 // initramfs writes the guest's init from DIR's agent, as the launcher will
@@ -100,15 +103,33 @@ func (h host) NewScratch(path string) error {
 	return vm.NewDisk(h.emptyDisk(), path, size)
 }
 
-func (h host) Volume(name string) (string, error) {
+// Volume is the launcher's rule for a volume's disk: made at its size
+// when missing, grown to it when smaller, a larger one left as it is.
+// With no size, a missing disk is not made.
+func (h host) Volume(name string) (backend.VMDisk, error) {
 	p := filepath.Join(h.work, "volumes", name+".img")
-	if _, err := os.Stat(p); err == nil || h.volSize == 0 {
-		return p, nil
+	size := h.volSize
+	if s, ok := h.sizes[name]; ok {
+		size = s
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return "", err
+	fi, err := os.Stat(p)
+	switch {
+	case err == nil && fi.Size() < size:
+		if err := os.Truncate(p, size); err != nil {
+			return backend.VMDisk{}, err
+		}
+	case err != nil && size > 0:
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return backend.VMDisk{}, err
+		}
+		if err := vm.NewDisk(h.emptyDisk(), p, size); err != nil {
+			return backend.VMDisk{}, err
+		}
 	}
-	return p, vm.NewDisk(h.emptyDisk(), p, h.volSize)
+	if fi, err = os.Stat(p); err != nil {
+		return backend.VMDisk{Path: p}, nil
+	}
+	return backend.VMDisk{Path: p, Size: fi.Size()}, nil
 }
 
 // StartVMM is what the launcher will do: caboose-vmm, detached, its output

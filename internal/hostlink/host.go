@@ -136,6 +136,10 @@ type Config struct {
 	// CheckpointRequests is [link] checkpoint_requests, which the
 	// fallback decision (Decide nil) decides OpCheckpoint by.
 	CheckpointRequests string
+	// Volumes says what the host knows of the environment's volumes, for
+	// a resize the sandbox asks for (OpBrokerRequest, volume_resize);
+	// nil refuses every one.
+	Volumes VolumeFacts
 	// Mods, when set, is told the agent's count of Claude Code sessions
 	// and of those with caboose's mod (TypeMods), checked, whenever it
 	// changes.

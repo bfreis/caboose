@@ -39,6 +39,7 @@ const (
 var (
 	dispatchQueueCreate func(label string, attr uintptr) uintptr
 	dispatchSyncF       func(queue, ctx, fn uintptr)
+	dispatchRelease     func(object uintptr)
 
 	loadOnce sync.Once
 	loadErr  error
@@ -80,6 +81,7 @@ func doLoad() error {
 	}
 	purego.RegisterLibFunc(&dispatchQueueCreate, sys, "dispatch_queue_create")
 	purego.RegisterLibFunc(&dispatchSyncF, sys, "dispatch_sync_f")
+	purego.RegisterLibFunc(&dispatchRelease, sys, "dispatch_release")
 	syncCall = purego.NewCallback(runSync)
 	for _, c := range required {
 		if objc.GetClass(c) == 0 {
@@ -176,6 +178,9 @@ var ErrEntitlement = errors.New("caboose-vmm is not signed with the virtualizati
 type Runner struct {
 	queue uintptr
 	vm    objc.ID
+	blk   []*blkDev
+	// resizing makes ResizeDisk one at a time.
+	resizing sync.Mutex
 
 	mu      sync.Mutex
 	done    chan struct{}
@@ -222,10 +227,11 @@ func (r *Runner) Start(m vm.Machine) error {
 	pool := class("NSAutoreleasePool").Send(sel("new"))
 	defer pool.Send(sel("drain"))
 
-	cfg, err := configure(m)
+	cfg, blk, err := configure(m)
 	if err != nil {
 		return err
 	}
+	r.blk = blk
 	r.queue = dispatchQueueCreate("caboose.vmm", 0)
 	delegate := objc.ID(delegateClass).Send(sel("new"))
 	onQueue(r.queue, func() {
@@ -235,6 +241,7 @@ func (r *Runner) Start(m vm.Machine) error {
 		}
 	})
 	if r.vm == 0 {
+		closeBlk(blk)
 		return errors.New("Virtualization.framework made no VM of a valid configuration")
 	}
 
@@ -252,14 +259,54 @@ func (r *Runner) Start(m vm.Machine) error {
 	select {
 	case err := <-started:
 		block.Release()
+		if err != nil {
+			closeBlk(blk)
+		}
 		return err
 	case <-time.After(startTimeout):
+		// The disks stay open: the VM may still start, and serve them.
 		return fmt.Errorf("the VM did not start in %v", startTimeout)
 	}
 }
 
-// configure is m as a validated VZVirtualMachineConfiguration.
-func configure(m vm.Machine) (objc.ID, error) {
+// configure is m as a validated VZVirtualMachineConfiguration, and its
+// block devices.
+func configure(m vm.Machine) (objc.ID, []*blkDev, error) {
+	cfg, err := configureVM(m)
+	if err != nil {
+		return 0, nil, err
+	}
+	blk, err := addBlockDevices(cfg, m)
+	if err != nil {
+		return 0, nil, err
+	}
+	var nserr objc.ID
+	if !objc.Send[bool](cfg, sel("validateWithError:"), unsafe.Pointer(&nserr)) {
+		closeBlk(blk)
+		why := describe(nserr)
+		if strings.Contains(why, "com.apple.security.virtualization") {
+			return 0, nil, fmt.Errorf("%w (%s)", ErrEntitlement, why)
+		}
+		return 0, nil, fmt.Errorf("the VM's configuration is not valid: %s", why)
+	}
+	return cfg, blk, nil
+}
+
+// addBlockDevices adds m's block devices to cfg.
+func addBlockDevices(cfg objc.ID, m vm.Machine) ([]*blkDev, error) {
+	cfgs, devs, err := blkConfigurations(m)
+	if err != nil || len(cfgs) == 0 {
+		return nil, err
+	}
+	cfg.Send(sel("setCustomVirtioDevices:"), array(cfgs...))
+	for _, c := range cfgs {
+		c.Send(sel("release"))
+	}
+	return devs, nil
+}
+
+// configureVM is m but its block devices as a VZVirtualMachineConfiguration.
+func configureVM(m vm.Machine) (objc.ID, error) {
 	for _, p := range []string{m.Kernel, m.Initramfs} {
 		if _, err := os.Stat(p); err != nil {
 			return 0, err
@@ -346,14 +393,6 @@ func configure(m vm.Machine) (objc.ID, error) {
 	cfg.Send(sel("setEntropyDevices:"), array(class("VZVirtioEntropyDeviceConfiguration").Send(sel("new"))))
 	cfg.Send(sel("setMemoryBalloonDevices:"), array(class("VZVirtioTraditionalMemoryBalloonDeviceConfiguration").Send(sel("new"))))
 
-	nserr = 0
-	if !objc.Send[bool](cfg, sel("validateWithError:"), unsafe.Pointer(&nserr)) {
-		why := describe(nserr)
-		if strings.Contains(why, "com.apple.security.virtualization") {
-			return 0, fmt.Errorf("%w (%s)", ErrEntitlement, why)
-		}
-		return 0, fmt.Errorf("the VM's configuration is not valid: %s", why)
-	}
 	return cfg, nil
 }
 

@@ -290,9 +290,9 @@ func TestSetupRootsOverlap(t *testing.T) {
 func TestSetupRootsUnsafeEdit(t *testing.T) {
 	e := newSetupEnv(t, "default", "", false)
 	e.mkdir("src")
-	// A multi-line string whose body looks like the roots table: the editor would
-	// replace a line inside it.
-	odd := "[session]\ntz = \"\"\"\n[roots]\ndev = \"~/dev\"\n\"\"\"\n"
+	// The roots as an inline table, which the line editor does not edit:
+	// the table it would add says roots twice.
+	odd := "roots = { dev = \"~/dev\" }\n"
 	if err := os.MkdirAll(e.a.Cfg.EnvDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -306,6 +306,27 @@ func TestSetupRootsUnsafeEdit(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(e.configPath()); string(b) != odd {
 		t.Errorf("config.toml changed:\n%s", b)
+	}
+}
+
+// A multi-line string whose body looks like the roots table is the
+// string's: the editor leaves it, and makes the real one.
+func TestSetupRootsMultilineString(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.mkdir("src")
+	odd := "[session]\ntz = \"\"\"\n[roots]\ndev = \"~/dev\"\n\"\"\"\n"
+	if err := os.MkdirAll(e.a.Cfg.EnvDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.configPath(), []byte(odd), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.run("2\n~/src\n\n\ny\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	b, _ := os.ReadFile(e.configPath())
+	if !strings.HasPrefix(string(b), odd) || !strings.HasSuffix(string(b), "\n[roots]\ndev = \"~/src\"\n") {
+		t.Errorf("config.toml:\n%s", b)
 	}
 }
 

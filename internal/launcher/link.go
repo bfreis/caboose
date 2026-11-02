@@ -444,6 +444,9 @@ type linkRun struct {
 	// cpLimits, the environment's; nil (a helper of its own) offers none.
 	checkpoints hostlink.Checkpointer
 	cpLimits    *hostlink.CheckpointLimits
+	// resizer runs the volume resizes the sandbox asks for and a person
+	// allows, as the daemon's jobs; nil (a helper of its own) offers none.
+	resizer broker.Resizer
 }
 
 // newLinkRunner is a link for this environment, as config.toml has it
@@ -464,6 +467,10 @@ func (a *App) newLinkRunner(o linkRun) (*linkRunner, error) {
 	r.cfg.AliasTmp = aliasTmp(a.daemonDir())
 	r.cfg.Checkpoints, r.cfg.CheckpointLimits = o.checkpoints, o.cpLimits
 	r.cfg.CheckpointRequests = settings.CheckpointRequests
+	r.resizer = o.resizer
+	if o.resizer != nil {
+		r.cfg.Volumes = r
+	}
 	if o.actions != nil {
 		r.cfg.Actions = o.actions
 	}
@@ -570,6 +577,9 @@ type linkRunner struct {
 	// is its URL dialog.
 	broker *broker.Broker
 	dialog *urlDialog
+	// resizer is linkRun's, which the broker runs allowed volume resizes
+	// with.
+	resizer broker.Resizer
 	// dialogs is the process's URL dialog queue, shared by the daemon's
 	// links; nil has the link make one of its own.
 	dialogs *dialogQueue

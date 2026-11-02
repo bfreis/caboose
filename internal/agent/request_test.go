@@ -178,6 +178,24 @@ func TestRequestPort(t *testing.T) {
 	}
 }
 
+// A volume resize names the volume and its size as words of their own,
+// sent as they are: the host parses and checks them.
+func TestRequestVolumeResize(t *testing.T) {
+	h := startBrokerLink(t, true, t.TempDir(), func(m agentproto.Message) agentproto.Message {
+		if m.Ask.Kind == "volume_resize" {
+			return agentproto.Message{Verdict: agentproto.VerdictPending, Reason: agentproto.ReasonPending, RequestID: 3, Error: "pending #3"}
+		}
+		return agentproto.Message{Error: "unexpected"}
+	})
+	code, out, errb := runRequest(t, h.socket, "volume-resize", "cache", "128G", "--context", "the cache is full")
+	if code != ExitPending || strings.TrimSpace(out) != "pending #3" {
+		t.Fatalf("%d %q %q", code, out, errb)
+	}
+	if a := h.last(t).Ask; a.Kind != "volume_resize" || a.Volume != "cache" || a.Size != "128G" || a.Context != "the cache is full" || a.Port != 0 || a.Host != "" {
+		t.Fatalf("the host saw %+v", a)
+	}
+}
+
 func TestRequestUsage(t *testing.T) {
 	h := startBrokerLink(t, true, t.TempDir(), verdicts)
 	for _, args := range [][]string{
@@ -195,6 +213,15 @@ func TestRequestUsage(t *testing.T) {
 		{"port", "--port", "4321", "--host", "a.example"},
 		{"port", "--port", "4321", "--url", "https://a.example"},
 		{"port", "--port", "4321", "--alias", "x"},
+		{"volume-resize"},
+		{"volume-resize", "cache"},
+		{"volume-resize", "cache", "128G", "extra"},
+		{"volume-resize", "cache", "128G", "--port", "1"},
+		{"volume-resize", "cache", "128G", "--host", "a.example"},
+		{"volume-resize", strings.Repeat("a", agentproto.MaxAskVolume+1), "128G"},
+		{"volume-resize", "cache", strings.Repeat("1", agentproto.MaxAskSize+1)},
+		{"volume_resize"},
+		{"egress", "x", "--host", "a", "--port", "1"},
 	} {
 		if code, _, errb := runRequest(t, h.socket, args...); code != 2 {
 			t.Errorf("%v: exit %d, %q", args, code, errb)
@@ -219,13 +246,15 @@ func TestLinkBoundsWhatItSends(t *testing.T) {
 	_, err := askCtx(context.Background(), h.socket, agentproto.Message{Op: agentproto.OpBrokerRequest, Ask: &agentproto.Ask{
 		Kind: "egress", Host: "allowed.example", Port: 1, Context: strings.Repeat("é", 5000), Options: opts,
 		Recommendation: strings.Repeat("r", 9000), Meanwhile: strings.Repeat("m", 9000), Session: strings.Repeat("s", 900), Args: args,
+		Volume: strings.Repeat("v", 900), Size: strings.Repeat("1", 900),
 	}}, 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := h.last(t).Ask
 	if len(a.Context) > agentproto.MaxAskContext || len(a.Options) != agentproto.MaxAskOptions || len(a.Recommendation) > agentproto.MaxAskRecommendation ||
-		len(a.Meanwhile) > agentproto.MaxAskMeanwhile || len(a.Session) > agentproto.MaxAskSession || len(a.Args) > agentproto.MaxAskArgs {
+		len(a.Meanwhile) > agentproto.MaxAskMeanwhile || len(a.Session) > agentproto.MaxAskSession || len(a.Args) > agentproto.MaxAskArgs ||
+		len(a.Volume) != agentproto.MaxAskVolume || len(a.Size) != agentproto.MaxAskSize {
 		t.Fatalf("not bounded: %d %d %d %d %d %d", len(a.Context), len(a.Options), len(a.Recommendation), len(a.Meanwhile), len(a.Session), len(a.Args))
 	}
 	for _, o := range a.Options {

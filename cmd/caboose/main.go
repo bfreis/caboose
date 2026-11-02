@@ -200,6 +200,9 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		// Before the roots are resolved too: a restore is most needed when
 		// something is broken, a missing root included.
 		return exit(stderr, app.Checkpoint(inv.Args))
+	case "volume":
+		// Nor does a volume need the roots: it is the VM's own.
+		return exit(stderr, app.Volume(inv.Args))
 	}
 	if err := cfg.ResolveRoots(); err != nil {
 		return exit(stderr, launcher.Die("%v", err))

@@ -210,7 +210,8 @@ func brokerAnswer(b *broker.Broker, p daemonproto.AnswerParams, by string) (*dae
 		Effect:  daemonproto.Text(res.Effect, 4096),
 		Diff:    daemonproto.Lines(res.Diff, daemonproto.MaxDiff), DiffHash: res.DiffHash,
 		Recorded: res.Recorded, Grant: res.Grant, Also: res.Also,
-		OpenError: daemonproto.Text(res.OpenError, 4096),
+		OpenError:   daemonproto.Text(res.OpenError, 4096),
+		ResizeError: daemonproto.Text(res.ResizeError, 4096),
 	}
 	if len(out.Also) > daemonproto.MaxRequestsLimit*4 {
 		out.Also = out.Also[:daemonproto.MaxRequestsLimit*4]

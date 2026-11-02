@@ -184,6 +184,9 @@ type fixture struct {
 	dialog *dialog
 	// required is Options.RequiredHosts for the next openBroker.
 	required []string
+	// resize is the Resizer, unless noResizer.
+	resize    *resizer
+	noResizer bool
 }
 
 func baseConfig() config.Config {
@@ -202,19 +205,23 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	home := t.TempDir()
 	f := &fixture{t: t, home: home, dir: config.EnvDirFor(home, testEnv), owner: &owner{}, clock: newClock(),
-		src: &source{cfg: baseConfig()}, open: &opener{}, dialog: &dialog{}}
+		src: &source{cfg: baseConfig()}, open: &opener{}, dialog: &dialog{}, resize: &resizer{}}
 	f.w = &writer{src: f.src}
 	f.b = f.openBroker()
 	return f
 }
 
 func (f *fixture) options() Options {
-	return Options{
+	o := Options{
 		Home: f.home, Env: testEnv, Owner: f.owner, Source: f.src.get,
 		Writable:     func() ([]string, error) { return []string{"/work"}, nil },
 		ConfigWriter: f.w, Opener: f.open, Dialog: f.dialog, Now: f.clock.Now,
 		RequiredHosts: f.required,
 	}
+	if !f.noResizer {
+		o.Resizer = f.resize
+	}
+	return o
 }
 
 func (f *fixture) openBroker() *Broker {

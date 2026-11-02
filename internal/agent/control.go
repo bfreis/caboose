@@ -18,6 +18,12 @@ type Guest interface {
 	Shutdown()
 }
 
+// VolumeGuest is a Guest whose volumes can be resized while it runs: the
+// sandbox's (machine). Volume does one step of a resize and answers it.
+type VolumeGuest interface {
+	Volume(agentproto.VolumeOp) agentproto.VolumeInfo
+}
+
 // Clock is the guest's wall clock.
 type Clock interface {
 	Now() time.Time
@@ -36,6 +42,9 @@ type ControlServer struct {
 
 	once    sync.Once
 	bootErr error
+	// volume makes a volume's steps one at a time, whichever connection
+	// asks.
+	volume sync.Mutex
 }
 
 // The clock is left alone within clockTolerance of the host's. Behind by
@@ -114,6 +123,17 @@ func (c *ControlServer) ServeConn(conn io.ReadWriteCloser) error {
 				}
 				_ = s.Send(ready)
 			}()
+		case agentproto.TypeVolume:
+			if m.VolumeOp == nil {
+				return errors.New("control: a volume step with none")
+			}
+			op := *m.VolumeOp
+			// In the background: a filesystem's check and shrink take
+			// long, and the connection's other messages keep coming.
+			go func() {
+				info := c.volumeStep(op)
+				_ = s.Send(agentproto.Message{Type: agentproto.TypeVolume, VolumeInfo: &info})
+			}()
 		case agentproto.TypeShutdown:
 			c.logf("shutting down, as the host asked")
 			c.Guest.Shutdown()
@@ -125,6 +145,27 @@ func (c *ControlServer) ServeConn(conn io.ReadWriteCloser) error {
 		return err
 	}
 	return nil
+}
+
+// volumeStep does op, when the guest resizes volumes and no other step
+// runs.
+func (c *ControlServer) volumeStep(op agentproto.VolumeOp) agentproto.VolumeInfo {
+	g, ok := c.Guest.(VolumeGuest)
+	if !ok {
+		return agentproto.VolumeInfo{Op: op.Op, Error: "this guest resizes no volumes"}
+	}
+	if !c.volume.TryLock() {
+		return agentproto.VolumeInfo{Op: op.Op, Error: "another step of a volume's resize is running in the guest"}
+	}
+	defer c.volume.Unlock()
+	c.logf("volume %s: %s", op.Name, op.Op)
+	info := g.Volume(op)
+	if info.Error != "" {
+		c.logf("volume %s: %s: failed: %s", op.Name, op.Op, info.Error)
+	} else {
+		c.logf("volume %s: %s: done", op.Name, op.Op)
+	}
+	return info
 }
 
 // boot boots the guest once; a later boot, from this connection or

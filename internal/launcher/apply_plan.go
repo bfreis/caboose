@@ -40,6 +40,7 @@ const (
 	PartAlias    = daemonproto.ProposalPartAlias
 	PartWritable = daemonproto.ProposalPartWritable
 	PartSettings = daemonproto.ProposalPartSettings
+	PartVolume   = daemonproto.ProposalPartVolume
 )
 
 // The confirmations a proposal takes beyond the confirmation itself.
@@ -152,7 +153,7 @@ func (a *App) ProposalView(e proposal.Entry) (v ProposalView, err error) {
 // packagesWithRoot reports whether parts are pl's packages and its root,
 // and nothing else: the one pair config.toml takes as one edit.
 func packagesWithRoot(pl plan, parts []ProposalPart) bool {
-	return len(parts) == 2 && pl.packages != nil && pl.root != nil && pl.dockerfile == nil && pl.alias == nil && pl.writable == nil && pl.settings == nil
+	return len(parts) == 2 && pl.packages != nil && pl.root != nil && pl.dockerfile == nil && pl.alias == nil && pl.writable == nil && pl.settings == nil && pl.volume == nil
 }
 
 // viewParts fills v's parts from its plan, and what applying them takes.
@@ -210,6 +211,11 @@ func (a *App) viewParts(v *ProposalView) {
 		edit := sp.edit
 		v.edit, v.editDiff = &edit, sp.diff
 		v.Parts = append(v.Parts, ProposalPart{Kind: PartSettings, Diff: viewLines(sp.diff), Summary: a.settingsSummary(sp)})
+	}
+	if vp := pl.volume; vp != nil {
+		edit := vp.edit
+		v.edit, v.editDiff = &edit, vp.diff
+		v.Parts = append(v.Parts, ProposalPart{Kind: PartVolume, Diff: viewLines(vp.diff), Summary: a.volumeProposalSummary(vp)})
 	}
 	if pl.root != nil {
 		rc := a.planRootChange(pl)
@@ -335,7 +341,12 @@ func (a *App) ApplyPlanned(e proposal.Entry, hash, typed string) (notes []string
 		if d, err := a.configDiff(*v.edit); err != nil || d != v.editDiff {
 			return nil, daemonproto.NewError(daemonproto.KindStaleDiff, "config.toml changed since it was shown: nothing was applied")
 		}
-		if _, err := a.writeConfig(*v.edit); err != nil {
+		if pl.volume != nil {
+			// Checked again whole, as it is written: the file must load.
+			if err := a.writeVolumeEdit(*v.edit); err != nil {
+				return nil, err
+			}
+		} else if _, err := a.writeConfig(*v.edit); err != nil {
 			return nil, err
 		}
 		if err := a.rereadConfigFile(); err != nil {
@@ -354,6 +365,8 @@ func (a *App) ApplyPlanned(e proposal.Entry, hash, typed string) (notes []string
 			for _, k := range pl.settings.keys {
 				notes = append(notes, fmt.Sprintf("Wrote %s to %s: %s.", k.key, cfgPath, k.when))
 			}
+		case pl.volume != nil:
+			notes = append(notes, fmt.Sprintf("Wrote [%s] to %s: %s.", pl.volume.table, cfgPath, a.volumeWhen(pl.volume)))
 		}
 	default:
 		return nil, daemonproto.NewError(daemonproto.KindBadRequest, "not applied from the page: there is nothing in it to write")

@@ -19,6 +19,9 @@ func TestParseScratchSize(t *testing.T) {
 	if EmptyDiskSize > DefaultScratchSize || DefaultScratchSize > MaxScratchSize {
 		t.Error("the default scratch size is outside the sizes it may have")
 	}
+	if EmptyDiskSize > DefaultDockerSize || DefaultDockerSize > MaxScratchSize {
+		t.Error("the default docker size is outside the sizes it may have")
+	}
 }
 
 // Memory and scratch sizes are one format: where both accept a text, it

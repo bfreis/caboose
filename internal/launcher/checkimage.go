@@ -69,6 +69,10 @@ func (a *App) CheckImage(args []string) error {
 	if row, ok := rep.DockerInside(); ok && a.isVM() {
 		rows = append(rows, row)
 	}
+	// The image's e2fsprogs matter only to a vm's live volume shrink.
+	if row, ok := rep.VolumeShrink(); ok && a.isVM() {
+		rows = append(rows, row)
+	}
 	lw := 0
 	for _, row := range rows {
 		lw = max(lw, len(row.Label))
@@ -207,6 +211,9 @@ func (a *App) checkImageSays(rep *imagecheck.Report, problems []string) {
 		"may differ where it runs, or a proxy be set later. But Claude Code installs from there."
 	notes := rep.Notes()
 	if n := rep.DockerInsideNote(); n != "" && a.isVM() {
+		notes = append(notes, n)
+	}
+	if n := rep.VolumeShrinkNote(); n != "" && a.isVM() {
 		notes = append(notes, n)
 	}
 	if u.width == 0 {

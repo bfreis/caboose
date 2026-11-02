@@ -211,6 +211,7 @@ func (r *linkRunner) brokerOptions(lock *os.File, d *urlDialog) broker.Options {
 		Writable: a.sandboxWritable,
 		Opener:   r.cfg.Actions,
 		Dialog:   d,
+		Resizer:  r.resizer,
 		Log:      r.log,
 		// A hostile launch refuses without these: no edit cuts them off.
 		RequiredHosts: slices.Clone(claudeHosts),
