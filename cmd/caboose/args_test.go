@@ -255,3 +255,32 @@ func TestRequestCommands(t *testing.T) {
 		}
 	}
 }
+
+// caboose disk reads no config.toml, so a broken one does not stop it;
+// an environment chosen by -e or CABOOSE_ENV that does not exist is an
+// error naming it, where with none chosen only those there are listed.
+func TestDiskSkipsTheConfig(t *testing.T) {
+	sandboxEnv(t)
+	ch := t.TempDir()
+	t.Setenv("CABOOSE_HOME", ch)
+	dir := filepath.Join(ch, "envs", "default")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("nope = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, errs := runIt("disk", "--json"); code != 0 || !strings.Contains(out, `"env": "default"`) {
+		t.Errorf("broken config.toml: exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+	if code, _, errs := runIt("-e", "typo", "disk"); code == 0 || !strings.Contains(errs, "no environment typo") {
+		t.Errorf("-e typo: exit %d, %q", code, errs)
+	}
+	t.Setenv("CABOOSE_ENV", "typo")
+	if code, _, errs := runIt("disk"); code == 0 || !strings.Contains(errs, "no environment typo") {
+		t.Errorf("CABOOSE_ENV=typo: exit %d, %q", code, errs)
+	}
+	if code, out, errs := runIt("-e", "default", "disk"); code != 0 || strings.Contains(out, "typo") || !strings.Contains(out, "environment default") {
+		t.Errorf("-e default over CABOOSE_ENV: exit %d, stdout %q, stderr %q", code, out, errs)
+	}
+}

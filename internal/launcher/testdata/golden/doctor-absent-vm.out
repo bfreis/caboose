@@ -15,6 +15,7 @@
   ✓ egress        through this machine, so its VPN routes and DNS apply (egress on; egress_ports "22 80 443")
   ✓ image         img, matching this launcher (built by v1)
   ! VM            box does not exist; a launch creates it
+  ✓ disk          VM disks: 0 B allocated (root disks 0 B); 'caboose disk' shows the rest, checkpoints included, and what deleting each would free
   – daemon        not checked: neither CABOOSE_HOME nor HOME is set
   – claude        not checked: the VM is not running
   – sessions      not checked: the VM is not running

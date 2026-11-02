@@ -3,8 +3,10 @@ package vm
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"syscall"
+	"time"
 )
 
 // HoldStart waits for, then takes, the exclusive lock on d's StartLock,
@@ -73,4 +75,47 @@ func HoldLock(path string) (func(), error) {
 		return nil, fmt.Errorf("locking %s: %w", path, err)
 	}
 	return func() { f.Close() }, nil
+}
+
+// answerWaits are how long Answers waits on each dial: a vmm that has
+// not been scheduled for a while (a Mac just woken) can take more than
+// the first to accept.
+var answerWaits = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
+
+// dialVMM dials vm.sock (the tests stand in for it).
+var dialVMM = func(path string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout("unix", path, timeout)
+}
+
+// Answers reports whether a vmm answers on d's vm.sock, trying again,
+// with a longer wait, while a dial fails for another reason than there
+// being no socket or nothing listening on it: those are a no at once.
+func (d Dir) Answers() bool {
+	for _, wait := range answerWaits {
+		c, err := dialVMM(d.Socket(), wait)
+		if err == nil {
+			c.Close()
+			return true
+		}
+		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
+			return false
+		}
+	}
+	return false
+}
+
+// Runs reports whether a vmm runs d's VM: one holds its Lock, which vmm
+// takes for as long as it runs, or answers on vm.sock (Answers). Seeing
+// whether the lock is held means taking it for a moment, which would make
+// a vmm starting at that moment fail: call Runs only with the StartLock
+// held, which every start holds while it starts vmm.
+func (d Dir) Runs() bool {
+	unlock, err := TryLock(d.Lock())
+	if err != nil {
+		// Held, or not to be looked at: running, as far as anyone can
+		// tell.
+		return true
+	}
+	unlock()
+	return d.Answers()
 }

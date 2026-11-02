@@ -353,15 +353,20 @@ With the VM stopped, or a volume on Virtualization.framework's own disks
 start, and only to grow: a start never shrinks a disk, so a shrink needs
 the VM running, on macOS 27 or later. Under container and gvisor volumes
 have no size.`},
-	{Name: "prune", Usage: "[--docker]", Args: ownArgs,
+	{Name: "prune", Usage: "[OPTIONS]", Args: ownArgs,
 		Summary: "delete old Claude Code versions and unused packages",
-		Help: `Deletes the installed Claude Code versions beyond the newest
+		Help: `Usage: caboose prune [--docker | --builder-cache]
+
+Deletes the installed Claude Code versions beyond the newest
 keep_versions in [session], and says what the rest take up. First, on
 this machine, it removes from the package cache apko builds share
 (CABOOSE_HOME/cache/apk) every package no environment's lock names, and
 every index but the newest, keeping anything fetched in the last hour,
 and says what that freed. A lock it cannot read could name anything, so
-then it leaves the cache alone, and says which lock.
+then it leaves the cache alone, and says which lock. Before the sandbox
+starts, it deletes the scratch disks that VMs not running left behind
+(a VM makes its own at each start), skipping any VM starting, stopping
+or running.
 
 --docker, under isolation vm, deletes the disk the sandbox's own dockerd
 keeps everything on -- images, containers, volumes, build cache -- for an
@@ -369,7 +374,30 @@ empty one, which caboose restart keeps otherwise. It says the size it
 frees and asks first (no by default); a running VM is stopped first,
 ending its sessions, which it lists. CABOOSE_FORCE=1 skips the question; with no
 terminal it refuses. Under docker and gvisor the sandbox has no dockerd of
-its own, so there is nothing of caboose's to delete.`},
+its own, so there is nothing of caboose's to delete.
+
+--builder-cache deletes the builder guest's cache disk, which keeps every
+layer and download builds fetched and only grows; the next build makes
+an empty one and fetches everything again. It says the size it frees and
+asks first, as --docker does, and refuses while a build runs.`},
+	{Name: "disk", Usage: "[OPTIONS]", Args: ownArgs,
+		Summary: "the disk space caboose takes up, and what frees it",
+		Help: `Usage: caboose [-e ENV] disk [--json] [--budget DURATION]
+
+What caboose keeps on this machine, for every environment (or only the
+one -e or CABOOSE_ENV names) and for caboose's own files, by kind: VM
+disks, volumes, the builder's cache, checkpoints, the kept home, Claude
+Code, and the rest. It reads no config.toml. Each shows three sizes.
+Apparent is the files' sizes; allocated, the blocks they hold, as du
+counts them (a sparse disk's holes take none); unshared, the blocks no
+other file, clone or snapshot holds, which deleting them frees at least.
+On APFS a clone shares its blocks with its source, so du counts every
+clone, every checkpoint, in full, while deleting one frees only its
+unshared size. Only APFS on macOS reports it; elsewhere that column is
+'-'. Measuring it takes time on a large checkpoint store: past the
+budget, 2m unless --budget says, the rest is counted but not measured,
+and the report says how much. --json prints the same as JSON. It only
+looks at the files' metadata, never their contents, and changes nothing.`},
 	{Name: "sync", Usage: "[ARGS]", Args: ownArgs,
 		Summary: "sync what the sandbox config names with other machines",
 		Help: `caboose sync [--remote URL] | status | add PATH | rm PATH

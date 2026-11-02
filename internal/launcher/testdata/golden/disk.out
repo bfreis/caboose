@@ -1,0 +1,42 @@
+apparent: the files' sizes; allocated: the blocks they hold, as du counts them;
+unshared: the blocks no other file, clone or snapshot holds (APFS's private size),
+which deleting the files frees at least
+
+environment default (TMP/.caboose/envs/default)
+                   files  apparent  allocated  unshared
+    root disks         2    137 GB     8.6 GB    4.3 GB
+    empty disks        1    4.3 GB     268 MB    134 MB
+    scratch disks      1     69 GB     4.3 GB    2.1 GB
+    volumes            3    206 GB      13 GB    6.4 GB
+    builder cache      1    137 GB     8.6 GB    4.3 GB
+    kept home          1     16 kB     1.0 kB     500 B
+    Claude Code        1    160 kB      10 kB    5.0 kB
+    checkpoints        1     32 kB     2.0 kB    1.0 kB
+    other              4     11 kB      660 B     328 B
+    total             15    554 GB      35 GB     17 GB
+
+environment work (TMP/.caboose/envs/work)
+                   files  apparent  allocated  unshared
+    builder cache      1    137 GB     8.6 GB    4.3 GB
+    other              1     160 B       10 B       5 B
+    total              2    137 GB     8.6 GB    4.3 GB
+
+caboose's own (TMP/.caboose, outside the environments)
+                      files  apparent  allocated  unshared
+    caboose versions      1     48 kB     3.0 kB    1.5 kB
+    package cache         1     64 kB     4.0 kB    2.0 kB
+    other                 2    2.4 kB      150 B      75 B
+    total                 4    114 kB     7.2 kB    3.6 kB
+
+all of it: 43 GB allocated, 22 GB unshared; deleting all of it would free at least that
+
+What frees what:
+  root disks: the next 'caboose build' deletes those no image or VM uses
+  empty disks: what scratch disks and volumes are cloned from: they share its blocks, so deleting it frees only its unshared size
+  scratch disks: made at a VM's start, deleted at its stop: 'caboose prune' deletes those left over by a VM that is not running
+  volumes: 'caboose volume rm NAME --delete-disk' deletes a volume's disk, 'caboose prune --docker' empties dockerd's
+  builder cache: only grows: 'caboose prune --builder-cache' deletes it (asking first), and the next build makes it again, fetching everything anew
+  checkpoints: kept by the retention rules ('caboose help checkpoint'); clones of each other and of the live files, so only unshared counts
+  Claude Code: 'caboose prune' deletes the versions beyond keep_versions
+  package cache: 'caboose prune' deletes the packages no environment's lock names
+  caboose versions: an update keeps the newest two

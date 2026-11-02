@@ -115,6 +115,23 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		return exit(stderr, app.AppBundle(inv.Args))
 	}
 
+	if inv.Command == "disk" {
+		// Every environment's files, or those of the one -e or CABOOSE_ENV
+		// names: their places alone, so that no config.toml, broken or
+		// missing, stands in the way.
+		chosen := inv.Env
+		if chosen == "" {
+			chosen = os.Getenv("CABOOSE_ENV")
+		}
+		cfg, err := config.Paths(os.Getenv, chosen)
+		if err != nil {
+			return exit(stderr, launcher.Die("%v", err))
+		}
+		app := &launcher.App{Cfg: cfg, Stdout: stdout, Stderr: stderr, Checkout: launcher.FindCheckout(sourceDir)}
+		app.AutoUpdate()
+		return exit(stderr, app.Disk(chosen, inv.Args))
+	}
+
 	cfg, err := config.Load(os.Getenv, config.OSFS{}, inv.Env)
 	switch {
 	case err != nil && inv.Command == "update":

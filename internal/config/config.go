@@ -309,6 +309,30 @@ func Machine(getenv Env) (*Config, error) {
 	return c, nil
 }
 
+// Paths is env's places -- CABOOSE_HOME, the environment's directory, its
+// data dir -- with no config.toml read, for a command that only looks at
+// files (caboose disk), which a broken config.toml must not stop. env ""
+// is CABOOSE_ENV's, else the default.
+func Paths(getenv Env, env string) (*Config, error) {
+	c, err := Machine(getenv)
+	if err != nil {
+		return nil, err
+	}
+	c.Env = or(env, or(getenv("CABOOSE_ENV"), DefaultEnv))
+	if !ValidEnv(c.Env) {
+		return nil, fmt.Errorf("'%s' is not an environment name: lowercase letters, digits, - and _, starting with a letter or digit, at most 32", c.Env)
+	}
+	dataDir := getenv("CABOOSE_DATA_DIR")
+	if c.CabooseHome == "" && dataDir == "" {
+		return nil, fmt.Errorf("HOME is not set (needed for the default CABOOSE_DATA_DIR)")
+	}
+	if c.CabooseHome != "" {
+		c.EnvDir = EnvDirFor(c.CabooseHome, c.Env)
+	}
+	c.DataDir = or(dataDir, c.EnvDir+"/data")
+	return c, nil
+}
+
 // readVariables reads the variables that are not an environment's
 // settings.
 func (c *Config) readVariables() error {

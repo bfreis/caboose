@@ -256,6 +256,8 @@ func (a *App) runCheckup(c *checkup, offline bool) {
 		c.checking("the " + a.noun())
 		state = a.doctorContainer(c, rootsOK)
 	}
+	c.checking("the disks")
+	a.doctorDisk(c)
 	running := state == "running"
 	c.checking("the daemon and the link")
 	a.doctorDaemon(c, running)

@@ -1,0 +1,23 @@
+apparent: the files' sizes; allocated: the blocks they hold, as du counts them;
+unshared: not measured, as only APFS on macOS reports it (allocated counts each
+clone's shared blocks again, so it is more than deleting would free)
+
+environment work (TMP/.caboose/envs/work)
+                   files  apparent  allocated  unshared
+    builder cache      1    137 GB     8.6 GB         -
+    other              1     160 B       10 B         -
+    total              2    137 GB     8.6 GB         -
+
+caboose's own (TMP/.caboose, outside the environments)
+                      files  apparent  allocated  unshared
+    caboose versions      1     48 kB     3.0 kB         -
+    package cache         1     64 kB     4.0 kB         -
+    other                 2    2.4 kB      150 B         -
+    total                 4    114 kB     7.2 kB         -
+
+all of it: 8.6 GB allocated
+
+What frees what:
+  builder cache: only grows: 'caboose prune --builder-cache' deletes it (asking first), and the next build makes it again, fetching everything anew
+  package cache: 'caboose prune' deletes the packages no environment's lock names
+  caboose versions: an update keeps the newest two

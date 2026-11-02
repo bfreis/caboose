@@ -134,6 +134,14 @@ func (s *vmImageStore) put(rec vmImage) error {
 // from: a running sandbox keeps its disk, however old, until it is
 // recreated.
 func (s *vmImageStore) prune(vmRoot string) {
+	for _, d := range s.unused(vmRoot) {
+		_ = os.Remove(d)
+	}
+}
+
+// unused is the root disks no record names and no VM of vmRoot boots
+// from: what prune removes.
+func (s *vmImageStore) unused(vmRoot string) []string {
 	keep := map[string]bool{}
 	recs, _ := filepath.Glob(filepath.Join(s.dir, "*.json"))
 	for _, p := range recs {
@@ -150,10 +158,12 @@ func (s *vmImageStore) prune(vmRoot string) {
 			}
 		}
 	}
+	var out []string
 	disks, _ := filepath.Glob(filepath.Join(s.dir, "root-*.img"))
 	for _, d := range disks {
 		if !keep[d] {
-			_ = os.Remove(d)
+			out = append(out, d)
 		}
 	}
+	return out
 }

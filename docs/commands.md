@@ -28,6 +28,8 @@
 | `caboose daemon [status\|stop\|restart]` | the host daemon that runs the links: how it is, stop it, or restart it; it starts on demand and exits when idle; see [The host link](host-link.md#the-daemon) |
 | `caboose prune` | delete old Claude Code versions now, and cached packages no environment's lock names |
 | `caboose prune --docker` | under a `vm` profile, delete the disk the sandbox's own `dockerd` keeps its images on, for an empty one (asks; `CABOOSE_FORCE=1` does not); see [The vm isolation](configuration.md#the-vm-isolation) |
+| `caboose prune --builder-cache` | delete the builder guest's cache disk, every layer and download builds fetched; the next build makes an empty one (asks; `CABOOSE_FORCE=1` does not; refused while a build runs) |
+| `caboose [-e ENV] disk [--json] [--budget DURATION]` | the disk space caboose takes up on this machine, per environment and per kind, and what frees each; see [Disk space](#disk-space) |
 | `caboose volume create NAME PATH [--size SIZE] [--profile PROFILE]` | add a volume to a profile in `config.toml`; see [Volumes](configuration.md#adding-listing-and-removing-volumes) |
 | `caboose volume ls [--json]` | every volume of the environment: the profiles declaring it, its disk's size and allocated space, whether the running VM has it |
 | `caboose volume rm NAME [--profile PROFILE] [--delete-disk]` | remove a volume from a profile, keeping its disk unless `--delete-disk` (asks) |
@@ -77,8 +79,11 @@ link's check of a proposal, is using the cache, it leaves the cache
 alone and says so ("a build is using the package cache; not pruned"),
 pruning the Claude Code versions all the same. A lock it cannot read
 could name anything, so then it removes nothing from the cache and says
-which lock. It ends with one line: what it freed. A volume's disk that no profile
-declares is never pruned, since it holds what the sandbox wrote: `caboose
+which lock. It ends with one line: what it freed. Before the sandbox
+starts, it deletes the scratch disks VMs that are not running left
+behind (a VM makes its scratch disk at each start and deletes it at its
+stop), skipping any VM starting, stopping or running. A volume's disk
+that no profile declares is never pruned, since it holds what the sandbox wrote: `caboose
 prune` names each one, with `caboose volume rm NAME --delete-disk`, which
 deletes it.
 
@@ -87,13 +92,88 @@ the sessions they are about to kill and ask first. `CABOOSE_FORCE=1` (or `true`)
 prompt; without a tty they refuse rather than assume. `caboose prune
 --docker` asks the same way, with or without sessions, since what it
 deletes cannot come back, and lists those stopping a running VM ends;
-`caboose volume rm --delete-disk` asks the same way too.
+`caboose prune --builder-cache` and `caboose volume rm --delete-disk` ask
+the same way too. `--builder-cache` refuses while a build runs, since the
+build holds the builder for as long as its guest runs (a second build
+waits for the first), and stops a builder guest an earlier build left
+running.
 The daemon's stop and restart, for a client that asked you itself, ask
 nothing more (see [the host link](host-link.md#the-daemon)).
 
 Sessions are per project and per terminal: a second `caboose` in the same
 repo while the first is attached gets `<project>-2`. `caboose --session
 NAME` (or `CABOOSE_SESSION=NAME`) names one outright, attaching if it exists.
+
+## Disk space
+
+`caboose disk` lists what caboose keeps on this machine, for every
+environment (or only the one `-e` or `CABOOSE_ENV` names, which must
+exist) and for caboose's own files outside them, by kind: the VM's root
+disks, the empty disk new disks are cloned from, scratch disks, volumes
+(dockerd's disk among them), the builder's cache, checkpoints, the kept
+home, the installed Claude Code versions, and the rest of each
+directory; then caboose's versions, the package cache, the vm assets
+(kernel and builder disk), runsc and Caboose.app. `--json` prints the
+same as JSON. It reads no environment's `config.toml`, so a broken one
+does not stop it. It only looks at each file's metadata (`fstatat`, and
+`getattrlist` on macOS), never at what a file holds, and it changes
+nothing. A directory a sandbox can write, such as the kept
+home, is walked without following any symlink.
+
+Each kind shows three sizes, which differ a great deal for what caboose
+keeps:
+
+- Apparent: the files' sizes, what `ls -l` shows. Every VM disk is a
+  sparse file of its full size (a scratch disk is `scratch_size`, 64 GiB by default),
+  most of it never written, so this is far more than the disk holds.
+- Allocated: the blocks the files hold, what `du` counts. A sparse file's
+  holes take none. On APFS, though, a clone (`cp -c`) shares every block
+  with the file it was cloned from until either is written, and `du`
+  counts those shared blocks once for each clone. Checkpoints are clones
+  of each other and of the live files, and scratch disks and volumes are
+  clones of the empty disk, so for them allocated is far more than
+  deleting them would free.
+- Unshared: the blocks no other file, clone or local snapshot holds,
+  which deleting the files gives back. APFS on macOS reports it per file
+  (its "private size", which leaves out blocks a clone or a snapshot,
+  Time Machine's local ones included, still holds); elsewhere the column
+  is `-`. Blocks that two of caboose's files share, say two checkpoints,
+  but nothing else does are in neither's unshared size, yet deleting both
+  frees them: the unshared total is what deleting everything would free
+  at the least.
+
+A file with several hard links counts once, and its unshared size only
+once every one of its links has been met: APFS reports a hard-linked
+file's whole size as its own, but deleting some of its links frees
+nothing. One with a link outside what `caboose disk` looks at is counted
+with no unshared size, and the report says how many there are.
+Measuring the unshared size takes a call per file, tens of seconds on a
+checkpoint store of a million files; past the budget, two minutes unless `--budget` says otherwise,
+the remaining files are still counted but not measured, the report says
+for how many files it measured, and a kind measured in part shows `≥`
+before its unshared size. Checkpoints are measured last, so the budget
+goes to the rest first.
+
+`caboose doctor` has a `disk` row with the VM disks' allocated sizes,
+from each disk file's metadata alone, and `caboose status` a `disk` line
+with their total; neither walks the checkpoints. Doctor adds a line for
+the builder's cache from 16 GiB, and for each leftover of 1 GiB or more:
+the scratch disk of a VM that is not running, root disks no image or VM
+uses, and a volume's disk no profile declares, each with the command
+that deletes it.
+
+What frees what:
+
+| Kind | Freed by |
+|---|---|
+| root disks | the next `caboose build` deletes those no image record or VM uses |
+| scratch disks | made at each start of a VM and deleted at its stop; `caboose prune` deletes those VMs not running left over |
+| volumes | `caboose volume rm NAME --delete-disk` deletes a volume's disk; `caboose prune --docker` replaces dockerd's with an empty one |
+| builder cache | only grows; `caboose prune --builder-cache` deletes it, and the next build makes it again, fetching everything anew |
+| checkpoints | the [retention rules](checkpoints.md#what-is-kept-where-for-how-long); only the unshared size counts |
+| Claude Code | `caboose prune`, beyond `keep_versions` |
+| package cache | `caboose prune`, the packages no environment's lock names |
+| caboose versions | an update keeps the newest two |
 
 ## When something is wrong
 

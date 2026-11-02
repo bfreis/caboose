@@ -17,6 +17,7 @@
   ✓ image         img, matching this launcher (built by v1)
   ✓ VM            box, running
   ✗ keep          the VM does not keep ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/gh, ~/.config/git, ~/.config/jj, ~/.ssh, which the sandbox config now does
+  ✓ disk          VM disks: 0 B allocated (root disks 0 B); 'caboose disk' shows the rest, checkpoints included, and what deleting each would free
   – daemon        not checked: neither CABOOSE_HOME nor HOME is set
   ✓ claude        
   ! sessions      cannot list what runs in the VM: <nil>

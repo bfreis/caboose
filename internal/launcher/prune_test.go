@@ -65,7 +65,7 @@ func TestPruneDocker(t *testing.T) {
 				return
 			}
 
-			if err := b.Prune([]string{"--dokcer"}); err == nil || !strings.Contains(err.Error(), "usage: caboose prune [--docker]") {
+			if err := b.Prune([]string{"--dokcer"}); err == nil || !strings.Contains(err.Error(), "usage: caboose prune [--docker | --builder-cache]") {
 				t.Errorf("a stray argument: %v", err)
 			}
 			if !tty.IsTerminal(os.Stdin.Fd()) {

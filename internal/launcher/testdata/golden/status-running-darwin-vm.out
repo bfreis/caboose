@@ -12,6 +12,7 @@ daemon    : not running (daemon-VERSION); any caboose command that launches or l
 web       : unknown (the daemon is not running or does not answer)
 app       : unknown (the daemon is not running or does not answer)
 link      : not running (the daemon is not running); run: caboose daemon restart
+disk      : VM disks 0 B allocated ('caboose disk' shows everything)
 claude    : 
 timezone  : UTC (host: unknown)
 dockerd   : in the VM, its own, not this machine's (images kept in TMP/data/vm/volumes/docker.img)

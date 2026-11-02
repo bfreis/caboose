@@ -85,6 +85,9 @@ type Guest struct {
 	// the host link serving it, closed by Stop.
 	egress string
 	link   io.Closer
+	// unlock lets go of the builder's start lock, which the guest holds
+	// for its life (Start).
+	unlock func()
 	// run, when set, stands in for the guest's exec port (tests): stderr
 	// is where the command's stderr is shown, nil when it is not.
 	run func(timeout time.Duration, in io.Reader, out, stderr io.Writer, argv ...string) error
@@ -95,12 +98,29 @@ type Guest struct {
 
 // Start boots the builder guest with out attached as the disk a root is
 // written to, created anew, and template, when not "", as the disk an
-// empty ext4 goes to (Template). A builder left running by an earlier
-// build is stopped first: it has other disks.
-func (b *Builder) Start(out, template string) (*Guest, error) {
+// empty ext4 goes to (Template). It takes the builder's start lock, and
+// the guest holds it until Stop, so that one build at a time uses the
+// builder, and whatever deletes its cache disk (caboose prune
+// --builder-cache) can tell none does: a second build waits for the
+// first. A builder left running by an earlier build is stopped first: it
+// has other disks.
+func (b *Builder) Start(out, template string) (g *Guest, err error) {
 	if err := os.MkdirAll(string(b.Dir), 0o700); err != nil {
 		return nil, err
 	}
+	unlock, err := vm.TryLock(b.Dir.StartLock())
+	if errors.Is(err, vm.ErrLocked) {
+		fmt.Fprintln(orDiscard(b.Stderr), "caboose: another build is using the builder; waiting for it to end")
+		unlock, err = b.Dir.HoldStart()
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			unlock()
+		}
+	}()
 	if b.Dir.Serving() {
 		if err := b.Dir.Stop(); err != nil {
 			return nil, fmt.Errorf("stopping the builder left from before: %w", err)
@@ -137,7 +157,7 @@ func (b *Builder) Start(out, template string) (*Guest, error) {
 	if err := b.Dir.Boot(m, spec, b.StartVMM); err != nil {
 		return nil, err
 	}
-	g := &Guest{b: b, spec: spec}
+	g = &Guest{b: b, spec: spec, unlock: unlock}
 	if err := b.Dir.WaitReady(spec, readyTimeout); err != nil {
 		_ = g.Stop()
 		return nil, fmt.Errorf("the builder guest did not come up: %w", err)
@@ -221,7 +241,12 @@ func (g *Guest) Stop() error {
 		_ = g.link.Close()
 		g.link = nil
 	}
-	return g.b.Dir.Stop()
+	err := g.b.Dir.Stop()
+	if g.unlock != nil {
+		g.unlock()
+		g.unlock = nil
+	}
+	return err
 }
 
 // Run runs argv in the guest, stdin from in (nil for none) and stdout to

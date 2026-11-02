@@ -123,6 +123,8 @@ type statusData struct {
 	// lv is the daemon's view they came from.
 	lv                                linkView
 	daemon, web, link, checkpointLine string
+	// disk is the VM disks' line, "" with none.
+	disk string
 	// app is the menu-bar app's line, on macOS only.
 	app string
 
@@ -165,6 +167,7 @@ func (a *App) collectStatus() *statusData {
 	}
 	d.link = a.linkLine(d.lv, d.running)
 	d.checkpointLine = a.checkpointLine(d.lv, d.running, defaultCkSeams())
+	d.disk = a.diskStatusLine()
 	if !d.running {
 		return d
 	}
@@ -238,6 +241,9 @@ func (a *App) renderStatus(d *statusData) error {
 	fmt.Fprintf(out, "link      : %s\n", d.link)
 	if d.checkpointLine != "" {
 		fmt.Fprintf(out, "checkpoints: %s\n", d.checkpointLine)
+	}
+	if d.disk != "" {
+		fmt.Fprintf(out, "disk      : %s\n", d.disk)
 	}
 	// From the status the daemon already gave: no call of its own, and the
 	// daemon is never started for it.
@@ -385,15 +391,21 @@ func (a *App) Restart() error {
 // First, on the host, it removes from the package cache what no
 // environment's lock names (pruneApkCache), which needs no sandbox; its
 // error is returned once the versions are pruned.
-// --docker deletes the vm sandbox's docker disk instead (pruneDocker).
+// It deletes the scratch disks VMs not running left (pruneScratch) before
+// the sandbox starts.
+// --docker deletes the vm sandbox's docker disk instead (pruneDocker),
+// --builder-cache the builder's cache disk (pruneBuilderCache).
 func (a *App) Prune(args []string) error {
 	switch {
 	case len(args) == 1 && args[0] == "--docker":
 		return a.pruneDocker()
+	case len(args) == 1 && args[0] == "--builder-cache":
+		return a.pruneBuilderCache()
 	case len(args) > 0:
-		return &ExitError{Code: 2, Msg: fmt.Sprintf("usage: caboose prune [--docker] (got %q)", args[0])}
+		return &ExitError{Code: 2, Msg: fmt.Sprintf("usage: caboose prune [--docker | --builder-cache] (got %q)", strings.Join(args, " "))}
 	}
 	cacheErr := a.pruneApkCache()
+	a.pruneScratch()
 	if err := a.ensureRunning(false); err != nil {
 		return err
 	}
