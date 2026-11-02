@@ -10,9 +10,9 @@
     has title, reason, dockerfile_sha256, [section], [packages], [roots],
     [alias.NAME], with command, description, timeout, cwd, policy and
     [alias.NAME.params], [writable], with path, and [settings], with session.tz,
-    session.hostname, session.tmux, build.auto_build, vm.cpus and vm.memory;
-    what the sandbox keeps is changed in ~/.config/caboose/sandbox.toml, with no
-    proposal)
+    session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory and
+    vm.scratch_size; what the sandbox keeps is changed in
+    ~/.config/caboose/sandbox.toml, with no proposal)
   ? What now?
     1  Delete it
     2  Leave it pending

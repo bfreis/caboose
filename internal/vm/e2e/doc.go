@@ -7,5 +7,7 @@
 //
 // DIR holds caboose-vmm (signed), Image (the kernel),
 // caboose-agent-linux-arm64, root.img (an ext4 root with /bin/sh) and
-// empty-ext4.img.
+// empty-ext4.img, the 4G empty ext4 every disk is made from (longer, the
+// guest growing its filesystem): a copy of the builder's, which a data dir
+// keeps as vm/images/empty-ext4-4g.img.
 package e2e

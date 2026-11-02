@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -43,6 +44,8 @@ type fakeVMM struct {
 	clocks   int
 	volumes  int
 	ln       net.Listener
+	// madeScratch, when set, runs once NewScratch has made the disk.
+	madeScratch func()
 }
 
 func (f *fakeVMM) Image(ref string) (VMImage, error) { return f.img, nil }
@@ -54,8 +57,15 @@ func (f *fakeVMM) Machine() (vm.Machine, error) {
 func (f *fakeVMM) NewScratch(path string) error {
 	f.mu.Lock()
 	f.scratch++
+	made := f.madeScratch
 	f.mu.Unlock()
-	return os.WriteFile(path, nil, 0o600)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		return err
+	}
+	if made != nil {
+		made()
+	}
+	return nil
 }
 
 func (f *fakeVMM) Volume(name string) (string, error) {
@@ -298,11 +308,18 @@ func TestVMLifecycle(t *testing.T) {
 	}
 	c.Close()
 
+	if _, err := os.Stat(v.Dir.Scratch()); err != nil {
+		t.Fatalf("no scratch disk while the VM runs: %v", err)
+	}
 	if err := v.Stop(); err != nil {
 		t.Fatal(err)
 	}
 	if s := v.State(); s != "exited" {
 		t.Fatalf("state %s after stop", s)
+	}
+	// A stopped VM keeps no scratch disk, and the next start makes one.
+	if _, err := os.Stat(v.Dir.Scratch()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the scratch disk outlived the VM's stop: %v", err)
 	}
 	if err := v.Stop(); err != nil {
 		t.Fatalf("stopping a stopped VM: %v", err)
@@ -374,5 +391,70 @@ func TestVMExecNoVMM(t *testing.T) {
 	_ = cmd.Run()
 	if cmd.ProcessState.ExitCode() != vm.ExecFailed || !strings.Contains(errb.String(), "cannot reach the sandbox's VM") {
 		t.Fatalf("status %d, said %q", cmd.ProcessState.ExitCode(), errb.String())
+	}
+}
+
+// A stop that comes while another process's start has made the scratch
+// disk and is booting waits for the start, then stops the VM it started:
+// it never deletes the disk under a booting VM.
+func TestVMStopWaitsForStart(t *testing.T) {
+	v, f := newTestVM(t)
+	if err := v.Create(Spec{Image: "img"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	made, release := make(chan struct{}), make(chan struct{})
+	f.mu.Lock()
+	f.madeScratch = func() { close(made); <-release }
+	f.mu.Unlock()
+	started := make(chan error, 1)
+	go func() { started <- v.Start() }()
+	<-made
+	// Another launcher's VM, as a second process has it: its own fd on
+	// the lock file, which is all flock tells apart.
+	other := NewVM(v.Name, v.Dir, f)
+	other.Stderr = io.Discard
+	stopped := make(chan error, 1)
+	go func() { stopped <- other.Stop() }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("the stop went ahead while the start was booting (%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := os.Stat(v.Dir.Scratch()); err != nil {
+		t.Fatalf("the booting VM's scratch disk is gone: %v", err)
+	}
+	close(release)
+	if err := <-started; err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if s := v.State(); s != "exited" {
+		t.Errorf("state %s: the stop came second, so the VM is stopped", s)
+	}
+	if _, err := os.Stat(v.Dir.Scratch()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the scratch disk outlived the stop that came second: %v", err)
+	}
+}
+
+// Stopping or removing a VM that was never made is a no-op, and makes
+// no directory for it.
+func TestVMStopAbsent(t *testing.T) {
+	v, _ := newTestVM(t)
+	if err := v.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(string(v.Dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a stop made the VM's directory: %v", err)
+	}
+	if err := v.Start(); err == nil || !strings.Contains(err.Error(), "no VM box to start") {
+		t.Errorf("start of no VM: %v", err)
 	}
 }

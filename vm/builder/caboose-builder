@@ -30,10 +30,10 @@ serve)
 	mkdir -p "$state"
 	# A new cache disk is blank: format it the first time it will not
 	# mount.
-	if ! mount -t ext4 /dev/vdb "$state" 2> /dev/null; then
+	if ! mount -t ext4 -o discard /dev/vdb "$state" 2> /dev/null; then
 		say "formatting the cache disk"
 		mkfs.ext4 -q -L caboose-cache /dev/vdb
-		mount -t ext4 /dev/vdb "$state"
+		mount -t ext4 -o discard /dev/vdb "$state"
 	fi
 	mkdir -p "$state/docker"
 	# dockerd's log reaches the console through a filter dropping one

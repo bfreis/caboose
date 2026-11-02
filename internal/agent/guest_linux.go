@@ -231,7 +231,7 @@ func (m *machine) Boot(spec agentproto.BootSpec) error {
 	if err := mountShares(sharesDir, tags, binds, sysMounts{}); err != nil {
 		return err
 	}
-	if err := mountDisks(spec.Disks); err != nil {
+	if err := guestDisks.mountDisks(spec.Disks, m.logf); err != nil {
 		return err
 	}
 	if spec.Egress != "" {
@@ -556,22 +556,6 @@ func checkDisks(ds []agentproto.GuestDisk) error {
 		}
 		if !filepath.IsAbs(d.Target) || filepath.Clean(d.Target) != d.Target || d.Target == "/" {
 			return fmt.Errorf("disk: bad target %q", d.Target)
-		}
-	}
-	return nil
-}
-
-// mountDisks mounts each ext4 disk at its target, making the target.
-func mountDisks(ds []agentproto.GuestDisk) error {
-	for _, d := range ds {
-		if err := waitForFile(d.Device, 5*time.Second); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(d.Target, 0o755); err != nil {
-			return err
-		}
-		if err := unix.Mount(d.Device, d.Target, "ext4", 0, ""); err != nil {
-			return fmt.Errorf("mounting %s at %s: %w", d.Device, d.Target, err)
 		}
 	}
 	return nil

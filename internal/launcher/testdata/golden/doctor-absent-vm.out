@@ -11,6 +11,7 @@
   ✓ keep          ~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh; 8 sync rules
   ✓ docker        not needed: isolation is vm
   ✓ isolation     vm: 4 CPUs, 6144 MiB; , kernel , builder 
+  ! disks         TMP/data/vm/images/empty-ext4-4g.img, the empty disk scratch disks and volumes are made from, is missing: the next start makes it in the builder guest, or 'caboose build' now
   ✓ egress        through this machine, so its VPN routes and DNS apply (egress on; egress_ports "22 80 443")
   ✓ image         img, matching this launcher (built by v1)
   ! VM            box does not exist; a launch creates it

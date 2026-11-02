@@ -353,7 +353,7 @@ outside the repo.
   by file.
 - **A proposal is the sandbox asking; only the host decides.** What a
   session may propose is an allowlist -- a Dockerfile section, one root,
-  one alias alone, one writable part alone, one settings part alone (`[settings]`: session tz/hostname/tmux, build auto_build, the vm profile's cpus/memory) (`internal/proposal`) -- and
+  one alias alone, one writable part alone, one settings part alone (`[settings]`: session tz/hostname/tmux, build auto_build, the vm profile's cpus/memory/scratch_size) (`internal/proposal`) -- and
   anything more is refused whole, never shown as a question. Never add a proposable part that
   widens what the sandbox reaches without a refusal list of its own, as a
   root has (`checkProposedRoot`: home, hidden dirs of it and `~/Library`,

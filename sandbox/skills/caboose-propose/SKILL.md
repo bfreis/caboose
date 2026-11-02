@@ -28,7 +28,7 @@ launch and after every `apply`. It is the authority, not these instructions:
   the rest is read-only.
 - `[settings]`: the values a settings proposal changes, as `config.toml` has
   them now (`tz` and `hostname` are `""` when unset), `isolation` (the
-  kind in use) and `vm_profile` (the `[vm.NAME]` that `cpus` and `memory`
+  kind in use) and `vm_profile` (the `[vm.NAME]` that `cpus`, `memory` and `scratch_size`
   are set in, `""` when `config.toml` defines none).
 
 ## 2. Write ~/.caboose-proposals/NAME.toml
@@ -220,12 +220,14 @@ auto_build = false
 [settings.vm]              # the VM profile config.toml uses; you never name it
 cpus = 6
 memory = "12G"
+scratch_size = "128G"   # the disk everything outside the mounts is written to
 ```
 
-Alone in its proposal, and only these six keys (dotted keys, like
+Alone in its proposal, and only these seven keys (dotted keys, like
 `session.tz = "UTC"` under `[settings]`, are the same): `session.tz` (a zone
 name such as `Europe/Lisbon`), `session.hostname` (one DNS label),
-`session.tmux`, `build.auto_build`, `vm.cpus` and `vm.memory`. Any other key,
+`session.tmux`, `build.auto_build`, `vm.cpus`, `vm.memory` and
+`vm.scratch_size` (`4G` to `1024G`, written as memory is). Any other key,
 or any other `config.toml` setting, refuses the proposal whole. The VM keys
 are refused when the isolation in `state.toml` is not `vm`, when it has no
 `vm_profile`, and when they ask for more CPUs or memory than the host has;
@@ -267,7 +269,7 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | an image profile | `[apko.NAME]` `packages`, `defaults`; `[dockerfile.NAME]` (its Dockerfile in the environment's `dockerfile/NAME/`); `[ref.NAME]` `image` |
 | a capability, a device, DNS, any other `docker run` flag | `run_args` in `[container.NAME]` or `[gvisor.NAME]` |
 | the host's Docker engine inside | `engine_socket = true` in `[container.NAME]` or `[gvisor.NAME]`: root-equivalent on the host |
-| VM size | `cpus`, `memory` in `[vm.NAME]`, or a `[settings]` proposal as above |
+| VM size | `cpus`, `memory`, `scratch_size` in `[vm.NAME]`, or a `[settings]` proposal as above |
 | VM outbound proxy | `egress`, `egress_ports`, `egress_allow`, `egress_deny` in `[vm.NAME]` (all but `egress` apply without a restart) |
 | forwarded ports, URL opening, any host command, checkpoints asked for from here | `forward_ports`, `open_urls`, `open_urls_allow`, `host_exec`, `checkpoint_requests` in `[link]` (within seconds); for one port, `caboose-agent request port --port N` also asks the host (caboose-requests skill) |
 | a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |

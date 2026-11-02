@@ -101,6 +101,7 @@ Each kind has its own keys, and a key another kind has is an error, so
 | `container`, `gvisor` | `engine_socket` | `false` | mount this machine's engine socket (`DOCKER_HOST`'s unix socket, else `/var/run/docker.sock`): **removes the isolation**, see [caveats](caveats.md) |
 | `vm` | `cpus` | half the CPUs | the VM's CPUs; at least 1 |
 | `vm` | `memory` | half the memory, at most `8G` | the VM's memory, as `"8G"` or `"4096M"` (a bare number is MiB); at least `512M` |
+| `vm` | `scratch_size` | `"64G"` | the size of the VM's scratch disk, the one everything the sandbox writes outside the mounts goes to, written as `memory` is; from `4G` to `1024G`. A disk takes up only what the VM has written, and the space comes back as files are deleted. The scratch disk is made at every start and deleted when caboose stops the VM (`caboose stop`, `caboose restart`); a VM that ends any other way (powered off from inside, crashed, this Mac restarted) leaves it until the next start, which replaces it, or a `caboose stop`. So the size is a ceiling for one run: a new one takes effect at the VM's next start, and a smaller one needs nothing more. A size past the space free on the data dir's volume is allowed, and `caboose doctor` and `caboose apply` say so |
 | `vm` | `egress` | `true` | whether the sandbox's outbound connections through the link's proxy (HTTP(S) through the proxy settings, ssh through its `ProxyCommand`) are made from this machine, so a VPN's routes and DNS apply. At `trust = "fallible"` the VM keeps its own NAT beside the proxy, and a program that ignores the proxy settings leaves through it, unrestricted; under `"hostile"` there is no NAT. `false` is the VM's own NAT alone. See [the host link](host-link.md#outbound-connections) |
 | `vm` | `egress_ports` | `[22, 80, 443]` | the ports the sandbox may reach that way, written as `forward_ports` is; `[]` for none |
 | `vm` | `egress_allow` | `[]` | private addresses it may reach anyway: names (`git.corp.example`), `*.suffix` patterns (`*.corp.example`, not `corp.example` itself), CIDRs or addresses. A name never lets through a loopback, unspecified or link-local address, nor one of this Mac's own: only an address or CIDR within that range does (`127.0.0.1`, `169.254.169.254`), and for the Mac's own, that very address |
@@ -127,6 +128,7 @@ run_args = ["--cap-add=NET_ADMIN"]
 [vm.big]
 cpus = 8
 memory = "16G"
+scratch_size = "128G"
 ```
 
 `caboose status` says which is in use and, when no profile is defined, that
@@ -322,7 +324,8 @@ agent raise an event inside for each file that changed.
 
 Under a `vm` profile the sandbox is a Linux VM: a kernel of its own,
 its image as a read-only disk, and a fresh scratch disk for what it writes,
-so nothing it writes outside the mounts outlives `caboose restart`. It
+so nothing it writes outside the mounts outlives the VM: every start
+begins on an empty one. It
 needs no Docker engine, and runs these:
 
 - `caboose-vmm`, next to `caboose`, which owns the VM. A release installs
@@ -348,6 +351,19 @@ here, on the Mac, and streamed into it; the first build takes a minute or
 two, a later one much less), and keeps it in the data dir's `vm/images/`
 as a disk. A launch boots the sandbox in seconds.
 
+**Disk space.** The disks are sparse files on this Mac: they take what the
+VM has written, not their size. The VM mounts every disk it can write
+(the scratch disk, `docker.img`, the builder's cache) with ext4's
+`discard`, so what it deletes is given back to this Mac as it goes, not
+only when the VM stops. A disk is made from a small empty ext4 that the
+first `caboose build` makes (`empty-ext4-4g.img` in `vm/images/`; a start
+that finds it missing makes it first, in the builder guest), made longer,
+and the guest grows its filesystem to fill it at boot; so a scratch disk
+is never under `4G`, and the Mac never formats or reads one. A scratch
+disk whose filesystem cannot grow stops the boot, and the VM's console
+(`caboose logs`) says so; a volume's is used at the size it has, and the
+console says that too.
+
 **Docker inside.** The VM is the sandbox, so it runs its own `dockerd`:
 no socket of this machine's, no Docker-in-Docker. caboose's packages have
 it (the `dockerd` group, with the CLI, buildx and compose, and `sudo`),
@@ -371,7 +387,7 @@ root's, so the agent user could not tell its own. Root's home is
 on the mounts are yours on the Mac. The Mac's edits under the roots reach the
 sandbox's watchers through the [host link](host-link.md#file-changes), and
 so does your [SSH agent](ssh.md) (any command that starts the VM starts
-the link too). The engine socket cannot be mounted into a VM, and `run_args` mean nothing there: a `vm` profile has no such key, and `cpus` and `memory` size the VM instead. `caboose logs`
+the link too). The engine socket cannot be mounted into a VM, and `run_args` mean nothing there: a `vm` profile has no such key, and `cpus`, `memory` and `scratch_size` size the VM instead. `caboose logs`
 shows the VM's console (`--tail N`). The data dir's path must be short
 enough for the VM's socket (macOS allows 103 bytes); `caboose doctor`
 says when it is not. Where caboose would say "container" -- `caboose

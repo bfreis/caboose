@@ -46,6 +46,10 @@ func (d Dir) Lock() string { return filepath.Join(string(d), "vmm.lock") }
 // Log is where vmm's own output goes: what it did, and why it stopped.
 func (d Dir) Log() string { return filepath.Join(string(d), "vmm.log") }
 
+// StartLock orders the launchers that start and stop the VM (HoldStart),
+// apart from vmm's own Lock, which vmm holds for as long as it runs.
+func (d Dir) StartLock() string { return filepath.Join(string(d), "start.lock") }
+
 // ShareTag is the virtio-fs tag of the one share every mount is a
 // directory of (Machine.Shares).
 const ShareTag = "caboose"

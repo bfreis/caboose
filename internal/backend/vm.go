@@ -306,8 +306,19 @@ func within(dir, base string) bool {
 // (made empty when one was deleted while it was stopped), vmm, and then
 // the boot spec to the agent. It returns once the agent has the spec, not once the
 // sandbox is ready: the launcher waits for that as it does for a
-// container, saying what takes long.
+// container, saying what takes long. It holds the VM's start lock
+// throughout, so that a stop in another process waits for vmm to have
+// the new scratch disk, and stops it, rather than delete it under it.
 func (v *VM) Start() error {
+	unlock, err := v.Dir.HoldStart()
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("no VM %s to start: %w", v.Name, err)
+	}
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// Read under the lock: a remove that held it may have taken the VM.
 	st, err := v.Dir.ReadState()
 	if err != nil {
 		return fmt.Errorf("no VM %s to start: %w", v.Name, err)
@@ -344,18 +355,46 @@ func (v *VM) WaitReady(timeout time.Duration) error {
 }
 
 // Stop asks the agent to shut the guest down, which ends vmm, and signals
-// vmm when it does not end in time.
+// vmm when it does not end in time. The scratch disk goes with it, so that
+// a stopped VM takes no space for what it wrote: it is empty at every
+// start anyway, and nothing in the guest outlives the boot that made it.
+// Both happen under the VM's start lock (Start).
 func (v *VM) Stop() error {
+	unlock, err := v.Dir.HoldStart()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // no directory, no VM
+	}
+	if err != nil {
+		return v.say("%v", err)
+	}
+	defer unlock()
+	return v.stop()
+}
+
+// stop is Stop with the start lock held.
+func (v *VM) stop() error {
 	if err := v.Dir.Stop(); err != nil {
 		return v.say("%v", err)
+	}
+	if err := os.Remove(v.Dir.Scratch()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return v.say("removing the scratch disk: %v", err)
 	}
 	return nil
 }
 
-// Remove stops the VM and deletes its directory; the image's disk, which
-// other VMs may share, stays.
+// Remove stops the VM and deletes its directory, the start lock held
+// throughout, so a start waiting on it finds no VM; the image's disk,
+// which other VMs may share, stays.
 func (v *VM) Remove() error {
-	if err := v.Stop(); err != nil {
+	unlock, err := v.Dir.HoldStart()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return v.say("%v", err)
+	}
+	defer unlock()
+	if err := v.stop(); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(string(v.Dir)); err != nil {

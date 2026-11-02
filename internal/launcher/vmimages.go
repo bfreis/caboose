@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/vm"
 	"github.com/bfreis/caboose/internal/vm/builder"
 )
@@ -64,9 +65,12 @@ func (s *vmImageStore) recordPath(name string) string {
 // disk is rec's root disk.
 func (s *vmImageStore) disk(rec vmImage) string { return filepath.Join(s.dir, rec.Disk) }
 
-// template is the empty ext4 the builder made, which scratch disks are
-// cloned from.
-func (s *vmImageStore) template() string { return filepath.Join(s.dir, "empty-ext4.img") }
+// template is the empty ext4 the builder made, which scratch disks and
+// volumes are cloned from; its size is in its name, so a template of
+// another size is never mistaken for it.
+func (s *vmImageStore) template() string {
+	return filepath.Join(s.dir, fmt.Sprintf("empty-ext4-%dg.img", config.EmptyDiskSize>>30))
+}
 
 // diskName is the root disk file for an image ID.
 func diskName(id string) string {

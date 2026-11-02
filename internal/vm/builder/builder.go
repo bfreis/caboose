@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/vm"
 )
 
@@ -111,15 +112,20 @@ func (b *Builder) Start(out, template string) (*Guest, error) {
 		}
 	}
 	disks := []vm.Disk{{Path: b.Image, ReadOnly: true}, {Path: b.Cache()}}
-	for _, d := range []string{out, template} {
-		if d == "" {
+	// The template is the size every disk is cloned from; the output is
+	// the most a root disk can be.
+	for _, d := range []struct {
+		path string
+		size int64
+	}{{out, diskSize}, {template, config.EmptyDiskSize}} {
+		if d.path == "" {
 			continue
 		}
-		_ = os.Remove(d)
-		if err := sparse(d, diskSize); err != nil {
+		_ = os.Remove(d.path)
+		if err := sparse(d.path, d.size); err != nil {
 			return nil, err
 		}
-		disks = append(disks, vm.Disk{Path: d})
+		disks = append(disks, vm.Disk{Path: d.path})
 	}
 	m := vm.Machine{
 		Kernel: b.Kernel, Initramfs: b.Initramfs,

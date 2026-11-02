@@ -128,7 +128,7 @@ func earlyInit() error {
 	if tmpfsScratch {
 		err = mount("tmpfs", "/mnt/scratch", "tmpfs", 0, "mode=0755")
 	} else {
-		err = mount(scratchDisk, "/mnt/scratch", "ext4", 0, "")
+		err = guestDisks.mountScratch(scratchDisk, "/mnt/scratch")
 	}
 	if err != nil {
 		return err

@@ -615,6 +615,7 @@ func (a *App) exportProposals() {
 		Settings: proposal.StateSettings{Isolation: isolationOf(c), TZ: c.TZ, Hostname: c.Hostname, Tmux: c.Tmux, AutoBuild: c.AutoBuild}}
 	if isolationOf(c) == config.KindVM && c.Profile != "" {
 		s.Settings.VMProfile, s.Settings.CPUs, s.Settings.Memory = c.Profile, c.VMCPUs, c.VMMemory
+		s.Settings.ScratchSize = c.VMScratchSize
 	}
 	if ip := c.ImageProfile; ip.Kind == config.ImageKindApko {
 		installed, err := ip.Spec().List()

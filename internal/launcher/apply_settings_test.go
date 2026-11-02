@@ -25,7 +25,27 @@ func vmSettingsEnv(t *testing.T) *setupEnv {
 	cpus, mem := settingsHostCPUs, settingsHostMemory
 	settingsHostCPUs, settingsHostMemory = func() int { return 8 }, func() uint64 { return 16 << 30 }
 	t.Cleanup(func() { settingsHostCPUs, settingsHostMemory = cpus, mem })
+	free := vmFreeSpace
+	vmFreeSpace = func(string) (int64, error) { return 1 << 50, nil }
+	t.Cleanup(func() { vmFreeSpace = free })
 	return e
+}
+
+// A scratch_size past the space free where the disk would be is written,
+// with a warning: the disk is a sparse file, so it may never take it.
+func TestSettingsScratchSpace(t *testing.T) {
+	e := vmSettingsEnv(t)
+	vmFreeSpace = func(string) (int64, error) { return 100 << 30, nil }
+	pl, refusals, w := e.a.planSettings(proposal.Settings{ScratchSize: ptr("128G")})
+	if pl == nil || len(refusals) > 0 || pl.edit.Set["vm.default.scratch_size"] != "128G" {
+		t.Fatalf("%+v %v", pl, refusals)
+	}
+	if ws := strings.Join(w, "\n"); !strings.Contains(ws, "scratch_size is 128G, and the volume of the data dir") || !strings.Contains(ws, "has 100G free") {
+		t.Errorf("warnings: %q", ws)
+	}
+	if _, _, w := e.a.planSettings(proposal.Settings{ScratchSize: ptr("64G")}); len(w) > 0 {
+		t.Errorf("64G of 100G free: %q", w)
+	}
 }
 
 func TestApplySettings(t *testing.T) {
@@ -89,6 +109,16 @@ func TestSettingsVMKeys(t *testing.T) {
 	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "no [vm.NAME] profile") {
 		t.Errorf("no profile: %q", r)
 	}
+	_, refusals, _ = e.a.planSettings(proposal.Settings{ScratchSize: ptr("8G")})
+	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "no [vm.NAME] profile") {
+		t.Errorf("no profile, scratch_size: %q", r)
+	}
+	e = newSetupEnv(t, "default", "", false)
+	e.writeConfig("")
+	_, refusals, _ = e.a.planSettings(proposal.Settings{ScratchSize: ptr("8G")})
+	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "this environment's isolation is container") {
+		t.Errorf("under container, scratch_size: %q", r)
+	}
 
 	// Under vm with a profile: written into it.
 	e = vmSettingsEnv(t)
@@ -102,6 +132,25 @@ func TestSettingsVMKeys(t *testing.T) {
 	if !strings.Contains(pl.diff, "cpus = 6") || !strings.Contains(pl.diff, `memory = "12G"`) {
 		t.Errorf("diff:\n%s", pl.diff)
 	}
+
+	// The scratch disk's size goes into the profile too.
+	pl, refusals, _ = e.a.planSettings(proposal.Settings{ScratchSize: ptr("128G")})
+	if len(refusals) > 0 || pl == nil || pl.edit.Set["vm.default.scratch_size"] != "128G" || !pl.restart || !strings.Contains(pl.diff, `scratch_size = "128G"`) {
+		t.Errorf("scratch_size: %v %+v", refusals, pl)
+	}
+	_, refusals, _ = e.a.planSettings(proposal.Settings{ScratchSize: ptr("2G")})
+	if r := strings.Join(refusals, "\n"); !strings.Contains(r, "vm.scratch_size") || !strings.Contains(r, "outside 4G to 1024G") {
+		t.Errorf("a scratch_size under the floor: %q", r)
+	}
+	_, refusals, _ = e.a.planSettings(proposal.Settings{ScratchSize: ptr("64G")})
+	if len(refusals) > 0 {
+		t.Errorf("64G refused: %v", refusals)
+	}
+	e.a.Cfg.VMScratchSize = "65536M"
+	if pl, refusals, w := e.a.planSettings(proposal.Settings{ScratchSize: ptr("64G")}); pl != nil || len(refusals) > 0 || len(w) != 1 {
+		t.Errorf("the same size in other words: %+v %v %v", pl, refusals, w)
+	}
+	e.a.Cfg.VMScratchSize = ""
 
 	// Past this machine.
 	_, refusals, _ = e.a.planSettings(proposal.Settings{CPUs: ptr(9)})

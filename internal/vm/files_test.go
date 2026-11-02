@@ -96,3 +96,48 @@ func TestCloneFile(t *testing.T) {
 		t.Error("cloned over an existing file")
 	}
 }
+
+// A disk is the template made longer: the template's bytes, then a hole.
+// A size under the template's is refused, and so is an existing dst.
+func TestNewDisk(t *testing.T) {
+	d := t.TempDir()
+	tmpl := filepath.Join(d, "empty.img")
+	f, err := os.Create(tmpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("superblock"), 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(8 << 20); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	for _, size := range []int64{8 << 20, 32 << 20} {
+		dst := filepath.Join(d, strconv.FormatInt(size, 10)+".img")
+		if err := NewDisk(tmpl, dst, size); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Stat(dst)
+		if err != nil || fi.Size() != size {
+			t.Fatalf("disk of %d: %v, %v", size, fi, err)
+		}
+		b, _ := os.ReadFile(dst)
+		if string(b[1024:1034]) != "superblock" || !bytes.Equal(b[8<<20-8:8<<20], make([]byte, 8)) {
+			t.Errorf("disk of %d lacks the template's bytes", size)
+		}
+	}
+	if err := NewDisk(tmpl, filepath.Join(d, "short.img"), 4<<20); err == nil {
+		t.Error("a disk shorter than its template was made")
+	}
+	if _, err := os.Stat(filepath.Join(d, "short.img")); err == nil {
+		t.Error("a refused disk left a file")
+	}
+	if err := NewDisk(tmpl, filepath.Join(d, "8388608.img"), 16<<20); err == nil {
+		t.Error("a disk was made over a file")
+	}
+	if err := NewDisk(filepath.Join(d, "none.img"), filepath.Join(d, "x.img"), 16<<20); err == nil {
+		t.Error("a disk was made from no template")
+	}
+}

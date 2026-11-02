@@ -14,6 +14,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/backend"
+	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/vm"
 )
 
@@ -36,6 +37,9 @@ type host struct {
 
 	root, empty string
 	env         []string
+	// scratch is the scratch disk's size, 0 for config.DefaultScratchSize,
+	// and volSize a volume's.
+	scratch, volSize int64
 }
 
 func (h host) Image(string) (backend.VMImage, error) {
@@ -80,16 +84,32 @@ func (h host) initramfs() (string, error) {
 	return initramfs, errors.Join(werr, f.Close())
 }
 
-func (h host) NewScratch(path string) error {
-	_ = os.Remove(path)
-	empty := h.empty
-	if empty == "" {
-		empty = filepath.Join(h.dir, "empty-ext4.img")
+func (h host) emptyDisk() string {
+	if h.empty != "" {
+		return h.empty
 	}
-	return vm.CloneFile(empty, path)
+	return filepath.Join(h.dir, "empty-ext4.img")
 }
 
-func (h host) Volume(name string) (string, error) { return "/volumes/" + name + ".img", nil }
+func (h host) NewScratch(path string) error {
+	_ = os.Remove(path)
+	size := h.scratch
+	if size == 0 {
+		size = config.DefaultScratchSize
+	}
+	return vm.NewDisk(h.emptyDisk(), path, size)
+}
+
+func (h host) Volume(name string) (string, error) {
+	p := filepath.Join(h.work, "volumes", name+".img")
+	if _, err := os.Stat(p); err == nil || h.volSize == 0 {
+		return p, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return "", err
+	}
+	return p, vm.NewDisk(h.emptyDisk(), p, h.volSize)
+}
 
 // StartVMM is what the launcher will do: caboose-vmm, detached, its output
 // to vmm.log.
@@ -247,6 +267,12 @@ func TestVM(t *testing.T) {
 	}
 	if got := out("sh", "-c", "ls /tmp/marker 2>&1 || true"); !strings.Contains(got, "No such file") {
 		t.Errorf("the scratch disk survived a restart: %q", got)
+	}
+	if err := v.Stop(); err != nil {
+		t.Fatalf("stop again: %v", err)
+	}
+	if _, err := os.Stat(vmdir.Scratch()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the scratch disk is still there after a stop: %v", err)
 	}
 	keepLogs()
 	if err := v.Remove(); err != nil {

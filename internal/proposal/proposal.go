@@ -108,12 +108,12 @@ type Writable struct {
 
 // Settings are the settings of config.toml a proposal sets, each nil when
 // it does not: [session] tz, hostname and tmux, [build] auto_build, and
-// the cpus and memory of the VM profile in use (the sandbox never names
-// the profile). Which of them applies, and when, is the host's to say.
+// the cpus, memory and scratch_size of the VM profile in use (the sandbox
+// never names the profile). Which of them applies, and when, is the host's to say.
 type Settings struct {
-	TZ, Hostname, Memory *string
-	Tmux, AutoBuild      *bool
-	CPUs                 *int
+	TZ, Hostname, Memory, ScratchSize *string
+	Tmux, AutoBuild                   *bool
+	CPUs                              *int
 }
 
 // Proposal is one proposal, checked.
@@ -166,8 +166,9 @@ type settingsFile struct {
 		AutoBuild *bool `toml:"auto_build"`
 	} `toml:"build"`
 	VM *struct {
-		CPUs   *int    `toml:"cpus"`
-		Memory *string `toml:"memory"`
+		CPUs        *int    `toml:"cpus"`
+		Memory      *string `toml:"memory"`
+		ScratchSize *string `toml:"scratch_size"`
 	} `toml:"vm"`
 }
 
@@ -193,10 +194,10 @@ func Parse(name string, data []byte) (*Proposal, error) {
 		for i, k := range u {
 			keys[i] = k.String()
 			if k[0] == "settings" {
-				return nil, fmt.Errorf("%s cannot be proposed: [settings] holds session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus and vm.memory only; every other config.toml key is the user's to change", Printable(clip(k.String(), 100)))
+				return nil, fmt.Errorf("%s cannot be proposed: [settings] holds session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory and vm.scratch_size only; every other config.toml key is the user's to change", Printable(clip(k.String(), 100)))
 			}
 		}
-		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], [writable], with path, and [settings], with session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus and vm.memory; what the sandbox keeps is changed in %s, with no proposal)",
+		return nil, fmt.Errorf("unknown key %s (a proposal has title, reason, dockerfile_sha256, [section], [packages], [roots], [alias.NAME], with command, description, timeout, cwd, policy and [alias.NAME.params], [writable], with path, and [settings], with session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory and vm.scratch_size; what the sandbox keeps is changed in %s, with no proposal)",
 			strings.Join(keys, ", "), sandboxHint)
 	}
 	p := &Proposal{Name: stem, Title: strings.TrimSpace(f.Title), Reason: strings.TrimSpace(f.Reason)}
@@ -363,9 +364,19 @@ func checkSettings(f settingsFile) (*Settings, error) {
 			}
 			st.Memory = &v
 		}
+		if m.ScratchSize != nil {
+			v := *m.ScratchSize
+			if err := checkText("settings.vm.scratch_size", v, false, MaxSettingText); err != nil {
+				return nil, err
+			}
+			if _, err := config.ParseScratchSize(v); err != nil {
+				return nil, fmt.Errorf("settings.vm.scratch_size: %s", Printable(err.Error()))
+			}
+			st.ScratchSize = &v
+		}
 	}
 	if st == (Settings{}) {
-		return nil, errors.New("[settings] proposes nothing: set session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus or vm.memory")
+		return nil, errors.New("[settings] proposes nothing: set session.tz, session.hostname, session.tmux, build.auto_build, vm.cpus, vm.memory or vm.scratch_size")
 	}
 	return &st, nil
 }

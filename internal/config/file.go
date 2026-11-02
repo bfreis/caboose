@@ -110,6 +110,7 @@ var profileKeys = map[string]map[string]valueType{
 	KindVM: {
 		"cpus":         typeInt,
 		"memory":       typeString,
+		"scratch_size": typeString,
 		"egress":       typeBool,
 		"egress_ports": typePorts,
 		"egress_allow": typeStrings,
@@ -643,6 +644,11 @@ format = 1    # this file's structure
 # and half its memory, at most 8G.
 #cpus = 4
 #memory = "8G"
+# The size of the disk the sandbox's own writes go to (everything outside
+# the kept paths and the mounted roots), new at every start: 64G by
+# default, 4G to 1024G. It takes up only what is written, and the space
+# comes back when the VM stops. A new size takes effect at the next start.
+#scratch_size = "64G"
 # Make the sandbox's outbound connections through the link's proxy from
 # this machine, so that a VPN's routes and DNS apply as they do here. Under
 # trust = "fallible" the VM keeps its own NAT beside it, which a program

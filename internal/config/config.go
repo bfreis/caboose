@@ -153,6 +153,9 @@ type Config struct {
 	// (launcher/vm.go).
 	VMCPUs   int
 	VMMemory string
+	// VMScratchSize is a vm profile's scratch_size, "" for
+	// DefaultScratchSize; checked at load (ParseScratchSize).
+	VMScratchSize string
 	// Egress is a vm profile's egress: whether the sandbox's outbound
 	// connections are dialled from this machine, through the link, so that
 	// its VPN routes and resolver apply. EgressPorts are the ports it
@@ -486,6 +489,12 @@ func (c *Config) readFile() error {
 			return err
 		}
 		str(p+".memory", &c.VMMemory)
+		str(p+".scratch_size", &c.VMScratchSize)
+		if c.VMScratchSize != "" {
+			if _, err := ParseScratchSize(c.VMScratchSize); err != nil {
+				return fail("%s: %v", displayKey(p+".scratch_size"), err)
+			}
+		}
 		boolean(p+".egress", &c.Egress)
 		if v, ok := f.Vals[p+".egress_ports"]; ok {
 			c.EgressPorts = portsString(v)

@@ -3,6 +3,7 @@ package vm
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -68,4 +69,30 @@ func sparseCopy(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// NewDisk makes dst, which must not exist, an empty disk of size bytes: a
+// clone of template, an empty ext4, made longer when size is more than
+// it. The filesystem keeps template's size until the guest grows it to
+// fill the disk (agent's growFS), so the host never formats or reads a
+// disk. A size under template's is refused: a shorter file would cut the
+// filesystem off.
+func NewDisk(template, dst string, size int64) error {
+	fi, err := os.Stat(template)
+	if err != nil {
+		return err
+	}
+	if size < fi.Size() {
+		return fmt.Errorf("a disk of %d bytes is shorter than the empty disk it is made from, %d (%s)", size, fi.Size(), template)
+	}
+	if err := CloneFile(template, dst); err != nil {
+		return err
+	}
+	if size > fi.Size() {
+		if err := os.Truncate(dst, size); err != nil {
+			os.Remove(dst)
+			return err
+		}
+	}
+	return nil
 }

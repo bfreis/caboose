@@ -2,7 +2,6 @@ package launcher
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -253,14 +252,84 @@ func (h *vmHost) Machine() (vm.Machine, error) {
 	return vm.Machine{Kernel: f.Kernel, Initramfs: initramfs, CPUs: cpus, MemoryMiB: mem, Network: h.a.vmNetwork()}, nil
 }
 
+// NewScratch makes the scratch disk, of the profile's scratch_size: the
+// size is read from config.toml at every start, so a new one takes effect
+// at the next.
 func (h *vmHost) NewScratch(path string) error {
-	tmpl := h.a.vmImages().template()
-	if !isFile(tmpl) {
-		return errors.New("no empty disk to clone a scratch disk from: 'caboose build' makes it")
+	size, err := scratchSize(h.a.Cfg)
+	if err != nil {
+		return err
+	}
+	tmpl, err := h.a.vmTemplate()
+	if err != nil {
+		return err
 	}
 	_ = os.Remove(path)
-	return vm.CloneFile(tmpl, path)
+	return vm.NewDisk(tmpl, path, size)
 }
+
+// vmTemplate is the empty ext4 every scratch disk and volume is made
+// from, made first when it is missing (caboose build makes it with the
+// first image, but a start must not fail for want of it): the builder
+// guest, booted to write that disk alone. One launcher makes it at a
+// time, and one that waited for another finds it made.
+func (a *App) vmTemplate() (string, error) {
+	store := a.vmImages()
+	tmpl := store.template()
+	if isFile(tmpl) {
+		return tmpl, nil
+	}
+	if err := os.MkdirAll(store.dir, 0o700); err != nil {
+		return "", err
+	}
+	unlock, err := vm.HoldLock(filepath.Join(store.dir, ".template.lock"))
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if isFile(tmpl) {
+		return tmpl, nil
+	}
+	a.Note("making %s, the empty disk scratch disks and volumes are made from, in the builder guest", a.short(tmpl))
+	tmp := filepath.Join(store.dir, ".empty-new.img")
+	boot := a.buildGuest
+	if boot == nil {
+		boot = func(out, template string) (vmBuildGuest, error) { return a.startBuilder(out, template) }
+	}
+	g, err := boot("", tmp)
+	if err != nil {
+		return "", err
+	}
+	defer g.Stop()
+	if err := g.Template(); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("the empty disk for scratch disks and volumes: %w", err)
+	}
+	if err := g.Stop(); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("stopping the builder: %w", err)
+	}
+	if err := os.Rename(tmp, tmpl); err != nil {
+		return "", err
+	}
+	return tmpl, nil
+}
+
+// scratchSize is the scratch disk's size in bytes: the profile's
+// scratch_size, else config.DefaultScratchSize.
+func scratchSize(c *config.Config) (int64, error) {
+	if c.VMScratchSize == "" {
+		return config.DefaultScratchSize, nil
+	}
+	n, err := config.ParseScratchSize(c.VMScratchSize)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %v", c.ProfileKey("scratch_size"), err)
+	}
+	return n, nil
+}
+
+// volumeSize is the size of a volume's disk, made when it is new.
+const volumeSize = 64 << 30
 
 // Volume is the volume's disk in the data dir's vm/volumes/, outside
 // every VM's directory, so caboose restart keeps it: cloned from the empty
@@ -271,14 +340,15 @@ func (h *vmHost) Volume(name string) (string, error) {
 	if isFile(p) {
 		return p, nil
 	}
-	tmpl := h.a.vmImages().template()
-	if !isFile(tmpl) {
-		return "", errors.New("no empty disk to make it from: 'caboose build' makes it")
+	tmpl, err := h.a.vmTemplate()
+	if err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := vm.CloneFile(tmpl, p+".new"); err != nil {
+	_ = os.Remove(p + ".new")
+	if err := vm.NewDisk(tmpl, p+".new", volumeSize); err != nil {
 		os.Remove(p + ".new")
 		return "", err
 	}
@@ -341,4 +411,53 @@ func (a *App) doctorVM(c *checkup) {
 		return
 	}
 	c.ok("isolation", "vm: %d CPUs, %d MiB; %s, kernel %s, builder %s", cpus, mem, f.VMM, f.Kernel, f.Builder)
+	a.doctorVMDisks(c)
+}
+
+// doctorVMDisks checks what the VM's disks are made from, and the scratch
+// disk's size against the space the data dir's volume has.
+func (a *App) doctorVMDisks(c *checkup) {
+	size, err := scratchSize(a.Cfg)
+	if err != nil {
+		c.problem("disks", "fix it in config.toml", "%v", err)
+		return
+	}
+	if tmpl := a.vmImages().template(); !isFile(tmpl) {
+		c.note("disks", "%s, the empty disk scratch disks and volumes are made from, is missing: the next start makes it in the builder guest, or 'caboose build' now", a.short(tmpl))
+		return
+	}
+	if warn := scratchSpaceWarning(a.Cfg.DataDir, size); warn != "" {
+		c.note("disks", "%s", warn)
+		return
+	}
+	c.ok("disks", "a scratch disk of up to %s at each start", gibString(size))
+}
+
+// vmFreeSpace is the space free to this user on the volume that holds
+// path. A variable for the tests.
+var vmFreeSpace = func(path string) (int64, error) {
+	avail, _, err := realStatfs(path)
+	return int64(avail), err
+}
+
+// scratchSpaceWarning says when a scratch disk of size could outgrow the
+// space free on the volume of the data dir, which holds it: allowed, since
+// the disk takes only what the VM writes, but a VM that writes that much
+// fills the volume first. "" when it fits, or when the space is unknown.
+func scratchSpaceWarning(dataDir string, size int64) string {
+	free, err := vmFreeSpace(dataDir)
+	if err != nil || size <= free {
+		return ""
+	}
+	return fmt.Sprintf("scratch_size is %s, and the volume of the data dir (%s) has %s free: the scratch disk takes only what the VM writes, but a VM that writes past %s fills that volume first",
+		gibString(size), dataDir, gibString(free), gibString(free))
+}
+
+// gibString is n bytes in the units config.toml writes a size in: "64G",
+// or "10.5G" for what is not a whole number of them.
+func gibString(n int64) string {
+	if n%(1<<30) == 0 {
+		return fmt.Sprintf("%dG", n>>30)
+	}
+	return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
 }

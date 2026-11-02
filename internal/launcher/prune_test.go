@@ -98,8 +98,17 @@ func TestPruneDocker(t *testing.T) {
 					t.Errorf("missing %q in:\n%s", want, errs)
 				}
 			}
-			if got, err := os.ReadFile(disk); err != nil || string(got) != "empty" {
-				t.Errorf("the disk is not the empty one: %q, %v", got, err)
+			// The empty disk is the template made volumeSize long.
+			if f, err := os.Open(disk); err != nil {
+				t.Errorf("no new disk: %v", err)
+			} else {
+				got := make([]byte, 5)
+				_, rerr := f.ReadAt(got, 0)
+				fi, serr := f.Stat()
+				if rerr != nil || serr != nil || string(got) != "empty" || fi.Size() != volumeSize {
+					t.Errorf("the disk is not the empty one: %q, %v, %v, %v", got, rerr, serr, fi)
+				}
+				f.Close()
 			}
 			if !slices.Equal(b.box.Calls, []string{"stop"}) || b.box.State() != "exited" {
 				t.Errorf("calls %q, state %s", b.box.Calls, b.box.State())

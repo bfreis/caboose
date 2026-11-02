@@ -42,17 +42,19 @@ type State struct {
 
 // StateSettings are the settings a [settings] proposal sets, as the host
 // has them now: Isolation is the kind in use and VMProfile the [vm.NAME]
-// profile cpus and memory are set in ("" when config.toml defines none, and
-// then they cannot be proposed). CPUs is 0 and Memory "" when not set.
+// profile cpus, memory and scratch_size are set in ("" when config.toml
+// defines none, and then they cannot be proposed). CPUs is 0, Memory and
+// ScratchSize "" when not set.
 type StateSettings struct {
-	Isolation string `toml:"isolation"`
-	VMProfile string `toml:"vm_profile"`
-	TZ        string `toml:"tz"`
-	Hostname  string `toml:"hostname"`
-	Tmux      bool   `toml:"tmux"`
-	AutoBuild bool   `toml:"auto_build"`
-	CPUs      int    `toml:"cpus"`
-	Memory    string `toml:"memory"`
+	Isolation   string `toml:"isolation"`
+	VMProfile   string `toml:"vm_profile"`
+	TZ          string `toml:"tz"`
+	Hostname    string `toml:"hostname"`
+	Tmux        bool   `toml:"tmux"`
+	AutoBuild   bool   `toml:"auto_build"`
+	CPUs        int    `toml:"cpus"`
+	Memory      string `toml:"memory"`
+	ScratchSize string `toml:"scratch_size"`
 }
 
 // ApkoState is what an apko image profile is made of.
@@ -122,9 +124,9 @@ const stateHeader = `# Written by caboose on the host, at every launch and after
 #
 # settings: the values a [settings] proposal changes, as config.toml has
 # them: tz and hostname ("" for this machine's zone and the default
-# hostname), tmux, auto_build, and the cpus and memory of the VM profile in
-# use (0 and "" while unset). isolation is the kind in use, and vm_profile
-# the [vm.NAME] cpus and memory are set in: they apply under vm only, and
+# hostname), tmux, auto_build, and the cpus, memory and scratch_size of the
+# VM profile in use (0 and "" while unset). isolation is the kind in use, and
+# vm_profile the [vm.NAME] cpus, memory and scratch_size are set in: they apply under vm only, and
 # only when config.toml defines that profile.
 
 `
