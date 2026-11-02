@@ -502,7 +502,9 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
 		if len(rest) != 0 {
 			return usage()
 		}
-		err = RunLink(stdin, stdout, Config{Socket: linkSocket, ProcRoot: "/proc", Interval: time.Second})
+		// A vm guest's boot environment says so (the launcher sets it):
+		// the touches' lookups hold the Mac's files there (touch.go).
+		err = RunLink(stdin, stdout, linkConfig(os.Getenv("CABOOSE_ISOLATION")))
 	case "guest":
 		if len(rest) != 0 {
 			return usage()
@@ -542,4 +544,10 @@ func xdgOpen(socket string, args []string, stdout, stderr io.Writer) int {
 		return 4
 	}
 	return 0
+}
+
+// linkConfig is the link's configuration under isolation, the kind the
+// sandbox's boot environment names: the rechecks run under vm alone.
+func linkConfig(isolation string) Config {
+	return Config{Socket: linkSocket, ProcRoot: "/proc", Interval: time.Second, Recheck: isolation == "vm"}
 }

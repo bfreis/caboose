@@ -27,6 +27,14 @@ const (
 	// (MAXPATHLEN, 1024), which is why the path is at 176.
 	vnodePathInfoSize = 1200
 	vnodePathOffset   = 176
+	// The vnode_info starts with a struct vinfo_stat, at 24: vst_mode
+	// (uint16) at 4 in it, vst_nlink (uint16) at 6, vst_size (int64) at
+	// 88 and vst_blocks (int64, in 512-byte blocks, as stat's) at 96.
+	vnodeStatOffset = 24
+	vstMode         = vnodeStatOffset + 4
+	vstNlink        = vnodeStatOffset + 6
+	vstSize         = vnodeStatOffset + 88
+	vstBlocks       = vnodeStatOffset + 96
 	// pidPathMax is PROC_PIDPATHINFO_MAXSIZE.
 	pidPathMax = 4096
 )
@@ -131,18 +139,31 @@ func (host) VnodeFDs(pid int) ([]int32, error) {
 	}
 }
 
-func (host) FDPath(pid int, fd int32) (string, error) {
-	buf := make([]byte, vnodePathInfoSize)
+// pathInfoBufs are FDFile's buffers: a doctor reads tens of thousands of
+// descriptors in a row, each into one.
+var pathInfoBufs = sync.Pool{New: func() any { return new([vnodePathInfoSize]byte) }}
+
+func (host) FDFile(pid int, fd int32) (File, error) {
+	b := pathInfoBufs.Get().(*[vnodePathInfoSize]byte)
+	defer pathInfoBufs.Put(b)
+	buf := b[:]
 	n := libproc.proc_pidfdinfo(int32(pid), fd, procPIDFDVnodePathInfo, unsafe.Pointer(&buf[0]), int32(len(buf)))
 	runtime.KeepAlive(buf)
 	if n < vnodePathInfoSize {
-		return "", fmt.Errorf("cannot read the path of descriptor %d of process %d", fd, pid)
+		return File{}, fmt.Errorf("cannot read descriptor %d of process %d", fd, pid)
 	}
 	p := buf[vnodePathOffset:]
 	if i := bytes.IndexByte(p, 0); i >= 0 {
 		p = p[:i]
 	}
-	return string(p), nil
+	le := binary.LittleEndian
+	return File{
+		Path:      string(p),
+		Regular:   le.Uint16(buf[vstMode:])&unix.S_IFMT == unix.S_IFREG,
+		Links:     int(le.Uint16(buf[vstNlink:])),
+		Size:      int64(le.Uint64(buf[vstSize:])),
+		Allocated: int64(le.Uint64(buf[vstBlocks:])) * 512,
+	}, nil
 }
 
 func (host) MaxVnodes() (int, error) {

@@ -17,6 +17,12 @@ func testRelay(states map[string]fileState) *relay {
 	return r
 }
 
+// batch is split's paths: the ones the agent touches.
+func (r *relay) batch(hostPaths []string) []string {
+	paths, _ := r.split(hostPaths)
+	return paths
+}
+
 func TestRelayMapsAndFilters(t *testing.T) {
 	file := fileState{exists: true, mode: 0o644, size: 1, mtime: time.Unix(1, 0)}
 	r := testRelay(map[string]fileState{
@@ -102,24 +108,46 @@ func TestRelayForgets(t *testing.T) {
 }
 
 func TestRelayCoalesces(t *testing.T) {
-	r := testRelay(map[string]fileState{})
-	var many []string
+	file := fileState{exists: true, mode: 0o644, size: 1, mtime: time.Unix(1, 0)}
+	states := map[string]fileState{}
+	r := testRelay(states)
+	var many, wantGone []string
 	for i := range relayPerDir + 1 {
-		many = append(many, fmt.Sprintf("/Users/me/dev/big/f%d", i))
+		p := fmt.Sprintf("/Users/me/dev/big/f%03d", i)
+		many = append(many, p)
+		// Every other one is gone.
+		if i%2 == 0 {
+			states[p] = file
+		} else {
+			wantGone = append(wantGone, fmt.Sprintf("/work/big/f%03d", i))
+		}
 	}
-	got := r.batch(append(many, "/Users/me/dev/small/a"))
+	got, gone := r.split(append(many, "/Users/me/dev/small/a"))
 	if want := []string{"/work/big", "/work/small/a"}; !slices.Equal(got, want) {
-		t.Fatalf("batch = %v, want %v", got, want)
+		t.Fatalf("paths = %v, want %v", got, want)
+	}
+	// The directory stands for the gone ones too, but the agent has to
+	// look each up for a guest that holds one to let go of it. A gone one
+	// sent among the paths is not sent again.
+	if !slices.Equal(gone, wantGone) {
+		t.Fatalf("gone = %v, want the %d gone in the coalesced directory", gone, len(wantGone))
 	}
 
 	r = testRelay(map[string]fileState{})
 	many = nil
 	for i := range relayPerBatch + 1 {
-		many = append(many, fmt.Sprintf("/Users/me/dev/d%d/f", i))
+		many = append(many, fmt.Sprintf("/Users/me/dev/d%05d/f", i))
 	}
-	got = r.batch(many)
+	got, gone = r.split(many)
 	if want := []string{"/work", "/work/other"}; !slices.Equal(got, want) {
 		t.Fatalf("an oversized batch = %v, want the roots", got)
+	}
+	if len(gone) != relayGonePerBatch || gone[0] != "/work/d00000/f" || gone[len(gone)-1] != fmt.Sprintf("/work/d%05d/f", relayGonePerBatch-1) {
+		t.Fatalf("an oversized batch's gone: %d paths, want the first %d", len(gone), relayGonePerBatch)
+	}
+	// However many, they fit one message beside the paths of the batch.
+	if msgs := changedMessages(nil, gone); len(msgs) != 1 {
+		t.Fatalf("the gone of a batch take %d messages, want 1", len(msgs))
 	}
 }
 
@@ -129,19 +157,24 @@ func TestChangedMessagesFitAFrame(t *testing.T) {
 		// Control characters take six bytes each once encoded.
 		paths = append(paths, fmt.Sprintf("/work/%d/%s", i, strings.Repeat("\x01", 100)))
 	}
-	msgs := changedMessages(paths)
-	var all []string
+	gone := []string{}
+	for i := range 1000 {
+		gone = append(gone, fmt.Sprintf("/work/gone/%d", i))
+	}
+	msgs := changedMessages(paths, gone)
+	var all, allGone []string
 	for _, m := range msgs {
 		b, err := agentproto.Encode(m)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(b) > agentproto.MaxPayload || len(m.Paths) > agentproto.MaxChanged {
-			t.Fatalf("a message of %d bytes, %d paths", len(b), len(m.Paths))
+		if len(b) > agentproto.MaxPayload || len(m.Paths)+len(m.Gone) > agentproto.MaxChanged {
+			t.Fatalf("a message of %d bytes, %d paths and %d gone", len(b), len(m.Paths), len(m.Gone))
 		}
 		all = append(all, m.Paths...)
+		allGone = append(allGone, m.Gone...)
 	}
-	if !slices.Equal(all, paths) {
+	if !slices.Equal(all, paths) || !slices.Equal(allGone, gone) {
 		t.Fatal("paths were lost or reordered across messages")
 	}
 }

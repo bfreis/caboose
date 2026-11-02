@@ -264,6 +264,22 @@ leaves the file's contents and times alone; for a file deleted or renamed
 away, it does that to its directory. Under a `container` profile the engine passes
 events on itself, and the link relays nothing.
 
+Under `vm`, the touch looks the file up in the guest, which makes the
+Mac's Virtualization process keep it open until the guest forgets it,
+and a file the Mac deletes keeps its space while it is held. The guest
+trusts what it looked up for a second, so a file deleted within a second
+of its touch would be found there still. The agent looks each path it
+touched up once more two seconds later: a file gone by then is
+forgotten, and the Mac lets go of it (sometimes only once the guest
+forgets more files after it). When the link relays a directory in place
+of its files (below), it sends the files of it that are gone apart, and
+the agent only looks each up, at once and, if the guest still finds it,
+two seconds later. None of these lookups raises an event. Up to 65,536
+paths wait for their second lookup, and up to 512 gone files go apart
+in one burst; past those, and for what the link does not relay, a file
+the guest has cached stays held after the Mac deletes it, until the
+guest forgets it. Under `gvisor` the agent does none of this.
+
 Watchers that take any event on a file as a change see it: Node's
 `fs.watch` and the tools built on it, for instance. One that ignores
 attribute changes does not: Go's fsnotify reports them as `Chmod`, which

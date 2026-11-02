@@ -3,8 +3,10 @@ package vnodes
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
+	"time"
 )
 
 // These run on a Mac only, against the real libproc.
@@ -59,12 +61,50 @@ func TestHostCountsItsOwnFiles(t *testing.T) {
 			t.Errorf("descriptor %d (%s) is not listed", fd, f.Name())
 			continue
 		}
-		p, err := h.FDPath(pid, fd)
+		fi, err := h.FDFile(pid, fd)
 		if err != nil {
 			t.Errorf("descriptor %d: %v", fd, err)
-		} else if p != f.Name() {
-			t.Errorf("descriptor %d: path %q, want %q", fd, p, f.Name())
+		} else if fi != (File{Path: f.Name(), Regular: true, Links: 1}) {
+			t.Errorf("descriptor %d: %+v, want %s, a regular empty file with one link", fd, fi, f.Name())
 		}
+	}
+	// One written and deleted while open: no link left, and its space
+	// still taken.
+	const size = 1 << 20
+	if _, err := files[0].Write(make([]byte, size)); err != nil {
+		t.Fatal(err)
+	}
+	if err := files[0].Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(files[0].Name()); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := h.FDFile(pid, int32(files[0].Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("deleted while open: %+v", fi)
+	if !fi.Regular || fi.Links != 0 || fi.Size != size || fi.Allocated < size || fi.Allocated > 2*size {
+		t.Errorf("deleted while open: %+v, want a regular file with no link, %d bytes, about as many allocated", fi, size)
+	}
+	if d, err := h.FDFile(pid, int32(files[1].Fd())); err != nil || d.Regular && d.Links == 0 {
+		t.Errorf("a file still linked: %+v, %v", d, err)
+	}
+	// A doctor reads every descriptor of the VM's, tens of thousands: no
+	// buffer of vnodePathInfoSize each.
+	fd1 := int32(files[1].Fd())
+	const calls = 1000
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	for range calls {
+		_, _ = h.FDFile(pid, fd1)
+	}
+	runtime.ReadMemStats(&m1)
+	per := (m1.TotalAlloc - m0.TotalAlloc) / calls
+	t.Logf("FDFile allocates %d bytes a call", per)
+	if per >= vnodePathInfoSize {
+		t.Errorf("FDFile allocates %d bytes a call, want less than its %d-byte buffer", per, vnodePathInfoSize)
 	}
 	limit, err := h.MaxVnodes()
 	if err != nil || limit <= 0 {
@@ -100,11 +140,11 @@ func TestHostListsVMs(t *testing.T) {
 		t.Logf("VM process %d holds %d files and directories, %.1f%% of kern.maxvnodes %d",
 			pid, len(fds), 100*float64(len(fds))/float64(limit), limit)
 		for _, fd := range fds[:min(len(fds), 25)] {
-			p, err := h.FDPath(pid, fd)
+			fi, err := h.FDFile(pid, fd)
 			if err != nil {
 				t.Logf("  fd %d: %v", fd, err)
 			} else {
-				t.Logf("  fd %d: %s", fd, p)
+				t.Logf("  fd %d: %+v", fd, fi)
 			}
 		}
 	}
@@ -124,6 +164,12 @@ func TestHostListsVMs(t *testing.T) {
 			t.Logf("environment %s: %v", filepath.Base(filepath.Dir(d)), err)
 		} else {
 			t.Logf("environment %s: VM process %d holds %d of %d", filepath.Base(filepath.Dir(d)), s.PID, s.Files, s.Max)
+		}
+		start := time.Now()
+		del, err := f.Deleted(start.Add(10 * time.Second))
+		if err == nil {
+			t.Logf("environment %s: VM process %d holds %d deleted files, %d bytes; read %d of %d descriptors in %v",
+				filepath.Base(filepath.Dir(d)), del.PID, del.Files, del.Bytes, del.Read, del.Open, time.Since(start))
 		}
 	}
 }

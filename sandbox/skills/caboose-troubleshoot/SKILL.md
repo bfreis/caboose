@@ -1,6 +1,6 @@
 ---
 name: caboose-troubleshoot
-description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port not reachable from the host's browser, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch saying the sandbox comes from an incompatible caboose, work that stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" on the Mac, a vm volume full or empty after a resize, or caboose's Claude Code mod or its request tools (caboose_request, caboose-agent request, exit 75 or 77) not working. Explains causes per isolation and what the user runs on the host.
+description: Use when something about the caboose sandbox itself misbehaves - "no host is linked", a port the host's browser cannot reach, caboose-agent failing, a host edit a file watcher or dev server does not see, a file that seems missing but should exist, a write under a root failing with "Read-only file system", the SSH agent or git push/signing not working, outbound connections refused, timing out or not reaching a VPN host (HTTP 403/502/503 from the proxy, DNS failing), docker not working in the sandbox, a start.d script that did not run, a launch refusing a sandbox from an incompatible caboose, work stalled while the Mac slept, or, under vm, git slow or a session hanging at startup on a large repo, or "Too many open files in system" or space not freed by deleting files on the Mac, a vm volume wrong after a resize, or caboose's Claude Code mod or its request tools (caboose_request, caboose-agent request, exit 75 or 77) not working. Explains causes per isolation and what to run on the host.
 ---
 
 # When the sandbox misbehaves
@@ -213,6 +213,14 @@ Diagnose, read-only:
 Relief you can apply: `sync; echo 2 > /proc/sys/vm/drop_caches`, as root in
 here. The Mac releases the files at once; the cost is that the VM re-reads
 what it needs, so the next walk of the repo is slow again.
+
+The same holding keeps disk space: a file deleted on the Mac, and often
+one deleted in here, that the VM still has cached stays allocated on the
+Mac, so deleting big files under a root may free nothing there. `caboose@@CABOOSE_ENV_FLAG@@ doctor`
+sums them ("VM's deleted files"), and `lsof -a +L1 -p <pid>` on the Mac
+lists them for the Virtualization process (`-a`: without it lsof lists
+every open file of the process and every deleted file of any). The same
+drop releases them.
 
 What the user runs on the host:
 

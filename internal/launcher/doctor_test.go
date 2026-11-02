@@ -433,3 +433,47 @@ func TestDoctorRootNotInTheSandboxConfig(t *testing.T) {
 		t.Errorf("said with the root listed:\n%s", got)
 	}
 }
+
+// A root the sandbox config expects and this machine lacks is a note while
+// nothing syncs and a problem once something does, and either way names
+// both ways out: add the root, or drop it from roots in the file.
+func TestDoctorMissingRoot(t *testing.T) {
+	e := newAutoEnv(t, newBare(t))
+	e.write(filepath.Join(e.data, datadir.SandboxConfig), string(sandboxcfg.Default([]string{"/work/dev", "/opt/gone"})))
+	doctor := func() *checkup {
+		t.Helper()
+		c := &checkup{}
+		e.a.sb = nil
+		e.a.doctorSandbox(c)
+		return c
+	}
+	find := func(c *checkup) finding {
+		t.Helper()
+		for _, r := range c.rows {
+			if r.label == "roots" && strings.Contains(r.text, "expects a root at /opt/gone") {
+				return r
+			}
+		}
+		t.Fatalf("no row for /opt/gone:\n%s", c.String())
+		return finding{}
+	}
+	for _, syncOn := range []bool{false, true} {
+		if syncOn {
+			e.setRemote()
+		}
+		r := find(doctor())
+		want := levelNote
+		if syncOn {
+			want = levelProblem
+		}
+		if r.level != want {
+			t.Errorf("sync %v: level %v, want %v", syncOn, r.level, want)
+		}
+		both := r.text + " " + r.fix
+		for _, s := range []string{"setup roots", "drop /opt/gone from roots: edit " + sandboxcfg.HomePath} {
+			if !strings.Contains(both, s) {
+				t.Errorf("sync %v: %q not named in %q", syncOn, s, both)
+			}
+		}
+	}
+}

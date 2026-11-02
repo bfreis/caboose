@@ -51,7 +51,12 @@ type Link struct {
 	ports    []int
 	forwards []agentproto.Forward
 
-	changed chan []string
+	changed chan changes
+	// recheck looks touched paths up again (touch.go), under vm; nil
+	// elsewhere. dropped counts the change messages the full queue
+	// dropped.
+	recheck *rechecker
+	dropped dropLog
 
 	// waiting are the streams the host is to open for SSH agent and
 	// outbound proxy clients, by request; sshServing is set once the
@@ -90,6 +95,12 @@ type Config struct {
 	Now       func() time.Time
 	ModsEvery time.Duration
 	ScanEvery time.Duration
+	// Recheck has the paths the relay touches looked up again: under vm,
+	// where the guest's lookups hold the Mac's files (touch.go).
+	Recheck bool
+	// Look is what the rechecks look a path up with, nil for the
+	// agent's own; tests give another.
+	Look func(path string) (found bool)
 }
 
 // RunLink runs the link over in and out until the host goes away.
@@ -99,7 +110,7 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 		procRoot: cfg.ProcRoot,
 		interval: cfg.Interval,
 		pending:  map[uint64]chan agentproto.Message{},
-		changed:  make(chan []string, changedQueue),
+		changed:  make(chan changes, changedQueue),
 
 		waiting: map[uint64]chan *agentproto.Stream{},
 		helloed: make(chan struct{}),
@@ -130,6 +141,14 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 	go l.serveClients(ln)
 	go l.watchPorts()
 	go l.acceptStreams()
+	if cfg.Recheck {
+		look := cfg.Look
+		if look == nil {
+			look = lookUp
+		}
+		l.recheck = newRechecker(recheckAfter, recheckMax, look)
+		go l.recheck.run(l.sess.Done())
+	}
 	go l.touchChanged()
 	go l.watchMods()
 	l.readControl()
@@ -191,8 +210,11 @@ func (l *Link) readControl() {
 			l.mu.Unlock()
 		case agentproto.TypeChanged:
 			select {
-			case l.changed <- m.Paths:
+			case l.changed <- changes{paths: m.Paths, gone: m.Gone}:
 			default:
+				if n, ok := l.dropped.note(time.Now()); ok {
+					fmt.Fprintf(os.Stderr, "caboose-agent: link: %d of the host's change messages dropped, %d waiting already: watchers in the sandbox may miss those changes\n", n, changedQueue)
+				}
 			}
 		}
 	}

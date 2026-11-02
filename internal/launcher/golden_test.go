@@ -11,6 +11,7 @@ import (
 	"github.com/bfreis/caboose/internal/backend"
 	"github.com/bfreis/caboose/internal/backend/backendtest"
 	"github.com/bfreis/caboose/internal/version"
+	"github.com/bfreis/caboose/internal/vm/vnodes"
 )
 
 // updateGolden rewrites the golden files from the current output:
@@ -74,6 +75,20 @@ func statusDoctorGolden(t *testing.T, iso, suffix string, darwin bool) {
 	}
 	b.Cfg.VMCPUs, b.Cfg.VMMemory = 4, "6G"
 	b.mountLocal("local/linux-arm64")
+	// A Mac's VM, while it runs: its process holds a file of the data
+	// dir's, another of a root's, and one deleted on the Mac.
+	var vmSys *deletedSys
+	if darwin && iso == isolationVM {
+		real, err := filepath.EvalSymlinks(b.Cfg.DataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vmSys = &deletedSys{files: []string{real + "/home/.claude.json", "/Users/u/dev/a.go", "/Users/u/dev/.jj/cookie"},
+			gone: map[int]int64{2: 300 << 10}}
+		old := vnodesHost
+		t.Cleanup(func() { vnodesHost = old })
+		vnodesHost = func() (vnodes.System, error) { return vmSys, nil }
+	}
 	if err := b.Status(); err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +102,9 @@ func statusDoctorGolden(t *testing.T, iso, suffix string, darwin bool) {
 	golden(t, b, "doctor-running-"+suffix+".err", errs)
 
 	b.box.Status = "absent"
+	if vmSys != nil {
+		vmSys.files = nil
+	}
 	if err := b.Status(); err != nil {
 		t.Fatal(err)
 	}

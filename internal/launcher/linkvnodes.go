@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -140,7 +141,10 @@ var vnodesHost = vnodes.Host
 
 // vnodeFinder finds this environment's VM process by what it holds under
 // the data dir, which no other environment shares, and out of its vm/,
-// which holds the builder's disks too.
+// which holds the builder's disks too. What the VM boots from is no file
+// the guest cached either: the kernel, which its process keeps open, in
+// CABOOSE_HOME/vm/ (a release's, whose old versions an update deletes) or
+// the checkout's vm-dist/.
 func (a *App) vnodeFinder() (*vnodes.Finder, error) {
 	sys, err := vnodesHost()
 	if err != nil {
@@ -148,13 +152,22 @@ func (a *App) vnodeFinder() (*vnodes.Finder, error) {
 	}
 	f := &vnodes.Finder{Sys: sys}
 	// The kernel names files by their real path.
-	dirs := []string{filepath.Clean(a.Cfg.DataDir)}
-	if r, err := filepath.EvalSymlinks(a.Cfg.DataDir); err == nil && r != dirs[0] {
-		dirs = append(dirs, r)
+	both := func(p string) []string {
+		out := []string{filepath.Clean(p)}
+		if r, err := filepath.EvalSymlinks(p); err == nil && r != out[0] {
+			out = append(out, r)
+		}
+		return out
 	}
-	for _, d := range dirs {
+	for _, d := range both(a.Cfg.DataDir) {
 		f.Dirs = append(f.Dirs, d)
 		f.Exclude = append(f.Exclude, filepath.Join(d, vmDirName))
+	}
+	if a.Cfg.CabooseHome != "" {
+		f.Exclude = append(f.Exclude, both(filepath.Join(a.Cfg.CabooseHome, vmDirName))...)
+	}
+	if a.Checkout != "" {
+		f.Exclude = append(f.Exclude, both(filepath.Join(a.Checkout, "vm-dist", "kernel-"+runtime.GOARCH))...)
 	}
 	return f, nil
 }

@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/bfreis/caboose/internal/vm/vnodes"
 )
 
 // A Mac running vm holds one open file in its Virtualization process for
@@ -71,19 +74,80 @@ func (a *App) doctorMaxVnodes(c *checkup) {
 }
 
 // doctorVMFiles says how many of the Mac's vnodes the running VM holds
-// open, one per file or directory its guest has cached from the shares.
-// A VM that is not running, or not found, is no finding.
+// open, one per file or directory its guest has cached from the shares,
+// and how much of the Mac's disk the deleted ones among them keep. A VM
+// that is not running, or not found, is no finding.
 func (a *App) doctorVMFiles(c *checkup) {
-	held, max, _, err := a.vmFilesHeld()
-	if err != nil || max <= 0 {
+	f, err := a.vnodeFinder()
+	if err != nil {
 		return
 	}
-	line := fmt.Sprintf("the VM holds %s of the Mac's %s vnodes open", thousands(held), thousands(max))
-	if held*100 >= max*vnodeWarnPct {
+	s, err := f.Sample()
+	if err != nil || s.Max <= 0 {
+		return
+	}
+	line := fmt.Sprintf("the VM holds %s of the Mac's %s vnodes open", thousands(s.Files), thousands(s.Max))
+	if s.Files*100 >= s.Max*vnodeWarnPct {
 		c.problem("VM's open files", "in the sandbox, sync; echo 2 > /proc/sys/vm/drop_caches lets go of them (the next walk of a large repo starts cold); fewer worktrees inside a repo keeps them down", "%s", line)
+	} else {
+		c.ok("VM's open files", "%s", line)
+	}
+	c.checking("the deleted files the VM holds")
+	d, err := f.Deleted(time.Now().Add(vmDeletedBudget))
+	if err != nil {
+		c.unchecked("VM's deleted files", "%v", err)
 		return
 	}
-	c.ok("VM's open files", "%s", line)
+	doctorVMDeleted(c, d)
+}
+
+// A file the Mac deletes keeps its space while the VM's process holds it
+// open, which it does for as long as the guest has it cached: until
+// memory pressure or a cache drop in the guest, however long ago the
+// guest last used it.
+const (
+	// vmDeletedLarge is how much of that is a problem. A sandbox in use
+	// keeps a few files of this kind, a few MiB; tens of GiB have been
+	// seen kept by files a session deleted in bulk. A GiB is more than
+	// the first, and enough of a disk to free at the price of the drop
+	// (the guest reads what it needs next from the Mac again).
+	vmDeletedLarge = 1 << 30
+	// vmDeletedBudget is the longest doctor reads the VM's descriptors.
+	vmDeletedBudget = 3 * time.Second
+)
+
+// doctorVMDeleted reports d, what the VM holds of files deleted on the
+// Mac.
+func doctorVMDeleted(c *checkup, d vnodes.Deleted) {
+	const label = "VM's deleted files"
+	atLeast, partial := "", ""
+	if d.Read < d.Open {
+		atLeast = "at least "
+		partial = fmt.Sprintf(" (%s of its %s open files read in %s)", thousands(d.Read), thousands(d.Open), vmDeletedBudget)
+	}
+	if d.Files == 0 {
+		if d.Read < d.Open {
+			c.ok(label, "the VM holds no file deleted on the Mac open among the %s of its %s open files read in %s", thousands(d.Read), thousands(d.Open), vmDeletedBudget)
+			return
+		}
+		c.ok(label, "the VM holds no files deleted on the Mac open")
+		return
+	}
+	line := fmt.Sprintf("the VM holds %s%s %s deleted on the Mac open, %s of disk%s", atLeast, thousands(d.Files), plural(d.Files, "file", "files"), sizeText(d.Bytes), partial)
+	if d.Bytes >= vmDeletedLarge {
+		c.problem(label, "in the sandbox, sync; echo 2 > /proc/sys/vm/drop_caches lets go of them (the guest reads what it uses next from the Mac again)",
+			"%s: the space comes back only when the guest lets go of them", line)
+		return
+	}
+	c.ok(label, "%s", line)
+}
+
+// sizeText is n bytes in MiB, or GiB from one up, to one decimal.
+func sizeText(n int64) string {
+	if n >= 1<<30 {
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	}
+	return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 }
 
 // maxVnodesPlistText is the LaunchDaemon that sets kern.maxvnodes at boot.

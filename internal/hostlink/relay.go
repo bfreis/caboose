@@ -31,11 +31,20 @@ const (
 	relayGather = 50 * time.Millisecond
 	// relayPerDir is the most paths sent for one directory in a batch;
 	// past it the directory goes instead, for watchers there to look
-	// again.
+	// again, and the paths among them that are gone go apart, as
+	// agentproto.Message's Gone: for the agent to look up, which raises
+	// no event.
 	relayPerDir = 64
 	// relayPerBatch is the most paths sent in a batch; past it only the
-	// roots go.
+	// roots go, with the gone paths apart.
 	relayPerBatch = 4096
+	// relayGonePerBatch is the most gone paths sent apart in a batch: one
+	// message's worth (agentproto.MaxChanged), so that they take at most
+	// one more of the 64 messages the agent queues to touch (its
+	// changedQueue) and never crowd out the touches that raise events:
+	// at the 4096 cap they would take 8 of them, as many as the paths
+	// of a full batch.
+	relayGonePerBatch = agentproto.MaxChanged
 	// relayMaxPath is the longest path sent: longer is not a real one.
 	relayMaxPath = 4096
 	// relayForget is how long a sent path's state is kept, and
@@ -92,13 +101,16 @@ func lstat(p string) fileState {
 	return fileState{exists: true, mode: fi.Mode(), size: fi.Size(), mtime: fi.ModTime()}
 }
 
-// change is a path to send: where it is here, and in the container.
+// change is a path to send: where it is here, and in the container, and
+// whether it is gone.
 type change struct {
 	host, container string
+	gone            bool
 }
 
-// batch turns host paths that changed into the container paths to send.
-func (r *relay) batch(hostPaths []string) []string {
+// split turns host paths that changed into the container paths to send:
+// the ones to touch, and apart the ones gone that are not among them.
+func (r *relay) split(hostPaths []string) (paths, gone []string) {
 	now := r.now()
 	r.forget(now)
 	var out []change
@@ -116,7 +128,7 @@ func (r *relay) batch(hostPaths []string) []string {
 			// The agent touches the directory of what is gone.
 			r.differs(filepath.Dir(hp), r.stat(filepath.Dir(hp)), now)
 		}
-		out = append(out, change{hp, cp})
+		out = append(out, change{hp, cp, !st.exists})
 	}
 	return r.coalesce(out, now)
 }
@@ -165,28 +177,39 @@ func inGit(p string) bool {
 // coalesce puts a directory in place of its paths when a batch has too
 // many in it, and the roots in place of everything when it is still too
 // long. A directory sent is recorded as its paths are, so the agent's
-// touch of it is not sent back.
-func (r *relay) coalesce(changes []change, now time.Time) []string {
+// touch of it is not sent back. The gone paths a directory or the roots
+// stand for go apart: under vm the guest may hold one it looked up
+// before, and only a lookup of that path makes it let go (the agent's
+// touch.go says how).
+func (r *relay) coalesce(changes []change, now time.Time) (paths, gone []string) {
 	byDir := map[string][]change{}
 	for _, c := range changes {
 		d := filepath.Dir(c.container)
 		byDir[d] = append(byDir[d], c)
 	}
 	var out []change
+	goneOf := func(cs []change) {
+		for _, c := range cs {
+			if c.gone {
+				gone = append(gone, c.container)
+			}
+		}
+	}
 	for d, cs := range byDir {
 		if len(cs) > relayPerDir {
-			out = append(out, change{filepath.Dir(cs[0].host), d})
+			out = append(out, change{host: filepath.Dir(cs[0].host), container: d})
+			goneOf(cs)
 		} else {
 			out = append(out, cs...)
 		}
 	}
 	if len(out) > relayPerBatch {
+		goneOf(out)
 		out = out[:0]
 		for _, root := range r.roots {
-			out = append(out, change{root.Host, root.Container})
+			out = append(out, change{host: root.Host, container: root.Container})
 		}
 	}
-	var paths []string
 	for _, c := range out {
 		if st := r.stat(c.host); st.mode.IsDir() {
 			r.seen[c.host] = sent{state: st, at: now}
@@ -194,7 +217,8 @@ func (r *relay) coalesce(changes []change, now time.Time) []string {
 		paths = append(paths, c.container)
 	}
 	slices.Sort(paths)
-	return slices.Compact(paths)
+	slices.Sort(gone)
+	return slices.Compact(paths), gone[:min(len(gone), relayGonePerBatch)]
 }
 
 // relayChanges sends the host's changes under the roots until w is closed
@@ -206,7 +230,7 @@ func (h *Host) relayChanges(w Watcher) {
 		if !ok {
 			return
 		}
-		for _, msg := range changedMessages(r.batch(hostPaths)) {
+		for _, msg := range changedMessages(r.split(hostPaths)) {
 			if err := h.sess.Send(msg); err != nil {
 				return
 			}
@@ -219,23 +243,31 @@ func (h *Host) relayChanges(w Watcher) {
 	}
 }
 
-// changedMessages splits paths into messages that each fit a frame.
-func changedMessages(paths []string) []agentproto.Message {
+// changedMessages splits paths, and the gone ones apart, into messages
+// that each fit a frame, with at most MaxChanged of both.
+func changedMessages(paths, gone []string) []agentproto.Message {
 	var msgs []agentproto.Message
-	var cur []string
-	size := 0
-	for _, p := range paths {
+	cur := agentproto.Message{Type: agentproto.TypeChanged}
+	k, size := 0, 0
+	add := func(to *[]string, p string) {
 		b, _ := json.Marshal(p)
 		n := len(b) + 1
-		if len(cur) == agentproto.MaxChanged || size+n > agentproto.MaxPayload/2 {
-			msgs = append(msgs, agentproto.Message{Type: agentproto.TypeChanged, Paths: cur})
-			cur, size = nil, 0
+		if k == agentproto.MaxChanged || size+n > agentproto.MaxPayload/2 {
+			msgs = append(msgs, cur)
+			cur, k, size = agentproto.Message{Type: agentproto.TypeChanged}, 0, 0
 		}
-		cur = append(cur, p)
+		*to = append(*to, p)
+		k++
 		size += n
 	}
-	if len(cur) > 0 {
-		msgs = append(msgs, agentproto.Message{Type: agentproto.TypeChanged, Paths: cur})
+	for _, p := range paths {
+		add(&cur.Paths, p)
+	}
+	for _, p := range gone {
+		add(&cur.Gone, p)
+	}
+	if k > 0 {
+		msgs = append(msgs, cur)
 	}
 	return msgs
 }

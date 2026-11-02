@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ProcessName is the executable's name of the process that runs a VM of
@@ -45,10 +46,22 @@ type System interface {
 	// VnodeFDs are a process's open descriptors of files and directories,
 	// in ascending order.
 	VnodeFDs(pid int) ([]int32, error)
-	// FDPath is the path of one of them.
-	FDPath(pid int, fd int32) (string, error)
+	// FDFile is what one of them is open on.
+	FDFile(pid int, fd int32) (File, error)
 	// MaxVnodes is kern.maxvnodes.
 	MaxVnodes() (int, error)
+}
+
+// File is what a descriptor is open on.
+type File struct {
+	Path string
+	// Regular is whether it is a regular file; Links is how many names
+	// it has left (none once deleted), Size its length and Allocated
+	// what it takes on disk, in bytes.
+	Regular   bool
+	Links     int
+	Size      int64
+	Allocated int64
 }
 
 // Sample is what a VM holds, at one time.
@@ -68,6 +81,7 @@ type Finder struct {
 
 	pid int
 	fd  int32 // the descriptor that showed pid is the environment's
+	now func() time.Time
 }
 
 // Sample counts what the environment's VM process holds now.
@@ -76,17 +90,67 @@ func (f *Finder) Sample() (Sample, error) {
 	if err != nil {
 		return Sample{}, fmt.Errorf("cannot read kern.maxvnodes: %v", err)
 	}
-	if f.pid != 0 {
-		if fds, ok := f.still(); ok {
-			return Sample{PID: f.pid, Files: len(fds), Max: limit}, nil
-		}
-		f.pid = 0
-	}
-	pid, fds, err := f.discover()
+	pid, fds, err := f.locate()
 	if err != nil {
 		return Sample{}, err
 	}
 	return Sample{PID: pid, Files: len(fds), Max: limit}, nil
+}
+
+// locate is the environment's VM process and its open descriptors of
+// files and directories: the one found before while it still is, else
+// one found anew.
+func (f *Finder) locate() (int, []int32, error) {
+	if f.pid != 0 {
+		if fds, ok := f.still(); ok {
+			return f.pid, fds, nil
+		}
+		f.pid = 0
+	}
+	return f.discover()
+}
+
+// Deleted is what a VM holds of files deleted on the Mac, at one time.
+type Deleted struct {
+	PID   int
+	Files int // regular files open with no name left
+	// Bytes is what they take on disk, about: their allocated blocks,
+	// which clones that share blocks count once each.
+	Bytes int64
+	// Read is how many of the process's Open descriptors were read
+	// before the time ran out: all of them, or Files and Bytes are a
+	// lower bound.
+	Read, Open int
+}
+
+// Deleted sums the files the environment's VM process holds open that
+// have no name left: deleted on the Mac, they keep their space until the
+// process closes them. Files in Exclude (the VM's own disks) are left
+// out: what is sought is what the guest has cached from the shares. It
+// reads descriptors until by, and says how many it read.
+func (f *Finder) Deleted(by time.Time) (Deleted, error) {
+	pid, fds, err := f.locate()
+	if err != nil {
+		return Deleted{}, err
+	}
+	now := f.now
+	if now == nil {
+		now = time.Now
+	}
+	d := Deleted{PID: pid, Open: len(fds)}
+	for _, fd := range fds {
+		if !now().Before(by) {
+			break
+		}
+		d.Read++
+		fi, err := f.Sys.FDFile(pid, fd)
+		if err != nil || !fi.Regular || fi.Links > 0 || f.excluded(fi.Path) {
+			continue
+		}
+		d.Files++
+		d.Bytes += fi.Allocated
+	}
+	return d, nil
 }
 
 // still reports whether the process found before is still the
@@ -101,7 +165,7 @@ func (f *Finder) still() ([]int32, bool) {
 	if err != nil {
 		return nil, false
 	}
-	if p, err := f.Sys.FDPath(f.pid, f.fd); err != nil || !f.match(p) {
+	if fi, err := f.Sys.FDFile(f.pid, f.fd); err != nil || !f.match(fi.Path) {
 		return nil, false
 	}
 	return fds, true
@@ -125,7 +189,7 @@ func (f *Finder) discover() (int, []int32, error) {
 			continue
 		}
 		for _, fd := range fds[:min(len(fds), maxProbes)] {
-			if p, err := f.Sys.FDPath(pid, fd); err == nil && f.match(p) {
+			if fi, err := f.Sys.FDFile(pid, fd); err == nil && f.match(fi.Path) {
 				f.pid, f.fd = pid, fd
 				return pid, fds, nil
 			}
@@ -148,15 +212,23 @@ func (f *Finder) match(p string) bool {
 			return true
 		}
 	}
-	in := func(dirs []string) bool {
-		for _, d := range dirs {
-			if within(p, d) {
-				return true
-			}
+	return in(p, f.Dirs) && !in(p, f.Exclude)
+}
+
+// excluded reports whether p is in one of f.Exclude, under either name
+// of the data volume.
+func (f *Finder) excluded(p string) bool {
+	return in(p, f.Exclude) || strings.HasPrefix(p, dataVolume+"/") && in(strings.TrimPrefix(p, dataVolume), f.Exclude)
+}
+
+// in reports whether p is one of dirs or inside one.
+func in(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if within(p, d) {
+			return true
 		}
-		return false
 	}
-	return in(f.Dirs) && !in(f.Exclude)
+	return false
 }
 
 // within reports whether p is dir or inside it.

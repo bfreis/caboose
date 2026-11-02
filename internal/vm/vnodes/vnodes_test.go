@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 const vmPath = "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/" + ProcessName + ".xpc/Contents/MacOS/" + ProcessName
@@ -13,12 +14,18 @@ const vmPath = "/System/Library/Frameworks/Virtualization.framework/Versions/A/X
 type fakeProc struct {
 	path  string
 	files map[int32]string
+	// info is what FDFile says of a descriptor, where it says more than
+	// that it is a regular file with one link.
+	info map[int32]File
 }
 
 type fakeSys struct {
 	procs  map[int]*fakeProc
 	max    int
-	probes int // FDPath calls
+	probes int // FDFile calls
+	// clock, when set, is what the Finder's now reads, and moves a second
+	// with each FDFile call.
+	clock time.Time
 }
 
 func (s *fakeSys) Processes() ([]int, error) {
@@ -52,17 +59,24 @@ func (s *fakeSys) VnodeFDs(pid int) ([]int32, error) {
 	return fds, nil
 }
 
-func (s *fakeSys) FDPath(pid int, fd int32) (string, error) {
+func (s *fakeSys) FDFile(pid int, fd int32) (File, error) {
 	s.probes++
+	if !s.clock.IsZero() {
+		s.clock = s.clock.Add(time.Second)
+	}
 	p := s.procs[pid]
 	if p == nil {
-		return "", errors.New("no such process")
+		return File{}, errors.New("no such process")
 	}
 	f, ok := p.files[fd]
 	if !ok {
-		return "", errors.New("not open")
+		return File{}, errors.New("not open")
 	}
-	return f, nil
+	if fi, ok := p.info[fd]; ok {
+		fi.Path = f
+		return fi, nil
+	}
+	return File{Path: f, Regular: true, Links: 1}, nil
 }
 
 func (s *fakeSys) MaxVnodes() (int, error) { return s.max, nil }
@@ -193,5 +207,61 @@ func TestSampleBoundsTheProbes(t *testing.T) {
 	}
 	if s.probes != maxProbes {
 		t.Fatalf("read %d paths, want %d", s.probes, maxProbes)
+	}
+}
+
+// gone is a regular file deleted on the Mac, of size bytes.
+func gone(size int64) File { return File{Regular: true, Size: size, Allocated: size} }
+
+func TestDeletedSumsWhatHasNoNameLeft(t *testing.T) {
+	p := vmOf(
+		dataDir+"/home/.claude",
+		"/Users/u/dev/a.go",
+		"/Users/u/dev/big.bin",
+		dataDir+"/home/.claude/backup",
+		"/Users/u/dev/olddir",
+		dataDir+"/vm/images/root-old.img",
+		dataVolume+dataDir+"/vm/default/scratch.img",
+	)
+	p.info = map[int32]File{
+		5: gone(1 << 20),
+		6: gone(4096),
+		7: {Links: 0}, // a directory
+		8: gone(1 << 30),
+		9: gone(1 << 30),
+	}
+	s := &fakeSys{max: 1000, procs: map[int]*fakeProc{3: vmOf(otherDir + "/home"), 4: p}}
+	got, err := finder(s).Deleted(time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Deleted{PID: 4, Files: 2, Bytes: 1<<20 + 4096, Read: 7, Open: 7}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestDeletedStopsWhenTheTimeIsUp(t *testing.T) {
+	p := vmOf(dataDir+"/home", "/Users/u/dev/a", "/Users/u/dev/b", "/Users/u/dev/c")
+	p.info = map[int32]File{4: gone(10), 5: gone(20), 6: gone(30)}
+	t0 := time.Unix(1_000_000, 0)
+	s := &fakeSys{max: 1000, procs: map[int]*fakeProc{3: p}, clock: t0}
+	f := finder(s)
+	f.now = func() time.Time { return s.clock }
+	// Finding the process reads one descriptor: a second gone. Two more
+	// are read before the clock reaches t0+3s.
+	got, err := f.Deleted(t0.Add(3 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Deleted{PID: 3, Files: 1, Bytes: 10, Read: 2, Open: 4}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestDeletedNoVM(t *testing.T) {
+	s := &fakeSys{max: 1000, procs: map[int]*fakeProc{6: {path: "/usr/bin/vim"}}}
+	if _, err := finder(s).Deleted(time.Now().Add(time.Hour)); err == nil || err.Error() != "no VM is running" {
+		t.Fatalf("got %v, want no VM is running", err)
 	}
 }

@@ -32,7 +32,8 @@ const (
 	TypeForwards = "forwards"
 	// TypeChanged is the host's list of paths in the container that
 	// changed on the host, for the agent to make watchers inside see. An
-	// agent that does not know it ignores it, so it needs no new Version.
+	// agent that does not know it ignores it, so it needs no new Version;
+	// nor did its Gone paths: an older agent ignores the field.
 	TypeChanged = "changed"
 
 	// The exec port's (a vm guest's): the host's TypeExec asks for one
@@ -54,7 +55,8 @@ const (
 	TypeVolume = "volume"
 )
 
-// MaxChanged is the most paths one TypeChanged message carries.
+// MaxChanged is the most paths one TypeChanged message carries, Paths
+// and Gone together.
 const MaxChanged = 512
 
 // Request operations.
@@ -360,6 +362,10 @@ type Message struct {
 
 	// Paths are TypeChanged's paths, and OpCheckpoint's.
 	Paths []string `json:"paths,omitempty"`
+	// Gone, in TypeChanged, are paths gone on the host that the message
+	// does not carry in Paths (it carries their directory, or a root):
+	// the agent looks each up, and touches none.
+	Gone []string `json:"gone,omitempty"`
 
 	Exec *ExecRequest `json:"exec,omitempty"`
 	Rows uint16       `json:"rows,omitempty"`

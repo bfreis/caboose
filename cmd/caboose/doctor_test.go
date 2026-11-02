@@ -545,7 +545,7 @@ func TestDoctorKeep(t *testing.T) {
 	}
 	wantRows(t, out, map[string]string{
 		"keep":  "~/.claude, ~/.claude.json, ~/.config/caboose, ~/.config/git, ~/.config/jj, ~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc; 8 sync rules",
-		"roots": "problem: the sandbox config expects a root at /work/oss, which none of this machine's configured roots is at",
+		"roots": "note: the sandbox config expects a root at /work/oss, which none of this machine's configured roots is at; nothing syncs",
 	})
 	for _, want := range []string{
 		`problem: keep "~/.config/deep/er": "~/.config/deep/er" is too deep`,
@@ -556,7 +556,7 @@ func TestDoctorKeep(t *testing.T) {
 			t.Errorf("no keep row %q in:\n%s", want, out)
 		}
 	}
-	if !fixFor(out, "keep", "caboose restart (this ends running sessions)") || !fixFor(out, "roots", "caboose setup roots") {
+	if !fixFor(out, "keep", "caboose restart (this ends running sessions)") || fixFor(out, "roots", "") {
 		t.Errorf("fixes:\n%s", out)
 	}
 }

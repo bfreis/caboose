@@ -389,16 +389,28 @@ func (a *App) doctorSandbox(c *checkup) {
 		}
 	}
 	have := a.rootPaths()
+	// Where something syncs, the memory of a missing root's projects is
+	// wanted and never read here: a problem. Where nothing syncs, the
+	// entry only goes unused: a note. Either way, the root can be added
+	// back or the entry dropped from the file's roots list.
+	syncs := !sb.Absent && statesync.MaybeRemote(a.syncRepo())
 	for _, r := range sb.Roots {
-		if !slices.Contains(have, r) {
-			c.problem("roots", SetupCommand(a.Cfg.Env, "roots"),
+		if slices.Contains(have, r) {
+			continue
+		}
+		drop := "or drop " + r + " from roots: " + edit
+		if syncs {
+			c.problem("roots", SetupCommand(a.Cfg.Env, "roots")+" to add the root back, "+drop,
 				"the sandbox config expects a root at %s, which none of this machine's configured roots is at: the synced memory of its projects is never read here", r)
+		} else {
+			c.note("roots", "the sandbox config expects a root at %s, which none of this machine's configured roots is at; nothing syncs, so nothing is lost, but to settle it: %s to add the root back, %s",
+				r, SetupCommand(a.Cfg.Env, "roots"), drop)
 		}
 	}
 	// The sync rules' {roots} are the file's roots: a root added here
 	// after the file was written syncs nothing until it is listed. Only
 	// worth saying where something syncs.
-	if sb.Absent || !statesync.MaybeRemote(a.syncRepo()) {
+	if !syncs {
 		return
 	}
 	for _, r := range have {
