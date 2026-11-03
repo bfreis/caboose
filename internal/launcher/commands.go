@@ -669,8 +669,9 @@ func (a *App) Attach(args []string) error {
 	if !terminal {
 		// No tty to attach a tmux client to — run claude directly so piped
 		// and scripted invocations still work.
+		startedIn, _ := a.startDir(projectDir, workdir)
 		return a.exec(a.box().Command(backend.ExecSpec{
-			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: workdir, Stdin: true,
+			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: startedIn, Stdin: true,
 		}))
 	}
 
@@ -678,8 +679,9 @@ func (a *App) Attach(args []string) error {
 	// Rendering is then identical to the host terminal, at the cost of
 	// losing detach/reattach -- closing the terminal kills the session.
 	if !c.Tmux {
+		startedIn, _ := a.startDir(projectDir, workdir)
 		return a.exec(a.box().Command(backend.ExecSpec{
-			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: workdir, Stdin: true, TTY: true,
+			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: startedIn, Stdin: true, TTY: true,
 		}))
 	}
 
@@ -698,13 +700,26 @@ func (a *App) Attach(args []string) error {
 	}
 
 	// -A attaches to the session if it already exists, which is the
-	// detach/reattach path; note that `claude` args only apply when the
-	// session is first created.
-	if len(args) > 0 && backend.Quiet(a.box(), "tmux", "has-session", "-t", "="+name) == nil {
-		a.Note("reattaching to existing session '%s' — arguments ignored", name)
+	// detach/reattach path; note that `claude` args and the directory
+	// (-c) only apply when the session is first created. So whether it
+	// exists is asked once, when either would matter, and a directory
+	// [session.start] gives is looked at only for a session to be made.
+	_, mapped := a.startFor(projectDir)
+	var warning string
+	if len(args) > 0 || mapped {
+		if backend.Quiet(a.box(), "tmux", "has-session", "-t", "="+name) == nil {
+			if len(args) > 0 {
+				a.Note("reattaching to existing session '%s' — arguments ignored", name)
+			}
+		} else if mapped {
+			workdir, warning = a.startDir(projectDir, workdir)
+		}
 	}
 
 	argv := tmuxSessionArgv(name, workdir, env, args)
+	// The note above is on stderr, which the client's alternate screen
+	// hides until it detaches: the session shows it too.
+	argv = append(argv, startNotice(argv, warning)...)
 	// This process becomes the docker exec, and ends with the terminal
 	// (attach.go).
 	a.recordAttach(name)

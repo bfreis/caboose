@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| `caboose` | start or attach the session for the current directory (run it *in* the repo) |
+| `caboose` | start or attach the session for the current directory (run it *in* the repo): it starts in the directory [`[session.start]`](configuration.md#sessionstart) gives for that project, else in the path that mirrors it |
 | `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
 | `caboose setup [roots \| checkpoints \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks): the roots, which paths to take [checkpoints](checkpoints.md#choosing-the-paths) of, the image, the isolation, git and sync; see [Setup](configuration.md#setup) |
 | `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root, an alias, a writable part of a root, a few settings), and apply them; see [Proposals](proposals.md) |

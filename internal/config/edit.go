@@ -613,6 +613,9 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 				return fmt.Errorf("[%s] would be lost", p)
 			}
 		}
+		if !reflect.DeepEqual(o.SessionStart, f.SessionStart) {
+			return fmt.Errorf("[session.start] would change")
+		}
 		if !e.SetRoots && !sameFileRoots(o.Roots, f.Roots) {
 			return fmt.Errorf("[roots] would change")
 		}

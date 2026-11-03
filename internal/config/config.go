@@ -79,6 +79,9 @@ type Config struct {
 	// an error that says to run caboose build.
 	AutoBuild bool
 
+	// SessionStart is [session.start], sorted by host directory: where a
+	// project's sessions start in the sandbox (launcher.startDir).
+	SessionStart []StartDir
 	// Tmux is [session] tmux: sessions run in tmux, which detaches them.
 	Tmux bool
 	// TZ is [session] tz, "" for this machine's zone.
@@ -468,6 +471,13 @@ func (c *Config) readFile() error {
 	}
 
 	boolean("build.auto_build", &c.AutoBuild)
+	if len(f.SessionStart) > 0 {
+		starts, err := CheckStartDirs(f.SessionStart, c.Home)
+		if err != nil {
+			return fail("%v", err)
+		}
+		c.SessionStart = starts
+	}
 	boolean("session.tmux", &c.Tmux)
 	str("session.tz", &c.TZ)
 	str("session.hostname", &c.Hostname)

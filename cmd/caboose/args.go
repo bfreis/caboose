@@ -655,7 +655,9 @@ Usage:
   caboose [FLAGS] claude [ARGS...]   the same, passing ARGS to claude
   caboose [FLAGS] COMMAND [ARGS]     one of the commands below
 
-Run it from a project under a root (see 'caboose help setup').
+Run it from a project under a root (see 'caboose help setup'). The session
+starts in the path that mirrors the project, or where [session.start] in
+config.toml says.
 
 Commands:
 `)

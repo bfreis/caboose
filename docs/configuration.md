@@ -65,6 +65,63 @@ is `name = "host path"`, or a table with `host` and optionally `path` and
 | `auto_sync` | `false` | [sync](sync.md) before a launch that finds nothing running in the container, once a sync remote is set |
 | `keep_versions` | `2` | installed Claude Code versions to retain (~224MB each); at least 1 |
 | `ready_timeout` | `600` | seconds to wait for first-run install; at least 1 |
+| `start` | none | a table, `[session.start]`, giving the directory in the sandbox a project's sessions start in; see below |
+
+### `[session.start]`
+
+By default `caboose` and `caboose claude` start the session in the path that mirrors
+the project's directory under its [root](#roots). `[session.start]` names another
+start directory for a project, such as a clone on a [volume](#volumes), which is faster
+than a root for a large repo:
+
+```toml
+[session.start]
+"/Volumes/work/app" = "/src/app"
+"~/dev/tools" = "/src/tools"
+```
+
+- A key is the project's directory on this machine: absolute, or starting with `~/`. A
+  value is a path in the sandbox: absolute and clean (no `..`, `//` or trailing `/`),
+  with no `~`, no control or invisible character and no `#`, which tmux reads as the
+  start of a format. Two keys that are the same directory once cleaned are an error.
+  Any absolute path will do, since it is only a working directory: it need not be under a
+  root or a volume.
+- An entry applies when you run `caboose` in exactly that directory, not in one below
+  it. The directory is compared by identity, so a symlink to it, another case of its name
+  on a case-insensitive volume, or any other name for the same directory matches. An entry
+  whose directory does not exist matches nothing (an unplugged disk, say), and `caboose doctor` notes it. The project
+  must still be under a root: that is how caboose finds it.
+- Before a session is created, caboose checks in the sandbox that the session's user can
+  enter the directory. If it cannot (the directory is missing, is not a directory, or is not
+  allowed to that user), the session starts in the mirrored path instead, and one line says
+  so, naming the setting and both directories. The same goes for a directory on one of the
+  profile's [volumes](#volumes) when the volume is not mounted (a volume's path exists as an
+  empty directory before the volume is mounted, so entering it proves nothing). In tmux the
+  line is also shown inside the session for 15 seconds, since the terminal hides what was
+  printed before it. If the check itself cannot run (the engine does not answer, or the
+  sandbox has no shell at the usual path), the session starts in the mirrored path and the
+  line says the directory could not be checked. If the sandbox's mounts cannot be read, or
+  list nothing, the volume check is skipped without a word and entering the directory alone
+  decides. A launch is never refused for any of this. `caboose doctor` makes the same
+  checks while the sandbox runs, and names the fix.
+- tmux fixes a session's directory when it creates it, so an existing session of the project
+  keeps the directory it started in; nothing is checked or said then. `caboose claude ARGS`
+  attaching to an existing session ignores ARGS, as always.
+- The session's name, and the project it counts as for `caboose detach`, stay the host
+  project's: only where the session starts changes. `caboose shell` is not affected: it keeps
+  the mirrored path.
+- Claude Code files a project's memory and transcripts by the project's path, so a project
+  that starts in `/src/app` has memory and transcripts of its own there, apart from those of
+  the mirrored path. The [sync](sync.md)'s default rules cover a project's memory only under
+  the paths `roots` lists in the [sandbox config](sandbox-config.md) (container paths of the
+  roots, by default), so list `/src` there too for the start directory's memory to sync;
+  `caboose doctor` does not ask for a root of this machine at a `roots` entry that holds a
+  start directory.
+- `caboose-agent host` runs its command in the host directory of the directory it is called
+  from, which must be under a root. Called from a start directory that is under none
+  (`/src/app`, say) it fails with "is not under a root this machine shares with the
+  sandbox", unless it is given `-C DIR` with a directory under one.
+- This is `config.toml`'s setting alone: neither the sandbox config nor a proposal can set it.
 
 ## `[link]`
 

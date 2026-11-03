@@ -38,6 +38,12 @@ The daemon takes `PATH` and the SSH agent from a login shell when it
 starts, not from the terminal a command runs in, so a variable exported only
 in that terminal does not reach host commands.
 
+`caboose-agent host` failing with "is not under a root this machine shares
+with the sandbox" means it was called from a directory no root holds: run it
+from one that is under a root, or pass `-C DIR`. This happens when the user
+set `[session.start]` in `config.toml` so that a project's sessions start
+elsewhere, such as on a volume.
+
 A URL to port 7171 or 7172 is refused on purpose, and neither port is
 forwarded or reached through the outbound proxy on the host: they are the
 host's caboose web UI, and no setting changes that.

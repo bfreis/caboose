@@ -168,6 +168,9 @@ type File struct {
 	// tables, by "<kind>.<name>", sorted by name; checked but for where
 	// the roots are (checkVolumeRoots).
 	Volumes map[string][]FileVolume
+	// SessionStart is [session.start] as written, host directory by start
+	// directory (checked, with ~ left as written); nil when there is none.
+	SessionStart map[string]string
 
 	// defined are the tables and keys the file writes, by their dotted
 	// names: not the tables TOML makes implicitly ([vm.a] of a lone
@@ -255,6 +258,18 @@ func ParseFile(path string, data []byte) (*File, error) {
 			}
 			f.ImageProfiles = append(f.ImageProfiles, names...)
 		case tables[k] != nil && k != "":
+			if k == "session" {
+				// [session.start] is read apart, as profiles' volumes are.
+				if t, ok := v.(map[string]any); ok {
+					if sv, has := t[startKey]; has {
+						if err := f.readStartDirs(sv); err != nil {
+							return nil, fail("%v", err)
+						}
+						v = maps.Clone(t)
+						delete(v.(map[string]any), startKey)
+					}
+				}
+			}
 			if err := f.readTable(k, v, tables[k]); err != nil {
 				return nil, fail("%v", err)
 			}
@@ -446,6 +461,9 @@ func unknownKey(table, key string) string {
 				known = append(known, "["+table+"."+volumeKey+".NAME]")
 			}
 		}
+		if table == "session" {
+			known = append(known, "["+table+"."+startKey+"]")
+		}
 		for k := range keys {
 			known = append(known, k)
 		}
@@ -597,6 +615,14 @@ format = 1    # this file's structure
 #keep_versions = 2
 # Seconds to wait for the sandbox's first start.
 #ready_timeout = 600
+# Where a project's sessions start in the sandbox, instead of the path that
+# mirrors its directory on this machine: the project's host directory (the
+# directory itself, not one below it) and the sandbox directory to start
+# in, such as a clone on a volume. A directory the sandbox cannot enter, or
+# on a volume that is not mounted, falls back to the mirrored path, with a
+# note.
+#[session.start]
+#"/Volumes/work/app" = "/src/app"
 
 #[link]
 # Which ports listening in the sandbox are forwarded to the same port on

@@ -276,6 +276,12 @@ func (a *App) runCheckup(c *checkup, offline bool) {
 			c.unchecked(l, "%s", why)
 		}
 	}
+	c.checking("the session start directories")
+	notRunning := agentWhy
+	if !reachable {
+		notRunning = "docker did not answer"
+	}
+	a.doctorSessionStart(c, rootsOK, running, notRunning)
 	c.checking("git")
 	a.doctorIdentity(c)
 	a.doctorSigning(c, agentKeys, agentWhy)
@@ -396,6 +402,11 @@ func (a *App) doctorSandbox(c *checkup) {
 	syncs := !sb.Absent && statesync.MaybeRemote(a.syncRepo())
 	for _, r := range sb.Roots {
 		if slices.Contains(have, r) {
+			continue
+		}
+		// A root listed so that the memory of projects that start under
+		// it ([session.start]) syncs: no root of this machine is there.
+		if a.holdsStartTarget(r) {
 			continue
 		}
 		drop := "or drop " + r + " from roots: " + edit
