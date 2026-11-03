@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -439,6 +440,9 @@ type Invocation struct {
 	Env string
 	// Session is --session, or "" when none was given.
 	Session string
+	// Dir is -C, the sandbox directory the session starts in (or a path
+	// relative to [session] dir), or "" when none was given.
+	Dir string
 	// Command is one of Commands, or "" for the default: start or attach
 	// the project's session, with no arguments for claude.
 	Command string
@@ -475,6 +479,11 @@ flags:
 			inv.Env, argv, err = flagValue(argv, "--env")
 		case flag == "--session" || strings.HasPrefix(flag, "--session="):
 			inv.Session, argv, err = flagValue(argv, "--session")
+		case flag == "-C" || strings.HasPrefix(flag, "-C="):
+			inv.Dir, argv, err = flagValue(argv, "-C")
+			if err != nil {
+				err = &UsageError{Msg: "-C needs a directory in the sandbox"}
+			}
 		case flag == "-h" || flag == "--help":
 			// `caboose --help status` asks about status, as `caboose help
 			// status` does.
@@ -486,7 +495,7 @@ flags:
 				return inv, &UsageError{Msg: fmt.Sprintf("--version takes nothing after it (got %s)", quoteArgs(argv[1:]))}
 			}
 			inv.Command = "version"
-			return inv, nil
+			return inv, checkDirFlag(inv)
 		default:
 			break flags
 		}
@@ -495,7 +504,7 @@ flags:
 		}
 	}
 	if len(argv) == 0 {
-		return inv, nil
+		return inv, checkDirFlag(inv)
 	}
 	name, rest := argv[0], argv[1:]
 	cmd, ok := lookup(name)
@@ -503,6 +512,9 @@ flags:
 		return inv, unknown(name, all[len(all)-len(argv):])
 	}
 	inv.Command, inv.Args = name, rest
+	if err := checkDirFlag(inv); err != nil {
+		return inv, err
+	}
 	switch cmd.Args {
 	case claudeArgs:
 		return inv, nil
@@ -528,6 +540,22 @@ flags:
 		return inv, checkHelp(rest)
 	}
 	return inv, nil
+}
+
+// dirCommands are the commands -C applies to: the ones that run in a
+// directory of the sandbox ("" is the default, the project's session).
+var dirCommands = []string{"", "claude", "shell", "detach"}
+
+// checkDirFlag refuses -C on a command it means nothing to, rather than
+// leaving it unused.
+func checkDirFlag(inv Invocation) error {
+	if inv.Dir == "" || slices.Contains(dirCommands, inv.Command) {
+		return nil
+	}
+	return &UsageError{
+		Msg:  fmt.Sprintf("-C does not apply to '%s'", inv.Command),
+		Hint: "it picks the directory a session starts in: use it with 'caboose', 'caboose claude', 'caboose shell' or 'caboose detach'",
+	}
 }
 
 func isHelpFlag(a string) bool { return a == "-h" || a == "--help" }
@@ -655,9 +683,10 @@ Usage:
   caboose [FLAGS] claude [ARGS...]   the same, passing ARGS to claude
   caboose [FLAGS] COMMAND [ARGS]     one of the commands below
 
-Run it from a project under a root (see 'caboose help setup'). The session
-starts in the path that mirrors the project, or where [session.start] in
-config.toml says.
+Run it from a project under a root and the session starts in the path that
+mirrors it (see 'caboose help setup'). From anywhere else, name the sandbox
+directory: -C DIR, or dir in [session] of config.toml (and with no roots, the
+home directory). A directory is a path in the sandbox, not on this machine.
 
 Commands:
 `)
@@ -675,6 +704,8 @@ Commands:
 Flags, before the command:
   -e, --env NAME       the environment (default: CABOOSE_ENV, else "default")
       --session NAME   name the tmux session outright (default: CABOOSE_SESSION)
+  -C DIR               start in DIR in the sandbox, absolute or relative to
+                       [session] dir (caboose, claude, shell and detach)
   -h, --help           this help (every command: 'caboose help';
                        one: 'caboose help COMMAND')
       --version        the launcher's version, as 'caboose version'

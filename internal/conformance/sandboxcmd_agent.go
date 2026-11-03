@@ -82,6 +82,26 @@ func AgentHost(dir *SPath, argv ...string) (Cmd, error) {
 	return Cmd{body: agentBin + " host -C " + dir.p + " -- " + w}, nil
 }
 
+// AgentHostDir asks the host to run argv in hostDir, a directory the
+// request names on the host (--host-dir) rather than one mapped through a
+// root. hostDir is an absolute path of the suite's, under B: never ~, which
+// is the person's home, whatever a broken control would then do there.
+func AgentHostDir(hostDir string, argv ...string) (Cmd, error) {
+	if !hostPathOK(hostDir) {
+		return Cmd{}, fmt.Errorf("conformance: %q is not a path the suite may name on the host", hostDir)
+	}
+	if len(argv) == 0 {
+		return Cmd{}, errors.New("conformance: no host command")
+	}
+	for _, a := range argv {
+		if !hostWordRe.MatchString(a) {
+			return Cmd{}, fmt.Errorf("conformance: %q is not a word the suite may send", a)
+		}
+	}
+	w, _ := quoteWords(argv)
+	return Cmd{body: agentBin + " host --host-dir '" + hostDir + "' -- " + w}, nil
+}
+
 // AgentAliases lists the host's aliases as JSON, on stderr: the wrapper
 // discards stdout, and the result's Out keeps all of stderr.
 func AgentAliases() Cmd { return Cmd{body: agentBin + " aliases --json 1>&2"} }

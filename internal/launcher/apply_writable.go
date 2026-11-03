@@ -49,7 +49,7 @@ func (a *App) checkProposedWritable(w proposal.Writable) (pl *writablePlan, refu
 	// The sandbox's path, mapped to this machine's through what the
 	// sandbox mounts: the session names what it sees.
 	var via []config.Root
-	if mounted := a.mountedRoots(); len(mounted) > 0 {
+	if mounted, known := a.mountedRootsKnown(); known {
 		for _, m := range mounted {
 			via = append(via, config.Root{Host: physicalOr(m.Host), Container: m.Container})
 		}

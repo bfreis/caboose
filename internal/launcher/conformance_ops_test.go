@@ -192,6 +192,18 @@ func TestConfConfigCalls(t *testing.T) {
 	if _, err := h.AliasCommand("other"); err == nil {
 		t.Fatal("an alias not the suite's has a command")
 	}
+	cn, err := h.Canary(checks.RoleHostOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := h.HostPath(cn.Rel + "/absent"); err != nil || p != filepath.Join(o.g.Base(), cn.Rel, "absent") {
+		t.Fatalf("HostPath = %q, %v", p, err)
+	}
+	for _, rel := range []string{o.g.ConfigRel(), cn.Rel + "/../other", "/etc"} {
+		if _, err := h.HostPath(rel); err == nil {
+			t.Fatalf("HostPath names %s", rel)
+		}
+	}
 }
 
 // Create and Attach are the launcher's decisions alone: nothing is

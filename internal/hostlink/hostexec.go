@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bfreis/caboose/internal/agentproto"
 	"github.com/bfreis/caboose/internal/broker"
@@ -55,8 +58,13 @@ const (
 // sandbox (OpHostExec).
 type HostExec struct {
 	// Roots are the roots the container mounts: a command runs in the host
-	// directory of the container one it names, which must be under one.
+	// directory of the container one it names, which must be under one --
+	// or in the directory of this machine that the request names itself
+	// (ExecRequest.HostDir).
 	Roots []config.Root
+	// Home is this machine's home, what a HostDir's ~ is; "" for the
+	// link's own $HOME.
+	Home string
 }
 
 // hostExecState is a Host's count of the commands running and what its log
@@ -204,6 +212,103 @@ func HostExecEnv(getenv func(string) string) []string {
 	return []string{"PATH=" + getenv("PATH"), "HOME=" + getenv("HOME"), "LANG=" + lang}
 }
 
+// executableDir is the directory of the running launcher: where its
+// executable is once symlinks are resolved, and only if that is a regular
+// file; "" when it cannot be told, which leaves a command's PATH alone.
+var executableDir = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if exe, err = filepath.EvalSymlinks(exe); err != nil || !filepath.IsAbs(exe) {
+		return ""
+	}
+	if fi, err := os.Stat(exe); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
+// hostCommandPATH is path with dir added at the end, unless it is in path
+// already (or dir is empty): after the user's own directories, so that it
+// never takes a name from them.
+func hostCommandPATH(path, dir string) string {
+	if dir == "" {
+		return path
+	}
+	for _, d := range filepath.SplitList(path) {
+		if d != "" && filepath.Clean(d) == dir {
+			return path
+		}
+	}
+	if path == "" {
+		return dir
+	}
+	return path + string(os.PathListSeparator) + dir
+}
+
+// hostCommandEnv is HostExecEnv for a command the sandbox asked for, with
+// the running launcher's directory at the end of its PATH, so that
+// "caboose-agent host caboose status" finds the launcher whatever the
+// login shell's PATH holds. Aliases keep HostExecEnv's: what one runs is
+// decided, and nothing is added to what it finds.
+func hostCommandEnv(getenv func(string) string) []string {
+	env := HostExecEnv(getenv)
+	env[0] = "PATH=" + hostCommandPATH(getenv("PATH"), executableDir())
+	return env
+}
+
+// lookPath is exec.LookPath(name) over path instead of the process's PATH,
+// absolute entries only: the first that is a regular file with an execute
+// bit.
+func lookPath(name, path string) (string, error) {
+	for _, d := range filepath.SplitList(path) {
+		if !filepath.IsAbs(d) {
+			continue
+		}
+		p := filepath.Join(d, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+			return p, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+// MaxHostDir bounds a request's HostDir.
+const MaxHostDir = 4096
+
+// hostDirOf is the directory on this machine that a request's HostDir
+// names: absolute, or ~ or ~/... expanded with home; clean, printable, and
+// a directory that exists. Nothing in it is followed or limited: a command
+// on the host runs as the user and could go anywhere it likes, which is
+// what host_exec is.
+func hostDirOf(v, home string) (string, error) {
+	shown := clip(proposal.Printable(v), 300)
+	switch {
+	case v == "" || len(v) > MaxHostDir:
+		return "", errors.New("--host-dir names no usable directory")
+	case !utf8.ValidString(v) || strings.ContainsFunc(v, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+	}):
+		return "", fmt.Errorf("--host-dir %s has a control or invisible character", shown)
+	}
+	p := v
+	if v == "~" || strings.HasPrefix(v, "~/") {
+		if home == "" || !filepath.IsAbs(home) {
+			return "", fmt.Errorf("--host-dir %s: this machine's home directory is not known to the link", shown)
+		}
+		p = filepath.Join(home, v[1:])
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("--host-dir %s is not an absolute path on this machine, nor ~ or ~/... (quote it, so the sandbox's shell does not expand the ~ to the sandbox's home)", shown)
+	}
+	p = filepath.Clean(p)
+	if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("--host-dir %s is no directory on this machine (%s there); it takes a path on the host, not in the sandbox", shown, clip(proposal.Printable(p), 300))
+	}
+	return p, nil
+}
+
 // check is the host directory req runs in, or why it does not run at all.
 func (x *HostExec) check(req agentproto.ExecRequest) (string, error) {
 	switch {
@@ -223,6 +328,16 @@ func (x *HostExec) check(req agentproto.ExecRequest) (string, error) {
 			return "", errors.New("an argument holds a NUL byte")
 		}
 	}
+	if req.HostDir != "" {
+		if req.Dir != "" {
+			return "", errors.New("a command on the host runs in a directory of the sandbox mapped through a root (-C) or in one named on the host (--host-dir), not both")
+		}
+		home := x.Home
+		if home == "" {
+			home = os.Getenv("HOME")
+		}
+		return hostDirOf(req.HostDir, home)
+	}
 	var shared []string
 	for _, r := range x.Roots {
 		shared = append(shared, r.Container)
@@ -233,7 +348,10 @@ func (x *HostExec) check(req agentproto.ExecRequest) (string, error) {
 		if len(shared) > 0 {
 			where = "those are " + strings.Join(shared, ", ")
 		}
-		return "", fmt.Errorf("%s is not under a root this machine shares with the sandbox (%s): run it from under one, or pass -C DIR",
+		return "", fmt.Errorf("%s is not under a root this machine shares with the sandbox (%s).\n"+
+			"Run it from a directory under one, or name a directory on the host, e.g. the home:\n"+
+			"    caboose-agent host --host-dir '~' CMD ...\n"+
+			"(quote the ~, or the sandbox's shell turns it into the sandbox's home)",
 			clip(proposal.Printable(req.Dir), 300), where)
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -255,17 +373,20 @@ func runHostExec(s *agentproto.Session, x *HostExec, req agentproto.ExecRequest,
 		return agentproto.ExitCannotRun, "", err
 	}
 	path := req.Argv[0]
+	env := hostCommandEnv(os.Getenv)
+	hostPATH := strings.TrimPrefix(env[0], "PATH=")
 	if !strings.Contains(path, "/") {
 		// The link's own PATH: the daemon's, which it took from the
 		// user's login shell as it started (a detached helper's is the
-		// terminal's that started it). One relative to Dir is resolved
-		// there by exec.Cmd.
-		if path, err = exec.LookPath(path); err != nil {
+		// terminal's that started it), and the running launcher's
+		// directory after it. One relative to Dir is resolved there by
+		// exec.Cmd.
+		if path, err = lookPath(path, hostPATH); err != nil {
 			closeAll()
 			return agentproto.ExitNotFound, dir, fmt.Errorf("%s: not found in the host's PATH", clip(proposal.Printable(req.Argv[0]), 100))
 		}
 	}
-	cmd := &exec.Cmd{Path: path, Args: req.Argv, Dir: dir, Env: HostExecEnv(os.Getenv),
+	cmd := &exec.Cmd{Path: path, Args: req.Argv, Dir: dir, Env: env,
 		// Its own group, so a kill reaches what it started too.
 		SysProcAttr: &syscall.SysProcAttr{Setpgid: true}}
 	code, err = runCmd(s, cmd, streams, own, runLimits{})

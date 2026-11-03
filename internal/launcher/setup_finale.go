@@ -77,10 +77,13 @@ func (a *App) setupLogin(p *prompter) error {
 		return nil
 	}
 	how := "Run caboose in a project under " + config.DescribeRoots(c.Roots) + ": Claude Code asks you to log in the first time."
-	if cwd, err := config.Cwd(); err != nil || a.state() != "running" {
+	if len(c.Roots) == 0 {
+		how = "Run caboose from any directory, or with -C DIR for one in the sandbox: Claude Code asks you to log in the first time."
+	}
+	if a.state() != "running" {
 		p.warn("Not logged in yet. %s", how)
 		return nil
-	} else if _, err := a.containerDir(cwd); err != nil {
+	} else if _, err := a.pickLaunchDir(); err != nil {
 		p.warn("Not logged in yet. %s", how)
 		return nil
 	}

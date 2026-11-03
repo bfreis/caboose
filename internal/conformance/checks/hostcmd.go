@@ -14,7 +14,7 @@ import (
 	c "github.com/bfreis/caboose/internal/conformance"
 )
 
-// The host-command and alias checks, H1-H10: the sandbox asks the host to
+// The host-command and alias checks, H1-H11: the sandbox asks the host to
 // run things it may not, and each check decides from the host whether
 // anything ran. Their commands are caboose-agent's, sent only through the
 // envelope's RunCmd; whatever a broken control lets run is one of the
@@ -69,9 +69,9 @@ func HostLayout(canary, ro string) ([]HostCanary, error) {
 	return []HostCanary{{canary, RoleAliasOut, c.Dir}, {ro, RoleHostOut, c.Dir}}, nil
 }
 
-// HostChecks are H1-H10 in the order they run.
+// HostChecks are H1-H11 in the order they run.
 func HostChecks() []c.Check {
-	return []c.Check{h1(), h2(), h3(), h4(), h5(), h6(), h7(), h8(), h9(), h10()}
+	return []c.Check{h1(), h2(), h3(), h4(), h5(), h6(), h7(), h8(), h9(), h10(), h11()}
 }
 
 func hostCheck(id, title, control string, run func(context.Context, *hostRun) c.CheckResult) c.Check {
@@ -272,30 +272,41 @@ func (h *hostRun) refusedHost(ctx context.Context, withDir bool, argv ...string)
 		dir = &p
 	}
 	cmd, err := c.AgentHost(dir, argv...)
-	res, err := h.run(ctx, cmd, err)
-	after, serr := h.env.Snapshot(h.hostOut)
 	what := strings.Join(argv, " ")
-	switch {
-	case serr != nil:
-		r := errorf("canary %s could not be read back: %v", RoleHostOut, serr)
-		return &r
-	case changed(before, after):
-		r := failf("host %s: the host ran it (canary %s changed)", what, RoleHostOut)
-		return &r
-	case err != nil:
-		r := errorf("host %s: %v", what, err)
-		return &r
-	case res.RC == 0:
-		r := failf("host %s: exited 0", what)
-		return &r
-	case res.RC != exitUnavailable:
-		r := failf("host %s: exited %d, not host exec's refusal%s", what, res.RC, msgOf(res))
-		return &r
-	case !strings.Contains(res.Out, "host_exec"):
+	res, r := h.refused(ctx, what, before, cmd, err)
+	if r != nil {
+		return r
+	}
+	if !strings.Contains(res.Out, "host_exec") {
 		r := errorf("host %s: refused, but not for host_exec%s", what, msgOf(res))
 		return &r
 	}
 	return nil
+}
+
+// refused sends cmd and holds its answer to host exec's refusal: 126, and
+// h1-out as it was before. What the message says is the caller's to judge.
+func (h *hostRun) refused(ctx context.Context, what string, before map[string]c.Identity, cmd c.Cmd, cmdErr error) (c.ExecResult, *c.CheckResult) {
+	res, err := h.run(ctx, cmd, cmdErr)
+	after, serr := h.env.Snapshot(h.hostOut)
+	switch {
+	case serr != nil:
+		r := errorf("canary %s could not be read back: %v", RoleHostOut, serr)
+		return res, &r
+	case changed(before, after):
+		r := failf("host %s: the host ran it (canary %s changed)", what, RoleHostOut)
+		return res, &r
+	case err != nil:
+		r := errorf("host %s: %v", what, err)
+		return res, &r
+	case res.RC == 0:
+		r := failf("host %s: exited 0", what)
+		return res, &r
+	case res.RC != exitUnavailable:
+		r := failf("host %s: exited %d, not host exec's refusal%s", what, res.RC, msgOf(res))
+		return res, &r
+	}
+	return res, nil
 }
 
 // changed reports whether two snapshots of a canary differ: a path new,
@@ -649,6 +660,79 @@ func h8() c.Check {
 			}
 			return pass("the running environment keeps host_exec off (the mount audit requires it); host_exec = true was judged on a copy")
 		}))
+}
+
+// H11: naming a directory on the host (--host-dir) goes through the same
+// refusal as a directory mapped through a root. The running environment
+// keeps host_exec off (the mount audit requires it), under either trust, so
+// this is the refusal that reaches the session in a real run; a hostile
+// host_exec = true is judged on a copy, as in H8, whatever the run's trust.
+// The directory named is the h1-out canary, then a path below it that does
+// not exist: never ~, since a broken control would then run in the person's
+// home. The two refusals must be the same one, with nothing of the
+// directory in it: a request judged by its directory first would say so.
+func h11() c.Check {
+	return hostCheck("H11", "--host-dir is refused with host exec off and under hostile, whatever the directory", "host exec off",
+		func(ctx context.Context, h *hostRun) c.CheckResult {
+			if r := h.marker(ctx); r != nil {
+				return *r
+			}
+			on, _, err := h.ops.HostExecOffered(c.ConfigVariant{Trust: c.TrustFallible, Isolation: "vm", HostExec: true})
+			if err != nil {
+				return errorf("%v", err)
+			}
+			if !on {
+				return errorf("positive control failed: a fallible configuration with host_exec on offers no host exec either")
+			}
+			on, why, err := h.ops.HostExecOffered(c.ConfigVariant{Trust: c.TrustHostile, Isolation: "vm", HostExec: true})
+			switch {
+			case err != nil:
+				return errorf("%v", err)
+			case on || !strings.Contains(why, "trust"):
+				return failf("with trust = hostile and host_exec = true, host exec is not refused for trust (offered: %v, reason %q), so --host-dir would run", on, why)
+			}
+			there, err := h.ops.HostPath(h.hostOut.Rel)
+			if err != nil {
+				return errorf("%v", err)
+			}
+			first, r := h.refusedHostDir(ctx, there, "h11-marker")
+			if r != nil {
+				return *r
+			}
+			second, r := h.refusedHostDir(ctx, there+"/conf-"+h.n8+"-h11-absent", "h11-absent")
+			if r != nil {
+				return *r
+			}
+			if first != second {
+				return failf("--host-dir: the refusal depends on the directory named: %q, then %q", first, second)
+			}
+			return pass("not tried: the host's own refusal; with no host exec in the hello the sandbox's agent answers first, and the hostile copy is judged by what the hello would offer")
+		})
+}
+
+// refusedHostDir is a --host-dir request for dir, refused for host_exec
+// and for nothing about dir: it returns the refusal's text. dir is not
+// said in a result, since it holds the run's base.
+func (h *hostRun) refusedHostDir(ctx context.Context, dir, name string) (string, *c.CheckResult) {
+	before, err := h.env.Snapshot(h.hostOut)
+	if err != nil || len(before) == 0 {
+		r := errorf("canary %s could not be read: %v", RoleHostOut, err)
+		return "", &r
+	}
+	what := "--host-dir touch"
+	cmd, err := c.AgentHostDir(dir, "touch", "conf-"+h.n8+"-"+name)
+	res, r := h.refused(ctx, what, before, cmd, err)
+	switch {
+	case r != nil:
+		return "", r
+	case strings.Contains(res.Out, "--host-dir"):
+		r := failf("host %s: refused for its directory, so the directory was judged before the policy", what)
+		return "", &r
+	case !strings.Contains(res.Out, "host_exec"):
+		r := errorf("host %s: refused, but not for host_exec%s", what, msgOf(res))
+		return "", &r
+	}
+	return res.Out, nil
 }
 
 // allowedEnv are the variables an alias may see: the daemon's three, and

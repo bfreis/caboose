@@ -35,8 +35,9 @@ const confReadyTimeout = 900
 type confSettings struct {
 	Isolation, Trust string
 	// Roots are the two roots, by name, read-only then the one with the
-	// writable part, at their host paths under B.
-	Roots [2]config.Root
+	// writable part, at their host paths under B; none in a run with no
+	// roots, whose [roots] table is there and empty.
+	Roots []config.Root
 	// OpenURLs is [link] open_urls: "allow", since the suite's stub
 	// opener is first on the PATH of the daemon its link runs in
 	// (conformance.StubDir), so a URL the link opens reaches a stub, never
@@ -56,12 +57,14 @@ func confSettingsFor(g *conformance.Guard) confSettings {
 	s := confSettings{
 		Isolation: g.Isolation(),
 		Trust:     g.Trust(),
-		Roots: [2]config.Root{
+		OpenURLs:  "allow",
+	}
+	if !g.NoRoots() {
+		s.Roots = []config.Root{
 			{Name: ro, Host: g.RootPath(ro), Container: config.WorkDir + "/" + ro},
 			{Name: dev, Host: g.RootPath(dev), Container: config.WorkDir + "/" + dev, Writable: []string{conformance.WritablePart}},
-		},
-		OpenURLs:    "allow",
-		Checkpoints: []string{config.WorkDir + "/" + dev + "/" + conformance.WritablePart},
+		}
+		s.Checkpoints = []string{config.WorkDir + "/" + dev + "/" + conformance.WritablePart}
 	}
 	// The suite's aliases, and no other: scripts in the stubs' directory
 	// (outside every root), writing only into the alias-out canary.
@@ -147,6 +150,11 @@ func confConfigText(s confSettings) (string, error) {
 			fmt.Fprintf(&b, "writable = %s\n", qs(r.Writable))
 		}
 	}
+	if len(s.Roots) == 0 {
+		// An absent table is the default root: a table with nothing in it
+		// is none.
+		b.WriteString("\n[roots]\n")
+	}
 	fmt.Fprintf(&b, "\n[session]\nready_timeout = %d\n", confReadyTimeout)
 	fmt.Fprintf(&b, "\n[link]\nhost_exec = false\nforward_ports = []\nopen_urls = %s\nssh_agent = \"none\"\n", q(s.OpenURLs))
 	if len(s.Checkpoints) > 0 {
@@ -203,7 +211,7 @@ func writeConfConfig(g *conformance.Guard, s confSettings) error {
 
 // checkConfConfig loads the written config.toml with the launcher's own
 // loader, as the launch will, and refuses one that does not say what the
-// suite wrote: the isolation, the trust, the two roots, no host exec, no
+// suite wrote: the isolation, the trust, the roots, no host exec, no
 // SSH agent, no forwarded port, no run_args or engine socket.
 func checkConfConfig(cfg *config.Config, s confSettings) error {
 	var problems []string
@@ -218,7 +226,7 @@ func checkConfConfig(cfg *config.Config, s confSettings) error {
 		add("%d roots", len(cfg.Roots))
 	}
 	for _, r := range cfg.Roots {
-		i := slices.IndexFunc(s.Roots[:], func(w config.Root) bool { return w.Name == r.Name })
+		i := slices.IndexFunc(s.Roots, func(w config.Root) bool { return w.Name == r.Name })
 		if i < 0 {
 			add("root %s", r.Name)
 			continue

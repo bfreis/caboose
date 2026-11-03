@@ -17,13 +17,15 @@ func init() {
 		Help: `caboose conformance run --isolation container|gvisor|vm
                         [--trust fallible|hostile] [--out FILE] [--skip-wipe]
                         [--only ID,ID...] [--keep] [--probe-dir DIR]
+                        [--no-roots]
 caboose conformance list | leftovers | verify-doc
 caboose conformance matrix [FILE...]
 
 'run' creates an environment of its own under a new directory in /tmp,
 has its sandbox try what a sandbox must not do, judges each attempt from
 the host, writes the results (never over a file), and removes the
-environment. It refuses to run inside a sandbox.
+environment. It refuses to run inside a sandbox. With --no-roots it is a run
+of its own, of a sandbox with an empty [roots], with only the checks of that.
 'list' prints the checks; 'leftovers' lists what an interrupted run left,
 with the commands that remove it, and removes nothing; 'verify-doc' checks
 docs/security.md's check ids and its matrix against the suite; 'matrix' merges

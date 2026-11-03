@@ -33,7 +33,9 @@ type Edit struct {
 	// [vm.default]) has those keys commented out.
 	Remove []string
 	// SetRoots replaces the [roots] table with Roots, or comments it out
-	// when Roots is nil.
+	// when Roots is nil. A Roots that is empty, not nil, writes a bare
+	// [roots]: no roots, which is not the default roots an absent table
+	// means.
 	SetRoots bool
 	Roots    map[string]FileRoot
 }
@@ -484,8 +486,8 @@ func (ed *editor) valueEnd(i int) int {
 	return i
 }
 
-// setRoots rewrites [roots] as roots, or comments it out when roots is
-// nil; either way any [roots.NAME] table is commented out, since the long
+// setRoots rewrites [roots] as roots (a bare table for none), or comments
+// it out when roots is nil; either way any [roots.NAME] table is commented out, since the long
 // form is written inline.
 func (ed *editor) setRoots(roots map[string]FileRoot) {
 	for i := 0; i < len(ed.lines); i++ {
@@ -612,9 +614,6 @@ func CheckEdit(path string, orig, edited []byte, e Edit) error {
 			if !slices.Contains(f.Profiles, p) && !slices.Contains(f.ImageProfiles, p) {
 				return fmt.Errorf("[%s] would be lost", p)
 			}
-		}
-		if !reflect.DeepEqual(o.SessionStart, f.SessionStart) {
-			return fmt.Errorf("[session.start] would change")
 		}
 		if !e.SetRoots && !sameFileRoots(o.Roots, f.Roots) {
 			return fmt.Errorf("[roots] would change")
@@ -812,7 +811,12 @@ func inlineRoot(r FileRoot) string {
 
 // sameFileRoots reports whether a and b are the same [roots], writable
 // lists in order and all.
+// A table with no entries ([roots] alone: no roots) is not an absent one
+// (the default roots), though maps.EqualFunc counts them equal.
 func sameFileRoots(a, b map[string]FileRoot) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
 	return maps.EqualFunc(a, b, func(x, y FileRoot) bool {
 		return x.Host == y.Host && x.Path == y.Path && slices.Equal(x.Writable, y.Writable)
 	})

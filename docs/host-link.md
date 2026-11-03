@@ -441,6 +441,8 @@ says, and whose link does not offer it):
 ```sh
 caboose-agent host make release           # in the host directory of the current one
 caboose-agent host -C /work/dev/site ls     # in another
+caboose-agent host --host-dir '~' ls      # in a directory named on this machine
+caboose-agent host caboose status         # caboose itself is on the PATH
 caboose-agent host sh -c 'cd .. && ls'    # shell syntax takes a shell
 ```
 
@@ -451,9 +453,24 @@ environment reaches it, so a variable you exported only in a terminal
 `PATH` is the daemon's, which a login shell gave it when it
 started (`$SHELL -l`, bounded to five seconds; if that fails the daemon
 keeps the `PATH` it has and says so in its log), so a `PATH` change in your
-shell's startup files reaches new commands after `caboose daemon restart`. It runs in the host directory of
-the sandbox's current one (or `-C DIR`'s), which must be under a root the
-sandbox mounts: `/work/dev/site` is wherever that root is here. Its stdin,
+shell's startup files reaches new commands after `caboose daemon restart`. The directory of
+the running `caboose` is also appended at the end of `PATH`, after your directories, so it
+never takes a name from them (it is left out when the executable cannot be resolved):
+`caboose-agent host caboose version`, `status` and `doctor` work. Aliases do not get it; their
+environment is as described below.
+
+A command runs in the host directory of the sandbox's current one (or `-C DIR`'s), which
+must be under a root the sandbox mounts: `/work/dev/site` is wherever that root is here. When
+there is none (no roots, or a current directory such as `/src/app` that no root holds),
+`--host-dir PATH` names the directory on this machine instead: absolute, or `~` or `~/...`
+expanded here; it must exist and be a directory, and be printable. Quote the `~`
+(`--host-dir '~'`), or the sandbox's shell expands it to `/home/agent`, which is refused as
+"no directory on this machine". `-C` and `--host-dir` together are refused. With neither a
+usable `-C` nor a current directory under a root, the host refuses and prints the form to
+use, `caboose-agent host --host-dir '~' CMD ...`; it never falls back to any directory. The
+policy still decides first, so `--host-dir` is refused when `host_exec` is off or `trust` is
+`"hostile"`. It reaches nothing a session could not already: with `host_exec` on, `sh -c 'cd
+/anywhere && ...'` runs in any directory. Its stdin,
 stdout and stderr are the sandbox command's, and its exit status is
 `caboose-agent host`'s; 127 is a command not found in your `PATH`, 126 one
 that could not run, or a refusal (said on stderr). There is no shell, so

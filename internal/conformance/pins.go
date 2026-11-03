@@ -100,6 +100,9 @@ func (g *Guard) VerifyDestructive(ctx context.Context) error {
 	if g == nil || !g.made {
 		return refuse("guard", "not an environment this suite created")
 	}
+	if g.noRoots {
+		return refuse("guard", "a run with no roots has no destructive step")
+	}
 	g.mu.Lock()
 	var pinned *Pins
 	var pinnedAudit AuditResult

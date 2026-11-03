@@ -51,11 +51,17 @@ func (f *Fake) mountinfo() []string {
 		}
 		out = append(out, fmt.Sprintf("%d %d 0:%d / %s %s - fakefs %s rw", id, parent, 40+i, m.Target, opts(m.ReadOnly), "fake:"+rel))
 	}
+	if f.noRoots && f.mutants[NoRootsHiddenMount] {
+		out = append(out, "90 1 0:90 / /work/conf-"+f.n8+"-ro ro,relatime - fakefs fake:hidden rw")
+	}
 	return out
 }
 
 // mountsLocked are the mounts as Mounts says them, with f.mu held.
 func (f *Fake) mountsLocked() []conformance.Mount {
+	if f.noRoots {
+		return f.noRootsMounts()
+	}
 	return []conformance.Mount{
 		{Source: "<B>/" + f.RO(), Target: "/work/conf-" + f.n8 + "-ro", ReadOnly: !f.mutants[RootsWritable]},
 		{Source: "<B>/" + f.Dev(), Target: "/work/conf-" + f.n8 + "-dev", ReadOnly: !f.mutants[ParentWritable]},

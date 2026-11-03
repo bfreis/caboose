@@ -132,11 +132,21 @@ func TestSetupLogin(t *testing.T) {
 	})
 	t.Run("not logged in, no container", func(t *testing.T) {
 		e := newSetupEnv(t, "default", "", false)
+		e.a.Cfg.Roots = []config.Root{{Host: "/h/dev", Container: "/work/dev"}}
 		e.a.attach = func([]string) error { t.Error("attached"); return nil }
 		if err := e.finale(e.a.setupLogin, ""); err != nil {
 			t.Fatal(err)
 		}
 		e.wantOut("! Not logged in yet. Run caboose in a project under ")
+	})
+	t.Run("not logged in, no roots, no container", func(t *testing.T) {
+		e := newSetupEnv(t, "default", "", false)
+		e.a.Cfg.Roots = []config.Root{}
+		e.a.attach = func([]string) error { t.Error("attached"); return nil }
+		if err := e.finale(e.a.setupLogin, ""); err != nil {
+			t.Fatal(err)
+		}
+		e.wantOut("! Not logged in yet. Run caboose from any directory, or with -C DIR")
 	})
 	t.Run("a link where the login is", func(t *testing.T) {
 		e := inRoot(t)

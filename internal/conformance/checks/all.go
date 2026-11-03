@@ -108,6 +108,7 @@ func Every() []c.Check {
 	all = append(all, CheckpointChecks()...)
 	all = append(all, EgressChecks()...)
 	all = append(all, DaemonChecks()...)
+	all = append(all, NoRootsChecks()...)
 	var out []c.Check
 	seen := map[string]bool{}
 	for _, ck := range all {

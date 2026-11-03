@@ -70,6 +70,10 @@ type Fake struct {
 	userLbl       *string // LabelUser as SetUserLabel set it; nil is caboose's
 	probeSum      string  // the sha256 of the probe as placed, "" for none
 	restarts      int     // how many times Restart ran
+	// noRoots is a sandbox made with no roots (SetNoRoots), catFault a
+	// fault of the sandbox's cat there.
+	noRoots  bool
+	catFault string
 	// rec is the host's record of each canary path, as the real guard
 	// keeps it: as made, then as each post-check found the paths of the
 	// check it was handed to.
@@ -249,6 +253,9 @@ func (f *Fake) State() string {
 func (f *Fake) Labels() map[string]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.noRoots {
+		return f.noRootsLabels()
+	}
 	ro, dev := "/work/conf-"+f.n8+"-ro", "/work/conf-"+f.n8+"-dev"
 	part := `["part"]`
 	if f.mutants[LabelsDrift] {
@@ -410,6 +417,9 @@ func (f *Fake) hostRel(p string) (string, bool) {
 	if !ok || rest == "" || rest == ".." || strings.HasPrefix(rest, "../") {
 		return "", false
 	}
+	if f.noRoots && !f.noRootsReaches(rest) {
+		return "", false
+	}
 	return "roots/" + rest, true
 }
 
@@ -559,7 +569,18 @@ func (f *Fake) runCmd(user string, a []string, out *[]string, depth int) int {
 		if len(a) == 3 && a[1] == "600" {
 			return f.modify("chmod", a[2], out, fmt.Sprintf("chmod: changing permissions of '%s': ", a[2]), func(n *node) { n.mode = n.mode&^0o777 | 0o600 })
 		}
+	case "ls":
+		if len(a) == 4 && a[1] == "-A" && a[2] == "/work" && a[3] == "1>&2" {
+			*out = append(*out, f.workEntries()...)
+			return 0
+		}
 	case "cat":
+		if len(a) == 2 && f.catFault == catMissing && strings.HasPrefix(a[1], "/work/") {
+			break
+		}
+		if len(a) == 2 && f.catFault == catDenied {
+			return say("cat: %s: %s", a[1], eAcces)
+		}
 		if len(a) == 2 {
 			rel, ok := f.hostRel(a[1])
 			n := f.nodes[rel]

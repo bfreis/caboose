@@ -33,7 +33,7 @@ curl -fsSL https://github.com/bfreis/caboose/releases/latest/download/install.sh
 ```
 
 Then run `caboose` in a project's directory under `~/dev` (the default
-root; `caboose setup roots` changes it).
+root; `caboose setup roots` changes it, or uses no roots).
 
 The installer puts caboose in `~/.caboose/versions`, linked from
 `~/.local/bin`, and on a Mac the menu-bar app in `~/Applications`, without

@@ -41,7 +41,11 @@ background work goes on.
 - **Every boot starts from a fresh root filesystem.** Whatever you write
   outside the mounts (packages, `/etc`, `/usr`, `/tmp`, an unkept path under
   `~`) is gone after a stop, a restart, a Mac reboot, or the VM ending for
+@@IF roots=some@@
   any reason. Only the roots and the kept paths (below) last.
+@@ELSE@@
+  any reason. Only the kept paths (below) and any volumes (disks of their own) last.
+@@END@@
 - The VM runs its own `dockerd` when the image has one (`caboose@@CABOOSE_ENV_FLAG@@ status`
   says). Its images sit on a disk that is kept; its containers can
   bind-mount `/work` paths, and a port they publish is forwarded like any
@@ -53,11 +57,19 @@ background work goes on.
 
 ## Paths
 
+@@IF roots=some@@
 The host directories that hold the projects (roots) are mounted at fixed
 container paths, read-only but for their writable parts: @@CABOOSE_ROOTS@@.
 A write elsewhere fails, and only the user can change that. The paths are the
 same on every machine: translate a host path through that mapping. Nothing
 is reachable at a second path. A changed root takes `caboose@@CABOOSE_ENV_FLAG@@ restart`.
+@@ELSE@@
+This sandbox has no roots: no directory of the user's machine is mounted in
+it. Projects live on volumes (disks of their own, at the paths the profile
+gives) and in the home; only the kept paths last (below). A session starts in
+`[session] dir`, `caboose -C DIR`, or the home. Adding a root is the user's
+call and takes `caboose@@CABOOSE_ENV_FLAG@@ restart`.
+@@END@@
 
 ## What is kept
 
@@ -85,11 +97,19 @@ start) and `shell.d` (interactive shell config) when asked, with no proposal
   URL in the user's browser: usually `pending #N` at once, then it opens
   once the user allows it on the host. `caboose-agent notify TEXT` notifies.
 @@IF hostexec=on@@
+@@IF roots=some@@
 - Host commands are on: `caboose-agent host CMD ARGS` runs CMD on the host as
   the user, in the host directory of the current one (under a root; `-C DIR`
-  names another), with no shell (`sh -c '...'`) and no terminal; stdio and
-  exit status come back. Use it rather than asking the user, but it is their
-  own machine: nothing destructive without asking.
+  names another; else `--host-dir '~'`, a host path, `~` quoted), with no
+  shell (`sh -c '...'`) and no terminal; stdio and exit status come back. Use
+  it rather than asking the user; nothing destructive without asking.
+@@ELSE@@
+- Host commands are on: `caboose-agent host --host-dir '~' CMD ARGS` runs CMD
+  on the host as the user. With no roots `--host-dir` (a host path; `~`
+  quoted, or your shell makes it `/home/agent`) is required. No shell
+  (`sh -c '...'`), no terminal; stdio and exit status come back. Use it
+  rather than asking the user; nothing destructive without asking.
+@@END@@
 @@ELSE@@
 - Host commands are off (`host_exec` in `[link]` of `config.toml`, the
   user's call). Ask the user to run what has to run on the host.
@@ -148,7 +168,12 @@ first: it names each problem and the command that fixes it.
 session in it, this one included.
 @@IF hostexec=on@@
 You may run the read-only ones yourself, in full:
+@@IF roots=some@@
 `caboose-agent host caboose@@CABOOSE_ENV_FLAG@@ status` (and `doctor`, `version`).
+@@ELSE@@
+`caboose-agent host --host-dir '~' caboose@@CABOOSE_ENV_FLAG@@ status` (and `doctor`,
+`version`).
+@@END@@
 @@IF env!=default@@
 Keep `-e @@CABOOSE_ENV@@` on each: a host command carries none of the
 sandbox's variables.

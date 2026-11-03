@@ -155,6 +155,9 @@ type GateSpec struct {
 // they were recorded with. It refuses before the sandbox is pinned, and
 // without a fixture for the run's isolation.
 func (g *Guard) GateSpec(fx *GateFixture) (GateSpec, error) {
+	if g.noRoots {
+		return GateSpec{}, refuse("gate", "a run with no roots has no destructive step")
+	}
 	p, a, ok := g.Pinned()
 	if !ok {
 		return GateSpec{}, refuse("gate", "the sandbox was never pinned")

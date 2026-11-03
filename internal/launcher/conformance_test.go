@@ -1154,3 +1154,107 @@ func TestConfPlanOrder(t *testing.T) {
 		}
 	}
 }
+
+// --no-roots: its own checks, an empty [roots] that loads as none, and no
+// run where a sandbox would not be made.
+func TestConformanceNoRoots(t *testing.T) {
+	w := newConfWorld(t, passCheck("P1", conformance.Observe))
+	w.cio.NoRootsChecks = func(string, string) []conformance.Check {
+		return []conformance.Check{passCheck("P2", conformance.Observe)}
+	}
+	if code := w.run("--isolation", "container", "--no-roots"); code != 0 {
+		t.Fatalf("exit %d: %s", code, w.errb.String())
+	}
+	res := w.results()
+	if !strings.Contains(res, "PASS P2") || strings.Contains(res, "P1") {
+		t.Errorf("the results:\n%s", res)
+	}
+	if !w.drv.g.NoRoots() || !strings.Contains(w.out.String(), "no roots:") {
+		t.Errorf("the run was not one with no roots: %s", w.out.String())
+	}
+	if b := w.bases(); len(b) != 0 {
+		t.Errorf("left %v", b)
+	}
+
+	// A destructive step never gets past the envelope.
+	w = newConfWorld(t)
+	w.cio.NoRootsChecks = func(string, string) []conformance.Check {
+		return []conformance.Check{passCheck("P2", conformance.Observe), passCheck("P3", conformance.Destructive)}
+	}
+	if code := w.run("--isolation", "container", "--no-roots"); code != conformance.ExitRefused {
+		t.Errorf("a destructive step in a run with no roots: exit %d", code)
+	}
+	if res := w.results(); strings.Contains(res, "PASS P3") {
+		t.Errorf("the destructive step ran:\n%s", res)
+	}
+
+	w = newConfWorld(t)
+	if code := w.run("--isolation", "container", "--trust", "hostile", "--no-roots"); code != conformance.ExitRefused {
+		t.Errorf("hostile with no roots under a container: exit %d", code)
+	}
+	if !strings.Contains(w.errb.String(), "--no-roots") {
+		t.Errorf("the refusal: %s", w.errb.String())
+	}
+	if b := w.bases(); len(b) != 0 {
+		t.Errorf("a refused run made %v", b)
+	}
+}
+
+func TestConfNoRootsChecks(t *testing.T) {
+	for _, run := range [][2]string{
+		{config.KindContainer, config.TrustFallible}, {config.KindGVisor, config.TrustFallible},
+		{config.KindVM, config.TrustFallible}, {config.KindVM, config.TrustHostile},
+	} {
+		got := confNoRootsChecks(run[0], run[1])
+		if len(got) != 1 || got[0].ID != "N1" {
+			t.Errorf("%s %s: %v", run[0], run[1], got)
+		}
+		if slices.ContainsFunc(confChecks(run[0], run[1]), func(c conformance.Check) bool { return c.ID == "N1" }) {
+			t.Errorf("%s %s: N1 is in an ordinary run", run[0], run[1])
+		}
+	}
+}
+
+// The config.toml of a run with no roots loads with no root, and the
+// suite's own check of it holds it to that.
+func TestConfConfigNoRootsLoads(t *testing.T) {
+	for _, iso := range config.Kinds {
+		t.Run(iso, func(t *testing.T) {
+			g, err := conformance.SetupNoRoots(confTestFacts(t), iso, config.TrustFallible)
+			if err != nil {
+				t.Fatal(err)
+			}
+			confUnderTemp(t, g.Base())
+			s := confSettingsFor(g)
+			if len(s.Roots) != 0 || len(s.Checkpoints) != 0 {
+				t.Fatalf("settings: %+v", s)
+			}
+			text, err := confConfigText(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(text, "\n[roots]\n") {
+				t.Fatalf("no empty [roots] table:\n%s", text)
+			}
+			if err := writeConfConfig(g, s); err != nil {
+				t.Fatal(err)
+			}
+			environ := g.LaunchEnv([]string{"HOME=" + t.TempDir()})
+			cfg, err := config.Load(envLookup(environ), config.OSFS{}, g.Env())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Roots) != 0 {
+				t.Fatalf("%d roots loaded: the default root came back?", len(cfg.Roots))
+			}
+			if err := checkConfConfig(cfg, s); err != nil {
+				t.Fatal(err)
+			}
+			// The same check refuses one that loaded a root.
+			with := confSettingsFor(confTestGuard(t, iso, config.TrustFallible))
+			if err := checkConfConfig(cfg, with); err == nil {
+				t.Fatal("two roots were asked for, none loaded, and the check let it through")
+			}
+		})
+	}
+}

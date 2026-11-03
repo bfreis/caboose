@@ -954,7 +954,7 @@ func (r *linkRunner) hostExec(offer *hostlink.HostExec) *hostlink.HostExec {
 	}
 	roots := r.a.mountedRoots()
 	r.log.Printf("running commands on this machine for the sandbox (host_exec), in %s", mountList(roots))
-	return &hostlink.HostExec{Roots: roots}
+	return &hostlink.HostExec{Roots: roots, Home: r.a.Cfg.Home}
 }
 
 // limitedWriter keeps the first n bytes written to it.

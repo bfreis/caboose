@@ -85,7 +85,7 @@ func TestCheckInsideRoot(t *testing.T) {
 		{"/h/dev/x", []config.Root{{Host: "/h/dev", Container: "/work/h/dev"}}, dev, "/work/h/dev/x"},
 		{"/h/w/x", nil, []config.Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}, {Name: "w", Host: "/h/w", Container: "/work/w"}}, "/work/w/x"},
 	} {
-		got, err := CheckInsideRoot(tc.dir, tc.mounted, tc.current, deflt, "container")
+		got, err := CheckInsideRoot(tc.dir, tc.mounted, tc.mounted != nil, tc.current, deflt, "container")
 		if err != nil || got != tc.want {
 			t.Errorf("CheckInsideRoot(%q, %+v, %+v) = %q, %v; want %q", tc.dir, tc.mounted, tc.current, got, err, tc.want)
 		}
@@ -93,13 +93,13 @@ func TestCheckInsideRoot(t *testing.T) {
 
 	// Outside the one root there is: say what the root is, where its value
 	// came from, and how to change it. tests/run.sh matches the first part.
-	_, err := CheckInsideRoot("/h/devx", nil, dev, deflt, "container")
+	_, err := CheckInsideRoot("/h/devx", nil, false, dev, deflt, "container")
 	want := "/h/devx is outside the mounted root, /h/dev at /work (" + deflt + ").\n" + config.RootsHelp
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
 	}
 	several := []config.Root{{Name: "a", Host: "/a", Container: "/work/a"}, {Name: "b", Host: "/b", Container: "/work/b"}}
-	_, err = CheckInsideRoot("/c", nil, several, "set by [roots] in /c.toml", "container")
+	_, err = CheckInsideRoot("/c", nil, false, several, "set by [roots] in /c.toml", "container")
 	want = "/c is outside every mounted root, /a at /work/a, /b at /work/b (set by [roots] in /c.toml).\n" + config.RootsHelp
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
@@ -107,7 +107,7 @@ func TestCheckInsideRoot(t *testing.T) {
 
 	// What the container has mounted wins over the configured value, and
 	// a restart is the fix when the configured value holds the path...
-	_, err = CheckInsideRoot("/", dev, one("/"), byEnv, "container")
+	_, err = CheckInsideRoot("/", dev, true, one("/"), byEnv, "container")
 	want = `/ is outside the root this container has mounted.
        mounted: /h/dev at /work (fixed when the container was created)
        current: / at /work (set by [roots] in /c.toml)
@@ -121,18 +121,34 @@ func TestCheckInsideRoot(t *testing.T) {
 		t.Errorf("not a die(): %#v", err)
 	}
 	// A VM is called one, and its mounts are not bind mounts.
-	_, err = CheckInsideRoot("/", dev, one("/"), byEnv, "VM")
+	_, err = CheckInsideRoot("/", dev, true, one("/"), byEnv, "VM")
 	if err == nil || !strings.Contains(err.Error(), "outside the root this VM has mounted") ||
 		!strings.Contains(err.Error(), "Mounts cannot change under a live VM") || strings.Contains(err.Error(), "container") {
 		t.Errorf("under vm: %v", err)
 	}
 	// ...but not when it does not.
-	_, err = CheckInsideRoot("/tmp/x", dev, one("/h/src"), deflt, "container")
+	_, err = CheckInsideRoot("/tmp/x", dev, true, one("/h/src"), deflt, "container")
 	if err == nil || !strings.Contains(err.Error(), "outside the root this container has mounted") ||
 		!strings.Contains(err.Error(), "current: /h/src at /work ("+deflt+")") ||
 		!strings.Contains(err.Error(), "/tmp/x is outside the current value too") ||
 		!strings.HasSuffix(err.Error(), config.RootsHelp) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// A sandbox created with no roots is known to have none: a directory under
+// a root the configuration has since gained is a restart, not a mirrored
+// path, and the message says there are no roots rather than "0 roots".
+func TestCheckInsideRootKnownEmpty(t *testing.T) {
+	cur := []config.Root{{Host: "/h/dev", Container: "/work/dev"}}
+	if _, err := CheckInsideRoot("/h/dev/x", []config.Root{}, true, cur, "o", "VM"); err == nil ||
+		!strings.Contains(err.Error(), "created with no roots") || !strings.Contains(err.Error(), "mounted: no roots") ||
+		!strings.Contains(err.Error(), "'caboose restart'") {
+		t.Errorf("known empty: %v", err)
+	}
+	// Unknown is judged by the configuration, never as none.
+	if got, err := CheckInsideRoot("/h/dev/x", nil, false, cur, "o", "VM"); err != nil || got != "/work/dev/x" {
+		t.Errorf("unknown: %q %v", got, err)
 	}
 }
 

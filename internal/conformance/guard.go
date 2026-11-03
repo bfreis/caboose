@@ -158,6 +158,10 @@ type Guard struct {
 	started   time.Time
 	facts     Facts
 	in        Inputs
+	// noRoots is a run whose environment has an empty [roots]
+	// (SetupNoRoots): the base and its canaries are the same, but nothing
+	// of roots/ is mounted, and it has no destructive step.
+	noRoots bool
 
 	mu          sync.Mutex
 	canaries    map[string]canaryRecord // by path relative to B
@@ -292,6 +296,22 @@ func Setup(f Facts, isolation, trust string) (*Guard, error) {
 	}
 	return g, nil
 }
+
+// SetupNoRoots is Setup for a run whose environment has no roots: every
+// other check of the envelope is the same, since a sandbox has one
+// configuration for life, and one with no roots is a run of its own. It
+// never runs a destructive step: VerifyDestructive and GateSpec refuse.
+func SetupNoRoots(f Facts, isolation, trust string) (*Guard, error) {
+	g, err := Setup(f, isolation, trust)
+	if err != nil {
+		return nil, err
+	}
+	g.noRoots = true
+	return g, nil
+}
+
+// NoRoots reports whether the run's environment has no roots.
+func (g *Guard) NoRoots() bool { return g.noRoots }
 
 func knownIsolation(s string) bool {
 	for _, k := range config.Kinds {

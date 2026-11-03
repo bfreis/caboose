@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| `caboose` | start or attach the session for the current directory (run it *in* the repo): it starts in the directory [`[session.start]`](configuration.md#sessionstart) gives for that project, else in the path that mirrors it |
-| `caboose claude [ARGS...]` | the same, passing ARGS to `claude` |
+| `caboose [-C DIR]` | start or attach the session for the directory it starts in (see [Where a session starts](#where-a-session-starts)) |
+| `caboose [-C DIR] claude [ARGS...]` | the same, passing ARGS to `claude` |
 | `caboose setup [roots \| checkpoints \| image \| isolation \| git \| sync]...` | set up the environment, creating it first (it asks): the roots, which paths to take [checkpoints](checkpoints.md#choosing-the-paths) of, the image, the isolation, git and sync; see [Setup](configuration.md#setup) |
 | `caboose apply` | review the changes sessions proposed (packages or a Dockerfile section for the image, a root, an alias, a writable part of a root, a few settings), and apply them; see [Proposals](proposals.md) |
 | `caboose requests [--all]` | what the sandbox asked for and waits on: URLs to open, connections through the `vm` proxy, ports to forward, runs of an alias whose `policy` is `"ask"`; `requests show N`, `requests approve N [--for 8h \| --always]`, `requests deny N` answer them; see [Requests and grants](security.md#requests-and-grants) |
@@ -24,7 +24,7 @@
 | `caboose check-image [IMAGE]` | whether an image can be the sandbox's base; see [Checking an image](images.md#checking-an-image) |
 | `caboose restart` | recreate the sandbox, to pick up a rebuilt image or new mounts |
 | `caboose stop` | stop the sandbox |
-| `caboose detach` | detach every terminal from this project's sessions (only NAME's with `--session NAME`), leaving them running |
+| `caboose [-C DIR] detach` | detach every terminal from the sessions of the directory a launch would use (only NAME's with `--session NAME`), leaving them running |
 | `caboose link [--restart \| --foreground]` | the host's end of the link to the sandbox: forwards its ports, opens its URLs; the caboose daemon runs it, every launch asks it for one, `caboose link` asks now and `--restart` replaces it; `--foreground` runs the link in this terminal, to debug it (refused while the daemon serves the environment); see [The host link](host-link.md) |
 | `caboose daemon [status\|stop\|restart]` | the host daemon that runs the links: how it is, stop it, or restart it; it starts on demand and exits when idle; see [The host link](host-link.md#the-daemon) |
 | `caboose prune` | delete old Claude Code versions now, and cached packages no environment's lock names |
@@ -39,7 +39,7 @@
 | `caboose sync status` | what a sync would send and take, changing nothing |
 | `caboose sync add PATH`, `caboose sync rm PATH` | make a path of the sandbox's home sync, or stop it, in the sandbox config |
 | `caboose logs` | the sandbox's supervisor log (under `vm`, the VM's console; `--tail N`) |
-| `caboose shell` | a bash prompt inside the sandbox; `-c CMD` runs CMD, with a terminal only when caboose has one, so it works from a script |
+| `caboose [-C DIR] shell` | a bash prompt inside the sandbox, in the directory a session would start in; `-c CMD` runs CMD, with a terminal only when caboose has one, so it works from a script |
 | `caboose env [list]` | list the [environments](configuration.md#environments) |
 | `caboose help [COMMAND]` | the commands and flags, or what one command does (also `--help`, `-h`) |
 
@@ -52,7 +52,9 @@ Anything caboose does not know — `caboose -p "..."`, `caboose statsu` — is
 refused (exit 2) with what to type instead, rather than handed to claude.
 
 caboose's own flags come first: `--env NAME` (`-e NAME`) picks the
-environment, `--session NAME` the tmux session, `--help` (`-h`) shows the
+environment, `--session NAME` the tmux session, `-C DIR` the directory in the sandbox a
+session starts in (`caboose`, `claude`, `shell` and `detach` only; any other command refuses
+it), `--help` (`-h`) shows the
 commands, and `--version` the launcher's version. `caboose help COMMAND`,
 or `caboose COMMAND --help`, says what one command does and takes; for
 `shell`, `logs` and `build`, whose arguments go to bash or docker, only a
@@ -102,9 +104,40 @@ running.
 The daemon's stop and restart, for a client that asked you itself, ask
 nothing more (see [the host link](host-link.md#the-daemon)).
 
-Sessions are per project and per terminal: a second `caboose` in the same
-repo while the first is attached gets `<project>-2`. `caboose --session
-NAME` (or `CABOOSE_SESSION=NAME`) names one outright, attaching if it exists.
+## Where a session starts
+
+`caboose`, `caboose claude` and `caboose shell` start in a directory of the sandbox,
+chosen in this order:
+
+1. `-C DIR`. DIR is a path in the sandbox, absolute or relative to
+   [`[session] dir`](configuration.md#session) (relative with no `dir` set is refused). A
+   value your shell expanded (`-C ~/x` becomes a path on this machine) does not exist in the
+   sandbox, and is refused with a message saying `-C` takes a sandbox path.
+2. The directory `caboose` was run from, when it is under a [root](configuration.md#roots):
+   the path that mirrors it in the sandbox.
+3. `[session] dir`.
+4. In an environment with no roots, the home directory, `/home/agent`.
+5. Otherwise (there are roots, and `caboose` was run from outside them) the launch is
+   refused, naming `[session] dir` and `-C`.
+
+A `-C` directory the session's user cannot enter is refused, with no session started (a stopped sandbox has already been started by then), and the
+message says to make it from `caboose shell`. A `[session] dir` that cannot be entered, or
+that is on a [volume](configuration.md#volumes) that is not mounted (a volume's path exists
+as an empty directory before it is mounted, so entering it proves nothing), or a check that
+could not run, starts the session in the home directory instead, with one line naming the
+setting and both directories; in tmux the line is also shown for 15 seconds inside the
+session, since the terminal hides what was printed before it. The mirrored path is never
+probed. tmux fixes a session's directory when it creates it, so an existing session is
+attached with no check and no warning. `caboose detach` follows the same choice, only to
+name the session.
+
+Sessions are per directory and per terminal. A session is named from its path in the
+sandbox, however it was reached: `caboose` run in a directory under a root, and `caboose -C
+/work/projects/app` for the path that mirrors it, are one session, and so is `caboose -C
+app` with `dir = "/work/projects"`. A second `caboose` for the same directory while the first
+is attached gets `<name>-2`, a third `-3`. With no roots, every launch from the home
+directory shares the home's name. `caboose --session NAME` (or `CABOOSE_SESSION=NAME`) names
+one outright, attaching if it exists.
 
 ## Disk space
 

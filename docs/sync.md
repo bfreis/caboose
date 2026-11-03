@@ -78,7 +78,8 @@ machine reads a rule the same way. `caboose doctor` says when a machine
 lacks one of those roots, and, once a remote is set, when it has a root the
 list does not name: add it there, and its projects' memory syncs from the
 next sync on, what the remote already has of it included. Projects under no
-listed root (a session started elsewhere) do not sync, unless a rule of the
+listed root (a session started elsewhere, such as on a volume or in a
+[`[session] dir`](configuration.md#session)) do not sync, unless a rule of the
 sandbox config says so.
 
 **Conflicts.** Settings merge key by key, and text files with git's merge,

@@ -141,7 +141,7 @@ func TestProfileSelection(t *testing.T) {
 func TestConfigFileRefuses(t *testing.T) {
 	for name, tc := range map[string]struct{ body, err string }{
 		"a misspelled key":       {`isolaton = "vm.a"`, "unknown top-level setting isolaton (known: [alias.NAME], [apko.NAME], [build], [checkpoints], [container.NAME], [dockerfile.NAME], [gvisor.NAME], [link], [ref.NAME], [roots], [session], [vm.NAME], format, image, isolation, trust; see docs/configuration.md, or 'caboose update' if this caboose predates it)"},
-		"a misspelled table key": {"[session]\ntmuz = true", "unknown setting in [session] tmuz (known: [session.start], auto_sync, hostname, keep_versions, ready_timeout, tmux, tz;"},
+		"a misspelled table key": {"[session]\ntmuz = true", "unknown setting in [session] tmuz (known: auto_sync, dir, hostname, keep_versions, ready_timeout, tmux, tz;"},
 		"another table":          {"[mounts]\ndev = \"/x\"", "unknown top-level setting mounts"},
 		"a key of another kind":  {"[vm.a]\nrun_args = [\"--init\"]", "unknown setting in [vm.a] run_args (known: [vm.a.volume.NAME], cpus, docker_size, egress, egress_allow, egress_deny, egress_ports, memory, scratch_size, volume_limit;"},
 		"vm keys under gvisor":   {"[gvisor.a]\ncpus = 2", "unknown setting in [gvisor.a] cpus"},
@@ -186,7 +186,15 @@ func TestConfigFileRefuses(t *testing.T) {
 		"open_urls":              {"[link]\nopen_urls = \"sometimes\"", `open_urls in [link]: "sometimes" is not "ask", "allow" or "off"`},
 		"checkpoint_requests":    {"[link]\ncheckpoint_requests = \"ask\"", `checkpoint_requests in [link]: "ask" is not "allow" or "off"`},
 		"roots not a table":      {`roots = "/x"`, "roots must be a table"},
-		"empty roots":            {"[roots]", "[roots] names no roots"},
+		"the old start table":    {"[session.start]\n\"/a\" = \"/b\"", "unknown setting in [session] start"},
+		"dir relative":           {"[session]\ndir = \"src/app\"", `[session] dir "src/app": the directory is not an absolute path`},
+		"dir with a tilde":       {"[session]\ndir = \"~/app\"", "~ is not expanded"},
+		"dir not clean":          {"[session]\ndir = \"/src/../app\"", `not clean; write it as "/app"`},
+		"dir with a #":           {"[session]\ndir = \"/src/a#b\"", "has a #"},
+		"dir with a control":     {"[session]\ndir = \"/src/a\\u0001b\"", "control or invisible"},
+		"dir with a bidi mark":   {"[session]\ndir = \"/src/a\\u202eb\"", "control or invisible"},
+		"dir empty":              {"[session]\ndir = \"\"", "[session] dir"},
+		"dir not text":           {"[session]\ndir = 3", "dir in [session] must be a string"},
 		"a bad root name":        {"[roots]\n\"My Dev\" = \"/x\"", "'My Dev' is not a root name"},
 		"a root not a path":      {"[roots]\ndev = 1", "root dev must be a path"},
 		"a long root, no host":   {"[roots.dev]\npath = \"/y\"", "root dev must be a path, or a table of host"},
@@ -345,6 +353,58 @@ func TestTemplateSaysWhatIsEnforced(t *testing.T) {
 	for _, s := range []string{"not enforced", "planned", "not yet", "will be able", "nothing runs"} {
 		if strings.Contains(low, s) {
 			t.Errorf("the template says %q", s)
+		}
+	}
+}
+
+// A present but empty [roots] is no roots; an absent table is the ~/dev
+// default. The two differ in a nil slice against a non-nil empty one.
+func TestEmptyRootsAreNotTheDefault(t *testing.T) {
+	c, err := load(t, "[roots]\n")
+	if err != nil || c.Roots == nil || len(c.Roots) != 0 || c.RootsFrom != cfgPath {
+		t.Fatalf("empty table: %#v from %q, %v", c.Roots, c.RootsFrom, err)
+	}
+	c, err = load(t, "[session]\ntmux = true\n")
+	if err != nil || !reflect.DeepEqual(c.Roots, []Root{{Name: "dev", Host: "/h/dev", Container: "/work/dev"}}) {
+		t.Errorf("absent table: %+v, %v", c.Roots, err)
+	}
+	// No roots need no HOME for the roots' sake.
+	c, err = Load(envOf(map[string]string{"CABOOSE_HOME": "/c"}), fakeFS{"/c/envs/default/config.toml": "[roots]\n"}, "")
+	if err != nil || len(c.Roots) != 0 || c.Roots == nil {
+		t.Errorf("no HOME: %+v, %v", c.Roots, err)
+	}
+	if got := DescribeRoots(c.Roots); got != "no roots" {
+		t.Errorf("described as %q", got)
+	}
+}
+
+func TestSessionDir(t *testing.T) {
+	c, err := load(t, "[session]\ndir = \"/src/app\"\ntmux = false\n")
+	if err != nil || c.SessionDir != "/src/app" || c.Tmux {
+		t.Errorf("%q tmux=%v, %v", c.SessionDir, c.Tmux, err)
+	}
+	if c, err = load(t, ""); err != nil || c.SessionDir != "" {
+		t.Errorf("none: %q, %v", c.SessionDir, err)
+	}
+}
+
+func TestResolveStartDir(t *testing.T) {
+	for _, tc := range []struct{ flag, base, want, err string }{
+		{"/src/app/", "", "/src/app", ""},
+		{"/src/a/../b", "/x", "/src/b", ""},
+		{"app", "/src", "/src/app", ""},
+		{"../other/./app", "/src/main", "/src/other/app", ""},
+		{"app", "", "", "no [session] dir"},
+		{"~/x", "/src", "", "-C takes a directory in the sandbox"},
+		{"~", "", "", "-C takes a directory in the sandbox"},
+		{"", "/src", "", "empty"},
+		{"/a#b", "", "", "has a #"},
+		{"/a\nb", "", "", "control or invisible"},
+		{"/a\u202eb", "", "", "control or invisible"},
+	} {
+		got, err := ResolveStartDir(tc.flag, tc.base)
+		if tc.err == "" && (err != nil || got != tc.want) || tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)) {
+			t.Errorf("ResolveStartDir(%q, %q) = %q, %v; want %q %q", tc.flag, tc.base, got, err, tc.want, tc.err)
 		}
 	}
 }

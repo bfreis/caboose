@@ -23,7 +23,9 @@ import (
 
 	"github.com/bfreis/caboose/internal/agent"
 	"github.com/bfreis/caboose/internal/agentproto"
+	"github.com/bfreis/caboose/internal/broker"
 	"github.com/bfreis/caboose/internal/config"
+	"github.com/bfreis/caboose/internal/policy"
 )
 
 // execAgent is the agent's side of a link to a real Host, as far as host
@@ -455,7 +457,7 @@ func TestHostExecEnvIsExactlyPathHomeLang(t *testing.T) {
 	if strings.Join(names, " ") != "HOME LANG PATH" {
 		t.Fatalf("the command's environment is %v, want HOME LANG PATH only:\n%s", names, r.stdout)
 	}
-	if got["HOME"] != home || got["LANG"] != "C.UTF-8" || got["PATH"] != os.Getenv("PATH") {
+	if got["HOME"] != home || got["LANG"] != "C.UTF-8" || got["PATH"] != hostCommandPATH(os.Getenv("PATH"), executableDir()) {
 		t.Errorf("values: %v", got)
 	}
 }
@@ -464,5 +466,186 @@ func TestHostExecEnvDefaultLang(t *testing.T) {
 	env := HostExecEnv(func(k string) string { return map[string]string{"PATH": "/a", "HOME": "/h"}[k] })
 	if strings.Join(env, " ") != "PATH=/a HOME=/h LANG="+defaultLang {
 		t.Errorf("got %v", env)
+	}
+}
+
+// hostDirHost is a host with no roots at all and a home of its own.
+func hostDirHost(t *testing.T) (*execAgent, string) {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return startExecHost(t, Config{Trust: "fallible", HostExec: &HostExec{Home: home}}), home
+}
+
+// A command runs in the host directory the request names, with no root:
+// absolute, or ~ and ~/x for the host's home.
+func TestHostExecHostDir(t *testing.T) {
+	a, home := hostDirHost(t)
+	for hostDir, want := range map[string]string{
+		home:                            home,
+		"~":                             home,
+		"~/sub":                         filepath.Join(home, "sub"),
+		"~/sub/../sub/":                 filepath.Join(home, "sub"),
+		filepath.Join(home, "sub", "."): filepath.Join(home, "sub"),
+	} {
+		r := a.run(agentproto.ExecRequest{Argv: []string{"sh", "-c", "pwd -P"}, HostDir: hostDir}, "")
+		if r.code != 0 || r.stdout != want+"\n" {
+			t.Errorf("--host-dir %q: %+v, want %q", hostDir, r, want)
+		}
+	}
+}
+
+func TestHostExecHostDirRefused(t *testing.T) {
+	a, home := hostDirHost(t)
+	if err := os.WriteFile(filepath.Join(home, "file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		req  agentproto.ExecRequest
+		want string
+	}{
+		{"both", agentproto.ExecRequest{Argv: []string{"true"}, Dir: "/work", HostDir: "~"}, "not both"},
+		{"relative", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "sub"}, "not an absolute path on this machine"},
+		{"a path only the sandbox has", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "/caboose-test-sandbox-only/agent"}, "is no directory on this machine"},
+		{"missing", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "~/gone"}, "is no directory on this machine"},
+		{"a file", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "~/file"}, "is no directory on this machine"},
+		{"another user's", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "~root"}, "not an absolute path"},
+		{"a control character", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "~/a\nb"}, "control or invisible"},
+		{"a NUL", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "/a\x00b"}, "control or invisible"},
+		{"a DEL", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "/a\x7fb"}, "control or invisible"},
+		{"a line separator", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "/a\u2028b"}, "control or invisible"},
+		{"a paragraph separator", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "/a\u2029b"}, "control or invisible"},
+		{"a bidi mark", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "~/a\u202eb"}, "control or invisible"},
+		{"too long", agentproto.ExecRequest{Argv: []string{"true"}, HostDir: "/" + strings.Repeat("a", MaxHostDir)}, "no usable directory"},
+		{"neither, no root", agentproto.ExecRequest{Argv: []string{"true"}, Dir: "/work/x"}, "caboose-agent host --host-dir '~' CMD"},
+	} {
+		st, err := a.open()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var out, errs bytes.Buffer
+		code, err := agentproto.Exec(st, c.req, agentproto.ExecIO{Stdout: &out, Stderr: &errs})
+		if err != nil || code != agentproto.ExitCannotRun || !strings.Contains(errs.String(), c.want) || out.Len() != 0 {
+			t.Errorf("%s: %d %v, %q, %q; want %d and %q", c.name, code, err, out.String(), errs.String(), agentproto.ExitCannotRun, c.want)
+		}
+	}
+}
+
+// A host directory is no way round the policy: refused while host exec is
+// off or the policy refuses it (trust = hostile), before the request is read.
+func TestHostExecHostDirDecidedByPolicy(t *testing.T) {
+	off := startExecHost(t, Config{})
+	if _, err := off.open(); err == nil || err.Error() != agentproto.HostExecOff {
+		t.Fatalf("host exec off: %v", err)
+	}
+	fd := newFakeDecider()
+	fd.set(policy.KindHostExec, broker.Outcome{Verdict: broker.Denied, Reason: "trust = hostile refuses host_exec"})
+	a := startExecHost(t, Config{Trust: "hostile", HostExec: &HostExec{}, Decide: fd, Execs: NewExecs()})
+	if _, err := a.open(); err == nil || !strings.Contains(err.Error(), "trust = hostile") {
+		t.Fatalf("hostile: %v", err)
+	}
+}
+
+func TestHostCommandPATH(t *testing.T) {
+	for _, tc := range []struct{ path, dir, want string }{
+		{"/a:/b", "/x", "/a:/b:/x"},
+		{"/a:/x/", "/x", "/a:/x/"},
+		{"/a:/x", "/x", "/a:/x"},
+		{"", "/x", "/x"},
+		{"/a", "", "/a"},
+	} {
+		if got := hostCommandPATH(tc.path, tc.dir); got != tc.want {
+			t.Errorf("hostCommandPATH(%q, %q) = %q, want %q", tc.path, tc.dir, got, tc.want)
+		}
+	}
+}
+
+// A host command finds the launcher in its own directory, after the PATH
+// it had; an alias's environment is HostExecEnv's, untouched.
+func TestHostExecFindsTheLauncher(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "caboose-fake"), []byte("#!/bin/sh\necho launcher\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := executableDir
+	executableDir = func() string { return bin }
+	t.Cleanup(func() { executableDir = old })
+	_, cfg := execRoot(t)
+	a := startExecHost(t, cfg)
+	r := a.run(agentproto.ExecRequest{Argv: []string{"caboose-fake"}, Dir: "/work"}, "")
+	if r.code != 0 || r.stdout != "launcher\n" {
+		t.Errorf("%+v", r)
+	}
+	r = a.run(agentproto.ExecRequest{Argv: []string{"sh", "-c", "echo $PATH"}, Dir: "/work"}, "")
+	if !strings.HasSuffix(strings.TrimSpace(r.stdout), ":"+bin) {
+		t.Errorf("PATH %q", r.stdout)
+	}
+	if env := HostExecEnv(os.Getenv); strings.Contains(env[0], bin) {
+		t.Errorf("HostExecEnv has the launcher's directory: %v", env)
+	}
+	// Unknown: PATH is left alone.
+	executableDir = func() string { return "" }
+	r = a.run(agentproto.ExecRequest{Argv: []string{"caboose-fake"}, Dir: "/work"}, "")
+	if r.code != agentproto.ExitNotFound {
+		t.Errorf("found it with the directory unknown: %+v", r)
+	}
+}
+
+func TestExecutableDirIsAResolvedRegularFileDir(t *testing.T) {
+	got := executableDir()
+	exe, _ := os.Executable()
+	exe, _ = filepath.EvalSymlinks(exe)
+	if got != filepath.Dir(exe) {
+		t.Errorf("%q, want %q", got, filepath.Dir(exe))
+	}
+}
+
+// lookPath reads absolute PATH entries only: a relative one (or an empty
+// one, which means the current directory) is skipped even where it holds
+// the command, and only a regular file with an execute bit is found.
+func TestLookPath(t *testing.T) {
+	abs := t.TempDir()
+	write := func(dir, name string, mode os.FileMode) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(abs, "tool", 0o755)
+	write(abs, "plain", 0o644)
+	if err := os.Mkdir(filepath.Join(abs, "adir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := t.TempDir()
+	write(rel, "only-relative", 0o755)
+	t.Chdir(rel)
+	for _, tc := range []struct{ name, path, want string }{
+		{"tool", abs, filepath.Join(abs, "tool")},
+		{"tool", "/nonexistent:" + abs, filepath.Join(abs, "tool")},
+		{"only-relative", ".", ""},
+		{"only-relative", "", ""},
+		{"only-relative", ":" + abs, ""},
+		{"only-relative", filepath.Base(rel), ""},
+		{"plain", abs, ""},
+		{"adir", abs, ""},
+		{"tool", "", ""},
+	} {
+		got, err := lookPath(tc.name, tc.path)
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("lookPath(%q, %q) = %q, want not found", tc.name, tc.path, got)
+			}
+		} else if err != nil || got != tc.want {
+			t.Errorf("lookPath(%q, %q) = %q, %v; want %q", tc.name, tc.path, got, err, tc.want)
+		}
 	}
 }

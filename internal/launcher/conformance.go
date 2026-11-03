@@ -47,6 +47,8 @@ type ConformanceIO struct {
 	Driver func(g *conformance.Guard, environ []string, probeDir string) confDriver
 	// Checks are the checks a run under isolation and trust has.
 	Checks func(isolation, trust string) []conformance.Check
+	// NoRootsChecks are those of a run with no roots (--no-roots).
+	NoRootsChecks func(isolation, trust string) []conformance.Check
 	// Signals delivers SIGINT and SIGTERM; stop ends the delivery.
 	Signals func() (ch <-chan os.Signal, stop func())
 	// Exit ends the process on a second interrupt, during the teardown.
@@ -85,7 +87,8 @@ func DefaultConformanceIO(stdout, stderr io.Writer, checkout string) Conformance
 		Driver: func(g *conformance.Guard, environ []string, probeDir string) confDriver {
 			return newConfReal(g, environ, checkout, probeDir, stdout, stderr)
 		},
-		Checks: confChecks,
+		Checks:        confChecks,
+		NoRootsChecks: confNoRootsChecks,
 		Signals: func() (<-chan os.Signal, func()) {
 			ch := make(chan os.Signal, 2)
 			signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
@@ -102,6 +105,7 @@ func DefaultConformanceIO(stdout, stderr io.Writer, checkout string) Conformance
 
 const conformanceUsage = `usage: caboose conformance run --isolation container|gvisor|vm [--trust fallible|hostile]
                                [--out FILE] [--skip-wipe] [--only ID,ID...] [--keep] [--probe-dir DIR]
+                               [--no-roots]
        caboose conformance list | leftovers | verify-doc
        caboose conformance matrix [FILE...]`
 
@@ -143,6 +147,7 @@ type confOptions struct {
 	isolation, trust string
 	out              string
 	skipWipe, keep   bool
+	noRoots          bool
 	only             []string
 	probeDir         string
 }
@@ -157,6 +162,7 @@ func parseConfRun(args []string, stderr io.Writer, now time.Time) (confOptions, 
 	fs.StringVar(&o.out, "out", "", "the results file, which must not exist")
 	fs.BoolVar(&o.skipWipe, "skip-wipe", false, "do not run the wipe (R14)")
 	fs.BoolVar(&o.keep, "keep", false, "leave the environment for inspection")
+	fs.BoolVar(&o.noRoots, "no-roots", false, "a run of its own, of a sandbox with an empty [roots]: only the checks of that")
 	fs.StringVar(&only, "only", "", "run only these check ids")
 	fs.StringVar(&o.probeDir, "probe-dir", "", "the directory make conformance-probe built the probe into")
 	if err := fs.Parse(args); err != nil {
@@ -170,6 +176,9 @@ func parseConfRun(args []string, stderr io.Writer, now time.Time) (confOptions, 
 	}
 	if o.trust != config.TrustFallible && o.trust != config.TrustHostile {
 		return o, errors.New("--trust must be fallible or hostile")
+	}
+	if o.noRoots && o.trust == config.TrustHostile && o.isolation != config.KindVM {
+		return o, errors.New("--no-roots needs a sandbox, and trust = hostile makes one only under vm")
 	}
 	if only != "" {
 		for _, id := range strings.Split(only, ",") {
@@ -216,6 +225,18 @@ func confChecks(isolation, trust string) []conformance.Check {
 	for _, c := range all {
 		if !seen[c.ID] && c.Applies(isolation, trust) {
 			seen[c.ID] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// confNoRootsChecks are the checks of a run with no roots: every other
+// check needs the two roots, so only these run, and none is destructive.
+func confNoRootsChecks(isolation, trust string) []conformance.Check {
+	var out []conformance.Check
+	for _, c := range checks.NoRootsChecks() {
+		if c.Applies(isolation, trust) {
 			out = append(out, c)
 		}
 	}
@@ -282,7 +303,11 @@ func confRunCmd(args []string, cio ConformanceIO) int {
 		fmt.Fprintf(cio.Stderr, "caboose conformance: %v\n%s\n", err, conformanceUsage)
 		return conformance.ExitRefused
 	}
-	run, skipped, err := confSelect(cio.Checks(o.isolation, o.trust), o)
+	checksFor, setup := cio.Checks, conformance.Setup
+	if o.noRoots {
+		checksFor, setup = cio.NoRootsChecks, conformance.SetupNoRoots
+	}
+	run, skipped, err := confSelect(checksFor(o.isolation, o.trust), o)
 	if err != nil {
 		fmt.Fprintf(cio.Stderr, "caboose conformance: %v\n", err)
 		return conformance.ExitRefused
@@ -309,7 +334,7 @@ func confRunCmd(args []string, cio ConformanceIO) int {
 		})
 	}
 
-	g, err = conformance.Setup(cio.Facts, o.isolation, o.trust)
+	g, err = setup(cio.Facts, o.isolation, o.trust)
 	if err != nil {
 		fmt.Fprintf(cio.Stderr, "caboose conformance: %v\n", err)
 		return conformance.ExitRefused
@@ -513,6 +538,9 @@ func confSayRunning(w io.Writer, home, dataDir, isolation, container string) {
 
 func confPlan(w io.Writer, o confOptions, run []conformance.Check, skipped []string) {
 	fmt.Fprintf(w, "caboose conformance: isolation %s, trust %s\n", o.isolation, o.trust)
+	if o.noRoots {
+		fmt.Fprintln(w, "no roots: a sandbox with an empty [roots], and only the checks of that")
+	}
 	if ordered, err := conformance.RunOrder(run); err == nil {
 		run = ordered
 	}

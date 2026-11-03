@@ -105,6 +105,7 @@ var condKeys = map[string][]string{
 	"image":     {"apko", "dockerfile", "ref"},
 	"source":    {SourceCheckout, SourceClone, SourceOutside, SourceRelease},
 	"hostexec":  {"on", "off"},
+	"roots":     {"none", "some"},
 	"env":       nil,
 }
 
@@ -122,6 +123,11 @@ func (f Facts) current(key string) string {
 			return "on"
 		}
 		return "off"
+	case "roots":
+		if len(f.Roots) == 0 {
+			return "none"
+		}
+		return "some"
 	}
 	return f.env()
 }

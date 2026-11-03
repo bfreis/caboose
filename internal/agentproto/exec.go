@@ -33,6 +33,11 @@ type ExecRequest struct {
 	Env []string `json:"env,omitempty"`
 	// Dir is where it runs: "" for the sandbox user's home.
 	Dir string `json:"dir,omitempty"`
+	// HostDir is, in a host exec, a directory on the host that it runs in,
+	// in place of Dir's mapping through a root: absolute, or ~ or ~/... for
+	// the host's home. Omitted when unset, so a peer that does not know it
+	// is unaffected.
+	HostDir string `json:"host_dir,omitempty"`
 	// User is "UID" or "UID:GID": "" for the sandbox's own user.
 	User  string `json:"user,omitempty"`
 	Stdin bool   `json:"stdin,omitempty"`

@@ -34,10 +34,11 @@ func (r setupRoot) container() string {
 }
 
 // fileRoots are the roots config.toml sets, else the default: the file is
-// what setup edits.
+// what setup edits. A [roots] table with no entries sets none, which is not
+// the default: it is a non-nil empty list here.
 func (a *App) fileRoots() []setupRoot {
-	if f := a.Cfg.File; f != nil && len(f.Roots) > 0 {
-		var roots []setupRoot
+	if f := a.Cfg.File; f != nil && f.Roots != nil {
+		roots := []setupRoot{}
 		for _, name := range slices.Sorted(maps.Keys(f.Roots)) {
 			fr := f.Roots[name]
 			roots = append(roots, setupRoot{name, fr.Host, fr.Path, slices.Clone(fr.Writable)})
@@ -70,7 +71,8 @@ func (a *App) setupRoots(p *prompter) error {
 	c := a.Cfg
 	cur := a.fileRoots()
 	p.heading("Roots", "The directories that hold your projects. The sandbox mounts each at /work/NAME, "+
-		"read-only but for the parts of it you let it write.")
+		"read-only but for the parts of it you let it write. You can also use none: then the sandbox "+
+		"has no directory of this machine, and work lives on volumes and in its home.")
 	roots := slices.Clone(cur)
 	asked := map[string]bool{} // the roots whose writable parts were asked for, by name
 	for first := true; ; first = false {
@@ -94,7 +96,11 @@ func (a *App) setupRoots(p *prompter) error {
 		}
 		var acts []action
 		if len(problems) == 0 {
-			acts = append(acts, action{"Use these", func() error {
+			use := "Use these"
+			if len(roots) == 0 {
+				use = "Use no roots"
+			}
+			acts = append(acts, action{use, func() error {
 				// Each root's writable parts, asked once a run: the
 				// question a first run must not skip.
 				for i := range roots {
@@ -135,11 +141,21 @@ func (a *App) setupRoots(p *prompter) error {
 				}})
 			}
 		}
+		if len(roots) > 0 {
+			acts = append(acts, action{"Use no roots", func() error {
+				roots = []setupRoot{}
+				return nil
+			}})
+		}
 		labels := make([]string, len(acts))
 		for i, act := range acts {
 			labels[i] = act.label
 		}
 		question := "Use these roots?"
+		if len(roots) == 0 {
+			question = "Use no roots?"
+			p.note("No roots: no directory of this machine is mounted in the sandbox.")
+		}
 		if len(problems) > 0 {
 			question = "These roots cannot be used as they are. Fix them:"
 		}

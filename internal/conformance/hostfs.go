@@ -171,6 +171,18 @@ func (h *GuardHost) ReadCanary(rel string) ([]byte, error) {
 	return b, err
 }
 
+// HostPath is the host's absolute path of rel, a canary path or below one.
+// It reads nothing, and rel need not exist.
+func (h *GuardHost) HostPath(rel string) (string, error) {
+	if h.G == nil || !h.G.made {
+		return "", refuse("guard", "not an environment this suite created")
+	}
+	if !cleanRel(rel) || !h.inCanary(rel) {
+		return "", fmt.Errorf("conformance: %s is not a canary of this run", rel)
+	}
+	return h.G.base + "/" + rel, nil
+}
+
 // Populate fills the directory canary c with n files of its content,
 // named after it, from the host and never through a symlink.
 func (h *GuardHost) Populate(c Canary, n int) error {

@@ -156,6 +156,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	// resolved, can end in a launch.
 	app.Checkout = launcher.FindCheckout(sourceDir)
 	app.Suffix = cfg.Session
+	app.Dir = inv.Dir
 	if inv.Session != "" {
 		app.Suffix = inv.Session
 	}

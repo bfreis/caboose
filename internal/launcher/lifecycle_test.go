@@ -458,11 +458,8 @@ func TestWaitUntilReadyFails(t *testing.T) {
 // caboose detach detaches the clients of this project's sessions, and of
 // no other's; with no sandbox running there is nothing to detach.
 func TestDetach(t *testing.T) {
-	cwd, err := config.Cwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := session.NameFor(cwd, "")
+	// Named by its path in the sandbox, here the one -C gives.
+	base := session.NameFor("/src/proj", "")
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
 			box := runningBox(iso)
@@ -477,6 +474,7 @@ func TestDetach(t *testing.T) {
 				return nil
 			}
 			b := newBoxApp(t, iso, box)
+			b.Dir = "/src/proj"
 			if err := b.Detach(); err != nil {
 				t.Fatal(err)
 			}

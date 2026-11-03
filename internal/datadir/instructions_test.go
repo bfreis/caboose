@@ -127,6 +127,23 @@ func TestExpandConditionals(t *testing.T) {
 	}
 }
 
+// roots=none is a sandbox with no roots at all; the placeholder for them
+// is never used then.
+func TestExpandRootsCondition(t *testing.T) {
+	src := "@@IF roots=some@@\nsome: @@CABOOSE_ROOTS@@\n@@ELSE@@\nnone\n@@END@@\n"
+	got, err := Expand([]byte(src), Facts{})
+	if err != nil || string(got) != "none\n" {
+		t.Errorf("no roots: %q %v", got, err)
+	}
+	got, err = Expand([]byte(src), Facts{Roots: []config.Root{{Host: "/h", Container: "/work"}}})
+	if err != nil || string(got) != "some: `/h` at `/work` (read-only)\n" {
+		t.Errorf("a root: %q %v", got, err)
+	}
+	if _, err := Expand([]byte("@@IF roots=few@@\nx\n@@END@@\n"), Facts{}); err == nil {
+		t.Error("an unknown value was accepted")
+	}
+}
+
 func TestExpandErrors(t *testing.T) {
 	for name, src := range map[string]string{
 		"unknown key":    "@@IF color=red@@\nx\n@@END@@\n",

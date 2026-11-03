@@ -534,11 +534,11 @@ func (a *App) Detach() error {
 		a.Note("%s is not running", a.noun())
 		return nil
 	}
-	cwd, err := config.Cwd()
+	d, err := a.pickLaunchDir()
 	if err != nil {
-		return Die("%v", err)
+		return err
 	}
-	target := session.NameFor(cwd, a.Suffix)
+	target := session.NameFor(d.Path, a.Suffix)
 	// An explicit name means that session and no other. Without one, the
 	// project may own a whole series, and detaching only the base would leave
 	// the terminal that asked still staring at a mirrored pane.
@@ -599,10 +599,10 @@ func (a *App) vmLogs(args []string) error {
 	return a.box().Logs(a.Stdout, a.Stderr, lines)
 }
 
-// Shell execs a bash prompt inside the container, at the cwd's container
-// path. The cwd is checked first, as Attach does: one outside the repo root
-// can only fail, and must not do so after building an image and creating a
-// container.
+// Shell execs a bash prompt inside the container, in the directory a launch
+// picks (pickDir): -C, the cwd's container path, [session] dir, the home.
+// It is picked first, as Attach does: one that can only fail must not do so
+// after building an image and creating a container.
 //
 // It has a terminal only when caboose has one, as Attach does: docker exec
 // -t refuses a stdin that is no terminal, and a script or a pipe running
@@ -610,11 +610,7 @@ func (a *App) vmLogs(args []string) error {
 // given no -c reads its commands from stdin, which is what
 // `caboose shell < script` means.
 func (a *App) Shell(args []string) error {
-	dir, err := config.Cwd()
-	if err != nil {
-		return Die("%v", err)
-	}
-	if _, err := a.containerDir(dir); err != nil {
+	if _, err := a.pickLaunchDir(); err != nil {
 		return err
 	}
 	if err := a.ensureRunning(true); err != nil {
@@ -623,7 +619,11 @@ func (a *App) Shell(args []string) error {
 	a.awaitProxy()
 	// Asked again: the container may only now exist, mounting the roots
 	// that were configured.
-	workdir, err := a.containerDir(dir)
+	d, err := a.pickLaunchDir()
+	if err != nil {
+		return err
+	}
+	workdir, _, err := a.startIn(d)
 	if err != nil {
 		return err
 	}
@@ -636,11 +636,7 @@ func (a *App) Shell(args []string) error {
 // directory, passing args through to claude.
 func (a *App) Attach(args []string) error {
 	c := a.Cfg
-	projectDir, err := enterProjectDir(".")
-	if err != nil {
-		return err
-	}
-	if _, err := a.containerDir(projectDir); err != nil {
+	if _, err := a.pickLaunchDir(); err != nil {
 		return err
 	}
 	if err := a.ensureRunning(true); err != nil {
@@ -649,12 +645,15 @@ func (a *App) Attach(args []string) error {
 	a.awaitProxy()
 	// Asked again: the container may only now exist, mounting the roots
 	// that were configured.
-	workdir, err := a.containerDir(projectDir)
+	d, err := a.pickLaunchDir()
 	if err != nil {
 		return err
 	}
 
-	name := session.NameFor(projectDir, a.Suffix)
+	// However the directory was reached, the session is named for its path
+	// in the sandbox: caboose run in a project, caboose -C with that path
+	// and (with [session] dir) with a path relative to it are one session.
+	name := session.NameFor(d.Path, a.Suffix)
 
 	// Built once, before the branches: a piped invocation wants the timezone
 	// just as much as an interactive one does.
@@ -669,7 +668,10 @@ func (a *App) Attach(args []string) error {
 	if !terminal {
 		// No tty to attach a tmux client to — run claude directly so piped
 		// and scripted invocations still work.
-		startedIn, _ := a.startDir(projectDir, workdir)
+		startedIn, _, err := a.startIn(d)
+		if err != nil {
+			return err
+		}
 		return a.exec(a.box().Command(backend.ExecSpec{
 			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: startedIn, Stdin: true,
 		}))
@@ -679,7 +681,10 @@ func (a *App) Attach(args []string) error {
 	// Rendering is then identical to the host terminal, at the cost of
 	// losing detach/reattach -- closing the terminal kills the session.
 	if !c.Tmux {
-		startedIn, _ := a.startDir(projectDir, workdir)
+		startedIn, _, err := a.startIn(d)
+		if err != nil {
+			return err
+		}
 		return a.exec(a.box().Command(backend.ExecSpec{
 			Argv: append([]string{Entrypoint}, args...), Env: env, Dir: startedIn, Stdin: true, TTY: true,
 		}))
@@ -702,17 +707,19 @@ func (a *App) Attach(args []string) error {
 	// -A attaches to the session if it already exists, which is the
 	// detach/reattach path; note that `claude` args and the directory
 	// (-c) only apply when the session is first created. So whether it
-	// exists is asked once, when either would matter, and a directory
-	// [session.start] gives is looked at only for a session to be made.
-	_, mapped := a.startFor(projectDir)
-	var warning string
-	if len(args) > 0 || mapped {
+	// exists is asked once, when either would matter, and a directory that
+	// -C or [session] dir gave is looked at only for a session to be made.
+	workdir, warning := d.Path, ""
+	checked := d.Source == dirFlag || d.Source == dirSetting
+	if len(args) > 0 || checked {
 		if backend.Quiet(a.box(), "tmux", "has-session", "-t", "="+name) == nil {
 			if len(args) > 0 {
 				a.Note("reattaching to existing session '%s' — arguments ignored", name)
 			}
-		} else if mapped {
-			workdir, warning = a.startDir(projectDir, workdir)
+		} else if checked {
+			if workdir, warning, err = a.startIn(d); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -799,6 +806,13 @@ func tmuxSessionArgv(name, workdir string, env, args []string) []string {
 	}
 	// -u forces UTF-8 regardless of the container's locale, which is
 	// otherwise POSIX/C and turns box-drawing characters into mojibake.
+	//
+	// A directory ending in ";" would end the command there: tmux takes an
+	// argument that ends in ";" as its separator, and "\;" as a literal
+	// ";" (verified with tmux 3.8: the session's path ends in ";").
+	if strings.HasSuffix(workdir, ";") {
+		workdir = strings.TrimSuffix(workdir, ";") + `\;`
+	}
 	argv := append([]string{"tmux", "-u", "new-session", "-A", "-s", name, "-c", workdir}, tmuxEnv...)
 	return append(append(argv, cmd...), args...)
 }

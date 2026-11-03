@@ -355,7 +355,7 @@ func (a *App) restartDrift() []string {
 	a.Backend = &onceBox{Backend: a.box()}
 	defer func() { a.Backend = prev }()
 	var out []string
-	if mounted := a.mountedRoots(); len(mounted) > 0 && !config.SameRoots(mounted, a.Cfg.Roots) {
+	if mounted, known := a.mountedRootsKnown(); known && !config.SameRoots(mounted, a.Cfg.Roots) {
 		out = append(out, fmt.Sprintf("the %s mounts %s; the configuration says %s", a.noun(), mountList(mounted), mountList(a.Cfg.Roots)))
 	}
 	for _, d := range []string{a.writableDrift(), a.trustDrift(), a.networkDrift()} {

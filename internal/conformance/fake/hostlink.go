@@ -68,6 +68,16 @@ const (
 	// HostileForwardsAgent forwards the host's default SSH agent under
 	// hostile, as fallible does.
 	HostileForwardsAgent Mutant = "hostile forwards the default ssh agent"
+	// HostDirRunsAnyway runs a host command that names --host-dir with
+	// host_exec off: only that form gets past the policy.
+	HostDirRunsAnyway Mutant = "host-dir runs anyway"
+	// HostDirJudgedFirst refuses a --host-dir that is no directory for
+	// that, before the policy: the host looked at the directory.
+	HostDirJudgedFirst Mutant = "host-dir judged first"
+	// HostDirRefusalVaries refuses a --host-dir that is no directory with
+	// the policy's refusal and a note on the directory added: the same
+	// reason, said differently for a directory that is not there.
+	HostDirRefusalVaries Mutant = "host-dir refusal varies with the directory"
 )
 
 // HostMutants are the mutants Link acts on, beside AliasRunsWithoutGrant
@@ -80,6 +90,7 @@ var HostMutants = []Mutant{
 	TrustLabelWrong, HostileEgressOffLoads, LaunchStartsClaude,
 	RefusedAliasesRun, RefusedHostExecRuns, RefusalsExitOdd, HostRefusalExitsOdd,
 	SandboxWritesConfig, AskRunsLater, AttachRelabels, HostileForwardsAgent,
+	HostDirRunsAnyway, HostDirJudgedFirst, HostDirRefusalVaries,
 }
 
 // Fault is an answer of the product's, or of the setup, that is not what
@@ -514,18 +525,30 @@ func (l *Link) writeOut(name, text string, appendTo bool) {
 }
 
 func (l *Link) host(args []string, out *[]string) int {
-	dir := ""
-	if len(args) >= 2 && args[0] == "-C" {
+	dir, hostRel := "", ""
+	named := false
+	switch {
+	case len(args) >= 2 && args[0] == "-C":
 		dir, args = args[1], args[2:]
+	case len(args) >= 2 && args[0] == "--host-dir":
+		named = true
+		hostRel, args = strings.TrimPrefix(args[1], hostBase+"/"), args[2:]
 	}
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}
+	if n := l.nodes[hostRel]; named && (n == nil || n.kind != kDir) && l.mutants[HostDirJudgedFirst] {
+		*out = append(*out, "caboose-agent: host: --host-dir is no directory on this machine")
+		return 126
+	}
 	lie := l.mutants[RefusedHostExecRuns]
-	if !l.mutants[HostExecOn] && !lie {
+	if !l.mutants[HostExecOn] && !lie && !(named && l.mutants[HostDirRunsAnyway]) {
 		msg := agentproto.HostExecOff
 		if l.trustNow() == conformance.TrustHostile {
 			msg = "trust = hostile refuses host_exec: running commands on the host is off"
+		}
+		if n := l.nodes[hostRel]; named && (n == nil || n.kind != kDir) && l.mutants[HostDirRefusalVaries] {
+			msg += " (and nothing is there)"
 		}
 		if l.faults[HostRefusalUnnamed] {
 			msg = "refused"
@@ -536,8 +559,11 @@ func (l *Link) host(args []string, out *[]string) int {
 		}
 		return 126
 	}
-	if len(args) == 2 && args[0] == "touch" && dir != "" {
-		rel := "roots/" + strings.TrimPrefix(dir, "/work/")
+	if len(args) == 2 && args[0] == "touch" && (dir != "" || named) {
+		rel := hostRel
+		if !named {
+			rel = "roots/" + strings.TrimPrefix(dir, "/work/")
+		}
 		if p := l.nodes[rel]; p != nil && p.kind == kDir {
 			l.nodes[rel+"/"+args[1]] = l.newNode(kFile, "")
 			l.logMut("host-touch", rel+"/"+args[1])
@@ -589,6 +615,20 @@ func (l *Link) ReadCanary(rel string) ([]byte, error) {
 	return []byte(n.content), nil
 }
 
+// hostBase is where the model says B is on the host.
+const hostBase = "/tmp/caboose-conf.123"
+
+func (l *Link) HostPath(rel string) (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, c := range l.canary {
+		if rel == c.Rel || strings.HasPrefix(rel, c.Rel+"/") {
+			return hostBase + "/" + rel, nil
+		}
+	}
+	return "", fmt.Errorf("%s is not a canary", rel)
+}
+
 func (l *Link) ConfigHash() (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -607,7 +647,7 @@ func (l *Link) AliasCommand(name string) (string, error) {
 	if _, ok := suiteAliases[name]; !ok {
 		return "", fmt.Errorf("no alias %q", name)
 	}
-	return "/tmp/caboose-conf.123/canary/bin/" + name, nil
+	return hostBase + "/canary/bin/" + name, nil
 }
 
 func (l *Link) EnvCanary() string { return "CONF_CANARY_" + strings.ToUpper(l.n8) }

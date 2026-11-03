@@ -276,12 +276,12 @@ func (a *App) runCheckup(c *checkup, offline bool) {
 			c.unchecked(l, "%s", why)
 		}
 	}
-	c.checking("the session start directories")
+	c.checking("the session directory")
 	notRunning := agentWhy
 	if !reachable {
 		notRunning = "docker did not answer"
 	}
-	a.doctorSessionStart(c, rootsOK, running, notRunning)
+	a.doctorSessionDir(c, running, notRunning)
 	c.checking("git")
 	a.doctorIdentity(c)
 	a.doctorSigning(c, agentKeys, agentWhy)
@@ -330,7 +330,12 @@ func (a *App) doctorConfig(c *checkup) bool {
 	}
 	// Each root with what the sandbox may write of it: read-only, a whole
 	// root writable, or the parts.
-	c.ok("roots", "%s", accessList(cfg.Roots))
+	if len(cfg.Roots) == 0 {
+		c.ok("roots", "none: no directory of this machine is mounted in the %s (%s)", a.noun(), cfg.RootsOrigin())
+	} else {
+		c.ok("roots", "%s", accessList(cfg.Roots))
+	}
+	a.doctorVolumeCopies(c)
 	return true
 }
 
@@ -404,9 +409,9 @@ func (a *App) doctorSandbox(c *checkup) {
 		if slices.Contains(have, r) {
 			continue
 		}
-		// A root listed so that the memory of projects that start under
-		// it ([session.start]) syncs: no root of this machine is there.
-		if a.holdsStartTarget(r) {
+		// A root listed so that the memory of projects on a volume or under
+		// [session] dir syncs: no root of this machine is there.
+		if a.holdsStartPath(r) {
 			continue
 		}
 		drop := "or drop " + r + " from roots: " + edit
@@ -424,6 +429,7 @@ func (a *App) doctorSandbox(c *checkup) {
 	if !syncs {
 		return
 	}
+	a.doctorUnsyncedWorkdirs(c, sb.Roots, edit)
 	for _, r := range have {
 		if !slices.Contains(sb.Roots, r) {
 			c.note("roots", "this machine's root at %s is not in the sandbox config's roots, so the memory of its projects does not sync; "+
@@ -569,7 +575,7 @@ func (a *App) doctorContainer(c *checkup, rootsOK bool) string {
 	case state == "running":
 		c.ok(noun, "%s, running", cfg.Container)
 	}
-	if mounted := a.mountedRoots(); rootsOK && len(mounted) > 0 && !config.SameRoots(mounted, cfg.Roots) {
+	if mounted, known := a.mountedRootsKnown(); rootsOK && known && !config.SameRoots(mounted, cfg.Roots) {
 		c.problem("roots", "caboose restart"+endsSessions, "the %s mounts %s; the configuration says %s",
 			noun, mountList(mounted), mountList(cfg.Roots))
 	}

@@ -31,6 +31,10 @@ type HostOps interface {
 	// without following a symlink, bounded; a file that is not there is an
 	// error wrapping fs.ErrNotExist.
 	ReadCanary(rel string) ([]byte, error)
+	// HostPath is the host's absolute path of rel, a canary or below one,
+	// which need not exist: what a request that names a directory on the
+	// host names, never anything else of the host's.
+	HostPath(rel string) (string, error)
 	// ConfigHash is the sha256, in hex, of the environment's config.toml.
 	ConfigHash() (string, error)
 	// AliasCommand is the host path of the suite's script for alias name.

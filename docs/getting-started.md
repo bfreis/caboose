@@ -58,7 +58,8 @@ vm-builder` once (they need Docker on the host); `make launcher` builds
 
 ## First run
 
-Run `caboose` from inside a project under one of the [roots](configuration.md#roots) (`~/dev` by default). The first
+Run `caboose` from inside a project under one of the [roots](configuration.md#roots) (`~/dev` by default; with
+[no roots](configuration.md#working-without-roots) it works from any directory). The first
 time, it:
 
 1. **Builds the image**, when there is none. It says so first, then builds

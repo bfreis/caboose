@@ -165,6 +165,7 @@ caboose is built and tested on, and Linux hosts are untested.
 | control | `container` | `gvisor` | `vm`, `fallible` | `vm`, `hostile` |
 |---|---|---|---|---|
 | only the mounted paths are reachable | held (not tested) | held (not tested) | held (not tested) | held (not tested) |
+| no roots: no project mount, nothing at `/work` | held (not tested) | held (not tested) | held (not tested) | held (not tested) |
 | read-only roots and writable parts | held (not tested) | held (not tested) | held (not tested) | held (not tested) |
 | read-only instructions mount | held (not tested) | held (not tested) | held, until the guest's root unmounts it (not tested) | held, until the guest's root unmounts it (not tested) |
 | daemon out of reach | held (not tested) | held (not tested) | held (not tested) | held (not tested) |
@@ -322,7 +323,9 @@ whatever `host_exec` says: the link does not offer it, and the policy
 denies every request for it. On, it is **a hole in the wall, on
 purpose**: the sandbox, and whatever steers it, can run anything on your
 machine as you. A command gets exactly `PATH`, `HOME` and `LANG`, no
-terminal and no shell; it runs in a directory under a root; it ends when the
+terminal and no shell; it runs in a directory that is either mapped through a root or named by the session on the
+host with `--host-dir`, which reaches nothing new, since a session with it on can already run
+`sh -c 'cd /anywhere && ...'`; it ends when the
 sandbox's command ends. Keep it off for any environment you leave
 unattended.
 
@@ -785,7 +788,12 @@ Stated plainly, so that nobody relies on them:
 A conformance suite is built. You run it on your own machine, from a
 caboose checkout with Go (it is in no release), and never inside a sandbox:
 
-    make conformance ISOLATION=container|gvisor|vm [TRUST=hostile] [OUT=FILE]
+    make conformance ISOLATION=container|gvisor|vm [TRUST=hostile] [NO_ROOTS=1] [OUT=FILE]
+
+`NO_ROOTS=1` makes it a run of its own, of a sandbox created with an empty `[roots]`, with
+only the check of that (`N1`: no host directory is mounted as a project, and nothing is at
+`/work`); a sandbox keeps its mounts for life, so the other checks, which need the suite's
+two roots, are not part of it. For example `make conformance ISOLATION=vm NO_ROOTS=1`.
 
 It prints its plan, what it will create and try, then creates a throwaway
 environment under a temporary directory, with roots holding only files it made, and from inside it tries each operation a

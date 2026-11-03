@@ -51,6 +51,16 @@ func TestParse(t *testing.T) {
 		{[]string{"--env=work"}, Invocation{Env: "work"}, ""},
 		{[]string{"--session", "two", "detach"}, Invocation{Session: "two", Command: "detach"}, ""},
 		{[]string{"--session=two", "-e", "w", "claude", "-e"}, Invocation{Session: "two", Env: "w", Command: "claude", Args: []string{"-e"}}, ""},
+		// -C, in every command that runs in a directory of the sandbox.
+		{[]string{"-C", "/src/app"}, Invocation{Dir: "/src/app"}, ""},
+		{[]string{"-C=app", "claude", "-C", "x"}, Invocation{Dir: "app", Command: "claude", Args: []string{"-C", "x"}}, ""},
+		{[]string{"-C", "/a", "--session", "s", "-e", "w", "shell", "ls"}, Invocation{Dir: "/a", Session: "s", Env: "w", Command: "shell", Args: []string{"ls"}}, ""},
+		{[]string{"-C", "/a", "detach"}, Invocation{Dir: "/a", Command: "detach"}, ""},
+		{[]string{"-C", "/a", "status"}, Invocation{Dir: "/a", Command: "status"}, "-C does not apply to 'status'"},
+		{[]string{"-C", "/a", "logs"}, Invocation{Dir: "/a", Command: "logs"}, "-C does not apply to 'logs'"},
+		{[]string{"-C", "/a", "--version"}, Invocation{Dir: "/a", Command: "version"}, "-C does not apply to 'version'"},
+		{[]string{"-C"}, Invocation{}, "-C needs a directory in the sandbox"},
+		{[]string{"-C", ""}, Invocation{}, "-C needs a directory in the sandbox"},
 		// Only before the command: after it, they are its arguments.
 		{[]string{"shell", "-e", "x"}, Invocation{Command: "shell", Args: []string{"-e", "x"}}, ""},
 

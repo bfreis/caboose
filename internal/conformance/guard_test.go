@@ -330,3 +330,33 @@ func mustRead(t *testing.T, p string) string {
 	}
 	return string(b)
 }
+
+// A run with no roots is an ordinary envelope that never runs a
+// destructive step, by either way in.
+func TestSetupNoRootsHasNoDestructiveStep(t *testing.T) {
+	f, _, _ := testFacts(t)
+	g, err := Setup(f, config.KindContainer, config.TrustFallible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.NoRoots() {
+		t.Error("Setup made a run with no roots")
+	}
+	g, err = SetupNoRoots(f, config.KindContainer, config.TrustFallible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.NoRoots() {
+		t.Fatal("SetupNoRoots made a run with roots")
+	}
+	var ref *RefusalError
+	if err := g.VerifyDestructive(context.Background()); !errors.As(err, &ref) {
+		t.Errorf("VerifyDestructive: %v", err)
+	}
+	if _, err := g.GateSpec(FixtureFor(config.KindContainer)); !errors.As(err, &ref) {
+		t.Errorf("GateSpec: %v", err)
+	}
+	if _, err := SetupNoRoots(f, "docker", config.TrustFallible); err == nil {
+		t.Error("SetupNoRoots took an unknown isolation")
+	}
+}

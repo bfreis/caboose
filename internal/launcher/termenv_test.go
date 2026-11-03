@@ -65,3 +65,21 @@ func TestTmuxSessionArgv(t *testing.T) {
 		})
 	}
 }
+
+// A directory ending in ";" would end the tmux command there; tmux reads
+// "\;" as a literal ";" (checked against tmux 3.8: the session's path ends
+// in ";"), so the -c value carries that, whatever chose the directory.
+func TestTmuxSessionArgvEscapesATrailingSemicolon(t *testing.T) {
+	for _, tc := range []struct{ dir, want string }{
+		{"/src/d", "/src/d"},
+		{"/src/a;b", "/src/a;b"},
+		{"/src/d;", `/src/d\;`},
+		{`/src/d\;`, `/src/d\\;`},
+	} {
+		got := tmuxSessionArgv("proj", tc.dir, nil, []string{"--resume"})
+		i := slices.Index(got, "-c")
+		if i < 0 || got[i+1] != tc.want || !slices.Equal(got[i+2:], []string{Entrypoint, "--resume"}) {
+			t.Errorf("dir %q: %q, want -c %q", tc.dir, got, tc.want)
+		}
+	}
+}

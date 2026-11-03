@@ -93,7 +93,12 @@ func (a *App) checkpointSources() ([]checkpoint.Source, []UnresolvedPath) {
 		} else {
 			var ok bool
 			if s, ok = rootSource(p, roots); !ok {
-				unresolved(p, "%s is not a writable part of a root; checkpoints copy only what the sandbox can write", p)
+				if v, held := a.volumeHolding(p); held && !a.isVM() {
+					unresolved(p, "%s is on volume %s, which only the vm isolation can checkpoint (it copies the volume's disk); under %s a volume is a docker volume, so copy %s out by hand",
+						p, v.Name, isolationOf(a.Cfg), p)
+				} else {
+					unresolved(p, "%s is not a writable part of a root; checkpoints copy only what the sandbox can write", p)
+				}
 				continue
 			}
 		}

@@ -40,9 +40,10 @@ in that terminal does not reach host commands.
 
 `caboose-agent host` failing with "is not under a root this machine shares
 with the sandbox" means it was called from a directory no root holds: run it
-from one that is under a root, or pass `-C DIR`. This happens when the user
-set `[session.start]` in `config.toml` so that a project's sessions start
-elsewhere, such as on a volume.
+from one that is under a root, pass `-C DIR` with one, or name a directory on
+the host with `--host-dir`, quoting a `~` (`caboose-agent host --host-dir '~' CMD
+...`) or the sandbox's shell expands it. This happens when work lives on a
+volume or in the home, or when there are no roots.
 
 A URL to port 7171 or 7172 is refused on purpose, and neither port is
 forwarded or reached through the outbound proxy on the host: they are the
@@ -207,10 +208,17 @@ re-hashes the whole repo after the other wrote the index.
 
 Diagnose, read-only:
 
+@@IF roots=some@@
 - `caboose-agent host /usr/sbin/sysctl kern.maxvnodes kern.num_vnodes` (needs
   `host_exec`): the limit, and how many vnodes the Mac uses now. The default
   limit is a few hundred thousand, scaled by memory; a count near it is the
   problem.
+@@ELSE@@
+- `caboose-agent host --host-dir '~' /usr/sbin/sysctl kern.maxvnodes kern.num_vnodes`
+  (needs `host_exec`): the limit, and how many vnodes the Mac uses now. The default
+  limit is a few hundred thousand, scaled by memory; a count near it is the
+  problem.
+@@END@@
 - On the Mac, `lsof -p <pid> | wc -l` for the Virtualization process (the
   `com.apple.Virtualization.VirtualMachine` one) is the files the VM holds.
 - `git status` slow in here but quick on the Mac, and quick again right after

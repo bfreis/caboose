@@ -34,7 +34,7 @@
 //	    (<platform> is the image's Claude Code build: linux-x64, linux-arm64-musl, ...)
 //	$CABOOSE_DATA_DIR/sync            -> ~/.caboose-sync (caboose sync's repo; git runs it in here)
 //	$CABOOSE_DATA_DIR/proposals       -> ~/.caboose-proposals (sessions' proposals for caboose apply)
-//	each root in config.toml's [roots] -> /work/<name>, or its long form's path
+//	each root in config.toml's [roots] -> /work/<name>, or its long form's path (none, for an empty [roots])
 //
 // The caboose checkout is NOT mounted separately. It lives under the repo
 // root like any other checkout, so it is already visible under /work; a
@@ -167,6 +167,9 @@ type App struct {
 	Checkout string
 	// Suffix is the --session / CABOOSE_SESSION name, or "".
 	Suffix string
+	// Dir is -C: the sandbox directory the session starts in, absolute or
+	// relative to [session] dir, or "".
+	Dir    string
 	Stdout io.Writer
 	Stderr io.Writer
 	// HostPart, when set, stands in for the machine's name as hostname.go

@@ -254,9 +254,11 @@ outside the repo.
   the vm backend does not keep), asked by type assertion.
 - **Container paths are fixed, not mirrored.** Each `[roots]` entry is
   mounted at `/work/<name>`, or at the `path` of its long form (a sole root
-  may take `/work` itself), so a project's container path -- and the
+  may take `/work` itself; an empty `[roots]` table means no roots, an absent
+  one the default), so a project's container path -- and the
   project key Claude Code derives from it, which `caboose sync` carries as
-  it is -- is the same on every machine. Container paths never nest and
+  it is -- is the same on every machine. A project under a root has the
+  mirrored path; other work uses a volume, the home, `-C` or `[session] dir`. Container paths never nest and
   never reach the home, caboose's mounts or a system directory
   (`config.CheckContainerPath`), as host paths never overlap. Never build
   one as `"/work" + hostPath`: go through `config.ContainerPath`, with the
@@ -750,7 +752,10 @@ outside the repo.
   either (`linkSettings.check`). What runs is the request's argv, through no shell, with
   no terminal, user or variables of the sandbox's, in the host directory
   of a container path under a root the container mounts
-  (`config.HostPath`, with `mountedRoots`); the session that carries it
+  (`config.HostPath`, with `mountedRoots`), or in the `--host-dir` the
+  session names (absolute or `~`, an existing directory; optional `host_dir`
+  JSON, so no protocol or `Compat` change; it widens nothing, since a session
+  can already `sh -c 'cd /anywhere && ...'`), never a silent fallback; the session that carries it
   takes three streams and the least window (`agentproto.Limits`), since
   the sandbox opens them. A command outlives neither its client nor the
   link: its process group is killed when the stream ends, when its link
@@ -761,7 +766,9 @@ outside the repo.
   process's environment: the daemon spawns with a minimal environment and
   takes `PATH`, the SSH agent and docker's variables once from the user's
   login shell (`launcher/loginenv.go`), so a link behaves the same
-  whichever terminal started the daemon. The daemon's links share one
+  whichever terminal started the daemon; the running launcher's own
+  directory is appended last to a host command's `PATH` (not an alias's).
+  The daemon's links share one
   `hostlink.ExecGate`: a `replace` closes it at once and exits when the
   commands it found have ended, so new ones cannot hold an update off.
 - **An alias runs what `config.toml` says, decided at every run.** The

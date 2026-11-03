@@ -128,8 +128,8 @@ func accessList(roots []config.Root) string {
 // takes a restart, which every caller says: the mounts are fixed when the
 // sandbox is created.
 func (a *App) writableDrift() string {
-	mounted := a.mountedRoots()
-	if len(mounted) == 0 || !config.SameRoots(mounted, a.Cfg.Roots) {
+	mounted, known := a.mountedRootsKnown()
+	if !known || !config.SameRoots(mounted, a.Cfg.Roots) {
 		return ""
 	}
 	if d := a.missingLabel(assets.LabelWritable, "writable parts"); d != "" {
@@ -215,7 +215,11 @@ func (a *App) noteReadOnlyRoots() {
 	if a.inSetup {
 		return
 	}
-	for _, r := range a.visibleRoots() {
+	roots := a.visibleRoots()
+	if len(roots) == 0 {
+		return // nothing mounted to be read-only
+	}
+	for _, r := range roots {
 		if len(r.Writable) > 0 {
 			return
 		}

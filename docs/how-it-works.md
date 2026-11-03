@@ -16,7 +16,8 @@ time apart from killing running sessions.
 
 **Repos are mounted at fixed paths.** Each root is `/work/<name>` inside the
 container (or the path the root's long form gives), whatever it is on the
-host, and each session's cwd is the host cwd's place under it: with
+host, and a session run from a directory under a root starts in that directory's place
+under it: with
 `dev = "~/dev"`, `/Users/you/dev/you/project` is `/work/dev/you/project`,
 and so is `/home/you/dev/you/project` on another machine. Claude Code keys
 per-project state (memory, transcripts, trust) off the cwd, so a project

@@ -24,6 +24,26 @@
       }
     },
     {
+      "control": "no roots: no project mount, nothing at `/work`",
+      "checks": [
+        "N1"
+      ],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
       "control": "read-only roots and writable parts",
       "checks": [
         "R1",
@@ -102,7 +122,8 @@
       "control": "`host_exec` off unless set",
       "checks": [
         "H1",
-        "H8"
+        "H8",
+        "H11"
       ],
       "cells": {
         "container": {

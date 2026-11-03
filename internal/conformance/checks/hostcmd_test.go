@@ -132,22 +132,22 @@ func TestForRun(t *testing.T) {
 			t.Errorf("%s is destructive", ck.ID)
 		}
 	}
-	if len(seen) != 16 {
-		t.Errorf("%d checks, want H1-H10 and T1-T6", len(seen))
+	if len(seen) != 17 {
+		t.Errorf("%d checks, want H1-H11 and T1-T6", len(seen))
 	}
 }
 
 // hostTable is which checks each mutant must fail, in the worlds where
 // they run.
 var hostTable = map[fake.Mutant][]string{
-	fake.HostExecOn:            {"H1", "H8"},
+	fake.HostExecOn:            {"H1", "H8", "H11"},
 	fake.UnknownAliasRuns:      {"H2", "H4", "H5"},
 	fake.AliasArgsUnchecked:    {"H3"},
 	fake.SandboxDefinesAlias:   {"H4"},
 	fake.ProposalApplied:       {"H5"},
 	fake.AliasRunsWithoutGrant: {"H6"},
 	fake.HostileWritableRuns:   {"H7", "T3"},
-	fake.HostileOffersHostExec: {"H8"},
+	fake.HostileOffersHostExec: {"H8", "H11"},
 	fake.AliasEnvLeaks:         {"H9"},
 	fake.RemainsSurvive:        {"H10"},
 	fake.HostileOnContainer:    {"T1"},
@@ -158,13 +158,16 @@ var hostTable = map[fake.Mutant][]string{
 	fake.HostileEgressOffLoads: {"T5"},
 	fake.LaunchStartsClaude:    {"T1", "T2"},
 	fake.RefusedAliasesRun:     {"H2", "H3", "H4", "H5", "H6", "H7", "T3"},
-	fake.RefusedHostExecRuns:   {"H1"},
+	fake.RefusedHostExecRuns:   {"H1", "H11"},
 	fake.RefusalsExitOdd:       {"H2", "H3", "H4", "H5", "H7", "T3"},
-	fake.HostRefusalExitsOdd:   {"H1", "H8"},
+	fake.HostRefusalExitsOdd:   {"H1", "H8", "H11"},
 	fake.SandboxWritesConfig:   {"H4", "H5", "T3"},
 	fake.AskRunsLater:          {"H6"},
 	fake.AttachRelabels:        {"T2"},
 	fake.HostileForwardsAgent:  {"T6"},
+	fake.HostDirRunsAnyway:     {"H11"},
+	fake.HostDirJudgedFirst:    {"H11"},
+	fake.HostDirRefusalVaries:  {"H11"},
 }
 
 // hostFaults are what each fault must make of the checks: an answer the
@@ -172,12 +175,12 @@ var hostTable = map[fake.Mutant][]string{
 // not created is a FAIL, from the backend's state).
 var hostFaults = map[fake.Fault]map[string]c.Status{
 	fake.UsageUnprefixed:      {"H2": c.Error, "H3": c.Error},
-	fake.HostRefusalUnnamed:   {"H1": c.Error, "H8": c.Error},
+	fake.HostRefusalUnnamed:   {"H1": c.Error, "H8": c.Error, "H11": c.Error},
 	fake.AskDenied:            {"H6": c.Error},
 	fake.TrustUnnamed:         {"H7": c.Error, "T3": c.Error},
 	fake.AttachAlwaysRefused:  {"T2": c.Error},
 	fake.ConfigNeverLoads:     {"T5": c.Error},
-	fake.HostExecNeverOffered: {"H8": c.Error},
+	fake.HostExecNeverOffered: {"H8": c.Error, "H11": c.Error},
 	fake.NoAliasesListed:      {"H4": c.Error},
 	fake.EnvWithoutPath:       {"H9": c.Error},
 	fake.AgentNeverCarried:    {"T6": c.Error},
@@ -423,6 +426,7 @@ func (r *recording) Exec(ctx context.Context, user string, argv []string, stdin 
 var agentForm = regexp.MustCompile(`^(caboose-agent (run|notify)( '[A-Za-z0-9 ./=_-]+')+` +
 	`|timeout [0-9]+ caboose-agent run '[a-z0-9-]+'` +
 	`|caboose-agent host (-C /work/conf-[0-9a-f]{8}-ro/conf-[0-9a-f]{8}-[a-z0-9-]+ )?--( '[a-z0-9-]+')+` +
+	`|caboose-agent host --host-dir '/tmp/caboose-conf\.123/roots/conf-[0-9a-f]{8}-ro/conf-[0-9a-f]{8}-[a-z0-9/-]+' --( '[a-z0-9-]+')+` +
 	`|caboose-agent aliases --json 1>&2` +
 	`|echo '[^'$` + "`" + `\\]+' >> /home/agent/[A-Za-z0-9./-]+( && echo '[^'$` + "`" + `\\]+' >> /home/agent/[A-Za-z0-9./-]+)*)$`)
 
@@ -615,6 +619,12 @@ func TestAgentBuildersRefuse(t *testing.T) {
 		func() error { _, err := c.AgentHost(nil); return err },
 		func() error { _, err := c.AgentHost(nil, "/bin/sh"); return err },
 		func() error { _, err := c.AgentHost(&c.SPath{}, "true"); return err },
+		func() error { _, err := c.AgentHostDir("/tmp/x"); return err },
+		func() error { _, err := c.AgentHostDir("~", "true"); return err },
+		func() error { _, err := c.AgentHostDir("relative", "true"); return err },
+		func() error { _, err := c.AgentHostDir("/tmp/../etc", "true"); return err },
+		func() error { _, err := c.AgentHostDir("/tmp/a'b", "true"); return err },
+		func() error { _, err := c.AgentHostDir("/tmp/x", "/bin/sh"); return err },
 		func() error { _, err := c.AgentNotify("`id`"); return err },
 		func() error { _, err := c.AppendLines(c.SandboxConfigFile, "a'b"); return err },
 		func() error { _, err := c.AppendLines(c.SandboxConfigFile, "$HOME"); return err },

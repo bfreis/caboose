@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -646,5 +647,49 @@ func TestSyncInstallsAndPrunesMods(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(data, datadir.ManagedDir, "mods", "caboose", "hooks", "gone.ts")); err == nil {
 		t.Error("a stale mod file is still installed")
+	}
+}
+
+// With no roots a host command has no directory to run in unless it names
+// one, so no example the sandbox is taught runs without --host-dir; and the
+// vm note about what lasts does not name roots there are none of.
+func TestEmbeddedFilesForNoRoots(t *testing.T) {
+	files, err := EmbeddedSandboxFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, roots := range [][]config.Root{nil, {{Host: "/h", Container: "/work"}}} {
+		f := datadir.Facts{Roots: roots, Isolation: "vm", Profile: "vm.p", Image: "apko", ImageProfile: "apko.default", HostExec: true, Env: config.DefaultEnv, Version: "v1"}
+		out, err := datadir.ExpandTree(files, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claude := string(out["CLAUDE.md"])
+		if (len(roots) == 0) == strings.Contains(claude, "Only the roots and the kept paths") {
+			t.Errorf("roots %v: the note on what lasts:\n%s", roots, claude)
+		}
+		sysctl := string(out[".claude/skills/caboose-troubleshoot/SKILL.md"])
+		if !strings.Contains(sysctl, "sysctl kern.maxvnodes") {
+			t.Fatal("no sysctl example in the troubleshooting skill")
+		}
+		for name, b := range out {
+			if err := checkInstructionSize(name, string(b)); err != nil {
+				t.Errorf("roots %v: %v", roots, err)
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				_, rest, ok := strings.Cut(line, "caboose-agent host ")
+				if !ok || len(roots) != 0 {
+					continue
+				}
+				if first, _, _ := strings.Cut(rest, " "); !slices.Contains([]string{"--host-dir", "-C", "CMD", "`"}, first) && !strings.HasPrefix(first, "`") {
+					t.Errorf("%s teaches a host command with no --host-dir under no roots: %q", name, strings.TrimSpace(line))
+				}
+			}
+		}
+		for _, run := range []string{"host caboose status", "host /usr/sbin/sysctl"} {
+			if has := strings.Contains(claude+sysctl, "caboose-agent "+run); has != (len(roots) != 0) {
+				t.Errorf("roots %v: %q present = %v", roots, run, has)
+			}
+		}
 	}
 }

@@ -203,7 +203,27 @@ const hostAnswerWait = 30 * time.Second
 // why: the host refused it, or nothing answered. Done, ctx closes the
 // connection, which ends the command on the host.
 func HostExec(ctx context.Context, socket string, argv []string, dir string, stdio agentproto.ExecIO) (int, error) {
-	return execOnHost(ctx, socket, agentproto.Message{Op: agentproto.OpHostExec}, agentproto.ExecRequest{Argv: argv, Dir: dir, Stdin: true}, stdio)
+	return HostExecIn(ctx, socket, argv, dir, "", stdio)
+}
+
+// HostExecIn is HostExec in a directory the host names (hostDir: absolute,
+// or ~ or ~/... for the host's home), for the command line's --host-dir,
+// in place of dir.
+func HostExecIn(ctx context.Context, socket string, argv []string, dir, hostDir string, stdio agentproto.ExecIO) (int, error) {
+	return execOnHost(ctx, socket, agentproto.Message{Op: agentproto.OpHostExec},
+		agentproto.ExecRequest{Argv: argv, Dir: dir, HostDir: hostDir, Stdin: true}, stdio)
+}
+
+// hostDirFlag checks --host-dir's value before it is sent: the host
+// decides again.
+func hostDirFlag(v string) error {
+	switch {
+	case v == "":
+		return errors.New("--host-dir needs a directory on the host")
+	case v != "~" && !strings.HasPrefix(v, "~/") && !filepath.IsAbs(v):
+		return fmt.Errorf("--host-dir takes an absolute path on the host, or ~ or ~/... for its home (quoted: '~/x'), not %q", printable(v))
+	}
+	return nil
 }
 
 // Refused is the host's refusal of a command, with its Reason code and,
@@ -281,7 +301,7 @@ func readLine(r io.Reader, max int) ([]byte, error) {
 // hostCommand is `caboose-agent host`: the command's exit status, or 126
 // when it never ran, 130 or 143 when this was interrupted or terminated.
 func hostCommand(args []string, stdin io.Reader, stdout, stderr io.Writer, usage func() int) int {
-	dir := ""
+	dir, hostDir, hostDirSet := "", "", false
 flags:
 	for len(args) > 0 {
 		switch {
@@ -290,6 +310,10 @@ flags:
 			break flags
 		case args[0] == "-C" && len(args) >= 2:
 			dir, args = args[1], args[2:]
+		case args[0] == "--host-dir" && len(args) >= 2:
+			hostDir, hostDirSet, args = args[1], true, args[2:]
+		case strings.HasPrefix(args[0], "--host-dir="):
+			hostDir, hostDirSet, args = strings.TrimPrefix(args[0], "--host-dir="), true, args[1:]
 		case strings.HasPrefix(args[0], "-"):
 			return usage()
 		default:
@@ -299,16 +323,28 @@ flags:
 	if len(args) == 0 {
 		return usage()
 	}
-	cwd, err := os.Getwd()
-	if err != nil && (dir == "" || !filepath.IsAbs(dir)) {
-		fmt.Fprintf(stderr, "caboose-agent: host: no current directory to run in (%v): pass -C DIR\n", err)
-		return agentproto.ExitCannotRun
-	}
-	switch {
-	case dir == "":
-		dir = cwd
-	case !filepath.IsAbs(dir):
-		dir = filepath.Join(cwd, dir)
+	if hostDirSet {
+		if dir != "" {
+			fmt.Fprintln(stderr, "caboose-agent: host: -C (a directory of the sandbox, mapped through a root) and --host-dir (a directory on the host) cannot be given together")
+			return agentproto.ExitCannotRun
+		}
+		if err := hostDirFlag(hostDir); err != nil {
+			fmt.Fprintf(stderr, "caboose-agent: host: %v\n", err)
+			return agentproto.ExitCannotRun
+		}
+	} else {
+		cwd, err := os.Getwd()
+		if err != nil && (dir == "" || !filepath.IsAbs(dir)) {
+			fmt.Fprintf(stderr, "caboose-agent: host: no current directory to run in (%v): pass -C DIR or --host-dir PATH\n", err)
+			return agentproto.ExitCannotRun
+		}
+		switch {
+		case dir == "":
+			dir = cwd
+		case !filepath.IsAbs(dir):
+			dir = filepath.Join(cwd, dir)
+		}
+		dir = filepath.Clean(dir)
 	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
@@ -321,7 +357,7 @@ flags:
 	}
 	done := make(chan result, 1)
 	go func() {
-		code, err := HostExec(ctx, linkSocket, args, filepath.Clean(dir),
+		code, err := HostExecIn(ctx, linkSocket, args, dir, hostDir,
 			agentproto.ExecIO{Stdin: stdin, Stdout: stdout, Stderr: stderr})
 		done <- result{code, err}
 	}()
@@ -367,10 +403,14 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
   ports               what listens in the sandbox, and what the host forwards
   connect HOST PORT   a TCP connection made by the host, on stdin and stdout:
                       ssh's ProxyCommand (caboose-agent connect %h %p), under vm
-  host [-C DIR] [--] CMD [ARG...]
+  host [-C DIR | --host-dir PATH] [--] CMD [ARG...]
                       run CMD on the host, as the user who runs caboose, in
                       the host's directory for DIR (by default the current
-                      one, which must be under a root); no shell and no
+                      one, which must be under a root), or in PATH, a
+                      directory on the host itself: absolute, or ~ or ~/x
+                      for its home, quoted ('~') so that this shell does
+                      not expand it to the sandbox's home (needed with no
+                      roots, or from a directory under none); no shell and no
                       terminal: stdin, stdout, stderr and the exit status
                       pass through. Only when host_exec is on, on the host
   run NAME [KEY=VALUE...]

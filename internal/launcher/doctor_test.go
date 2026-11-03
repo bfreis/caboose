@@ -477,3 +477,32 @@ func TestDoctorMissingRoot(t *testing.T) {
 		}
 	}
 }
+
+// doctorSandbox notes a [session] dir that no root of the sandbox config
+// holds once something syncs (not before), also under a cache directory of
+// the home, which a volume there is spared.
+func TestDoctorSandboxNotesSessionDirNotSynced(t *testing.T) {
+	for _, dir := range []string{"/src/app", "/home/agent/.cache/work"} {
+		t.Run(dir, func(t *testing.T) {
+			e := newAutoEnv(t, newBare(t))
+			e.a.Cfg.SessionDir = dir
+			e.a.Cfg.Volumes = []config.Volume{{Name: "c", Path: "/home/agent/.cache/vol"}}
+			e.write(filepath.Join(e.data, datadir.SandboxConfig), string(sandboxcfg.Default([]string{"/work/dev"})))
+			note := dir + " is a volume's path or [session] dir"
+			doctor := func() string {
+				t.Helper()
+				c := &checkup{}
+				e.a.sb = nil
+				e.a.doctorSandbox(c)
+				return c.String()
+			}
+			if got := doctor(); strings.Contains(got, note) {
+				t.Errorf("said with no remote:\n%s", got)
+			}
+			e.setRemote()
+			if got := doctor(); !strings.Contains(got, note) || strings.Contains(got, ".cache/vol is") {
+				t.Errorf("want the note for the dir alone:\n%s", got)
+			}
+		})
+	}
+}

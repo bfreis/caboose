@@ -79,9 +79,10 @@ type Config struct {
 	// an error that says to run caboose build.
 	AutoBuild bool
 
-	// SessionStart is [session.start], sorted by host directory: where a
-	// project's sessions start in the sandbox (launcher.startDir).
-	SessionStart []StartDir
+	// SessionDir is [session] dir: the sandbox directory a session starts
+	// in when the directory it is run from is under no root, and the base
+	// a relative -C is taken from; "" for none.
+	SessionDir string
 	// Tmux is [session] tmux: sessions run in tmux, which detaches them.
 	Tmux bool
 	// TZ is [session] tz, "" for this machine's zone.
@@ -471,12 +472,11 @@ func (c *Config) readFile() error {
 	}
 
 	boolean("build.auto_build", &c.AutoBuild)
-	if len(f.SessionStart) > 0 {
-		starts, err := CheckStartDirs(f.SessionStart, c.Home)
-		if err != nil {
-			return fail("%v", err)
+	str("session.dir", &c.SessionDir)
+	if f.Has("session.dir") {
+		if err := CheckSandboxDir(c.SessionDir); err != nil {
+			return fail("[session] dir %q: %v", c.SessionDir, err)
 		}
-		c.SessionStart = starts
 	}
 	boolean("session.tmux", &c.Tmux)
 	str("session.tz", &c.TZ)
@@ -902,8 +902,11 @@ func (r Root) writableUnder(base string) []string {
 // CheckContainerPath allows, and none at, inside or around another's. A
 // root at WorkDir itself is allowed only alone, since every other root's
 // default path is inside it.
+//
+// An empty table is no roots, a non-nil empty list: nil is what the default
+// is made of (Load), and the two must stay apart.
 func FileRoots(file map[string]FileRoot, home string) ([]Root, error) {
-	var roots []Root
+	roots := []Root{}
 	for _, name := range slices.Sorted(maps.Keys(file)) {
 		fr := file[name]
 		host := expandTilde(fr.Host, home)
@@ -1079,8 +1082,11 @@ func SameWritable(a, b []Root) bool {
 }
 
 // DescribeRoots is roots for a message: "/h/dev at /work/dev, /h/w at
-// /work/w".
+// /work/w", or "no roots".
 func DescribeRoots(roots []Root) string {
+	if len(roots) == 0 {
+		return "no roots"
+	}
 	var parts []string
 	for _, r := range roots {
 		parts = append(parts, r.Host+" at "+r.Container)
@@ -1103,9 +1109,11 @@ func (c *Config) RootsOrigin() string {
 // -- so the message has to say what they are and how to change them, not
 // just that they are wrong.
 const RootsHelp = `       The roots are the directories mounted into the sandbox, each at
-       /work/<name>; every project you run caboose in has to be under one.
-       Name the directories that hold your projects in the environment's
-       config.toml ('caboose setup roots' asks for them), e.g.:
+       /work/<name>. From a directory under one, a session starts in the
+       same path there. Elsewhere, name the sandbox directory to start in:
+       caboose -C DIR for one run, or dir in [session] of config.toml.
+       To work on the Mac's projects, name the directories that hold them
+       in the environment's config.toml ('caboose setup roots' asks), e.g.:
            [roots]
            projects = "~/path/holding/your/projects"
        A container that already exists keeps the roots it was created with;

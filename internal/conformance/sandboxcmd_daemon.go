@@ -250,6 +250,10 @@ func ProbeMount(nonce, op string, mp SPath) (Cmd, error) {
 // 2000 lines.
 func MountTable() Cmd { return Cmd{body: "head -n 2000 /proc/self/mountinfo 1>&2"} }
 
+// ListWork prints what /work holds, on stderr, where the wrapper keeps it.
+// Only a run with no roots reads it, to say that it holds nothing.
+func ListWork() Cmd { return Cmd{body: "ls -A /work 1>&2"} }
+
 // ProbeUserNS runs the probe's user-namespace attempt: roRoot is a
 // read-only root's mount point, part the writable part's, witness a
 // read-only canary under roRoot. It is destructive (it unmounts).

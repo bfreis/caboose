@@ -120,3 +120,33 @@ func TestCheckEditPolicy(t *testing.T) {
 		}
 	}
 }
+
+// Removing an empty [roots] table (no roots) changes the roots to the
+// default ones, which the read-back must see, though nil and an empty map
+// compare equal to maps.EqualFunc; and writing an empty set writes a bare
+// table.
+func TestEditEmptyRoots(t *testing.T) {
+	if sameFileRoots(nil, map[string]FileRoot{}) || sameFileRoots(map[string]FileRoot{}, nil) {
+		t.Error("nil and empty roots read as the same")
+	}
+	in := "[session]\ntmux = true\n\n[roots]\ndev = \"~/dev\"\n"
+	e := Edit{SetRoots: true, Roots: map[string]FileRoot{}}
+	out := EditFile([]byte(in), e)
+	if err := CheckEdit("config.toml", []byte(in), out, e); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "[roots]\n") || strings.Contains(string(out), "dev =") {
+		t.Errorf("not a bare table:\n%s", out)
+	}
+	// An edit that removes the empty table cannot pass as one that left it.
+	empty := "[roots]\n"
+	if err := CheckEdit("config.toml", []byte(empty), []byte("#[roots]\n"), Edit{Set: map[string]any{"session.tmux": true}}); err == nil {
+		t.Error("removing the empty table passed the read-back as unchanged")
+	}
+	// Setting roots to nil comments an empty table out.
+	e = Edit{SetRoots: true}
+	out = EditFile([]byte(empty), e)
+	if err := CheckEdit("config.toml", []byte(empty), out, e); err != nil || strings.Contains("\n"+string(out), "\n[roots]") {
+		t.Errorf("%v\n%s", err, out)
+	}
+}

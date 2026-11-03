@@ -302,7 +302,7 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |
 | what of a root the sandbox may write | `writable` in its `[roots]` entry, `caboose setup roots`, or a proposal as above; a restart |
-| where a project's sessions start in the sandbox, instead of the path that mirrors its directory under a root (for a clone on a volume) | `[session.start]` in `config.toml`, a host directory = a sandbox directory (the next session; not a proposal) |
+| the directory sessions start in when `caboose` is not run from under a root (for a clone on a volume) | `dir` in `[session]` of `config.toml`, a sandbox path (the next session; not a proposal; `caboose -C DIR` picks one per launch) |
 | tmux, time zone, hostname | `tmux`, `tz`, `hostname` in `[session]` (`tmux`, `tz`: the next session; `hostname`: a restart), or a `[settings]` proposal as above |
 
 @@IF isolation=vm@@

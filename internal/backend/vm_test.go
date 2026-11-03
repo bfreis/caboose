@@ -387,3 +387,24 @@ func TestVMLogsTailPrintable(t *testing.T) {
 		t.Errorf("small: %q %v", out.String(), err)
 	}
 }
+
+// With no roots the list is only what caboose mounts for itself, and plans
+// like any other.
+func TestPlanSharesWithNoRoots(t *testing.T) {
+	d := t.TempDir()
+	for _, p := range []string{"home/.claude", "managed"} {
+		if err := os.MkdirAll(filepath.Join(d, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shares, mounts, err := planShares([]Mount{
+		{Source: filepath.Join(d, "home/.claude"), Target: "/home/agent/.claude"},
+		{Source: filepath.Join(d, "managed"), Target: "/etc/claude-code", ReadOnly: true},
+	})
+	if err != nil || len(shares) != 2 || len(mounts) != 2 {
+		t.Fatalf("%v %v %v", shares, mounts, err)
+	}
+	if shares, mounts, err = planShares(nil); err != nil || len(shares) != 0 || len(mounts) != 0 {
+		t.Errorf("nothing: %v %v %v", shares, mounts, err)
+	}
+}

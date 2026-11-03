@@ -450,7 +450,8 @@ conformance-probe:
 	    echo "  built $(abspath $(PROBE_DIR))/conformance-probe-linux-$$a"; \
 	  done
 
-## conformance: run the conformance suite on a throwaway environment, on the host: ISOLATION=container|gvisor|vm [TRUST=hostile] [OUT=FILE]
+## conformance: run the conformance suite on a throwaway environment, on the host: ISOLATION=container|gvisor|vm [TRUST=hostile] [NO_ROOTS=1] [OUT=FILE]
+# NO_ROOTS=1 is a run of its own, of a sandbox with an empty [roots] (check N1 alone).
 # The launcher is built with the conformance tag as ./caboose-conformance
 # (next to caboose-vmm, which the vm isolation runs, and to the checkout's
 # vm-dist), never as ./caboose; the probe into a fresh temp dir, whose two
@@ -466,7 +467,7 @@ conformance:
 	  $(MAKE) --no-print-directory conformance-probe PROBE_DIR="$$probe" || status=$$?; \
 	  if [ "$$status" = 0 ]; then \
 	    ./$(CONF_LAUNCHER) conformance run --isolation "$(ISOLATION)" $(if $(TRUST),--trust "$(TRUST)") \
-	      $(if $(OUT),--out "$(OUT)") --probe-dir "$$probe" || status=$$?; \
+	      $(if $(NO_ROOTS),--no-roots) $(if $(OUT),--out "$(OUT)") --probe-dir "$$probe" || status=$$?; \
 	  fi; \
 	  for a in $(PROBE_ARCHS); do rm -f "$$probe/conformance-probe-linux-$$a"; done; \
 	  rmdir "$$probe"; \

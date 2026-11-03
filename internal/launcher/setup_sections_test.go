@@ -10,6 +10,7 @@ import (
 
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/datadir"
+	"github.com/bfreis/caboose/internal/proposal"
 	"github.com/bfreis/caboose/internal/sandboxcfg"
 	"github.com/bfreis/caboose/internal/statesync"
 )
@@ -164,7 +165,7 @@ func TestSetupRootsReplacesAMissingDefault(t *testing.T) {
 	if err := e.run("\n/nonexistent\nsrc\n~/src\n\n\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("✗ ~/dev does not exist\n", "? These roots cannot be used as they are. Fix them: 1 Change dev (~/dev) 2 Add another root\nchoose 1-2 [1]: ",
+	e.wantOut("✗ ~/dev does not exist\n", "? These roots cannot be used as they are. Fix them: 1 Change dev (~/dev) 2 Add another root 3 Use no roots\nchoose 1-3 [1]: ",
 		"✗ /nonexistent does not exist\n", "✗ src is not an absolute path (or one starting with ~/)\n",
 		"✓ Wrote them to "+e.configPath())
 	if e.said("anyway?") {
@@ -495,9 +496,65 @@ func TestSetupRootsRefusesCabooseHome(t *testing.T) {
 	if err := e.run("\n~\n~/dev\n\n\ny\n", "roots"); err != nil {
 		t.Fatalf("%v\n%s", err, e.errb)
 	}
-	e.wantOut("✗ ~ holds CABOOSE_HOME", "use ~/dev instead of ~\n", "choose 1-2 [1]: ",
+	e.wantOut("✗ ~ holds CABOOSE_HOME", "use ~/dev instead of ~\n", "choose 1-3 [1]: ",
 		"✓ Wrote them to "+e.configPath())
 	if f := e.file(); len(f.Roots) != 1 || f.Roots["dev"].Host != "~/dev" {
 		t.Errorf("roots = %+v", f.Roots)
+	}
+}
+
+// "Use no roots" writes a bare [roots] through the edit, which is not the
+// default roots an absent table means.
+func TestSetupRootsNone(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.mkdir("dev")
+	// The default: 1 use these, 2 change dev, 3 add, 4 use no roots; then
+	// "use no roots" is the first, and the move of ~/dev is confirmed.
+	if err := e.run("4\n\ny\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("No roots: no directory of this machine is mounted", "! Projects under ~/dev are no longer mounted (they were at /work/dev)\n")
+	f := e.file()
+	if f.Roots == nil || len(f.Roots) != 0 {
+		t.Errorf("roots = %#v", f.Roots)
+	}
+	b, _ := os.ReadFile(e.configPath())
+	if !strings.Contains("\n"+string(b), "\n[roots]\n") {
+		t.Errorf("config.toml:\n%s", b)
+	}
+}
+
+// A bare [roots] is the current roots, none: setup does not read it as the
+// default, and taking it as it is changes nothing.
+func TestSetupRootsNoneIsWhatIsThere(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.writeConfig("[roots]\n")
+	e.a.Cfg.File = e.file()
+	if got := e.a.fileRoots(); got == nil || len(got) != 0 {
+		t.Fatalf("fileRoots = %#v", got)
+	}
+	if err := e.run("\n", "roots"); err != nil {
+		t.Fatalf("%v\n%s", err, e.errb)
+	}
+	e.wantOut("Use no roots?", "Nothing changed")
+}
+
+// A root proposed into an environment with none is the only root, not
+// beside the default one; the writable and alias checks see none too.
+func TestProposedRootIntoNoRoots(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.a.Cfg.File = &config.File{Roots: map[string]config.FileRoot{}}
+	rc := e.a.planRootChange(plan{root: &proposal.Root{Name: "src"}, host: "/h/src"})
+	if rc.err != nil || len(rc.roots) != 1 || rc.roots[0].Name != "src" {
+		t.Errorf("%+v", rc)
+	}
+	// Absent: the default is there to be beside.
+	e.a.Cfg.File = &config.File{}
+	rc = e.a.planRootChange(plan{root: &proposal.Root{Name: "src"}, host: "/h/src"})
+	if len(rc.roots) != 2 || rc.roots[0].Name != "dev" {
+		t.Errorf("default: %+v", rc.roots)
+	}
+	if got := (&App{Cfg: &config.Config{File: &config.File{Roots: map[string]config.FileRoot{}}}}).checkpointCandidates(); len(got) != 1 || got[0].Path != "~/.claude" {
+		t.Errorf("checkpoint candidates with no roots: %+v", got)
 	}
 }

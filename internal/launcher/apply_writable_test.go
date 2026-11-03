@@ -131,6 +131,20 @@ func TestProposedWritableMapsThroughTheMounts(t *testing.T) {
 	}
 }
 
+// A sandbox created with no roots has no path inside a root, whatever
+// config.toml has since gained: the part is refused, not mapped through the
+// configured roots.
+func TestProposedWritableAgainstASandboxWithNoRoots(t *testing.T) {
+	e := newSetupEnv(t, "default", "", false)
+	e.mkdir("dev/p")
+	e.writeConfig("[roots]\ndev = \"~/dev\"\n")
+	e.a.Backend = sandbox([]config.Root{})
+	pl, refusals, _ := e.a.checkProposedWritable(proposal.Writable{Path: "/work/dev/p"})
+	if pl != nil || len(refusals) != 1 || !strings.Contains(refusals[0], "not inside a root the container mounts") {
+		t.Errorf("%+v %q", pl, refusals)
+	}
+}
+
 // The new list: the parts the new one holds go, the rest stay, and the
 // whole root is ".".
 func TestProposedWritableList(t *testing.T) {

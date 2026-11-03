@@ -128,34 +128,51 @@ func (a *App) checkExisting() error {
 
 // mountedRoots are the roots the container actually has mounted -- its
 // mounts at the container paths its LabelRoots names, each with the
-// writable parts its LabelWritable records (mountedWritable) -- or nil when the
-// container does not exist yet, in which case the configured ones are
-// about to become the truth anyway.
+// writable parts its LabelWritable records (mountedWritable) -- or nil when
+// there is no container, or what it has cannot be told. mountedRootsKnown
+// tells those from a container with no roots at all.
+func (a *App) mountedRoots() []config.Root {
+	roots, _ := a.mountedRootsKnown()
+	return roots
+}
+
+// mountedRootsKnown is mountedRoots with whether the container could be
+// asked. known is false when the container does not exist yet (the
+// configured roots are about to become the truth), or its labels or mounts
+// cannot be read or do not say, which fails closed: whatever asks must
+// count that as no answer, and never as a sandbox with no roots. known is
+// true with an empty list for a container created with none.
 //
 // The roots are mounted when the container is created, so changing them
 // afterwards does not move the mounts. Ask the container what it actually
 // has rather than trusting this process's values: read as it is, that puts
 // its sessions where it has their projects.
-func (a *App) mountedRoots() []config.Root {
+func (a *App) mountedRootsKnown() (roots []config.Root, known bool) {
 	labels, err := a.box().Labels()
 	if err != nil || labels == nil {
-		return nil
+		return nil, false
 	}
 	var paths []string
-	if json.Unmarshal([]byte(labels[assets.LabelRoots]), &paths) != nil {
-		return nil
+	// A container with no roots is labelled "[]": a label that is missing,
+	// "null", or lists a path nothing is mounted at does not say.
+	if json.Unmarshal([]byte(labels[assets.LabelRoots]), &paths) != nil || paths == nil {
+		return nil, false
 	}
 	mounts, err := a.box().Mounts()
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	var roots []config.Root
 	for _, m := range mounts {
 		if slices.Contains(paths, m.Target) {
 			roots = append(roots, config.Root{Host: m.Source, Container: m.Target, Writable: mountedWritable(labels, m.Target)})
 		}
 	}
-	return roots
+	for _, p := range paths {
+		if !slices.ContainsFunc(roots, func(r config.Root) bool { return r.Container == p }) {
+			return nil, false
+		}
+	}
+	return roots, true
 }
 
 // rootsLabel is LabelRoots' value for roots.
@@ -171,26 +188,27 @@ func rootsLabel(roots []config.Root) string {
 // visibleRoots are the roots as seen from inside: mounted, or configured
 // when nothing is mounted yet.
 func (a *App) visibleRoots() []config.Root {
-	if m := a.mountedRoots(); len(m) > 0 {
+	if m, known := a.mountedRootsKnown(); known {
 		return m
 	}
 	return a.Cfg.Roots
 }
 
 // CheckInsideRoot finds where the container sees host path dir, under the
-// roots it can actually see (mounted, or configured when nothing is mounted
-// yet). Checking against the configured roots instead would wave through a
-// path that is not mounted -- the session then dies inside tmux with an
-// opaque "no such directory" for a container path the user never typed.
+// roots it can actually see (mounted when known, which includes a container
+// created with none, else the configured roots, about to be mounted).
+// Checking against the configured roots instead would wave through a path
+// that is not mounted -- the session then dies inside tmux with an opaque
+// "no such directory" for a container path the user never typed.
 //
 // origin is config.RootsOrigin for configured. The messages say what the
 // roots are and where they came from, because the default is one
 // person's layout and a new user meets this having never heard of it.
 // noun is what the sandbox is called (App.noun).
-func CheckInsideRoot(dir string, mounted, configured []config.Root, origin, noun string) (string, error) {
-	roots := mounted
-	if len(roots) == 0 {
-		roots = configured
+func CheckInsideRoot(dir string, mounted []config.Root, known bool, configured []config.Root, origin, noun string) (string, error) {
+	roots := configured
+	if known {
+		roots = mounted
 	}
 	if p, ok := config.ContainerPath(roots, dir); ok {
 		return p, nil
@@ -200,12 +218,16 @@ func CheckInsideRoot(dir string, mounted, configured []config.Root, origin, noun
 		if noun != "container" {
 			mounts = "Mounts"
 		}
-		msg := fmt.Sprintf(`%s is outside the %s this %s has mounted.
+		lead := fmt.Sprintf("%s is outside the %s this %s has mounted.", dir, plural(len(roots), "root", "roots"), noun)
+		if len(roots) == 0 {
+			lead = fmt.Sprintf("%s is under a root that this %s, created with no roots, does not have.", dir, noun)
+		}
+		msg := fmt.Sprintf(`%s
        mounted: %s (fixed when the %s was created)
        current: %s (%s)
        %s cannot change under a live %s: 'caboose restart'
        remounts %s at the current value (this kills running sessions).`,
-			dir, plural(len(roots), "root", "roots"), noun, config.DescribeRoots(roots), noun,
+			lead, config.DescribeRoots(roots), noun,
 			config.DescribeRoots(configured), origin, mounts, noun, plural(len(roots), "it", "them"))
 		if _, ok := config.ContainerPath(configured, dir); !ok {
 			msg += "\n       That alone would not do: " + dir + " is outside the current value too.\n" + config.RootsHelp
@@ -219,15 +241,12 @@ func CheckInsideRoot(dir string, mounted, configured []config.Root, origin, noun
 	return "", Die("%s is outside %s, %s (%s).\n%s", dir, what, config.DescribeRoots(roots), origin, config.RootsHelp)
 }
 
-// containerDir is where the container sees host dir, or the error saying
-// why it cannot.
-func (a *App) containerDir(dir string) (string, error) {
-	return CheckInsideRoot(dir, a.mountedRoots(), a.Cfg.Roots, a.Cfg.RootsOrigin(), a.noun())
-}
-
 // mountList is roots as "host at container, ...", always saying where:
 // in a drift, that may be all that differs.
 func mountList(roots []config.Root) string {
+	if len(roots) == 0 {
+		return "no roots"
+	}
 	var parts []string
 	for _, r := range roots {
 		parts = append(parts, r.Host+" at "+r.Container)
@@ -240,8 +259,8 @@ func mountList(roots []config.Root) string {
 // added or removed since the container was created. Only a warning, as for
 // a drifted image: the fix, a restart, kills sessions.
 func (a *App) warnIfRootsDrifted() {
-	mounted := a.mountedRoots()
-	if len(mounted) == 0 || config.SameRoots(mounted, a.Cfg.Roots) {
+	mounted, known := a.mountedRootsKnown()
+	if !known || config.SameRoots(mounted, a.Cfg.Roots) {
 		return
 	}
 	a.Note("the %s mounts %s; the configuration says %s.", a.noun(), mountList(mounted), mountList(a.Cfg.Roots))
