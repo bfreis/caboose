@@ -892,10 +892,24 @@ func (a *App) waitUntilReady() error {
 			a.Note("waiting for the %s to be ready", a.noun())
 			announced = true
 		}
-		time.Sleep(time.Second)
+		time.Sleep(readyTick)
 		waited++
 	}
 	return nil
+}
+
+// readyTick is one of the seconds ready_timeout counts; SetReadyTick, for
+// the tests, shortens it.
+var readyTick = time.Second
+
+// SetReadyTick makes the wait for a sandbox to be ready count ready_timeout
+// in units of d instead of seconds, and returns a function that puts the
+// seconds back. It is for tests, which would otherwise wait out whole
+// seconds.
+func SetReadyTick(d time.Duration) (restore func()) {
+	old := readyTick
+	readyTick = d
+	return func() { readyTick = old }
 }
 
 // waitVMReady is waitUntilReady for a VM, whose agent says when the

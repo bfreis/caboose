@@ -96,7 +96,8 @@ func Notify(socket, title, text string) error {
 	return err
 }
 
-// Ports writes what listens here and what the host forwards of it.
+// Ports writes what listens here and what the host forwards of it, and the
+// Unix sockets the host forwards.
 func Ports(socket string, w io.Writer) error {
 	r, err := ask(socket, agentproto.Message{Op: OpStatus})
 	if err != nil {
@@ -108,7 +109,13 @@ func Ports(socket string, w io.Writer) error {
 	}
 	if len(r.Ports) == 0 {
 		fmt.Fprintln(w, "nothing is listening on a TCP port in the sandbox")
-		return nil
+	}
+	for _, s := range r.Sockets {
+		if s.Reason != "" {
+			fmt.Fprintf(w, "socket %s (%s) not forwarded: %s\n", s.Name, s.Path, s.Reason)
+		} else {
+			fmt.Fprintf(w, "socket %s (%s) forwarded from the host's %s\n", s.Name, s.Path, s.HostPath)
+		}
 	}
 	for _, p := range r.Ports {
 		f, ok := fwd[p]
@@ -401,6 +408,7 @@ func Main(args []string, stdin io.Reader, stdout io.WriteCloser, stderr io.Write
   notify [-t TITLE] TEXT
                       show a notification on the host
   ports               what listens in the sandbox, and what the host forwards
+                      (Unix sockets included)
   connect HOST PORT   a TCP connection made by the host, on stdin and stdout:
                       ssh's ProxyCommand (caboose-agent connect %h %p), under vm
   host [-C DIR | --host-dir PATH] [--] CMD [ARG...]

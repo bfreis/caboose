@@ -62,6 +62,7 @@ func TestParseRefuses(t *testing.T) {
 		{"p.toml", "[roots]\nx = \"/x\"\n", "no title"},
 		{"p.toml", "title = \"t\"\ndocker_sock = true\n[roots]\nx = \"/x\"\n", "unknown key docker_sock"},
 		{"p.toml", "title = \"t\"\nbase_image = \"evil\"\n", "unknown key base_image"},
+		{"p.toml", "title = \"t\"\n[link.forward_sockets]\napp = \"/tmp/s\"\n", "unknown key link"},
 		{"p.toml", "title = \"t\"\n[roots]\nx = \"/x\"\n[sync]\nremote = \"u\"\n", "unknown key sync"},
 		{"p.toml", "title = \"t\"\n[roots]\nx = \"/x\"\ny = \"/y\"\n", "more than one root"},
 		{"p.toml", "title = \"t\"\n[roots]\nX = \"/x\"\n", "not a root name"},

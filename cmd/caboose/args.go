@@ -142,6 +142,7 @@ is, and a bash given no -c reads its commands from stdin
 The host's end of the link to caboose-agent in the sandbox: while it
 runs, a port something listens on in it is forwarded to
 the same port on this machine's localhost when forward_ports allows it,
+a socket here reaches each Unix socket in it that [link.forward_sockets] names,
 and 'caboose-agent open URL' or 'notify TEXT' in the sandbox opens an
 http(s) URL here (after asking, as open_urls says) or shows a notification.
 The caboose daemon runs it, one link per environment: every launch asks the

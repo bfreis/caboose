@@ -350,6 +350,8 @@ func syncSetupEnv(t *testing.T) (e *setupEnv, remote string) {
 		t.Fatal(err)
 	}
 	c.ReadyTimeout = 1
+	// A launch's link comes from the daemon; none is started from a test.
+	e.a.linkHook = func() {}
 	c.Roots = []config.Root{{Name: config.DefaultRootName, Host: filepath.Join(t.TempDir(), "dev"), Container: config.WorkDir + "/" + config.DefaultRootName}}
 	repo := filepath.Join(c.DataDir, statesync.Dir)
 	home := filepath.Join(c.DataDir, datadir.HomeDir)

@@ -23,6 +23,7 @@ import (
 	"github.com/bfreis/caboose/internal/config"
 	"github.com/bfreis/caboose/internal/daemonproto"
 	"github.com/bfreis/caboose/internal/docker"
+	"github.com/bfreis/caboose/internal/hostlink"
 )
 
 // agentBox is an in-memory sandbox whose link is dialled, with an agent
@@ -354,6 +355,7 @@ func TestDaemonLinksStopKillsOnlyItsHostCommands(t *testing.T) {
 // here a host command that ignores SIGTERM, and goes only at the SIGKILL
 // that follows it.
 func TestDaemonLinksReleaseTheLockLast(t *testing.T) {
+	t.Cleanup(hostlink.SetHostExecKillWait(100 * time.Millisecond))
 	w := newLinksWorld(t)
 	a := w.env("alpha", "running")
 	l := w.links(w.daemonDir())

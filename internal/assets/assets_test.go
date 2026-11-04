@@ -199,3 +199,10 @@ func TestContextHashMissingFile(t *testing.T) {
 		t.Errorf("err = %v, want one naming entrypoint.sh", err)
 	}
 }
+
+// The memoized hash is the one a fresh computation gives.
+func TestLayerHashMatchesAFreshComputation(t *testing.T) {
+	if got, want := LayerHash(), mustHashOf(t, caboose.Files, tagLayer, LayerContext); got != want {
+		t.Errorf("LayerHash() = %s, fresh %s", got, want)
+	}
+}

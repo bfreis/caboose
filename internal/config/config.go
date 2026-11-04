@@ -107,6 +107,11 @@ type Config struct {
 	// as hostlink.ParsePorts reads them ("3000-3999 5173"), "none" for an
 	// empty array.
 	ForwardPorts string
+	// ForwardSockets is [link.forward_sockets], by name: the Unix sockets
+	// in the sandbox that a socket on this machine reaches through the
+	// link. The host's key alone, never the sandbox config's or a
+	// proposal's.
+	ForwardSockets []ForwardSocket
 	// OpenURLs is [link] open_urls: whether the sandbox may open URLs in
 	// this machine's browser, "ask", "allow" or "off".
 	OpenURLs string
@@ -494,6 +499,7 @@ func (c *Config) readFile() error {
 	if v, ok := f.Vals["link.forward_ports"]; ok {
 		c.ForwardPorts = portsString(v)
 	}
+	c.ForwardSockets = slices.Clone(f.ForwardSockets)
 	str("link.open_urls", &c.OpenURLs)
 	switch c.OpenURLs {
 	case "ask", "allow", "off":

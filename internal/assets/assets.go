@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 
 	caboose "github.com/bfreis/caboose"
 )
@@ -255,7 +256,23 @@ const (
 // LayerHash is the sha256, in hex, of the layer's context. It panics if
 // the context cannot be read, which only a broken build of the launcher
 // can cause, and which TestContextsHoldEveryCopySource already guards.
-func LayerHash() string { return mustHash(tagLayer, LayerContext) }
+//
+// The context is embedded, so the hash cannot change while the process
+// runs: it is made once (a launch asks for it several times, and the
+// context holds the agent binaries).
+func LayerHash() string {
+	layerHashMu.Lock()
+	defer layerHashMu.Unlock()
+	if layerHash == "" {
+		layerHash = mustHash(tagLayer, LayerContext)
+	}
+	return layerHash
+}
+
+var (
+	layerHashMu sync.Mutex
+	layerHash   string
+)
 
 func mustHash(tag string, files []ContextFile) string {
 	h, err := contextHash(caboose.Files, tag, files)

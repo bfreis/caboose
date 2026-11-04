@@ -262,6 +262,10 @@ vm_group() {
     check 'so ssh reads the kept known_hosts' /home/agent/.ssh/known_hosts \
         "$(vsh "ssh -G github.com 2>/dev/null | sed -n 's/^userknownhostsfile \([^ ]*\).*/\1/p'")"
     check 'a shell starts in the project, at its path under /work' /work/proj "$(vsh pwd)"
+    check 'the guest has /dev/fd and the standard stream links' '0 0 0 0' \
+        "$(vsh '[ -e /dev/fd/0 ]; a=$?; [ -e /dev/stdin ]; b=$?; [ -e /dev/stdout ]; c=$?; [ -e /dev/stderr ]; echo $a $b $c $?')"
+    check 'and bash process substitution works' ok \
+        "$(vsh '[ "$(cat <(echo ok))" = ok ] && echo ok')"
     check 'that user writes a 600 file in ~/.claude' ok \
         "$(vsh 'f=~/.claude/caboose-test-600; umask 077; echo x > "$f" && [ "$(cat "$f")" = x ] && rm -f "$f" && echo ok')"
     vsh 'echo from the VM > /work/proj/caboose-test-root' >/dev/null

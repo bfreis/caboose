@@ -330,11 +330,12 @@ func confHello(dataDir, isolation string) (*conformance.Hello, error) {
 // audit pins.
 func confConfigFacts(c *config.Config) conformance.ConfigFacts {
 	return conformance.ConfigFacts{
-		RunArgs:      c.RunArgs,
-		EngineSocket: c.EngineSocket,
-		HostExec:     c.HostExec,
-		SSHAgent:     c.SSHAgent,
-		ForwardPorts: c.ForwardPorts,
+		RunArgs:        c.RunArgs,
+		EngineSocket:   c.EngineSocket,
+		HostExec:       c.HostExec,
+		SSHAgent:       c.SSHAgent,
+		ForwardPorts:   c.ForwardPorts,
+		ForwardSockets: len(c.ForwardSockets),
 	}
 }
 

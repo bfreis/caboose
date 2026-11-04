@@ -1,5 +1,6 @@
 // Package hostlink is the host's end of the link to caboose-agent: it
-// forwards the sandbox's listening ports to this machine's localhost,
+// forwards the sandbox's listening ports to this machine's localhost and
+// sockets here to the Unix sockets config.toml names there (unixforward.go),
 // opens URLs and shows notifications when the sandbox asks, under vm dials
 // the sandbox's outbound connections from this machine (egress.go), and,
 // where the user turned it on, runs its commands here (hostexec.go).
@@ -148,6 +149,12 @@ type Config struct {
 	// host (the same on the host), sorted, each time the set may have
 	// changed. It must not block.
 	Forwarded func(ports []int)
+	// UnixForwards are [link.forward_sockets]: a socket here for each,
+	// reaching a socket in the sandbox (unixforward.go).
+	UnixForwards []UnixForward
+	// UnixForwarded, when set, is told what came of UnixForwards once the
+	// agent's hello came, and nil when the link ends. It must not block.
+	UnixForwarded func([]agentproto.SocketInfo)
 }
 
 // Host serves one session.
@@ -170,6 +177,7 @@ type Host struct {
 	reqs     requestsState  // OpBrokerRequests' bucket and waits
 	alias    aliasState     // OpAliasRun's bucket
 	cpBusy   bool           // an OpCheckpoint is being served
+	unix     unixState      // the socket forwards
 	lastMods *agentproto.ModsInfo
 }
 
@@ -207,6 +215,7 @@ func Run(sess *agentproto.Session, cfg Config) error {
 	h := &Host{sess: sess, cfg: cfg, forwards: map[int]*forward{}, refused: map[int]string{},
 		tokens: requestBurst, lastTick: time.Now()}
 	defer h.closeAll()
+	defer h.closeUnixForwards()
 	go h.recheckPorts()
 	// The session is over by the time Run returns, and with it every
 	// command it ran (runHostExec): Run returns once they are gone, so a
@@ -263,6 +272,7 @@ func Run(sess *agentproto.Session, cfg Config) error {
 			if watcher = h.watch(); watcher != nil {
 				go h.relayChanges(watcher)
 			}
+			h.startUnixForwards(m.SocketForwards)
 			continue
 		}
 		switch m.Type {

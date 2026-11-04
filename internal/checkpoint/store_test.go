@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -623,5 +624,39 @@ func TestStoreLogsFailureOnce(t *testing.T) {
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("logged:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+// noFsync skips fsync for a test that makes hundreds of checkpoints and
+// asserts nothing about durability.
+func noFsync(t *testing.T) {
+	t.Helper()
+	old := syncFile
+	syncFile = func(*os.File) error { return nil }
+	t.Cleanup(func() { syncFile = old })
+}
+
+// Production always fsyncs: the default is the real fsync, and a take
+// and a pin go through it.
+func TestStoreFsyncsByDefault(t *testing.T) {
+	if reflect.ValueOf(syncFile).Pointer() != reflect.ValueOf(osSync).Pointer() {
+		t.Fatal("syncFile is not os.File.Sync by default")
+	}
+	s := newStore(t)
+	l := lockT(t, s)
+	var files, dirs int
+	old := syncFile
+	syncFile = func(f *os.File) error {
+		if fi, err := f.Stat(); err == nil && fi.IsDir() {
+			dirs++
+		} else {
+			files++
+		}
+		return old(f)
+	}
+	t.Cleanup(func() { syncFile = old })
+	take(t, s, l, "/work/dev/x", time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
+	if files == 0 || dirs == 0 {
+		t.Errorf("a take synced %d files and %d directories", files, dirs)
 	}
 }

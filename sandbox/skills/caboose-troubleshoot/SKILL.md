@@ -59,6 +59,11 @@ already in use on the host. A port not in `forward_ports` is forwarded
 only after `caboose-agent request port --port N` is answered (caboose-requests
 skill); ports below 1024 only when `forward_ports` names them.
 
+A Unix socket not reaching the host: `caboose-agent ports` says, for each one
+in `[link.forward_sockets]`, the host's path or why the host does not listen
+there. A connection that closes at once means nothing listens at the path in
+the sandbox.
+
 ## "Read-only file system" under a root
 
 Each root is mounted read-only but for its writable parts, which

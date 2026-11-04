@@ -356,6 +356,7 @@ func TestPinsRecoveryIsPerKey(t *testing.T) {
 // At most maxPins in all, the oldest going first; a file holding more is
 // refused.
 func TestPinsTotalBound(t *testing.T) {
+	noFsync(t)
 	s := newStore(t)
 	l := lockT(t, s)
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)

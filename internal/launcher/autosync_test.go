@@ -337,17 +337,23 @@ func TestAutoSyncFailuresAreNotes(t *testing.T) {
 func TestAutoSyncSlowRemote(t *testing.T) {
 	here, _ := pair(t)
 	budget, slow := syncBudget, slowSync
-	syncBudget, slowSync = 2*time.Second, 200*time.Millisecond
+	syncBudget, slowSync = time.Second, 50*time.Millisecond
 	defer func() { syncBudget, slowSync = budget, slow }()
 	here.write(filepath.Join(here.ctl, "slow"), "")
 	// While it waits on the remote, it holds the lock: a caboose sync, or
 	// another launch, waits for it.
+	// The launch takes the lock a moment after it starts: ask until it
+	// is held, and fail if it never is.
 	locked := make(chan error, 1)
 	go func() {
-		time.Sleep(time.Second)
-		unlock, err := statesync.Lock(here.data)
-		if err == nil {
-			unlock()
+		var err error
+		for end := time.Now().Add(syncBudget); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+			var unlock func()
+			if unlock, err = statesync.Lock(here.data); err == nil {
+				unlock()
+				continue
+			}
+			break
 		}
 		locked <- err
 	}()
@@ -360,7 +366,7 @@ func TestAutoSyncSlowRemote(t *testing.T) {
 		t.Errorf("took %v", took)
 	}
 	want := "caboose: syncing with the remote\n" +
-		"caboose: not synced: no answer from the remote in 2s; run 'caboose sync' to see to it\n"
+		"caboose: not synced: no answer from the remote in 1s; run 'caboose sync' to see to it\n"
 	if got != want {
 		t.Errorf("said\n%s\nwant\n%s", got, want)
 	}

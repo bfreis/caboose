@@ -172,6 +172,7 @@ caboose is built and tested on, and Linux hosts are untested.
 | `host_exec` off unless set | held (not tested) | held (not tested) | held (not tested) | held, refused even when set (not tested) |
 | aliases: only `config.toml`'s, no command in or through a writable path | held (not tested) | held (not tested) | held (not tested) | held, no working directory or argument in a writable path either (not tested) |
 | ports forwarded only as the host says, on `127.0.0.1` | held (no check) | held (no check) | held (no check) | held (no check) |
+| Unix sockets forwarded only as the host says, for its own user | held (no check) | held (no check) | held (no check) | held (no check) |
 | URL checks | held (no check) | held (no check) | held (no check) | held, always asks (no check) |
 | outbound rules | not covered (not tested) | not covered (not tested) | partial: proxied traffic only; the NAT is open (not tested) | held, every unnamed host asks; no NAT (not tested) |
 | request queue and grants | held (not tested) | held (not tested) | held (not tested) | held (not tested) |
@@ -283,6 +284,14 @@ In effect. Everything `caboose-agent` sends is untrusted
   time the sandbox starts listening on the port and again after a forward
   of it ends with its grant; a listen never files a request, only
   `caboose-agent request port` does;
+- Unix sockets forward only as `[link.forward_sockets]` in the host's
+  `config.toml` says, under either `trust`: the host listens at a fixed path
+  in the environment's directory, mode 0600 in a directory of mode 0700 and
+  in no mount, and each connection a program here makes is carried to the
+  path configured, at most 64 at once. This adds no way out of the sandbox:
+  nothing it sends names a path or causes a listener or a dial here, and the
+  only ones who can connect are this machine's own user's programs, which
+  can already enter it. What answers is the sandbox's;
 - a URL opens only if it is `http` or `https`, holds no user or password
   and nothing unprintable, is not to port 7171 or 7172 (whatever its
   host), and the policy allows it: by default a person

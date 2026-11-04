@@ -97,13 +97,16 @@ type linkSettings struct {
 	// CheckpointRequests is checkpoint_requests: what a link with no
 	// broker decides the checkpoints the sandbox asks for by.
 	CheckpointRequests string `json:"checkpoint_requests,omitempty"`
+	// ForwardSockets is [link.forward_sockets], a NAME=path line for each.
+	ForwardSockets string `json:"forward_sockets,omitempty"`
 }
 
 func settingsOf(c *config.Config) linkSettings {
 	s := linkSettings{ForwardPorts: c.ForwardPorts, OpenURLs: c.OpenURLs,
 		Egress: c.Egress, EgressPorts: c.EgressPorts, EgressAllow: strings.Join(c.EgressAllow, " "),
 		DebugLink: linkdebug.Parse(os.Getenv(linkdebug.Var)).Raw, Isolation: isolationOf(c), HostExec: c.HostExec,
-		Trust: c.Trust, EgressDeny: strings.Join(c.EgressDeny, " "), CheckpointRequests: c.CheckpointRequests}
+		Trust: c.Trust, EgressDeny: strings.Join(c.EgressDeny, " "), CheckpointRequests: c.CheckpointRequests,
+		ForwardSockets: forwardSocketsText(c)}
 	if c.SSHAgent != "" {
 		s.SSHAgent, s.SSHAgentFrom = c.SSHAgent, sshAgentOrigin(c)
 	}
@@ -173,6 +176,8 @@ type linkState struct {
 	// daemon starting again does not bring it back (DaemonLinks.Recover).
 	// A link that starts writes link.json afresh, without it.
 	Stopped bool `json:"stopped,omitempty"`
+	// Sockets is what came of ForwardSockets with the sandbox linked now.
+	Sockets []agentproto.SocketInfo `json:"sockets,omitempty"`
 	linkSettings
 }
 
@@ -181,11 +186,23 @@ func writeLinkState(dataDir string, st linkState) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dataDir, linkStateFile+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// A name of its own: more than one writer may be at it, and each must
+	// publish only what it wrote whole.
+	f, err := os.CreateTemp(dataDir, linkStateFile+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dataDir, linkStateFile))
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), filepath.Join(dataDir, linkStateFile))
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
+	}
+	return err
 }
 
 func readLinkState(dataDir string) (linkState, bool) {
@@ -464,6 +481,7 @@ func (a *App) newLinkRunner(o linkRun) (*linkRunner, error) {
 	r.cfg.Log = r.log
 	r.cfg.Mods = r.setMods
 	r.cfg.Forwarded = r.setForwards
+	r.cfg.UnixForwards, r.cfg.UnixForwarded = unixForwards(a.Cfg), r.setSockets
 	r.cfg.AliasTmp = aliasTmp(a.daemonDir())
 	r.cfg.Checkpoints, r.cfg.CheckpointLimits = o.checkpoints, o.cpLimits
 	r.cfg.CheckpointRequests = settings.CheckpointRequests
@@ -584,15 +602,17 @@ type linkRunner struct {
 	// links; nil has the link make one of its own.
 	dialogs *dialogQueue
 
+	stateMu  sync.Mutex // one writeState at a time; taken before mu
 	mu       sync.Mutex
 	settings linkSettings
 	cfg      hostlink.Config
 	sess     *agentproto.Session
-	mods     *agentproto.ModsInfo // the agent's last count
-	forwards []int                // the ports forwarded now, sorted
-	reloaded bool                 // the session ended for new settings: reconnect at once
-	retired  bool                 // the isolation changed: this helper serves no more
-	vnodes   string               // what the vnode count last warned of, "" while under the levels
+	mods     *agentproto.ModsInfo    // the agent's last count
+	forwards []int                   // the ports forwarded now, sorted
+	sockets  []agentproto.SocketInfo // what came of the socket forwards, this session
+	reloaded bool                    // the session ended for new settings: reconnect at once
+	retired  bool                    // the isolation changed: this helper serves no more
+	vnodes   string                  // what the vnode count last warned of, "" while under the levels
 }
 
 func (r *linkRunner) settingsNow() linkSettings {
@@ -602,8 +622,12 @@ func (r *linkRunner) settingsNow() linkSettings {
 }
 
 func (r *linkRunner) writeState() {
+	// Held from the snapshot to the rename, so that a slower writer never
+	// replaces a newer state with its older one.
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	r.mu.Lock()
-	st := linkState{Daemon: r.daemon, linkSettings: r.settings}
+	st := linkState{Daemon: r.daemon, linkSettings: r.settings, Sockets: r.sockets}
 	if r.daemon == "" {
 		st.PID = os.Getpid()
 	}
@@ -760,12 +784,13 @@ func (r *linkRunner) reload() {
 	r.cfg.HostExec = hostExecOffer(lc.hostExec)
 	r.cfg.Trust = next.Trust
 	r.cfg.CheckpointRequests = next.CheckpointRequests
+	r.cfg.UnixForwards = unixForwards(c)
 	sess := r.sess
 	r.reloaded = sess != nil
 	r.mu.Unlock()
 	r.writeState()
-	r.log.Printf("config.toml changed: forward_ports %q, open_urls %q, egress %s, egress_ports %q, egress_allow %q, egress_deny %q, host_exec %s (trust %q); reconnecting",
-		next.ForwardPorts, next.OpenURLs, onOff(next.Egress), next.EgressPorts, next.EgressAllow, next.EgressDeny, onOff(lc.hostExec), next.Trust)
+	r.log.Printf("config.toml changed: forward_ports %q, forward_sockets %q, open_urls %q, egress %s, egress_ports %q, egress_allow %q, egress_deny %q, host_exec %s (trust %q); reconnecting",
+		next.ForwardPorts, next.ForwardSockets, next.OpenURLs, onOff(next.Egress), next.EgressPorts, next.EgressAllow, next.EgressDeny, onOff(lc.hostExec), next.Trust)
 	if sess != nil {
 		sess.Close()
 	}

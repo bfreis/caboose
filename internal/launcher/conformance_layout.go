@@ -255,6 +255,8 @@ func checkConfConfig(cfg *config.Config, s confSettings) error {
 		add("ssh_agent %q", cfg.SSHAgent)
 	case cfg.ForwardPorts != "none":
 		add("forward_ports %q", cfg.ForwardPorts)
+	case len(cfg.ForwardSockets) > 0:
+		add("forward_sockets set")
 	case len(cfg.RunArgs) > 0:
 		add("run_args")
 	case cfg.EngineSocket:

@@ -231,7 +231,32 @@ func lateMounts(log io.Writer) error {
 	if err := os.Symlink("pts/ptmx", "/dev/ptmx"); err != nil {
 		return err
 	}
+	if err := devLinks("/dev"); err != nil {
+		return err
+	}
 	return interfaceUp("lo")
+}
+
+// devLinksTable is the links a container runtime makes in /dev that a fresh
+// devtmpfs lacks: the standard streams and /dev/fd, which bash's process
+// substitution opens.
+var devLinksTable = []struct{ name, target string }{
+	{"fd", "/proc/self/fd"},
+	{"stdin", "/proc/self/fd/0"},
+	{"stdout", "/proc/self/fd/1"},
+	{"stderr", "/proc/self/fd/2"},
+}
+
+// devLinks creates devLinksTable's links in dir, replacing what is there.
+func devLinks(dir string) error {
+	for _, l := range devLinksTable {
+		p := filepath.Join(dir, l.name)
+		_ = os.Remove(p)
+		if err := os.Symlink(l.target, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func mount(src, dst, fs string, flags uintptr, data string) error {

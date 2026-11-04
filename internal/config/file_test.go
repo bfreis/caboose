@@ -316,7 +316,13 @@ func TestTemplate(t *testing.T) {
 		if table != "" && !strings.Contains(Template, "#["+table+"]\n") {
 			t.Errorf("the template has no #[%s]", table)
 		}
-		for k := range keys {
+		for k, vt := range keys {
+			if vt == typeSockets {
+				if !strings.Contains(Template, "\n#["+table+"."+k+"]\n") {
+					t.Errorf("the template has no #[%s.%s]", table, k)
+				}
+				continue
+			}
 			if !strings.Contains(Template, "\n#"+k+" = ") && k != "format" {
 				t.Errorf("the template has no #%s", k)
 			}

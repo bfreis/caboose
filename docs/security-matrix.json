@@ -187,6 +187,24 @@
       }
     },
     {
+      "control": "Unix sockets forwarded only as the host says, for its own user",
+      "checks": [],
+      "cells": {
+        "container": {
+          "claim": "held"
+        },
+        "gvisor": {
+          "claim": "held"
+        },
+        "vm/fallible": {
+          "claim": "held"
+        },
+        "vm/hostile": {
+          "claim": "held"
+        }
+      }
+    },
+    {
       "control": "URL checks",
       "checks": [],
       "cells": {

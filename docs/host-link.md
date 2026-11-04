@@ -625,6 +625,45 @@ numbers when they change (at most every 5 seconds), and `caboose permissions`
 shows "N Claude Code sessions, M without caboose's mod". That count is the
 sandbox's own word, shown to you and used for nothing else.
 
+## Unix sockets
+
+A server in the sandbox may listen on a Unix socket rather than a port, so
+that a client has to be able to reach the file to talk to it. A program on
+this machine reaches one through the link, once `config.toml` names it:
+
+```toml
+[link.forward_sockets]
+app = "/tmp/app/server.sock"   # NAME = the socket's path in the sandbox
+```
+
+While the link runs, a socket listens on this machine at `sockets/app.sock`
+in the environment's directory (`~/.caboose/envs/<env>/sockets/app.sock`).
+Each connection to it is carried over the link to a new connection to the
+socket in the sandbox, half closes included. `caboose status` and `caboose
+doctor` name the path; so does `caboose-agent ports`, in the sandbox.
+
+- The socket here is mode 0600, in a directory of mode 0700, and in no mount:
+  only your user reaches it, and no sandbox does.
+- With nothing listening at the path in the sandbox, a connection closes at
+  once: start the server, and connect again.
+- At most 64 connections are carried at once, over all of a link's sockets;
+  one more is closed at once, and the link's log says so.
+- A path over 103 bytes is refused, which is what a Mac's socket can hold:
+  doctor says so, and a shorter name or `CABOOSE_HOME` fixes it. Whatever is
+  at the path and is no socket stays where it is and is refused, also said by
+  doctor: move it away, then `caboose link --restart`. A socket a dead link
+  left, which refuses connections, is replaced; one that answers is left
+  alone and reported the same way, as when a link with another
+  `CABOOSE_DATA_DIR` holds it. A link removes only the socket it made.
+- An image older than this feature has an agent that cannot serve one, so the
+  host does not listen, and status and doctor say `caboose restart` is needed.
+
+The key is `config.toml`'s alone, the same under either `trust`: neither the
+sandbox config nor a proposal can set it, and a change reaches the running
+link within seconds, which reconnects as it does for any change there. What
+answers on the socket is the sandbox's, as on a forwarded port: a program
+connecting to it should trust what it reads no more than the sandbox itself.
+
 ## What the sandbox can and cannot do with it
 
 Everything the agent sends is treated as untrusted, as everything from the
@@ -646,6 +685,9 @@ sandbox is:
   forward's listener; only a service that is up is protected. Keep
   `forward_ports` to the ranges you use for development, and the ephemeral
   range if you log in from the sandbox;
+- which Unix sockets forward is `[link.forward_sockets]` in `config.toml`:
+  the sandbox names no path and causes no listener or connection on this
+  machine, only answers the connections a program here makes;
 - requests are rate-limited, a URL opens only as the setting says, and a
   dialog is one at a time; a crossing that asks a person is refused at
   once as pending, never waited on, and nothing the sandbox sends

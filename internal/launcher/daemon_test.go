@@ -109,7 +109,8 @@ func TestDaemonStatusCreatesNothing(t *testing.T) {
 // createContainer makes, nor any directory the vm backend shares for them,
 // is in, or holds, CABOOSE_HOME/daemon or CABOOSE_HOME/daemon-dev (the
 // daemon's socket and log in each), the broker's files, the jobs'
-// log (EnvDir/jobs.log), or the environment's checkpoint store, EnvDir/checkpoints.
+// log (EnvDir/jobs.log), the environment's checkpoint store, EnvDir/checkpoints,
+// or its forwarded sockets, EnvDir/sockets.
 func TestDaemonDirsAreInNoMount(t *testing.T) {
 	for _, iso := range isolations {
 		t.Run(iso, func(t *testing.T) {
@@ -139,6 +140,10 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 			if err := os.MkdirAll(envDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
+			// The data dir where a real environment has it, or nothing here
+			// is beside it; a VM's images follow it.
+			b.Cfg.EnvDir, b.Cfg.DataDir = envDir, filepath.Join(envDir, "data")
+			b.setImage(t, boxImageID, currentLabels("linux-arm64"))
 			private := brokerPrivatePaths(envDir)
 			for _, f := range private {
 				if err := os.WriteFile(f, nil, 0o600); err != nil {
@@ -157,6 +162,13 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				t.Fatal(err)
 			}
 			private = append(private, store)
+			// The host's end of the socket forwards, which only this
+			// machine's user may connect to: the directory and a socket in it.
+			sockets := config.SocketsDir(envDir)
+			if err := os.MkdirAll(sockets, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			private = append(private, sockets, config.SocketHostPath(envDir, "app"))
 			// make app's bundle, which the host runs, at every login once
 			// it is a login item.
 			bundleDir := filepath.Dir(appbundle.CheckoutPath(b.tmp))
@@ -190,7 +202,7 @@ func TestDaemonDirsAreInNoMount(t *testing.T) {
 				}
 				for _, f := range private {
 					if config.Within(src, f) || config.Within(f, src) {
-						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker, the jobs' log, the checkpoint store, the web page's token or the menu-bar app's bundle keeps", src, f)
+						t.Errorf("%s is mounted or shared, and reaches %s, which the request broker, the jobs' log, the checkpoint store, the socket forwards, the web page's token or the menu-bar app's bundle keeps", src, f)
 					}
 				}
 			}

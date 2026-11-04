@@ -122,6 +122,7 @@ type statusData struct {
 	// daemon, web, link and checkpoints are the host's lines;
 	// lv is the daemon's view they came from.
 	lv                                linkView
+	sockets                           []string
 	daemon, web, link, checkpointLine string
 	// disk is the VM disks' line, "" with none.
 	disk string
@@ -166,6 +167,7 @@ func (a *App) collectStatus() *statusData {
 		d.app = appLine(d.lv)
 	}
 	d.link = a.linkLine(d.lv, d.running)
+	d.sockets = a.socketLines(d.lv.Up)
 	d.checkpointLine = a.checkpointLine(d.lv, d.running, defaultCkSeams())
 	d.disk = a.diskStatusLine()
 	if !d.running {
@@ -239,6 +241,9 @@ func (a *App) renderStatus(d *statusData) error {
 		fmt.Fprintf(out, "app       : %s\n", d.app)
 	}
 	fmt.Fprintf(out, "link      : %s\n", d.link)
+	for _, s := range d.sockets {
+		fmt.Fprintf(out, "socket    : %s\n", s)
+	}
 	if d.checkpointLine != "" {
 		fmt.Fprintf(out, "checkpoints: %s\n", d.checkpointLine)
 	}

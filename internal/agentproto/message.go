@@ -3,6 +3,7 @@ package agentproto
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,10 @@ const (
 	// TypeForwards is the host's list of what it forwards, sent whenever
 	// that changes.
 	TypeForwards = "forwards"
+	// TypeSockets is the host's list of the Unix socket forwards config.toml
+	// names and what came of each (Sockets), sent once to an agent that said
+	// it serves them. For the agent to show, nothing more.
+	TypeSockets = "sockets"
 	// TypeChanged is the host's list of paths in the container that
 	// changed on the host, for the agent to make watchers inside see. An
 	// agent that does not know it ignores it, so it needs no new Version;
@@ -435,6 +440,12 @@ type Message struct {
 	AliasesOn bool `json:"aliases_on,omitempty"`
 	// Aliases are OpAliases' answer, at most MaxAliases.
 	Aliases []AliasInfo `json:"aliases,omitempty"`
+	// SocketForwards, in the agent's hello, says it connects streams to Unix
+	// sockets (StreamHeader.Socket). An older agent's hello lacks it, and
+	// the host then listens for none of them, so it needs no new Version.
+	SocketForwards bool `json:"socket_forwards,omitempty"`
+	// Sockets are TypeSockets' list, and an in-container status answer's.
+	Sockets []SocketInfo `json:"sockets,omitempty"`
 	// CheckpointsOn, in the host's hello, offers OpCheckpoint: its link
 	// takes checkpoints when the sandbox asks.
 	CheckpointsOn bool `json:"checkpoints_on,omitempty"`
@@ -452,10 +463,36 @@ type Forward struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// SocketInfo is one Unix socket forward, and what came of it.
+type SocketInfo struct {
+	// Name is its name in config.toml, Path the socket in the sandbox and
+	// HostPath the socket on the host.
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	HostPath string `json:"host_path"`
+	// Reason says why the host does not listen at HostPath, and what to
+	// do about it; "" when it does.
+	Reason string `json:"reason,omitempty"`
+}
+
+// MaxSocketPath is the longest path a Unix socket can have on Linux, where
+// the agent dials: 108 bytes of sun_path, with its NUL.
+const MaxSocketPath = 107
+
+// ValidSocketPath reports whether p can name a socket for the agent to dial:
+// absolute, and within what the kernel takes.
+func ValidSocketPath(p string) bool {
+	return len(p) > 1 && len(p) <= MaxSocketPath && p[0] == '/' && !strings.ContainsRune(p, 0)
+}
+
 // StreamHeader opens a stream: on the link, a connection the host
-// accepted, for Port in the container.
+// accepted, for Port in the container, or for the Unix socket Socket there.
 type StreamHeader struct {
 	Port int `json:"port,omitempty"`
+	// Socket is the path, from config.toml, of a Unix socket in the sandbox
+	// that the agent is to connect the stream to. Only an agent whose hello
+	// says SocketForwards is sent one.
+	Socket string `json:"socket,omitempty"`
 	// Name is which of an exec's streams this is (Stream*), on the exec
 	// port, where there is no Port.
 	Name string `json:"name,omitempty"`

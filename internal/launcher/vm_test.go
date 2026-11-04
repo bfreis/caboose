@@ -123,9 +123,9 @@ func TestVMImageStore(t *testing.T) {
 	}
 }
 
-// scratchHost is a vmHost over a data dir with an empty-disk template of
-// the size the builder makes (a sparse file: the host never formats one),
-// and cfg.
+// scratchHost is a vmHost over a data dir with an empty-disk template (a
+// sparse file of 1 MiB: the host never formats one, and a copy reads all
+// of it, which the builder's 4 GiB makes slow), and cfg.
 func scratchHost(t *testing.T, cfg *config.Config) (*vmHost, string) {
 	t.Helper()
 	cfg.DataDir = t.TempDir()
@@ -138,7 +138,7 @@ func scratchHost(t *testing.T, cfg *config.Config) (*vmHost, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Truncate(config.EmptyDiskSize); err != nil {
+	if err := f.Truncate(1 << 20); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()

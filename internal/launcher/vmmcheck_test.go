@@ -122,24 +122,29 @@ func TestMacOSMajor(t *testing.T) {
 // anyway; so does one whose check fails; one of this version is quiet.
 func TestStartVMMNotesVersion(t *testing.T) {
 	old := vmmCheckTimeout
-	vmmCheckTimeout = 2 * time.Second
 	t.Cleanup(func() { vmmCheckTimeout = old })
 	for _, tc := range []struct {
 		name, check, note string // note "" means quiet
+		timeout           time.Duration
 	}{
-		{"same", "printf '%s' '" + checkOut() + "'", ""},
-		{"older", "printf '%s' '" + checkOut("version=v0.2.2") + "'", "caboose-vmm is v0.2.2 and this caboose " + version.Get().Version},
-		{"no check", "echo 'usage: caboose-vmm DIR' >&2; exit 2", "caboose-vmm is of an unknown version"},
-		{"hung", "exec sleep 30", "caboose-vmm is of an unknown version"},
+		{"same", "printf '%s' '" + checkOut() + "'", "", 10 * time.Second},
+		{"older", "printf '%s' '" + checkOut("version=v0.2.2") + "'", "caboose-vmm is v0.2.2 and this caboose " + version.Get().Version, 10 * time.Second},
+		{"no check", "echo 'usage: caboose-vmm DIR' >&2; exit 2", "caboose-vmm is of an unknown version", 10 * time.Second},
+		{"hung", "exec sleep 30", "caboose-vmm is of an unknown version", 200 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			vmmCheckTimeout = tc.timeout
 			booted := filepath.Join(t.TempDir(), "booted")
 			p := fakeVMM(t, `if [ "$1" = --check ]; then `+tc.check+`; exit 0; fi; touch '`+booted+`'`)
 			var stderr strings.Builder
 			a := &App{Cfg: &config.Config{}, Stderr: &stderr}
 			a.vmFiles = func() (vmFiles, error) { return vmFiles{Arch: "arm64", VMM: p}, nil }
+			start := time.Now()
 			if err := (&vmHost{a: a}).StartVMM(vm.Dir(filepath.Join(t.TempDir(), "vm"))); err != nil {
 				t.Fatal(err)
+			}
+			if d := time.Since(start); tc.name == "hung" && d > 5*time.Second {
+				t.Errorf("a hung check held the start up for %v, not its timeout", d)
 			}
 			got := stderr.String()
 			if tc.note == "" {

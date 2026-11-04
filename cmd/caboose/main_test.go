@@ -121,6 +121,9 @@ func sandboxEnv(t *testing.T, kv ...string) (home string) {
 			build = append(build, "auto_build = false")
 		case "CABOOSE_READY_TIMEOUT":
 			session = append(session, "ready_timeout = "+v)
+			// ready_timeout counts seconds; the wait's tick is 10 ms here, so
+			// a timeout of 1 is a hundredth of a second.
+			t.Cleanup(launcher.SetReadyTick(10 * time.Millisecond))
 		case "CABOOSE_NO_TMUX":
 			session = append(session, "tmux = false")
 		default:

@@ -97,11 +97,12 @@ type Hello struct {
 
 // ConfigFacts are the configuration keys the audit requires.
 type ConfigFacts struct {
-	RunArgs      []string
-	EngineSocket bool
-	HostExec     bool
-	SSHAgent     string // [link] ssh_agent; must be "none"
-	ForwardPorts string // [link] forward_ports; must be "none"
+	RunArgs        []string
+	EngineSocket   bool
+	HostExec       bool
+	SSHAgent       string // [link] ssh_agent; must be "none"
+	ForwardPorts   string // [link] forward_ports; must be "none"
+	ForwardSockets int    // [link.forward_sockets] entries; must be none
 }
 
 // AuditedMount is one mount the audit let through, as the sandbox-side
@@ -281,6 +282,8 @@ func auditConfig(in Inspection) error {
 		return fmt.Errorf("ssh_agent is %q, not \"none\"", c.SSHAgent)
 	case c.ForwardPorts != "none":
 		return fmt.Errorf("forward_ports is %q, not \"none\"", c.ForwardPorts)
+	case c.ForwardSockets != 0:
+		return fmt.Errorf("forward_sockets has %d entries, not none", c.ForwardSockets)
 	}
 	return nil
 }

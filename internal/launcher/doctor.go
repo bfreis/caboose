@@ -1111,4 +1111,5 @@ func (a *App) doctorDaemon(c *checkup, running bool) {
 	default:
 		c.problem("link", "caboose link (caboose link --restart replaces one that runs wrongly)", "not running while the %s runs: %s", a.noun(), v.Why)
 	}
+	a.doctorSockets(c, v.Up)
 }

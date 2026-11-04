@@ -297,8 +297,9 @@ func TestShownIndents(t *testing.T) {
 // on.
 func TestAutoSyncStopsASyncThatHangs(t *testing.T) {
 	budget, margin := syncBudget, syncMargin
-	syncBudget, syncMargin = time.Second, time.Second
+	syncBudget, syncMargin = 300*time.Millisecond, 300*time.Millisecond
 	defer func() { syncBudget, syncMargin = budget, margin }()
+	defer syncagent.SetStopGrace(100 * time.Millisecond)()
 	b := syncBox(t, isolationContainer, func(string) *exec.Cmd {
 		return exec.Command("sh", "-c", `echo '{"type":"hello","version":1}'; exec sleep 60`)
 	})

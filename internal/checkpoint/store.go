@@ -509,7 +509,7 @@ func writeExclusive(p string, b []byte) error {
 		f.Close()
 		return writeFileErr(err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		f.Close()
 		return writeFileErr(err)
 	}
@@ -528,13 +528,19 @@ func writeFileErr(err error) error {
 	return fmt.Errorf("checkpoint: %w", err)
 }
 
+// syncFile is fsync, always: a variable only so that the tests of series
+// of takes can skip it (noFsync in the tests).
+var syncFile = osSync
+
+func osSync(f *os.File) error { return f.Sync() }
+
 func syncDir(p string) error {
 	f, err := os.OpenFile(p, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return fmt.Errorf("checkpoint: %w", err)
 	}
 	defer f.Close()
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		return fmt.Errorf("checkpoint: %w", err)
 	}
 	return nil

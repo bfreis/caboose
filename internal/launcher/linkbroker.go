@@ -80,6 +80,15 @@ func (r *linkRunner) setForwards(ports []int) {
 	r.mu.Unlock()
 }
 
+// setSockets keeps what came of the socket forwards, where status and
+// doctor read it.
+func (r *linkRunner) setSockets(s []agentproto.SocketInfo) {
+	r.mu.Lock()
+	r.sockets = s
+	r.mu.Unlock()
+	r.writeState()
+}
+
 // forwarded is the ports forwarded now.
 func (r *linkRunner) forwarded() []int {
 	r.mu.Lock()

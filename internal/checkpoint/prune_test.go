@@ -39,6 +39,7 @@ func trashIn(t *testing.T, s *Store) []string {
 }
 
 func TestPruneSeries(t *testing.T) {
+	noFsync(t)
 	s := newStore(t)
 	l := lockT(t, s)
 	p := "/work/dev/x"

@@ -68,6 +68,7 @@ func TestAuditRefuses(t *testing.T) {
 		"host_exec in config":          func(r *rig) { r.insp.Config.HostExec = true },
 		"ssh_agent unset":              func(r *rig) { r.insp.Config.SSHAgent = "" },
 		"a forwarded port":             func(r *rig) { r.insp.Config.ForwardPorts = "3000" },
+		"a forwarded socket":           func(r *rig) { r.insp.Config.ForwardSockets = 1 },
 		"hello offers the SSH agent":   func(r *rig) { r.insp.Hello = &Hello{SSHAgent: true} },
 		"hello offers host exec":       func(r *rig) { r.insp.Hello = &Hello{HostExec: true} },
 		"no hello":                     func(r *rig) { r.insp.Hello = nil },

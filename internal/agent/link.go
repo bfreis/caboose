@@ -50,6 +50,7 @@ type Link struct {
 	pending  map[uint64]chan agentproto.Message
 	ports    []int
 	forwards []agentproto.Forward
+	sockets  []agentproto.SocketInfo
 
 	changed chan changes
 	// recheck looks touched paths up again (touch.go), under vm; nil
@@ -127,7 +128,7 @@ func RunLink(in io.Reader, out io.WriteCloser, cfg Config) error {
 		return err
 	}
 	defer ln.Close()
-	if err := l.sess.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version}); err != nil {
+	if err := l.sess.Send(agentproto.Message{Type: agentproto.TypeHello, Version: agentproto.Version, SocketForwards: true}); err != nil {
 		return err
 	}
 	if k := linkdebug.Get(); k.Raw != "" {
@@ -207,6 +208,10 @@ func (l *Link) readControl() {
 		case agentproto.TypeForwards:
 			l.mu.Lock()
 			l.forwards = m.Forwards
+			l.mu.Unlock()
+		case agentproto.TypeSockets:
+			l.mu.Lock()
+			l.sockets = m.Sockets
 			l.mu.Unlock()
 		case agentproto.TypeChanged:
 			select {
@@ -296,7 +301,7 @@ func (l *Link) serveClient(c net.Conn) {
 	} else if m.Op == OpStatus {
 		l.mu.Lock()
 		resp = agentproto.Message{Type: agentproto.TypeResponse, OK: true,
-			Ports: slices.Clone(l.ports), Forwards: slices.Clone(l.forwards)}
+			Ports: slices.Clone(l.ports), Forwards: slices.Clone(l.forwards), Sockets: slices.Clone(l.sockets)}
 		l.mu.Unlock()
 	} else if m.Op == agentproto.OpAliases {
 		resp = l.aliasesRequest()
@@ -374,6 +379,10 @@ func (l *Link) connect(st *agentproto.Stream) {
 		}
 		return
 	}
+	if h.Socket != "" {
+		l.connectSocket(st, h.Socket)
+		return
+	}
 	if !agentproto.ValidPort(h.Port) {
 		st.Close()
 		return
@@ -384,6 +393,22 @@ func (l *Link) connect(st *agentproto.Stream) {
 		return
 	}
 	agentproto.Splice(st, c)
+}
+
+// connectSocket connects st to the Unix socket at path, which the host took
+// from its config.toml. With nothing listening there the stream closes, and
+// with it the host's connection.
+func (l *Link) connectSocket(st *agentproto.Stream, path string) {
+	if !agentproto.ValidSocketPath(path) {
+		st.Close()
+		return
+	}
+	c, err := net.DialTimeout("unix", path, 5*time.Second)
+	if err != nil {
+		st.Close()
+		return
+	}
+	agentproto.Splice(st, c.(*net.UnixConn))
 }
 
 // refused hands nil to the client waiting for a stream the session reset

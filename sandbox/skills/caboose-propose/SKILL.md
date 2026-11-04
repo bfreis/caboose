@@ -298,6 +298,7 @@ Everything else is the host's `config.toml`, which only the user edits (or
 | volumes | `[<profile>.volume.NAME]` (`caboose volume create` on the host), or a `[volume]` proposal as above; a volume's size under vm: `caboose-agent request volume-resize`, within `volume_limit` in `[vm.NAME]` (the user's key) |
 | VM outbound proxy | `egress`, `egress_ports`, `egress_allow`, `egress_deny` in `[vm.NAME]` (all but `egress` apply without a restart) |
 | forwarded ports, URL opening, any host command, checkpoints asked for from here | `forward_ports`, `open_urls`, `open_urls_allow`, `host_exec`, `checkpoint_requests` in `[link]` (within seconds); for one port, `caboose-agent request port --port N` also asks the host (caboose-requests skill) |
+| a Unix socket in the sandbox that a program on the host connects to | `[link.forward_sockets]`, `NAME = "/sandbox/path"` (within seconds); not a proposal. The host's socket is `sockets/NAME.sock` in the environment's directory; `caboose-agent ports` names it |
 | a named host command | `[alias.NAME]`, or a proposal as above (within seconds) |
 | which SSH agent | `ssh_agent` in `[link]`: within seconds under vm; on Linux under container or gvisor a mount, so a restart; with OrbStack or Docker Desktop only `"none"` counts (a restart) |
 | roots | `[roots]`, or a proposal as above |

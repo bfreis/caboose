@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -77,8 +78,20 @@ var (
 const stderrKept = 16 << 10
 
 // stopGrace is how long a sync told to stop has before its command is
-// killed. A variable for the tests.
-var stopGrace = 3 * time.Second
+// killed. Set through SetStopGrace, which the tests use.
+var stopGraceNs atomic.Int64
+
+func init() { stopGraceNs.Store(int64(3 * time.Second)) }
+
+func stopGrace() time.Duration { return time.Duration(stopGraceNs.Load()) }
+
+// SetStopGrace changes how long a sync told to stop has before its command
+// is killed, and returns a function that puts the old one back. It is for
+// tests, which would otherwise wait out the default.
+func SetStopGrace(d time.Duration) (restore func()) {
+	old := stopGraceNs.Swap(int64(d))
+	return func() { stopGraceNs.Store(old) }
+}
 
 // Run runs cmd -- caboose-agent sync OP in the sandbox -- sends it req, and
 // answers what it asks with h, until it ends. Its stderr (git's output)
@@ -121,7 +134,7 @@ func Run(cmd *exec.Cmd, req Request, h Handler, show io.Writer) (*Result, error)
 			reason = why
 			mu.Unlock()
 			stdin.Close()
-			time.AfterFunc(stopGrace, func() { _ = cmd.Process.Kill() })
+			time.AfterFunc(stopGrace(), func() { _ = cmd.Process.Kill() })
 		})
 	}
 	var timeout <-chan time.Time
@@ -137,7 +150,7 @@ func Run(cmd *exec.Cmd, req Request, h Handler, show io.Writer) (*Result, error)
 			stop(ErrInterrupted)
 			select {
 			case <-conversed:
-			case <-time.After(stopGrace + time.Second):
+			case <-time.After(stopGrace() + time.Second):
 				if h.Interrupted != nil {
 					h.Interrupted()
 				}

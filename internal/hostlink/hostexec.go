@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -41,9 +42,6 @@ const (
 	hostExecSetup = 10 * time.Second
 	// maxHostExecArgs bounds argv; the request's frame bounds its bytes.
 	maxHostExecArgs = 1024
-	// hostExecKillWait is how long a command has, after SIGTERM, before
-	// SIGKILL.
-	hostExecKillWait = 3 * time.Second
 	// hostExecLinger is how long the output waits, once the command has
 	// exited, for more from what it left running: past it, a background
 	// process holding the output open no longer holds up the exit.
@@ -577,7 +575,7 @@ func (g *group) killRemains() {
 		return
 	}
 	_ = syscall.Kill(-g.pid, syscall.SIGTERM)
-	for _, wait := range []time.Duration{hostExecKillWait, remainsGoneWait} {
+	for _, wait := range []time.Duration{hostExecKillWait(), remainsGoneWait} {
 		end := time.Now().Add(wait)
 		for alive() && time.Now().Before(end) {
 			time.Sleep(20 * time.Millisecond)
@@ -608,10 +606,26 @@ func (g *group) terminate() {
 	select {
 	case <-g.done:
 		return
-	case <-time.After(hostExecKillWait):
+	case <-time.After(hostExecKillWait()):
 	}
 	g.signal(syscall.SIGKILL)
 	<-g.done
+}
+
+// hostExecKillWaitNs is how long a command has, after SIGTERM, before
+// SIGKILL: 3 s, unless a test set it through SetHostExecKillWait.
+var hostExecKillWaitNs atomic.Int64
+
+func init() { hostExecKillWaitNs.Store(int64(3 * time.Second)) }
+
+func hostExecKillWait() time.Duration { return time.Duration(hostExecKillWaitNs.Load()) }
+
+// SetHostExecKillWait changes how long a host command has, after SIGTERM,
+// before SIGKILL, and returns a function that puts the old value back. It
+// is for tests, which would otherwise wait out the default.
+func SetHostExecKillWait(d time.Duration) (restore func()) {
+	old := hostExecKillWaitNs.Swap(int64(d))
+	return func() { hostExecKillWaitNs.Store(old) }
 }
 
 // Execs are host commands running: one link's, or every link's in the

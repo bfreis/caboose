@@ -61,13 +61,15 @@ const (
 	typeStrings
 	// typePorts is an array of ports (whole numbers) and ranges ("a-b").
 	typePorts
+	// typeSockets is [link.forward_sockets]: a table of NAME = path.
+	typeSockets
 )
 
 var portRangeSyntax = regexp.MustCompile(`^[0-9]+-[0-9]+$`)
 
 func (t valueType) String() string {
 	return [...]string{"a string", "a whole number", "true or false", "an array of strings",
-		`an array of ports and "a-b" ranges`}[t]
+		`an array of ports and "a-b" ranges`, `a table of NAME = "/sandbox/path"`}[t]
 }
 
 // tables are the keys of config.toml's plain tables, by table, "" for the
@@ -88,9 +90,11 @@ var tables = map[string]map[string]valueType{
 	},
 	"link": {
 		"forward_ports": typePorts,
-		"open_urls":     typeString,
-		"ssh_agent":     typeString,
-		"host_exec":     typeBool,
+		// Unix sockets in the sandbox a host socket reaches, by name.
+		"forward_sockets": typeSockets,
+		"open_urls":       typeString,
+		"ssh_agent":       typeString,
+		"host_exec":       typeBool,
 		// Whether a session may ask for a checkpoint now: "allow" or "off".
 		"checkpoint_requests": typeString,
 		// Origins, scheme://host[:port], that may be opened without asking.
@@ -159,6 +163,8 @@ type File struct {
 	ImageProfiles []string
 	// Format is the file's format key, 0 when it has none.
 	Format int
+	// ForwardSockets are [link.forward_sockets], checked, by name.
+	ForwardSockets []ForwardSocket
 	// Aliases are the [alias.NAME] tables, checked; Cwd is as written (a
 	// ~ is expanded when the Config is made).
 	Aliases map[string]Alias
@@ -401,6 +407,9 @@ func (f *File) readValue(key string, v any, t valueType) error {
 				return err
 			}
 		}
+	case typeSockets:
+		// One value per name, which is what CheckEdit compares.
+		return f.readForwardSockets(key, v)
 	}
 	f.Vals[key] = v
 	return nil
@@ -633,6 +642,15 @@ format = 1    # this file's structure
 # copies only paths listed there, at most once a minute each and ten
 # requests an hour, under either trust.
 #checkpoint_requests = "allow"
+
+# Unix sockets listening in the sandbox that a program on this machine can
+# connect to, through the link: NAME = the socket's absolute path in the
+# sandbox. Each listens here, mode 0600, at this environment's
+# sockets/NAME.sock while the link runs; caboose status names the path. A
+# name is lowercase letters, digits and -, at most 32. A running link
+# rereads this file when it changes.
+#[link.forward_sockets]
+#app = "/tmp/app/server.sock"
 
 # Paths of the sandbox whose files this machine is to copy into
 # checkpoints, kept in this environment's checkpoints/ directory, which no

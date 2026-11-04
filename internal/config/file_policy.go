@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bfreis/caboose/internal/agentproto"
 )
 
 // The trust levels: what the sandbox is assumed able to do. A fallible
@@ -138,6 +140,72 @@ func CheckWritable(list []string) error {
 				return fmt.Errorf("writable %q is inside writable %q, which already covers it", b, a)
 			}
 		}
+	}
+	return nil
+}
+
+// MaxForwardSockets is the most entries [link.forward_sockets] may have.
+const MaxForwardSockets = 16
+
+// ForwardSocket is one entry of [link.forward_sockets]: a Unix socket in the
+// sandbox, Path, that a socket on this machine reaches.
+type ForwardSocket struct {
+	Name string
+	Path string
+}
+
+// socketsDirName is the directory of an environment's EnvDir that holds the
+// host's end of its socket forwards: beside data/, in no mount.
+const socketsDirName = "sockets"
+
+// SocketsDir is where environment directory envDir's forwarded sockets
+// listen.
+func SocketsDir(envDir string) string { return envDir + "/" + socketsDirName }
+
+// SocketHostPath is where the socket forward name listens on this machine.
+func SocketHostPath(envDir, name string) string {
+	return SocketsDir(envDir) + "/" + name + ".sock"
+}
+
+var socketName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// CheckSandboxSocket says why p cannot name a Unix socket in the sandbox.
+func CheckSandboxSocket(p string) error {
+	switch {
+	case !path.IsAbs(p) || path.Clean(p) != p || p == "/":
+		return fmt.Errorf("%q must be an absolute, clean path to a socket in the sandbox", p)
+	case len(p) > agentproto.MaxSocketPath:
+		return fmt.Errorf("%q is %d bytes, and a Unix socket's path in the sandbox can have at most %d", p, len(p), agentproto.MaxSocketPath)
+	case !printableText(p):
+		return fmt.Errorf("%q has a control or invisible character", p)
+	}
+	return nil
+}
+
+// readForwardSockets reads [link.forward_sockets], keeping each entry as its
+// own key.
+func (f *File) readForwardSockets(key string, v any) error {
+	named, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf(`%s must be %s`, displayKey(key), typeSockets)
+	}
+	if len(named) > MaxForwardSockets {
+		return fmt.Errorf("[%s] has %d entries, and at most %d are allowed", key, len(named), MaxForwardSockets)
+	}
+	f.ForwardSockets = nil
+	for _, name := range slices.Sorted(maps.Keys(named)) {
+		if !socketName.MatchString(name) {
+			return fmt.Errorf("[%s]: '%s' is not a name for a socket: lowercase letters, digits and -, starting with a letter or digit, at most 32", key, name)
+		}
+		p, ok := named[name].(string)
+		if !ok {
+			return fmt.Errorf(`%s in [%s] must be a string, the socket's path in the sandbox`, name, key)
+		}
+		if err := CheckSandboxSocket(p); err != nil {
+			return fmt.Errorf("%s in [%s]: %v", name, key, err)
+		}
+		f.Vals[key+"."+name] = p
+		f.ForwardSockets = append(f.ForwardSockets, ForwardSocket{Name: name, Path: p})
 	}
 	return nil
 }

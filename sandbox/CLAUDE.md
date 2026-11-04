@@ -92,7 +92,7 @@ start) and `shell.d` (interactive shell config) when asked, with no proposal
   `localhost` if `forward_ports` (in `[link]` of the host's `config.toml`)
   allows it (by default 3000-3999, 5173, 8000-8999, 32768-60999, where a
   login's callback listens); another port asks: `caboose-agent request port
-  --port N`. Tell the user to open `http://localhost:PORT`; `caboose-agent ports` lists them.
+  --port N`. Tell the user to open `http://localhost:PORT`; `caboose-agent ports` lists them, and the Unix sockets `[link.forward_sockets]` there (the user's to set) forwards.
 - `caboose-agent open URL` (and `xdg-open`, `$BROWSER`) opens an http(s)
   URL in the user's browser: usually `pending #N` at once, then it opens
   once the user allows it on the host. `caboose-agent notify TEXT` notifies.
