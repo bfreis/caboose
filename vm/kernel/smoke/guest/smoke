@@ -1,0 +1,164 @@
+#!/bin/sh
+# smoke KERNEL OUT green|mutants, from the checkout's root: boot the real vm
+# guest init under QEMU (make vm-guest-smoke, make vm-guest-smoke-mutants).
+#
+# green boots two stages and requires the console to say they passed. QEMU's
+# status alone says nothing, since an init that fails powers off and exits 0.
+#   a: agent.Init, with vm/kernel/smoke/guestboot as /init: no vsock needed.
+#   b: caboose-agent as /init, driven through production vm.Dir.
+#
+# mutants breaks the production code in a copy, through go build -overlay and
+# never in the checkout, and requires each stage to go red for the reason
+# expected, so a check that stopped checking, or a hang nothing would notice,
+# fails here. A mutation that no longer applies to the source fails too.
+set -eu
+kernel=$1 out=$2 what=$3
+arch=arm64
+limit=180     # a boot that should end; TCG may be slow on a runner
+hang_limit=30 # a boot expected to hang
+cd "$(dirname "$0")/../../../.."
+smoke=vm/kernel/smoke
+
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+docker version > /dev/null 2>&1 || {
+	echo "  !!  vm-guest-smoke needs a running docker" >&2
+	exit 1
+}
+
+guest_go() { CGO_ENABLED=0 GOOS=linux GOARCH=$arch go "$@"; }
+
+# initramfs OVERLAY PACKAGE NAME: PACKAGE as /init, in the launcher's format.
+initramfs() {
+	guest_go build -overlay "$1" -trimpath -o "$out/$3.bin" "$2"
+	"$out/mkinitramfs" "$out/$3.bin" > "$out/$3.cpio"
+}
+
+printf '{"Replace":{}}\n' > "$out/none.json"
+cp "$kernel" "$out/kernel"
+guest_go build -trimpath -o "$out/guestboot" ./$smoke/guestboot
+go build -trimpath -o "$out/mkinitramfs" ./$smoke/initramfs
+# The driver runs in the container, on this machine's architecture.
+CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOHOSTARCH) go build -trimpath -o "$out/guestdriver" ./$smoke/guestdriver
+image=$(docker build -q $smoke/guest)
+
+boot() { docker run --rm --network none -v "$out:/smoke:ro" "$image" "$@"; }
+
+# has LOG TEXT: the console holds TEXT, a line's start if it begins with ^.
+has() {
+	case $2 in
+	^*) grep -q "$2" "$1" ;;
+	*) grep -qF -- "$2" "$1" ;;
+	esac
+}
+
+if [ "$what" = green ]; then
+	initramfs "$out/none.json" ./$smoke/guestboot a
+	initramfs "$out/none.json" ./cmd/caboose-agent b
+	bad=0
+	require() { # LOG TEXT...
+		log=$1
+		shift
+		for text; do
+			has "$log" "$text" || {
+				echo "  !!  no \"$text\" on the console: $log" >&2
+				bad=1
+			}
+		done
+	}
+	boot a a.cpio $limit | tee "$out/a.log"
+	require "$out/a.log" '^GUESTBOOT PASS' 'BOOT END 0'
+	boot b b.cpio $limit | tee "$out/b.log"
+	require "$out/b.log" '^GUESTBOOT PASS' 'DRIVER READY' 'DRIVER SHUTDOWN ok' 'BOOT END 0'
+	[ $bad = 0 ] || exit 1
+	echo "  ok  the guest init booted and passed, both stages (consoles: $out/a.log, $out/b.log)"
+	exit 0
+fi
+
+# mutate NAME FILE SED: an overlay of FILE changed by SED, or a failure when
+# SED changes nothing.
+mutate() {
+	sed "$3" "$2" > "$out/$1.go"
+	if cmp -s "$2" "$out/$1.go"; then
+		echo "  !!  mutant $1: its change no longer applies to $2" >&2
+		exit 1
+	fi
+	printf '{"Replace":{"%s":"%s"}}\n' "$PWD/$2" "$out/$1.go" > "$out/$1.json"
+}
+
+failed=0
+# red NAME LOG REFUSED WANTED...: the console must lack REFUSED and hold every
+# WANTED, what shows the mutant failed for the reason it was made.
+red() {
+	name=$1 log=$2 refused=$3
+	shift 3
+	ok=1
+	if has "$log" "$refused"; then
+		echo "  !!  mutant $name: the console says \"$refused\"" >&2
+		ok=0
+	fi
+	for text; do
+		if ! has "$log" "$text"; then
+			echo "  !!  mutant $name: no \"$text\" on the console" >&2
+			ok=0
+		fi
+	done
+	if [ $ok = 1 ]; then
+		echo "  ok  mutant $name went red"
+	else
+		failed=1
+		echo "  --  mutant $name's console:" >&2
+		cat "$log" >&2
+	fi
+}
+
+init_go=internal/agent/init_linux.go
+guest_go_file=internal/agent/guest_linux.go
+
+# A stage a mutant of the init: NAME FILE SED LIMIT WANTED...
+stage_a() {
+	name=$1 file=$2 expr=$3 lim=$4
+	shift 4
+	mutate "$name" "$file" "$expr"
+	initramfs "$out/$name.json" ./$smoke/guestboot "$name"
+	boot a "$name.cpio" "$lim" > "$out/$name.log" 2>&1 || true
+	red "$name" "$out/$name.log" '^GUESTBOOT PASS' "$@"
+}
+
+# The same for stage b's agent, with one more argument after LIMIT: what the
+# console must lack.
+stage_b() {
+	name=$1 file=$2 expr=$3 lim=$4 no=$5
+	shift 5
+	mutate "$name" "$file" "$expr"
+	initramfs "$out/$name.json" ./cmd/caboose-agent "$name"
+	boot b "$name.cpio" "$lim" > "$out/$name.log" 2>&1 || true
+	red "$name" "$out/$name.log" "$no" "$@"
+}
+
+no_devlinks='s|if err := devLinks("/dev"); err != nil {|if err := error(nil); err != nil {|'
+stage_a a-no-devlinks $init_go "$no_devlinks" $limit \
+	'FAIL link /dev/fd' 'FAIL bash process substitution' '^GUESTBOOT FAIL'
+stage_a a-no-late-mounts $init_go 's|return lateMounts(os.Stderr)|return nil|' $limit \
+	'FAIL mount /sys sysfs' 'FAIL mount /dev/pts devpts' '^GUESTBOOT FAIL'
+stage_a a-late-mount-fails $init_go 's|newinstance,ptmxmode=0666,mode=0620,gid=5|nosuchoption|' $limit \
+	'powering off' 'BOOT END 0'
+stage_a a-no-grow internal/agent/disk_linux.go 's|growBlocks(blocks, bs, size)|growBlocks(blocks, bs, blocks*bs)|' $limit \
+	'FAIL scratch grew' '^GUESTBOOT FAIL'
+stage_a a-hang $init_go 's|if err := earlyInit(); err != nil {|time.Sleep(time.Hour); if err := earlyInit(); err != nil {|' $hang_limit \
+	'init: started' 'BOOT TIMEOUT'
+
+stage_b b-no-devlinks $init_go "$no_devlinks" $limit 'DRIVER READY' \
+	'FAIL link /dev/fd' 'DRIVER FAIL' 'the entrypoint exited before it was ready'
+stage_b b-never-answers $guest_go_file 's|lnControl, err := listenVsock(agentproto.PortControl)|time.Sleep(time.Hour); lnControl, err := listenVsock(agentproto.PortControl)|' $hang_limit 'DRIVER READY' \
+	'the root is ready' 'DRIVER FAIL' 'the agent never listened'
+stage_b b-never-stops $guest_go_file 's|^func (m \*machine) Shutdown() {|func (m *machine) Shutdown() { time.Sleep(time.Hour)|' $hang_limit 'BOOT END 0' \
+	'DRIVER READY' 'DRIVER SHUTDOWN ok' 'BOOT TIMEOUT'
+
+# No mutant of production code: an entrypoint that never gets ready.
+initramfs "$out/none.json" ./cmd/caboose-agent b
+boot b b.cpio $hang_limit -no-ready > "$out/b-no-ready.log" 2>&1 || true
+red b-no-ready "$out/b-no-ready.log" 'DRIVER READY' '^GUESTBOOT PASS' 'DRIVER FAIL' 'the agent did not answer'
+
+[ $failed = 0 ] || exit 1
+echo "  ok  every mutant went red (consoles: $out/*.log)"

@@ -1,0 +1,78 @@
+#!/bin/sh
+# guest-boot STAGE INITRAMFS LIMIT [DRIVER ARG...]: make the disks a guest
+# boots from and boot /smoke/kernel under QEMU's emulation with INITRAMFS
+# from /smoke, the console on stdout. It decides nothing: the last line is
+# "BOOT END <QEMU's status>", after "BOOT TIMEOUT" when LIMIT seconds ran
+# out, and whoever ran it reads the console (./smoke, beside this file).
+#
+# STAGE a has no vsock: the guest ends itself. STAGE b adds a vsock through
+# vhost-device-vsock, which serves the same hybrid socket as caboose-vmm,
+# and runs /smoke/guestdriver against it.
+#
+# timeout stays a child of this shell: as a container's PID 1 it exits 125
+# without running anything (seen with coreutils 9.10).
+set -u
+stage=$1 initrd=$2 limit=$3
+shift 3
+
+# The root, as a sandbox's: ext4, never written. The scratch disk, as the
+# launcher makes one: a small empty ext4 on a longer disk, which the init
+# has to grow.
+mkdir -p /tmp/rootfs/etc /tmp/vm
+cp /bin/bash-static /smoke/guestboot /tmp/rootfs/
+echo 'root:x:0:0::/:/bash-static' > /tmp/rootfs/etc/passwd
+echo 'root:x:0:' > /tmp/rootfs/etc/group
+truncate -s 256M /tmp/root.img
+mkfs.ext4 -q -F -b 4096 -L caboose-root -d /tmp/rootfs /tmp/root.img
+truncate -s 64M /tmp/scratch.img
+mkfs.ext4 -q -F -b 4096 -L caboose-scratch /tmp/scratch.img
+truncate -s 512M /tmp/scratch.img
+
+# As smoke/run's virt machine, with the disks a guest has, in its order.
+qemu() {
+	timeout -k 5 "$limit" qemu-system-aarch64 \
+		-M virt,gic-version=3 -cpu max,pauth-impdef=on -smp 2 -m 1024 \
+		-nographic -serial none -monitor none -no-reboot \
+		-kernel /smoke/kernel -initrd "/smoke/$initrd" \
+		-append "console=hvc0 panic=-1 loglevel=4" \
+		-device virtio-serial-pci -chardev stdio,id=con,signal=off \
+		-device virtconsole,chardev=con \
+		-drive if=none,id=root,file=/tmp/root.img,format=raw,readonly=on \
+		-device virtio-blk-pci,drive=root \
+		-drive if=none,id=scratch,file=/tmp/scratch.img,format=raw \
+		-device virtio-blk-pci,drive=scratch \
+		-device virtio-rng-pci "$@"
+}
+
+case $stage in
+a)
+	qemu &
+	vm=$!
+	;;
+b)
+	vhost-device-vsock --vm guest-cid=3,socket=/tmp/vu.sock,uds-path=/tmp/vm/vm.sock &
+	tries=0
+	while [ ! -S /tmp/vu.sock ] && [ "$tries" -lt 100 ]; do
+		sleep 0.1
+		tries=$((tries + 1))
+	done
+	# vhost-user wants the guest's memory in a shared file.
+	qemu -object memory-backend-memfd,id=mem,size=1024M,share=on -machine memory-backend=mem \
+		-chardev socket,id=vsock,path=/tmp/vu.sock -device vhost-user-vsock-pci,chardev=vsock &
+	vm=$!
+	# The driver gives up first, so that it can say why.
+	if ! timeout -k 5 "$limit" /smoke/guestdriver -dir /tmp/vm -timeout "$((limit - 5))s" "$@"; then
+		kill "$vm" 2> /dev/null
+	fi
+	;;
+*)
+	echo "BOOT BAD STAGE $stage"
+	exit 2
+	;;
+esac
+wait "$vm"
+status=$?
+case $status in
+124 | 137) echo "BOOT TIMEOUT after ${limit}s" ;;
+esac
+echo "BOOT END $status"

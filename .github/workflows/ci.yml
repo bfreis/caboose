@@ -136,9 +136,11 @@ jobs:
   # The vm guest kernel: built from vm/kernel natively on an arm64 runner,
   # as release.yml's vm-assets job builds the one it ships, and booted
   # under QEMU (emulated, TCG: runners have no KVM to rely on) with the
-  # smoke test's init. It takes minutes, so it runs only when what it
-  # tests changed: vm/kernel, the initramfs writer, this file, or the
-  # Makefile's kernel lines. Without an arm64 runner (a repository may need
+  # smoke test's init, then the real guest init under QEMU (make
+  # vm-guest-smoke). It takes minutes, so it runs only when what it tests
+  # changed: vm/kernel, the guest's init and agent and what they and the
+  # test's driver speak, this file, or the Makefile's kernel and guest
+  # lines. Without an arm64 runner (a repository may need
   # them enabled) it waits in the queue, and timeout-minutes
   # counts only once a runner has it.
   kernel:
@@ -158,9 +160,9 @@ jobs:
           run=false
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2> /dev/null; then
             run=true
-          elif git diff --name-only "$BASE" HEAD | grep -qE '^(vm/kernel/|internal/vm/initramfs\.go$|\.github/workflows/ci\.yml$)'; then
+          elif git diff --name-only "$BASE" HEAD | grep -qE '^(vm/kernel/|cmd/caboose-agent/|internal/agent/|internal/agentproto/|internal/hvsock/|internal/vm/|\.github/workflows/ci\.yml$)'; then
             run=true
-          elif git diff "$BASE" HEAD -- Makefile | grep -qE '^[-+].*(LINUX_|KERNEL_|vm-kernel)'; then
+          elif git diff "$BASE" HEAD -- Makefile | grep -qE '^[-+].*(LINUX_|KERNEL_|vm-kernel|vm-guest|GUEST_SMOKE)'; then
             run=true
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -216,3 +218,16 @@ jobs:
             vm-dist/kernel-arm64
             vm-dist/kernel-arm64.config
           key: ${{ steps.kernel.outputs.cache-primary-key }}
+
+      # After the kernel is kept: these are about the init, and a change that
+      # breaks one must not cost the next run a kernel build. The stages'
+      # own limits end any hang first; these are for docker itself.
+      - name: make vm-guest-smoke
+        if: steps.changed.outputs.run == 'true'
+        timeout-minutes: 15
+        run: make vm-guest-smoke VM_ARCH=arm64
+
+      - name: make vm-guest-smoke-mutants
+        if: steps.changed.outputs.run == 'true'
+        timeout-minutes: 20
+        run: make vm-guest-smoke-mutants VM_ARCH=arm64

@@ -8,6 +8,8 @@ Docker. `make help` lists the targets; the ones that matter:
 | `make launcher` | build `./caboose` from the Go sources, only when something changed (and `./caboose-vmm` too, on a Mac) |
 | `make agent` | build `caboose-agent`, the sandbox's end of the host link, for amd64 and arm64 into `agent-bin/`, from `cmd/caboose-agent` and `internal/agent`; the launcher embeds it and the image's layer copies it in (`make launcher` runs it) |
 | `make vm-kernel` | build `vm-dist/kernel-arm64` (and its `.config` and `.SOURCE`, checked to name the pinned version), the vm isolation's guest kernel, from `vm/kernel` and the kernel.org release the Makefile pins; with docker, on the host, never in the sandbox |
+| `make vm-guest-smoke` | boot the real guest init and `caboose-agent` under QEMU in a container, emulated, with `vm-dist/kernel-arm64` (built only when there is none), and check what they leave on the console; needs docker, and works in the sandbox too |
+| `make vm-guest-smoke-mutants` | the same with the init broken in copies, never in the checkout, checking each stage goes red for the reason expected, hangs included: when a mutation stops applying, update it in `vm/kernel/smoke/guest/smoke` |
 | `make vm-assets` | pack the kernel and builder as `vm-release/caboose-vm_VERSION_arm64.tar.gz`, the release asset (goreleaser runs it) |
 | `make vm-builder` | build `vm-dist/builder-arm64.img`, the vm isolation's builder guest, with docker; on the host, never in the sandbox |
 | `make vmm` | build `./caboose-vmm`, the vm isolation's VM runner, and sign it with the virtualization entitlement: ad-hoc, or with a Developer ID (below); a Mac only |

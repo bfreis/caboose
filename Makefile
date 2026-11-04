@@ -275,6 +275,22 @@ vm-kernel-smoke: vm-dist/kernel-$(VM_ARCH)
 	  fi
 
 ## vm-kernel-pin: print the guest kernel's pin, LINUX_VERSION and LINUX_SHA256
+## vm-guest-smoke: boot the real vm guest init under QEMU with vm-dist/kernel-ARCH, with and without a vsock, and check what it leaves (docker)
+## vm-guest-smoke-mutants: break that init in copies and check vm-guest-smoke's stages go red, a hang included (docker)
+# vm/kernel/smoke/guest/smoke says how. Unlike the targets above, these run
+# in a sandbox too, wherever docker answers: they build no image a launcher
+# uses, and their container gets a directory of plain files, read-only, and
+# no network, so a vm sandbox's own dockerd serves as well as the host's.
+# They take the kernel that is there, however its date compares with
+# vm/kernel's files, and ask for one only when there is none (which a
+# sandbox refuses: vm-kernel builds on the host).
+GUEST_SMOKE_DIR ?= vm-dist/.guest-smoke-$(VM_ARCH)
+vm-guest-smoke vm-guest-smoke-mutants:
+	@[ "$(VM_ARCH)" = arm64 ] || { echo "  !!  $@ boots arm64 guests only" >&2; exit 1; }
+	@[ -s vm-dist/kernel-$(VM_ARCH) ] || $(MAKE) vm-dist/kernel-$(VM_ARCH)
+	@vm/kernel/smoke/guest/smoke "$(abspath vm-dist/kernel-$(VM_ARCH))" "$(abspath $(GUEST_SMOKE_DIR))" \
+	  $(if $(filter vm-guest-smoke,$@),green,mutants)
+
 vm-kernel-pin:
 	@echo "$(LINUX_VERSION) $(LINUX_SHA256)"
 
@@ -409,12 +425,12 @@ lint-linux:
 	@set -e; for f in entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh; do \
 	    bash -n "$$f"; echo "  ok  $$f"; \
 	  done; \
-	  for f in imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run; do \
+	  for f in imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run vm/kernel/smoke/guest/boot vm/kernel/smoke/guest/smoke; do \
 	    sh -n "$$f"; echo "  ok  $$f"; \
 	  done; \
 	  command -v shellcheck >/dev/null 2>&1 || { \
 	    echo "  !!  shellcheck is not installed: https://github.com/koalaman/shellcheck#installing"; exit 1; }; \
-	  shellcheck entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run \
+	  shellcheck entrypoint.sh shellrc.bash tests/run.sh tests/byo/run.sh imagecheck.sh layer-user.sh xdg-open.sh install.sh macsign.sh vm/builder/caboose-builder vm/kernel/check-config vm/kernel/smoke/run vm/kernel/smoke/guest/boot vm/kernel/smoke/guest/smoke \
 	   ; echo "  ok  shellcheck"; \
 	  unformatted="$$(gofmt -l $$(go list -f '{{.Dir}}' ./...))"; \
 	  if [ -n "$$unformatted" ]; then \
@@ -501,5 +517,5 @@ test-vm: launcher
 test-byo: $(CC)
 	@CABOOSE_BIN=$(CC) ./tests/byo/run.sh
 
-.PHONY: FORCE help staticcheck-version agent conformance conformance-probe vmm app vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-assets launcher build restart stop status prune logs shell lint lint-linux lint-darwin go-test test test-vm test-byo
+.PHONY: FORCE help staticcheck-version agent conformance conformance-probe vmm app vm-builder vm-kernel vm-kernel-pin vm-kernel-smoke vm-guest-smoke vm-guest-smoke-mutants vm-assets launcher build restart stop status prune logs shell lint lint-linux lint-darwin go-test test test-vm test-byo
 FORCE:
